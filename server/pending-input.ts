@@ -50,7 +50,7 @@ export interface PendingRecord<Owner, Lease> {
 }
 type Fault = { code: string; message: string };
 interface HeldCopyReply { ok: boolean; code?: string; message?: string }
-type Removed = { id: string; outcome: "sent" | "discarded" | "dismissed" };
+type Removed = { id: string; outcome: "sent" | "discarded" | "consumed" | "dismissed" };
 /**
  * `joined`: until then a ready status may be the end of the turn a Send now's Enter joined, or of one that ended just
  * before that Enter landed and started a turn of its own. `lenient`: such a ready came, and the wait is for that own
@@ -123,6 +123,7 @@ export class PendingInputs<Owner, Lease> {
     if (previous) {
       if (previous.fingerprint !== fingerprint) throw new PendingInputError("invalid_submit_id", "This resend id already belongs to another message");
     }
+    if (outcome?.paneId === paneId && outcome.outcome === "consumed") return Promise.resolve({ ok: true });
     if (outcome?.paneId === paneId && outcome.outcome === "dismissed"
       || this.records.get(id)?.paneId === paneId && this.records.get(id)?.message.state === "uncertain"
       || [...this.resends.values()].some((entry) => entry.id === id && entry.paneId === paneId && entry.uncertain)) {
@@ -319,6 +320,13 @@ export class PendingInputs<Owner, Lease> {
     if (uncertain || gate?.by === item.message.id || gate?.completed) this.gates.delete(item.paneId);
     if (uncertain) this.holdPane(item.paneId, fault.code === "pasted_not_sent" ? BEHIND_PASTE : fault);
     this.publish(item.owner, item.paneId);
+  }
+
+  /** Native transcript evidence settles only this uncertain ID; held followers stay held. */
+  confirmRecorded(item: PendingRecord<Owner, Lease>, remember: () => boolean): boolean {
+    if (this.records.get(item.message.id) !== item || item.inFlight || item.message.state !== "uncertain" || !remember()) return false;
+    this.finish(item, "consumed");
+    return true;
   }
 
   discard(item: PendingRecord<Owner, Lease>, withdrawalOnly = false): boolean {

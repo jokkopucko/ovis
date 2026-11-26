@@ -99,7 +99,7 @@ export async function sendCommandAsData(pane: HerdrPane, route: CommandDataRoute
 }
 
 /** Whether herdr reports a Codex session in `pane` other than `threadId` (by its id, or by its rollout file's name). */
-function codexDisagrees(pane: Pick<HerdrPane, "agent_session">, threadId: string): boolean {
+export function codexDisagrees(pane: Pick<HerdrPane, "agent_session">, threadId: string): boolean {
   const session = pane.agent_session;
   if (session?.agent !== "codex" || !session.value) return false;
   return session.kind === "id" ? session.value !== threadId : !(session.kind === "path" && session.value.endsWith(`-${threadId}.jsonl`));

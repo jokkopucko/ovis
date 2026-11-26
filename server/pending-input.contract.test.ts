@@ -14,6 +14,8 @@ import { OmoStatus } from "./omo-status.ts";
 import * as claudeStore from "./claude-store.ts";
 import * as agentLaunchModule from "./agent-launch.ts";
 import * as piModule from "./pi.ts";
+import * as codexModule from "./codex.ts";
+import { CodexServers } from "./approvals/codex.ts";
 import { MachineManager } from "./machines.ts";
 import { DeviceStore } from "./devices.ts";
 import { DEVICE_COOKIE } from "./auth.ts";
@@ -57,6 +59,15 @@ mock.module("./pi.ts", () => ({
     return path ? existsSync(path) ? { path } : { unwritten: { id: basename(path, ".jsonl"), path } }
       : realPiTranscriptPath(paneId, ...args as Parameters<typeof realPiTranscriptPath> extends [string, ...infer Rest] ? Rest : never);
   },
+}));
+const fakeCodexTranscripts = new Map<string, string>();
+const realCodexHome = codexModule.paneCodexHomePlaced, realCodexRollout = codexModule.codexOpenRollout, realCodexTranscript = codexModule.codexTranscriptPath;
+mock.module("./codex.ts", () => ({
+  ...codexModule,
+  paneCodexHomePlaced: async (...args: Parameters<typeof realCodexHome>) => fakeCodexTranscripts.has(args[0])
+    ? { home: root, placed: true } : realCodexHome(...args),
+  codexOpenRollout: async (...args: Parameters<typeof realCodexRollout>) => fakeCodexTranscripts.get(args[0]) ?? realCodexRollout(...args),
+  codexTranscriptPath: async (...args: Parameters<typeof realCodexTranscript>) => fakeCodexTranscripts.get(args[0]) ?? realCodexTranscript(...args),
 }));
 const launches: string[] = [];
 const realLaunch = agentLaunchModule.agentLaunch;
@@ -137,6 +148,7 @@ beforeAll(() => {
 afterEach(async () => {
   for (const item of active.splice(0)) { for (const socket of item.sockets) socket.close(); item.stop(); await herdrRpc("workspace.close", { workspace_id: item.workspace }).catch(() => undefined); }
   fakePiTranscripts.clear();
+  fakeCodexTranscripts.clear();
   unavailablePiTranscripts.clear();
   failedPiIdentityLookups.clear();
 });
@@ -1056,6 +1068,48 @@ describe("connection-owned pending input", () => {
     await f.waitBytes("barrier\r");
     expect(f.bytes().split("held cross tab").length - 1).toBe(1);
   }, 30_000);
+  it("reconciles a late Codex completed user item through the production conversation watcher", async () => {
+    let clientId: string | undefined;
+    const steer = spyOn(CodexServers.prototype, "steerTarget").mockImplementation(() => ({
+      threadId: "receipt-session", send: async (_text, id, beforeWrite, writing) => { await beforeWrite(); writing(); clientId = id; return "unknown"; },
+    }));
+    try {
+      const transcript = join(root, "codex-native-receipt.jsonl");
+      writeFileSync(transcript, JSON.stringify({ type: "session_meta", timestamp: new Date().toISOString(), payload: { id: "receipt-session", cwd: root } }) + "\n");
+      const f = await setup("codex-native-receipt", "codex", "• Working (2s • esc to interrupt)\n› Ask Codex to do anything\n");
+      fakeCodexTranscripts.set(f.pane, transcript);
+      f.socket.send({ type: "conversation-watch", pane_id: f.pane, enabled: true });
+      await f.socket.wait((frame) => frame.type === "conversation-changed" && frame.pane_id === f.pane && !frame.signature.startsWith("unavailable:"));
+      const row = await f.queue(1, "the native transcript confirms this message");
+      const follower = await f.queue(2, "later held message");
+      f.socket.send({ type: "pending-action", id: 10, pane_id: f.pane, pending_id: row.id, action: "steer" });
+      expect(await f.socket.action(10)).toMatchObject({ ok: false, code: "submit_changed" });
+      const payload = {
+        type: "item_completed", thread_id: "receipt-session", turn_id: "active-turn",
+        item: { type: "UserMessage", id: "accepted-user-item", client_id: clientId, content: [{ type: "text", text: row.text, text_elements: [] }] },
+      };
+      appendFileSync(transcript, JSON.stringify({ type: "event_msg", timestamp: new Date().toISOString(), payload }) + "\n");
+      const confirmed = await f.removed(row.id, "consumed");
+      expect(confirmed.messages).toMatchObject([{ id: follower.id, state: "held" }]);
+      expect(confirmed.messages.some((message: PendingMessage) => message.id === row.id)).toBe(false);
+      expect(f.bytes()).toBe("");
+    } finally { steer.mockRestore(); }
+  }, 30_000);
+
+  it("keeps an explicit terminal Send now uncertain without a send-specific acknowledgement", async () => {
+    const status = "Working (5s • esc to interrupt) · 1 background terminal running · /ps to view · /stop to close";
+    const composer = "› Ask Codex to do anything\n  GPT-6.2-Sol default · /workspace\n  ← for agents · ? for shortcuts";
+    const before = `› earlier input\n\n${status}\n\n${composer}\n`;
+    const f = await setup("codex-immediate-acceptance", "codex", before);
+    const message = await f.queue(1, "send this now");
+    f.socket.send({ type: "pending-action", id: 10, pane_id: f.pane, pending_id: message.id, action: "steer" });
+    await f.waitBytes("\r");
+    await f.showScreen(before.replace(status, `› ${message.text}\n\n${status}`));
+    const result = await f.socket.action(10);
+    expect(f.bytes()).toBe(`${paste(message.text)}\r`);
+    expect(result).toMatchObject({ ok: false, code: "submit_changed" });
+  }, 30_000);
+
   it("interrupts an explicit Codex Send now only after its native steering panel appears", async () => {
     const f = await setup("codex-send-now", "codex"); const message = await f.queue(1, "send this now");
     f.socket.send({ type: "pending-action", id: 10, pane_id: f.pane, pending_id: message.id, action: "steer" });

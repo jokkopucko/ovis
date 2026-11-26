@@ -17,6 +17,8 @@
  * pane after, so another session or process of the same kind gets none.
  */
 import type { AcpChildren } from "../acp/children.ts";
+import type { CodexServers } from "../approvals/codex.ts";
+import { codexDisagrees } from "../command-data-send.ts";
 import { AGENT_PICKER_MESSAGE, closeBackslash, closeMention, type createSubmitText, freeAgentInput, freeClaudeBox, freeHermesInput, InputDraftError, modelSwitchText, OMP_REPORT_POLL_MS, OMP_STARTUP_MS, ompStartingUntil, pendingFault, pendingIdentity, pendingText, refusedFirstWrite, submitFraming, untilOmpReported } from "./composer.ts";
 import { grokEcho, grokQueue, sendGrokQueuedNow } from "./grok-queue.ts";
 import { type Client, connectionOf, send } from "./connections.ts";
@@ -39,6 +41,9 @@ import { isShellAgentKind, SHELL_AGENTS } from "../shell-agent.ts";
 import { capturePiDeliveryAnchorRetrying, matchPiDeliveries, PiReceiptCapacity, piRecordText, type PiDeliveryAnchor, type PiReceiptReservation } from "../pi-delivery.ts";
 import { isPiProcess, piTranscriptPath, piUnwrittenHeaderId } from "../pi.ts";
 import { PendingRequestBook } from "../pending-requests.ts";
+import { captureCodexDelivery, CodexDeliveries, type CodexDeliveryAnchor } from "../codex-delivery.ts";
+import { codexConsumedReplay, rememberCodexConsumed } from "../codex-consumed.ts";
+import { codexOpenRollout, paneCodexHomePlaced } from "../codex.ts";
 import { RECEIPT_RESUME_ID } from "../../shared/receipt-resume.ts";
 import { interruptCodexSteering } from "../codex-steering.ts";
 import type { OmoStatus } from "../omo-status.ts";
@@ -136,8 +141,8 @@ const TYPED_WHILE_WAITING = { code: "typed_while_waiting", message: "Something w
 const FIRST_MESSAGE_RECEIPTS = 8;
 
 export function createPendingDelivery({ options, clients, attachments, sight, serialize, lastTyped, typedInto = () => 0, submitText, authorizeSocket, clientSnapshot, omo, queueHeld = () => false, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS, TYPED_SETTLE_MS }: {
-  options: { acp?: Pick<AcpChildren, "forPane"> | null; pendingStartTimeoutMs?: number; piReceiptLimit?: number; submitDeadlineMs?: number; submitDelayMs?: number; ompReportPollMs?: number; ompStartupMs?: number; openCodeStateDir?: string;
-    herdrFailure?: HerdrFailureView };
+  options: { acp?: Pick<AcpChildren, "forPane"> | null; pendingStartTimeoutMs?: number; piReceiptLimit?: number; submitDeadlineMs?: number; submitDelayMs?: number; ompReportPollMs?: number; ompStartupMs?: number; openCodeStateDir?: string; codexHome?: string;
+    codexServers?: Pick<CodexServers, "steerTarget">; stateDir?: string; herdrFailure?: HerdrFailureView };
   clients: Set<Client>;
   attachments: ReadonlyMap<string, AttachmentView>;
   sight: (client: Client, paneId: string) => TerminalSighting;
@@ -154,7 +159,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   TYPED_SETTLE_MS: number;
 }) {
   const pendingAuthorities = new WeakMap<Client, Map<string, object>>();
-  const firstReceipts = new Map<string, Array<{ id: string; outcome: "sent" | "discarded" | "dismissed" }>>();
+  const firstReceipts = new Map<string, Array<{ id: string; outcome: "sent" | "discarded" | "consumed" | "dismissed" }>>();
   /** the connections that could type into the pane now: attached, allowed to type, and with a ready lease */
   const typists = (paneId: string): Client[] => [...clients].filter((client) => {
     if (!client.data.attached.has(paneId)) return false;
@@ -203,6 +208,54 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     new Bun.CryptoHasher("sha256").update(JSON.stringify([message.pane_id, message.text, message.payload, message.delivery ?? "immediate", agentOnly])).digest("hex");
   const draftConfirmations = new WeakMap<Client, Map<string, { draft: string | null; identity: PendingIdentity; box?: string | null }>>();
 
+  const codexTyped = new CodexDeliveries<{ identity: PendingIdentity | null; item?: PendingItem }>();
+  const prepareCodexReceipt = async (paneId: string, identity: PendingIdentity): Promise<CodexDeliveryAnchor | null> => {
+    if (identity.agent !== "codex" || identity.processPid == null || identity.processBirth == null) return null;
+    try {
+      const { home, placed } = await paneCodexHomePlaced(paneId, options.codexHome);
+      if (!placed) return null;
+      const pane = (await clientSnapshot()).panes.find((candidate) => candidate.pane_id === paneId);
+      const path = await codexOpenRollout(paneId, pane?.cwd, home);
+      return path === null ? null : captureCodexDelivery(path);
+    } catch { return null; }
+  };
+  async function reconcileCodexDeliveries(paneId: string): Promise<void> {
+    if (codexTyped.values(paneId).length === 0) return;
+    await serialize(paneId, async () => {
+      // Retry failed reads with fresh RPC/file handles. A final native append may be followed
+      // by no further signature change, so waiting for another invalidation can strand a receipt.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const entries = codexTyped.values(paneId);
+          if (entries.length === 0) return;
+          const identities = entries.flatMap(({ identity }) => identity === null ? [] : [identity]);
+          if (identities.length === 0) return;
+          const bound = identities[0]!.processPid ?? null;
+          const matches = (current: Awaited<ReturnType<typeof currentIdentity>>): boolean => current.recognized
+            && identities.every((identity) => identity.processPid != null && identity.processBirth != null
+              && current.identity.processPid === identity.processPid && current.identity.processBirth === identity.processBirth
+              && samePendingIdentity(identity, current.identity));
+          const current = await currentIdentity(paneId, bound);
+          if (!matches(current)) { codexTyped.invalidate(paneId); return; }
+          const { home, placed } = await paneCodexHomePlaced(paneId, options.codexHome);
+          if (!placed) continue;
+          const path = await codexOpenRollout(paneId, current.pane.cwd, home);
+          if (path === null) continue;
+          const receipts = await codexTyped.reconcile(paneId, path, async () => {
+            if (matches(await currentIdentity(paneId, bound))) return true;
+            codexTyped.invalidate(paneId);
+            return false;
+          });
+          const dir = options.stateDir;
+          for (const { item } of receipts) if (item && dir) pending.confirmRecorded(item, () => rememberCodexConsumed(dir, item.message.id, paneId, item.message.text));
+          return;
+        } catch {
+          if (attempt === 2) return;
+        }
+      }
+    }).catch(() => { /* A later native invalidation retries; no failed read confirms input. */ });
+  }
+
   const piTyped = new Map<string, PiTypedReceipt[]>();
   // Presentation only, bound to both the authenticated device and an opaque browser
   // correlator. Retaining a receipt never retains permission to send input.
@@ -219,8 +272,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
    * `at` is on `elapsed`, a clock that only moves forward: a PC clock set forward must not end a receipt before the
    * proof a page counts on its own clock, and one set back must not stretch it.
    */
-  const completed: Array<{ paneId: string; key: string; id: string; outcome: "sent" | "discarded" | "held" | "uncertain" | "sending"; at: number; hash?: string;
-    gone?: true }> = [];
+  const completed: Array<{ paneId: string; key: string; id: string; outcome: "sent" | "discarded" | "consumed" | "held" | "uncertain" | "sending"; at: number; /** a resend's text, when one sent it */ hash?: string;
+    /** a `sending` claim whose pane ended while its send was on its way: its held receipt is not put back */ gone?: true }> = [];
   const elapsed = (): number => performance.now();
   /**
    * herdr may give the ID to another pane: a follow-up taken before that time was written for the pane that ended,
@@ -466,6 +519,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     // A typed Pi receipt is never re-sent. Losing its exact terminal only stops automatic
     // transcript confirmation and makes the saved receipt dismissible.
     failPi(paneId, piTyped.get(paneId) ?? []);
+    codexTyped.invalidate(paneId);
     if (fault.code === "pane_not_found") {
       for (const message of pending.list(FIRST_MESSAGE_OWNER, paneId)) {
         const item = pending.get(FIRST_MESSAGE_OWNER, paneId, message.id);
@@ -700,7 +754,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   async function dispatchPendingText(owner: Client, paneId: string, text: string, lease: PendingLease, identity: PendingIdentity,
     automatic: boolean, arrivedAt: number, committing: (working: boolean, restarting?: boolean, readMark?: number) => void = () => {}, interruptWorkingCodex = false,
     requestId = 0, agentOnly = false, queued = false,
-    row: { withdrawn?: () => boolean; waiting?: (waits: boolean) => void; uncertain?: () => void } = {}): Promise<SubmitReply> {
+    row: { withdrawn?: () => boolean; waiting?: (waits: boolean) => void; uncertain?: () => void } = {}, nativeItem?: PendingItem): Promise<SubmitReply> {
     let wrote = false;
     // a message for an agent alone pasted and then refused its Enter (#511): its text may sit in the input line, so it is
     // held for the user and never pasted again automatically
@@ -785,6 +839,39 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       let attached: string[] = [];
       let prompt: PromptPiece[] = [{ pasted: closeMention(sent) }];
       watch = startOpenCodeWatch(context.pane, command, options.openCodeStateDir);
+      if (interruptWorkingCodex && nativeItem && context.working && context.agentInFront && context.identity.agent === "codex"
+        && !context.collapsed && !command && !/(?:^|\s)[!/@$]\S*/u.test(text) && sent === text && closeMention(sent) === text) {
+        const argv = context.processes?.foreground_processes?.find((p) => p.pid === context.identity.processPid)?.argv ?? [];
+        const target = options.codexServers?.steerTarget(paneId, argv);
+        if (target && !codexDisagrees(context.pane, target.threadId)) {
+          const anchor = await prepareCodexReceipt(paneId, context.identity);
+          const clientId = crypto.randomUUID(), at = Date.now();
+          const reply = await target.send(text, clientId, async () => {
+            const current = await pendingContext(owner, paneId, lease, identity, false, true);
+            if (!current.working || current.collapsed || codexDisagrees(current.pane, target.threadId))
+              throw new HerdrError(TARGET_CHANGED.code, TARGET_CHANGED.message);
+            await noMaskedPrompt(paneId, lease.sighting.facts().cols, identity);
+          }, () => {
+            authorizePending(owner, paneId, lease);
+            if (row.withdrawn?.() || Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS))
+              throw new HerdrError("submit_timeout", "The message expired before delivery");
+            committing(true, false, pending.mark(paneId));
+            wrote = true;
+          });
+          if (reply === "accepted") { noteSubmitted(paneId, text, command, at); return { ok: true }; }
+          if (reply === "unknown") {
+            if (anchor?.session === target.threadId) codexTyped.add(paneId, text, anchor, at, { identity: context.identity, item: nativeItem }, clientId);
+            throw new HerdrError("submit_changed", "Immediate delivery was not confirmed. Check the terminal before sending again.");
+          }
+          if (reply === "changed") {
+            pending.holdPane(paneId, TARGET_CHANGED);
+            throw new HerdrError(TARGET_CHANGED.code, TARGET_CHANGED.message);
+          }
+          // No steer went. Start the terminal path from its first guard, without trying the RPC again.
+          return await dispatchPendingText(owner, paneId, text, lease, identity, automatic, arrivedAt, committing,
+            interruptWorkingCodex, requestId, agentOnly, queued, row);
+        }
+      }
       if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) throw new HerdrError("submit_timeout", "The pending message waited too long; nothing was typed");
       await stillInFront(paneId, context.identity.processPid, identity, agentOnly);
       await noMaskedPrompt(paneId, lease.sighting.facts().cols, identity);
@@ -883,7 +970,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       // Claude Code queues what Enter commits during a turn; Ctrl+Enter sends it now (#737). herdr
       // encodes the key as the pane asked, and as a plain CR for a program that asked for nothing.
       const sentAt = Date.now();
-      // Not seen: a task whose fire Claude has not written by then (the entry reaches the transcript some tens of milliseconds
+      // the connection to herdr is awaited, and a task may fire meanwhile: the hold is read once more once connected,
+      // right before the key's own write. A key refused there was not sent, and its paste is not confirmed. Not seen: a
+      // task whose fire Claude has not written by then (the entry reaches the transcript some tens of milliseconds
       // after the task fires), or that fires while herdr hands the key to the pane
       let refused = false;
       await paneSendKeys(paneId, [steering && beforeEnter.identity.agent === "claude" ? "ctrl+enter" : "Enter"], undefined, () => allowed() && !(refused = resumed()))
@@ -955,7 +1044,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       const lease = item.lease ?? pendingLease(by, item.paneId);
       reply = await dispatchPendingText(by, item.paneId, item.message.text, lease, item.identity,
         automatic, arrivedAt, (working, restarting, readMark) => pending.committing(item, working, restarting, readMark), interruptWorkingCodex, item.message.request_id, item.message.agent_only === true, false,
-        { withdrawn: () => withdrawn.has(item), waiting: (waits) => pending.sendingWaitsFor(item, waits ? "omp_starting" : undefined) });
+        { withdrawn: () => withdrawn.has(item), waiting: (waits) => pending.sendingWaitsFor(item, waits ? "omp_starting" : undefined) }, item);
     } catch (error) {
       reply = { ok: false, ...pendingFault(error, options.herdrFailure) };
     }
@@ -977,6 +1066,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     // The messages queued behind one held for a screen of Codex's own are held with it, in the same step: tried one
     // by one, a later one would be typed ahead of it if the screen closed between two tries.
     if (automatic && reply.unannounced === true && fault !== undefined) pending.holdPane(item.paneId, fault);
+    void reconcileCodexDeliveries(item.paneId);
     return reply;
   }
   function drainPending(paneId: string): void {
@@ -1302,7 +1392,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         const mine = completed.filter((item) => item.paneId === paneId && item.key === key);
         const removed = [
           ...piCompleted.filter((item) => item.paneId === paneId && item.key === key).map(({ id }) => ({ id, outcome: "consumed" as const })),
-          ...mine.flatMap(({ id, outcome }) => outcome === "sent" || outcome === "discarded" ? [{ id, outcome, resumed: true as const }] : []),
+          ...mine.flatMap(({ id, outcome }) => outcome === "sent" || outcome === "discarded" || outcome === "consumed" ? [{ id, outcome, resumed: true as const }] : []),
         ];
         const held = mine.filter(({ outcome }) => outcome === "held");
         if (removed.length || held.length) send(client, { type: "pending-messages", pane_id: paneId, messages: [], ...(removed.length ? { removed } : {}), ...(held.length ? heldPart(held) : {}) });
@@ -1359,7 +1449,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       keys.delete(item.id);
       const existing = completed.findIndex((entry) => entry.id === item.id && entry.outcome !== "sending");
       if (existing >= 0 && (item.outcome !== "dismissed" || completed[existing]!.outcome === "held")) completed.splice(existing, 1);
-      if (!kept || (item.outcome !== "sent" && item.outcome !== "discarded")) continue;
+      if (!kept || (item.outcome !== "sent" && item.outcome !== "discarded" && item.outcome !== "consumed")) continue;
       completed.push({ paneId, key: kept, id: item.id, outcome: item.outcome, at: elapsed() });
       pushResumed(owner, paneId, kept, { removed: [{ id: item.id, outcome: item.outcome, resumed: true }] });
     }
@@ -1376,6 +1466,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     }
     drainPending(paneId);
     if (piTyped.has(paneId)) void reconcilePiDeliveries(paneId);
+    void reconcileCodexDeliveries(paneId);
   }
   function replayPendingOutcome(owner: Client, paneId: string, id: string): boolean {
     const outcome = pending.outcome(owner, paneId, id) ?? pending.outcome(FIRST_MESSAGE_OWNER, paneId, id);
@@ -1609,8 +1700,15 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           // Every check and claim on the receipts runs in the pane's serialized turn, by the original ID: two
           // resends of one copy (any generations) see each other's claim, so the text is typed once.
           const answer = await serialize(pane, async () => {
+            if (options.stateDir) {
+              let replay: ReturnType<typeof codexConsumedReplay>;
+              try { replay = codexConsumedReplay(options.stateDir, id, pane, framed.text); }
+              catch { return { ok: false, code: "pending_uncertain", message: "The saved delivery record could not be read. Check the terminal before sending again." }; }
+              if (replay === "same") return { ok: true };
+              if (replay === "different") return { ok: false, code: "invalid_submit_id", message: "This resend id already belongs to another message" };
+            }
             if (completed.some((entry) => entry.id === id && entry.outcome === "sending")) return { ok: false, code: "pending_busy", message: "This message is already being sent" };
-            if (completed.some((entry) => entry.id === id && entry.outcome === "sent" && entry.paneId === pane && (entry.hash === undefined || entry.hash === hash))) return { ok: true };
+            if (completed.some((entry) => entry.id === id && (entry.outcome === "sent" || entry.outcome === "consumed") && entry.paneId === pane && (entry.hash === undefined || entry.hash === hash))) return { ok: true };
             if (completed.some((entry) => entry.id === id && entry.outcome === "uncertain" && entry.paneId === pane)) return { ok: false, code: "pending_uncertain", message: "Check the terminal before sending this message again" };
             // the held receipt is this pane's and this browser's to claim, no other's
             const at = completed.findIndex((entry) => entry.id === id && entry.outcome === "held" && entry.paneId === pane && entry.key === key);
@@ -1756,5 +1854,5 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     },
   };
 
-  return { pending, holdPending, holdPendingPane, movePendingPane, drainPending, pendingFrames, queueFirstMessage, askFirstMessage, attached, closeConnection, reconcilePiDeliveries };
+  return { pending, holdPending, holdPendingPane, movePendingPane, drainPending, pendingFrames, queueFirstMessage, askFirstMessage, attached, closeConnection, reconcilePiDeliveries, reconcileCodexDeliveries };
 }

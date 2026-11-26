@@ -399,6 +399,24 @@ class Connection {
     } finally { clearTimeout(timer); }
   }
 
+  /** Steer only the pane's one loaded thread. The RPC id acknowledges this request, not a TUI echo. */
+  async steer(threadId: string, input: string, clientId: string, checkPane: () => Promise<void>, writing: () => void): Promise<"accepted" | "unsent" | "changed" | "unknown"> {
+    const turn = this.turnId;
+    const ready = () => !this.closed && this.sure && this.thread === threadId && turn !== null && turn === this.turnId
+      && this.turn === "running" && !this.idle && this.waitsOnNone() && this.held.size === 0;
+    if (!ready()) return "unsent";
+    await checkPane();
+    const loaded = await this.within("thread/loaded/list", {});
+    const result = loaded !== "unknown" && isObject(loaded["result"]) ? loaded["result"] : null;
+    if (result?.["nextCursor"] !== null || !Array.isArray(result["data"]) || !result["data"].includes(threadId)
+      || !result["data"].every((id) => id === threadId || (typeof id === "string" && this.subagents.has(id)))
+      || this.thread !== threadId || this.closed) return "changed";
+    if (!ready()) return "unsent";
+    writing();
+    const reply = await this.within("turn/steer", { threadId, expectedTurnId: turn, clientUserMessageId: clientId, input: [{ type: "text", text: input, text_elements: [] }] });
+    return reply !== "unknown" && reply["error"] === undefined && isObject(reply["result"]) && reply["result"]["turnId"] === turn ? "accepted" : "unknown";
+  }
+
   private send(message: Json): void {
     if (!this.closed) this.socket.send(JSON.stringify(message));
   }
@@ -822,6 +840,16 @@ export class CodexServers {
 
   launchedHere(paneId: string): boolean {
     return this.panes.has(paneId);
+  }
+
+  /** A call bound to this launch, not just its reusable pane id. */
+  steerTarget(paneId: string, argv: readonly string[]) {
+    const served = this.panes.get(paneId);
+    const connection = served?.connection;
+    const threadId = connection?.status()?.threadId;
+    if (!served || !connection || !threadId || connection.closed || !argv.some((arg, i) =>
+      arg === "--remote" && argv[i + 1] === `unix://${join(served.dir, SOCKET_NAME)}`)) return null;
+    return { threadId, send: (input: string, clientId: string, checkPane: () => Promise<void>, writing: () => void) => connection.steer(threadId, input, clientId, checkPane, writing) };
   }
 
   turnEnd(paneId: string): TurnEnd | null {
