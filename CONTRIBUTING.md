@@ -26,7 +26,9 @@ another project, with its license.
 - Linux (x64, arm64), macOS or Windows x64. Windows uses the screen mirror and needs no terminal addon; Alpine and 32-bit ARM have no addon build.
 - Bun 1.4 or newer, and herdr 0.9.0 or newer for the integration tests. Terminals in a checkout run on
   the Rust PTY host (`cargo build --release --manifest-path crates/pty-sidecar/Cargo.toml`, or
-  `bun scripts/pty-sidecar.ts install` on a release tag), and the PTY tests need it. CI builds it and
+  `bun scripts/pty-sidecar.ts install` on a release tag), and the tests need it: `test:unit` and
+  `test:integration` install the release's for an unchanged crate when none runs, else stop and say how
+  to build one. CI builds it and
   runs Bun 1.4.4, Node 22 (some test fixtures are Node programs) and herdr 0.9.3, all pinned in
   [.github/actions/setup-ci/action.yml](.github/actions/setup-ci/action.yml).
 

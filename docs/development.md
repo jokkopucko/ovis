@@ -122,7 +122,8 @@ scripts/pty-sidecar.ts install` (herdr's plugin build, each update installed fro
 `install.sh`) puts the binary for its PC in `bin/ovis-pty-sidecar` only when the release's crate
 tree matches the checkout and the SHA-256 matches (a checkout whose crate tree no release has takes the
 daily beta's `pty-sidecar-<tree>` prerelease); otherwise that install mirrors its panes and says how to
-build one.
+build one. `test:unit` and `test:integration` run the same install where no host runs, and without one
+stop and say how to build one.
 A release without them gets them from **Actions → Attach the Rust PTY host** with its tag.
 
 It also builds the server as one compiled binary per platform (`server-binary`, on the same runners as the
