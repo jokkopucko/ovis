@@ -17,6 +17,7 @@ import { rowFor, type ThemeEntry } from "../src/lib/themes.ts";
 import { isReportableWindowError } from "../src/lib/uncaughtErrors.ts";
 import { chromePath } from "./chrome-path.ts";
 import { unlessGone } from "./response-gone.ts";
+import { appContext } from "./app-context.ts";
 import { buildDemoApp } from "./demo-build.ts";
 
 const repo = join(import.meta.dir, "..");
@@ -225,7 +226,7 @@ async function runCase(item: Case, base: "root" | "demo", url: string, width: "3
   const failures: string[] = [];
   if (row !== rowFor(id, mode) || row.id !== id || row.mode !== mode) failures.push(`loadSettings draws ${row.id}/${row.mode}, the case expects ${id}/${mode}`);
   const locale = item.korean ? "ko-KR" : "en-US";
-  const context = await browser!.newContext({ ...VIEWPORTS[width], colorScheme: item.scheme, locale, serviceWorkers: "block" });
+  const context = await appContext(browser!, { ...VIEWPORTS[width], colorScheme: item.scheme, locale });
   try {
     await context.addInitScript(pageSetup, { main: item.main, themes: item.themes, blocked: item.blocked ?? false, keys: [SETTINGS_KEY, THEMES_KEY] as [string, string] });
     const page = await context.newPage();
@@ -376,7 +377,7 @@ function workerCache(worker: string): string | null {
 async function warmServiceWorker(url: string): Promise<Record<string, unknown>> {
   const item = CASES[0]!;
   const row = appRow(item);
-  const context = await browser!.newContext({ ...VIEWPORTS["1440"], colorScheme: item.scheme, serviceWorkers: "allow" });
+  const context = await appContext(browser!, { ...VIEWPORTS["1440"], colorScheme: item.scheme, serviceWorkers: "allow" });
   try {
     await context.addInitScript(pageSetup, { main: item.main, themes: item.themes, blocked: false, keys: [SETTINGS_KEY, THEMES_KEY] as [string, string] });
     const page = await context.newPage();
@@ -488,7 +489,7 @@ try {
   }
   const urls = { root: serve(rootDir, "/"), demo: serve(demoDir, DEMO_PREFIX) };
   browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-  const decoderContext = await browser.newContext();
+  const decoderContext = await appContext(browser);
   const decoder = await decoderContext.newPage();
   for (const base of ["root", "demo"] as const) {
     for (const item of CASES) {

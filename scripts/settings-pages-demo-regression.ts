@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
+import { appContext } from "./app-context.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { DEMO_FILE_PREVIEW_SCRIPT } from "./demo-file-preview.ts";
 import { openSettingsFolds, openSettingsPage, pressInSettings, sheetRisen, themeSide } from "./settings-page.ts";
@@ -46,7 +47,7 @@ interface HeldSteps { holdSteps: (timers?: boolean) => void; releaseSteps: () =>
  */
 async function lateCloseStep(browser: import("playwright-core").Browser, url: string): Promise<void> {
   for (const width of [1440, 390] as const) {
-    const context = await browser.newContext(width === 390 ? { viewport: { width, height: 844 }, isMobile: true, hasTouch: true } : { viewport: { width, height: 900 } });
+    const context = await appContext(browser, width === 390 ? { viewport: { width, height: 844 }, isMobile: true, hasTouch: true } : { viewport: { width, height: 900 } });
     try {
       await context.addInitScript((settings) => {
         localStorage.setItem("ovis:settings", settings);
@@ -181,7 +182,7 @@ try {
         const started = performance.now();
         const strings: Record<string, string> = language === "ko" ? KO : language === "ja" ? JA : language === "zh" ? ZH : {};
         const label = (name: string): string => strings[name] ?? name;
-        const context = await browser.newContext({ viewport: { width, height: 760 }, isMobile: true, hasTouch: true, locale: language });
+        const context = await appContext(browser, { viewport: { width, height: 760 }, isMobile: true, hasTouch: true, locale: language });
         try {
           await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: new URL(url).origin });
           await context.addInitScript((settings) => { if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", settings); }, JSON.stringify({ ...SETTINGS, language }));
@@ -429,7 +430,7 @@ try {
         }
       }
 
-      const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" });
+      const phone = await appContext(browser, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
       try {
         await phone.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify(SETTINGS));
         await phone.addInitScript(() => {
@@ -558,9 +559,9 @@ try {
 
       if (process.env.UI_EVIDENCE_DIR) {
         for (const width of [1280, 390]) {
-          const context = await browser.newContext({
+          const context = await appContext(browser, {
             viewport: { width, height: width === 390 ? 844 : 800 },
-            isMobile: width === 390, hasTouch: width === 390, locale: "en-US",
+            isMobile: width === 390, hasTouch: width === 390,
           });
           try {
             await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify(SETTINGS));
@@ -581,7 +582,7 @@ try {
         }
       }
 
-      const desktop = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
+      const desktop = await appContext(browser, { viewport: { width: 1280, height: 800 } });
       try {
         await desktop.addInitScript((settings) => {
           if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", settings);

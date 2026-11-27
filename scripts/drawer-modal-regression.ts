@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Page } from "playwright-core";
+import { appContext } from "./app-context.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { SHEET_HISTORY_KEY } from "../src/lib/historyKeys.ts";
@@ -40,7 +41,7 @@ const openPane = async (page: Page): Promise<void> => {
   await page.locator(".conn-live").first().waitFor();
 };
 try {
-  const context = await browser.newContext({ locale: "en-US", viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  const context = await appContext(browser, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   // The demo returns its own socket class, so capture each instance before the app attaches.
   // This records real client input without sending anything to a user's terminal.
   await context.addInitScript(() => {
@@ -532,7 +533,7 @@ try {
   console.log("PASS phone drawer is a modal focus-trapped surface, headed by the Ovis mark and the PC's name with Inbox beside the gear at its foot, closed by a tap outside, a swipe, Back, Escape and its named close");
 
   {
-    const guarded = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    const guarded = await appContext(browser, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
     const page = await guarded.newPage();
     await openPane(page);
     await page.evaluate((limit) => {
@@ -568,7 +569,7 @@ try {
   }
 
   {
-    const app = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+    const app = await appContext(browser, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
     await app.addInitScript(() => {
       window.nativeCalls = [];
       (window as unknown as { Capacitor: unknown }).Capacitor = {

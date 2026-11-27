@@ -1,23 +1,19 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { chromium, type Browser, type Page } from "playwright-core";
+import type { Browser, Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { appFaces } from "./app-faces.ts";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
+import { appContext } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 import type { PlanStep, PlanSummary } from "../shared/protocol.ts";
-import { serveDemo } from "./demo-server.ts";
 
 // The plan chip's step in progress (#1040) on the unmodified app over the demo's fixture transport:
 // the Claude pane's plan as the demo keeps it, then every state the chip and its list can be in,
 // pushed as the server would push them (a pane-status frame on the machine events, the roster and
 // the plan answer rewritten alike) in this disposable, loopback-only copy of the demo. No herdr
 // session is opened and nothing is typed.
-const app = mkdtempSync(join(tmpdir(), "herdr-plan-chip-demo-"));
 const evidence = process.env["UI_EVIDENCE_DIR"];
-if (evidence) mkdirSync(evidence, { recursive: true });
 const PANE = panes.api;
 const STEP = "Adding the replay metric";
 const LONG = "Verify-the-replay-counter-against-the-idempotency-store-under-concurrent-retries-without-breaking-a-single-line-anywhere";
@@ -237,7 +233,7 @@ const rest = (page: Page) => page.evaluate(() => { (document.activeElement as HT
 
 async function scenario(browser: Browser, width: number, theme: "dark" | "light", language: "en" | "ko", run: (page: Page, touch: boolean) => Promise<void>): Promise<void> {
   const touch = width <= 480;
-  const context = await browser.newContext(touch
+  const context = await appContext(browser, touch
     ? { viewport: { width, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: language === "ko" ? "ko-KR" : "en-US", colorScheme: theme }
     : { viewport: { width, height: 900 }, locale: language === "ko" ? "ko-KR" : "en-US", colorScheme: theme });
   try {
@@ -265,255 +261,237 @@ async function scenario(browser: Browser, width: number, theme: "dark" | "light"
 }
 
 let url = "";
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  const html = readFileSync(index, "utf8");
-  assert.match(html, /<script type="module"/);
-  writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${hook}\n    <script type="module"`));
-  const server = serveDemo(app);
-  url = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(PANE)}`;
-  try {
-    const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-    try {
-      for (const width of [390, 1440]) for (const theme of ["dark", "light"] as const) await scenario(browser, width, theme, "en", async (page, touch) => {
-        const what = `${width}px ${theme}`;
-        const hook = hookOf(page);
-        let row = await measure(page);
-        oneRow(row, what);
-        assert.equal(row.current?.text, STEP, `${what}: the step in progress is drawn in the chip`);
-        assert.equal(row.plan?.text, "1/3");
-        assert.equal(row.chip?.name, `Plan: 1 of 3 done · ${STEP}`, `${what}: the button's name says the whole step`);
-        assert.equal(row.chip?.title, row.chip?.name, `${what}: and so does its title`);
-        assert.equal(row.compact, touch, `${what}: a phone's card is the compact one`);
-        assert.equal(row.label?.drawn, !touch, `${what}: the word Plan is drawn beside a mouse and gives way on a phone`);
-        assert.equal(row.count, null, `${what}: no task count without tasks`);
-        await shot(page, width, theme, "en", null);
-        const target = await hitBox(page);
-        if (touch) {
-          assert.equal(target.coarse, true, `${what}: a phone is a coarse pointer`);
-          assert.ok(target.hit.width >= 44 && target.hit.height >= 44, `${what}: the chip's hit rectangle is at least 44x44: ${JSON.stringify(target)}`);
-        }
-        results.push({ what, state: "rest", chip: row.chip, current: row.current, plan: row.plan, model: row.model, fonts: await fonts(page), target });
-        if (!touch) {
-          await chipOf(page).hover();
-          await shot(page, width, theme, "en", "hover");
-        }
-        await focusChip(page);
-        row = await measure(page);
-        assert.equal(row.chip?.focusVisible, true, `${what}: the chip shows its focus ring from the keyboard`);
-        oneRow(row, `${what} focused`);
-        await shot(page, width, theme, "en", "focus");
-        // pressed: the pointer held on the chip before it lets go (a held touch is cancelled, so the tap below opens it)
-        const centre = await chipOf(page).boundingBox();
-        assert.ok(centre, `${what}: the chip has a box to press`);
-        const point = { x: centre.x + centre.width / 2, y: centre.y + centre.height / 2 };
-        const cdp = touch ? await page.context().newCDPSession(page) : null;
-        if (cdp) await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point] });
-        else { await page.mouse.move(point.x, point.y); await page.mouse.down(); }
-        row = await measure(page);
-        oneRow(row, `${what} pressed`);
-        await shot(page, width, theme, "en", "pressed");
-        if (cdp) { await cdp.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] }); await cdp.detach(); }
-        if (touch) await open(page, touch); else { await page.mouse.up(); await menuOf(page).waitFor(); }
-        await menuOf(page).locator(".bg-step").nth(2).waitFor();
-        row = await measure(page);
-        assert.equal(row.chip?.expanded, "true");
-        assert.deepEqual(row.menu?.steps, ["Trace replayed requests", "Count idempotent replays", "Cover the metric with tests"], `${what}: the list has the demo's three steps`);
-        await shot(page, width, theme, "en", "open");
-        results.push({ what, state: "open", fonts: await fonts(page) });
-        await close(page);
-        await hook.answer(MANY);
-        await hook.status({ done: 5, total: 16, current: "Step 6: count the replay" }, 0);
-        await chipOf(page).filter({ hasText: "5/16" }).waitFor();
-        await open(page, touch);
-        await menuOf(page).locator(".bg-step").nth(15).waitFor();
-        row = await measure(page);
-        assert.equal(row.menu?.scrolls, true, `${what}: sixteen steps scroll inside the list`);
-        await menuOf(page).evaluate((menu) => { menu.scrollTop = menu.scrollHeight; });
-        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
-        row = await measure(page);
-        assert.equal(row.menu?.atEnd, true, `${what}: the list scrolled to its end`);
-        await shot(page, width, theme, "en", "open-end");
-        await close(page);
-        await hook.answer(undefined);
-        await rest(page);
-        await hook.status({ done: 1, total: 3, current: null }, 0);
-        await page.waitForFunction(() => document.querySelector(".bg-tasks-current") === null);
-        row = await measure(page);
-        oneRow(row, `${what} no step`);
-        assert.equal(row.current, null);
-        assert.equal(row.chip?.name, "Plan: 1 of 3 done", `${what}: no step, no separator in the name`);
-        assert.equal(row.chip?.idle, false);
-        await shot(page, width, theme, "en", "empty");
-        await hook.status({ done: 2, total: 3, current: "Covering the metric with tests" }, 0);
-        await chipOf(page).filter({ hasText: "2/3" }).waitFor();
-        row = await measure(page);
-        oneRow(row, `${what} running`);
-        assert.equal(row.current?.text, "Covering the metric with tests");
-        assert.equal(row.chip?.name, "Plan: 2 of 3 done · Covering the metric with tests");
-        assert.equal(row.chip?.idle, false);
-        await shot(page, width, theme, "en", "running");
-        results.push({ what, state: "running", chip: row.chip, current: row.current, plan: row.plan });
-        await hook.status({ done: 1, total: 3, current: "Test" }, 0);
-        await page.waitForFunction(() => document.querySelector(".bg-tasks-current")?.textContent === "Test" && document.querySelector(".bg-tasks-plan")?.textContent === "1/3");
-        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-        assert.equal(await page.locator(".composer-model").evaluate((element) => element.clientWidth >= element.scrollWidth), true, `${what}: with a short step the model label is whole`);
-        await hook.status({ done: 1, total: 3, current: LONG }, 0);
-        await page.waitForFunction((long) => document.querySelector(".bg-tasks-current")?.textContent === long, LONG);
-        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-        row = await measure(page);
-        oneRow(row, `${what} step text only`);
-        assert.equal(row.plan?.text, "1/3");
-        const model = await page.locator(".composer-model").evaluate((element) => ({ clientWidth: element.clientWidth, scrollWidth: element.scrollWidth, drawn: element.getBoundingClientRect().width > 1, fit: element.closest(".composer-status")?.getAttribute("data-model") ?? "full" }));
-        assert.ok(!model.drawn || model.clientWidth >= model.scrollWidth, `${what}: a step text change alone refits the model label: ${JSON.stringify(model)}`);
-        results.push({ what, state: "step-text-only", chip: row.chip, current: row.current, plan: row.plan, model });
-        await hook.status({ done: 3, total: 3, current: null }, 0);
-        await page.locator(".bg-tasks-toggle.is-idle").waitFor();
-        row = await measure(page);
-        oneRow(row, `${what} complete`);
-        assert.equal(row.plan?.text, "3/3");
-        assert.equal(row.current, null);
-        await shot(page, width, theme, "en", "complete");
-        await hook.status({ done: 1, total: 3, current: STEP }, 2);
-        await page.locator(".bg-tasks-count").waitFor();
-        row = await measure(page);
-        oneRow(row, `${what} with tasks`);
-        assert.equal(row.current?.text, STEP);
-        assert.ok(row.count?.drawn && row.count.inside && row.count.text === "2", `${what}: the task count is whole beside the plan: ${JSON.stringify(row.count)}`);
-        assert.equal(row.chip?.name, `Plan: 1 of 3 done · ${STEP} · 2 background tasks`);
-        await shot(page, width, theme, "en", "tasks");
-        results.push({ what, state: "tasks", chip: row.chip, current: row.current, count: row.count });
-        await hook.status({ done: 1, total: 3, current: LONG }, 2);
-        await page.waitForFunction((long) => document.querySelector(".bg-tasks-current")?.textContent === long, LONG);
-        row = await measure(page);
-        oneRow(row, `${what} long`);
-        assert.equal(row.current?.clipped, true, `${what}: the long step is cut: ${JSON.stringify(row.current)}`);
-        assert.ok(row.count?.drawn && row.count.inside, `${what}: the count stays whole beside a long step`);
-        assert.equal(row.chip?.name, `Plan: 1 of 3 done · ${LONG} · 2 background tasks`, `${what}: the name says the whole step`);
-        assert.ok(row.chip && row.card && row.chip.width < row.card.width / 2 + 60, `${what}: the step's room is bounded: ${JSON.stringify({ chip: row.chip.width, card: row.card.width })}`);
-        await shot(page, width, theme, "en", "long");
-        results.push({ what, state: "long", chip: row.chip, current: row.current, card: row.card, model: row.model });
-        // the list while the plan is still being read, then while it cannot be read (a failed read
-        // stays said until one succeeds, so this order)
-        await hook.status({ done: 1, total: 3, current: STEP }, 0);
-        await page.waitForFunction((step) => document.querySelector(".bg-tasks-current")?.textContent === step && document.querySelector(".bg-tasks-count") === null, STEP);
-        await hook.answer("hang");
-        await open(page, touch);
-        await menuOf(page).getByText("Reading the plan…", { exact: true }).waitFor();
-        await shot(page, width, theme, "en", "loading");
-        await close(page);
-        await hook.answer("error");
-        await open(page, touch);
-        await menuOf(page).getByRole("status").filter({ hasText: "Couldn't read the plan. Trying again…" }).waitFor();
-        await shot(page, width, theme, "en", "error");
-        await close(page);
-        await hook.answer(null);
-        await open(page, touch);
-        await menuOf(page).getByText("This session keeps no plan right now", { exact: true }).waitFor();
-        await shot(page, width, theme, "en", "missing");
-        await close(page);
-        await hook.answer(undefined);
-        await rest(page);
-        // an observer gets no composer (PaneTerminal draws its observing notice instead), so no chip:
-        // the plan stays the sidebar's count until the connection interacts again
-        await hook.role("observe");
-        await chipOf(page).waitFor({ state: "detached" });
-        assert.equal(await page.locator(".composer-surface").count(), 0, `${what}: an observer has no composer to hold the chip`);
-        await shot(page, width, theme, "en", "observe");
-        await hook.role("interact");
-        await chipOf(page).waitFor();
-        row = await measure(page);
-        oneRow(row, `${what} interacting again`);
-        assert.equal(row.current?.text, STEP);
-        await hook.offline(true);
-        await chipOf(page).waitFor({ state: "detached" });
-        assert.equal(await page.locator(".bg-tasks-toggle").count(), 0, `${what}: an offline PC's cached plan draws no chip`);
-        await shot(page, width, theme, "en", "offline");
-        await hook.offline(false);
-        await chipOf(page).waitFor();
-        row = await measure(page);
-        oneRow(row, `${what} back online`);
-        assert.equal(row.current?.text, STEP);
-        await hook.status(null, 0);
-        await chipOf(page).waitFor({ state: "detached" });
-        await shot(page, width, theme, "en", "absent");
-        await hook.status({ done: 1, total: 3, current: STEP }, 0);
-        await chipOf(page).waitFor();
-        if (!touch) {
-          const status = await page.evaluate(async (pane) => (await fetch("/api/pane/split", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ pane_id: pane, direction: "right", focus: false }) })).status, PANE);
-          assert.equal(status, 200, `${what}: the demo split the pane`);
-          await page.waitForFunction(() => document.querySelectorAll(".pane-frame").length === 2);
-          for (const target of [560, 320]) {
-            await page.setViewportSize({ width: target * 2 + 300, height: 900 });
-            await page.waitForFunction((target) => { const card = document.querySelector(".composer-surface")?.getBoundingClientRect().width ?? 0; return card > 0 && card <= target + 20; }, target);
-            await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-            row = await measure(page);
-            oneRow(row, `${what} split ${target}`);
-            assert.equal(row.compact, true, `${what}: a split's narrow card is compact`);
-            assert.equal(row.current?.text, STEP);
-            await shot(page, width, theme, "en", `split-${target}`);
-            results.push({ what, state: `split-${target}`, chip: row.chip, current: row.current, card: row.card, model: row.model });
-          }
-        }
-        console.log(`PASS ${what}: the step in the chip at rest, focused, pressed, open and scrolled, without a step, running a later one, complete, with tasks, cut when long, the list's read states, observed, offline and split`);
-      });
-
-      for (const width of [390, 1440]) for (const theme of ["dark", "light"] as const) await scenario(browser, width, theme, "ko", async (page, touch) => {
-        const what = `${width}px ${theme} ko`;
-        const hook = hookOf(page);
-        await hook.answer(KO_STEPS);
-        await hook.status({ done: 1, total: 3, current: KO_STEP }, 0);
-        await page.waitForFunction((step) => document.querySelector(".bg-tasks-current")?.textContent === step, KO_STEP);
-        let row = await measure(page);
-        oneRow(row, what);
-        assert.equal(row.chip?.name, `계획: 3개 중 1개 완료 · ${KO_STEP}`, `${what}: the name in Korean, the step as the agent wrote it`);
-        assert.equal(row.label?.text, "계획");
-        await shot(page, width, theme, "ko", null);
-        await open(page, touch);
-        await menuOf(page).locator(".bg-step").nth(2).waitFor();
-        row = await measure(page);
-        assert.deepEqual(row.menu?.steps, KO_STEPS.map((step) => step.label));
-        await shot(page, width, theme, "ko", "open");
-        await close(page);
-        await hook.status({ done: 1, total: 3, current: KO_LONG }, 0);
-        await page.waitForFunction((step) => document.querySelector(".bg-tasks-current")?.textContent === step, KO_LONG);
-        row = await measure(page);
-        oneRow(row, `${what} long`);
-        assert.equal(row.current?.clipped, true, `${what}: an unbroken Korean step is cut, not wrapped`);
-        await shot(page, width, theme, "ko", "long");
-        if (theme === "dark" && width === 390) results.push({ what, state: "long", chip: row.chip, current: row.current });
-        console.log(`PASS ${what}: Korean chip words, step, list and an unbroken step`);
-      });
-
-      for (const width of [320, 360]) for (const theme of ["dark", "light"] as const) await scenario(browser, width, theme, "en", async (page, touch) => {
-        const what = `${width}px ${theme}`;
-        const hook = hookOf(page);
-        await hook.status({ done: 1, total: 3, current: LONG }, 2);
-        await page.locator(".bg-tasks-count").waitFor();
-        const row = await measure(page);
-        oneRow(row, what);
-        assert.ok(row.count?.drawn && row.count.inside, `${what}: the task count is whole on the narrowest phone`);
-        assert.equal(row.current?.clipped, true);
-        assert.equal(await page.locator(".composer-controls-right .composer-stop, .composer-controls-right .composer-send").count(), 1, `${what}: the round control keeps its place`);
-        await shot(page, width, theme, "en", "narrow");
-        results.push({ what, state: "narrow", chip: row.chip, current: row.current, count: row.count, card: row.card, model: row.model });
-        console.log(`PASS ${what}: one row with a long step, the figures and a task count`);
-        void touch;
-      });
-    } finally {
-      await browser.close();
+await withDemoBrowser({ tempPrefix: "herdr-plan-chip-demo-", afterTransport: `\n    ${hook}` }, async ({ browser, baseUrl }) => {
+  url = `${baseUrl}?pane=${encodeURIComponent(PANE)}`;
+  for (const width of [390, 1440]) for (const theme of ["dark", "light"] as const) await scenario(browser, width, theme, "en", async (page, touch) => {
+    const what = `${width}px ${theme}`;
+    const hook = hookOf(page);
+    let row = await measure(page);
+    oneRow(row, what);
+    assert.equal(row.current?.text, STEP, `${what}: the step in progress is drawn in the chip`);
+    assert.equal(row.plan?.text, "1/3");
+    assert.equal(row.chip?.name, `Plan: 1 of 3 done · ${STEP}`, `${what}: the button's name says the whole step`);
+    assert.equal(row.chip?.title, row.chip?.name, `${what}: and so does its title`);
+    assert.equal(row.compact, touch, `${what}: a phone's card is the compact one`);
+    assert.equal(row.label?.drawn, !touch, `${what}: the word Plan is drawn beside a mouse and gives way on a phone`);
+    assert.equal(row.count, null, `${what}: no task count without tasks`);
+    await shot(page, width, theme, "en", null);
+    const target = await hitBox(page);
+    if (touch) {
+      assert.equal(target.coarse, true, `${what}: a phone is a coarse pointer`);
+      assert.ok(target.hit.width >= 44 && target.hit.height >= 44, `${what}: the chip's hit rectangle is at least 44x44: ${JSON.stringify(target)}`);
     }
-  } finally {
-    server.stop(true);
-  }
-  if (evidence) {
-    writeFileSync(join(evidence, "plan-chip-captures.json"), JSON.stringify(captures, null, 2) + "\n");
-    writeFileSync(join(evidence, "plan-chip-results.json"), JSON.stringify(results, null, 2) + "\n");
-    console.log(`Evidence: ${evidence} (${captures.length} captures)`);
-  }
-  console.log("PASS plan chip demo regression");
-} finally {
-  rmSync(app, { recursive: true, force: true });
-  console.log("Cleanup: browser closed, loopback server stopped, demo build removed");
+    results.push({ what, state: "rest", chip: row.chip, current: row.current, plan: row.plan, model: row.model, fonts: await fonts(page), target });
+    if (!touch) {
+      await chipOf(page).hover();
+      await shot(page, width, theme, "en", "hover");
+    }
+    await focusChip(page);
+    row = await measure(page);
+    assert.equal(row.chip?.focusVisible, true, `${what}: the chip shows its focus ring from the keyboard`);
+    oneRow(row, `${what} focused`);
+    await shot(page, width, theme, "en", "focus");
+    // pressed: the pointer held on the chip before it lets go (a held touch is cancelled, so the tap below opens it)
+    const centre = await chipOf(page).boundingBox();
+    assert.ok(centre, `${what}: the chip has a box to press`);
+    const point = { x: centre.x + centre.width / 2, y: centre.y + centre.height / 2 };
+    const cdp = touch ? await page.context().newCDPSession(page) : null;
+    if (cdp) await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point] });
+    else { await page.mouse.move(point.x, point.y); await page.mouse.down(); }
+    row = await measure(page);
+    oneRow(row, `${what} pressed`);
+    await shot(page, width, theme, "en", "pressed");
+    if (cdp) { await cdp.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] }); await cdp.detach(); }
+    if (touch) await open(page, touch); else { await page.mouse.up(); await menuOf(page).waitFor(); }
+    await menuOf(page).locator(".bg-step").nth(2).waitFor();
+    row = await measure(page);
+    assert.equal(row.chip?.expanded, "true");
+    assert.deepEqual(row.menu?.steps, ["Trace replayed requests", "Count idempotent replays", "Cover the metric with tests"], `${what}: the list has the demo's three steps`);
+    await shot(page, width, theme, "en", "open");
+    results.push({ what, state: "open", fonts: await fonts(page) });
+    await close(page);
+    await hook.answer(MANY);
+    await hook.status({ done: 5, total: 16, current: "Step 6: count the replay" }, 0);
+    await chipOf(page).filter({ hasText: "5/16" }).waitFor();
+    await open(page, touch);
+    await menuOf(page).locator(".bg-step").nth(15).waitFor();
+    row = await measure(page);
+    assert.equal(row.menu?.scrolls, true, `${what}: sixteen steps scroll inside the list`);
+    await menuOf(page).evaluate((menu) => { menu.scrollTop = menu.scrollHeight; });
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+    row = await measure(page);
+    assert.equal(row.menu?.atEnd, true, `${what}: the list scrolled to its end`);
+    await shot(page, width, theme, "en", "open-end");
+    await close(page);
+    await hook.answer(undefined);
+    await rest(page);
+    await hook.status({ done: 1, total: 3, current: null }, 0);
+    await page.waitForFunction(() => document.querySelector(".bg-tasks-current") === null);
+    row = await measure(page);
+    oneRow(row, `${what} no step`);
+    assert.equal(row.current, null);
+    assert.equal(row.chip?.name, "Plan: 1 of 3 done", `${what}: no step, no separator in the name`);
+    assert.equal(row.chip?.idle, false);
+    await shot(page, width, theme, "en", "empty");
+    await hook.status({ done: 2, total: 3, current: "Covering the metric with tests" }, 0);
+    await chipOf(page).filter({ hasText: "2/3" }).waitFor();
+    row = await measure(page);
+    oneRow(row, `${what} running`);
+    assert.equal(row.current?.text, "Covering the metric with tests");
+    assert.equal(row.chip?.name, "Plan: 2 of 3 done · Covering the metric with tests");
+    assert.equal(row.chip?.idle, false);
+    await shot(page, width, theme, "en", "running");
+    results.push({ what, state: "running", chip: row.chip, current: row.current, plan: row.plan });
+    await hook.status({ done: 1, total: 3, current: "Test" }, 0);
+    await page.waitForFunction(() => document.querySelector(".bg-tasks-current")?.textContent === "Test" && document.querySelector(".bg-tasks-plan")?.textContent === "1/3");
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await page.locator(".composer-model").evaluate((element) => element.clientWidth >= element.scrollWidth), true, `${what}: with a short step the model label is whole`);
+    await hook.status({ done: 1, total: 3, current: LONG }, 0);
+    await page.waitForFunction((long) => document.querySelector(".bg-tasks-current")?.textContent === long, LONG);
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    row = await measure(page);
+    oneRow(row, `${what} step text only`);
+    assert.equal(row.plan?.text, "1/3");
+    const model = await page.locator(".composer-model").evaluate((element) => ({ clientWidth: element.clientWidth, scrollWidth: element.scrollWidth, drawn: element.getBoundingClientRect().width > 1, fit: element.closest(".composer-status")?.getAttribute("data-model") ?? "full" }));
+    assert.ok(!model.drawn || model.clientWidth >= model.scrollWidth, `${what}: a step text change alone refits the model label: ${JSON.stringify(model)}`);
+    results.push({ what, state: "step-text-only", chip: row.chip, current: row.current, plan: row.plan, model });
+    await hook.status({ done: 3, total: 3, current: null }, 0);
+    await page.locator(".bg-tasks-toggle.is-idle").waitFor();
+    row = await measure(page);
+    oneRow(row, `${what} complete`);
+    assert.equal(row.plan?.text, "3/3");
+    assert.equal(row.current, null);
+    await shot(page, width, theme, "en", "complete");
+    await hook.status({ done: 1, total: 3, current: STEP }, 2);
+    await page.locator(".bg-tasks-count").waitFor();
+    row = await measure(page);
+    oneRow(row, `${what} with tasks`);
+    assert.equal(row.current?.text, STEP);
+    assert.ok(row.count?.drawn && row.count.inside && row.count.text === "2", `${what}: the task count is whole beside the plan: ${JSON.stringify(row.count)}`);
+    assert.equal(row.chip?.name, `Plan: 1 of 3 done · ${STEP} · 2 background tasks`);
+    await shot(page, width, theme, "en", "tasks");
+    results.push({ what, state: "tasks", chip: row.chip, current: row.current, count: row.count });
+    await hook.status({ done: 1, total: 3, current: LONG }, 2);
+    await page.waitForFunction((long) => document.querySelector(".bg-tasks-current")?.textContent === long, LONG);
+    row = await measure(page);
+    oneRow(row, `${what} long`);
+    assert.equal(row.current?.clipped, true, `${what}: the long step is cut: ${JSON.stringify(row.current)}`);
+    assert.ok(row.count?.drawn && row.count.inside, `${what}: the count stays whole beside a long step`);
+    assert.equal(row.chip?.name, `Plan: 1 of 3 done · ${LONG} · 2 background tasks`, `${what}: the name says the whole step`);
+    assert.ok(row.chip && row.card && row.chip.width < row.card.width / 2 + 60, `${what}: the step's room is bounded: ${JSON.stringify({ chip: row.chip.width, card: row.card.width })}`);
+    await shot(page, width, theme, "en", "long");
+    results.push({ what, state: "long", chip: row.chip, current: row.current, card: row.card, model: row.model });
+    // the list while the plan is still being read, then while it cannot be read (a failed read
+    // stays said until one succeeds, so this order)
+    await hook.status({ done: 1, total: 3, current: STEP }, 0);
+    await page.waitForFunction((step) => document.querySelector(".bg-tasks-current")?.textContent === step && document.querySelector(".bg-tasks-count") === null, STEP);
+    await hook.answer("hang");
+    await open(page, touch);
+    await menuOf(page).getByText("Reading the plan…", { exact: true }).waitFor();
+    await shot(page, width, theme, "en", "loading");
+    await close(page);
+    await hook.answer("error");
+    await open(page, touch);
+    await menuOf(page).getByRole("status").filter({ hasText: "Couldn't read the plan. Trying again…" }).waitFor();
+    await shot(page, width, theme, "en", "error");
+    await close(page);
+    await hook.answer(null);
+    await open(page, touch);
+    await menuOf(page).getByText("This session keeps no plan right now", { exact: true }).waitFor();
+    await shot(page, width, theme, "en", "missing");
+    await close(page);
+    await hook.answer(undefined);
+    await rest(page);
+    // an observer gets no composer (PaneTerminal draws its observing notice instead), so no chip:
+    // the plan stays the sidebar's count until the connection interacts again
+    await hook.role("observe");
+    await chipOf(page).waitFor({ state: "detached" });
+    assert.equal(await page.locator(".composer-surface").count(), 0, `${what}: an observer has no composer to hold the chip`);
+    await shot(page, width, theme, "en", "observe");
+    await hook.role("interact");
+    await chipOf(page).waitFor();
+    row = await measure(page);
+    oneRow(row, `${what} interacting again`);
+    assert.equal(row.current?.text, STEP);
+    await hook.offline(true);
+    await chipOf(page).waitFor({ state: "detached" });
+    assert.equal(await page.locator(".bg-tasks-toggle").count(), 0, `${what}: an offline PC's cached plan draws no chip`);
+    await shot(page, width, theme, "en", "offline");
+    await hook.offline(false);
+    await chipOf(page).waitFor();
+    row = await measure(page);
+    oneRow(row, `${what} back online`);
+    assert.equal(row.current?.text, STEP);
+    await hook.status(null, 0);
+    await chipOf(page).waitFor({ state: "detached" });
+    await shot(page, width, theme, "en", "absent");
+    await hook.status({ done: 1, total: 3, current: STEP }, 0);
+    await chipOf(page).waitFor();
+    if (!touch) {
+      const status = await page.evaluate(async (pane) => (await fetch("/api/pane/split", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ pane_id: pane, direction: "right", focus: false }) })).status, PANE);
+      assert.equal(status, 200, `${what}: the demo split the pane`);
+      await page.waitForFunction(() => document.querySelectorAll(".pane-frame").length === 2);
+      for (const target of [560, 320]) {
+        await page.setViewportSize({ width: target * 2 + 300, height: 900 });
+        await page.waitForFunction((target) => { const card = document.querySelector(".composer-surface")?.getBoundingClientRect().width ?? 0; return card > 0 && card <= target + 20; }, target);
+        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        row = await measure(page);
+        oneRow(row, `${what} split ${target}`);
+        assert.equal(row.compact, true, `${what}: a split's narrow card is compact`);
+        assert.equal(row.current?.text, STEP);
+        await shot(page, width, theme, "en", `split-${target}`);
+        results.push({ what, state: `split-${target}`, chip: row.chip, current: row.current, card: row.card, model: row.model });
+      }
+    }
+    console.log(`PASS ${what}: the step in the chip at rest, focused, pressed, open and scrolled, without a step, running a later one, complete, with tasks, cut when long, the list's read states, observed, offline and split`);
+  });
+
+  for (const width of [390, 1440]) for (const theme of ["dark", "light"] as const) await scenario(browser, width, theme, "ko", async (page, touch) => {
+    const what = `${width}px ${theme} ko`;
+    const hook = hookOf(page);
+    await hook.answer(KO_STEPS);
+    await hook.status({ done: 1, total: 3, current: KO_STEP }, 0);
+    await page.waitForFunction((step) => document.querySelector(".bg-tasks-current")?.textContent === step, KO_STEP);
+    let row = await measure(page);
+    oneRow(row, what);
+    assert.equal(row.chip?.name, `계획: 3개 중 1개 완료 · ${KO_STEP}`, `${what}: the name in Korean, the step as the agent wrote it`);
+    assert.equal(row.label?.text, "계획");
+    await shot(page, width, theme, "ko", null);
+    await open(page, touch);
+    await menuOf(page).locator(".bg-step").nth(2).waitFor();
+    row = await measure(page);
+    assert.deepEqual(row.menu?.steps, KO_STEPS.map((step) => step.label));
+    await shot(page, width, theme, "ko", "open");
+    await close(page);
+    await hook.status({ done: 1, total: 3, current: KO_LONG }, 0);
+    await page.waitForFunction((step) => document.querySelector(".bg-tasks-current")?.textContent === step, KO_LONG);
+    row = await measure(page);
+    oneRow(row, `${what} long`);
+    assert.equal(row.current?.clipped, true, `${what}: an unbroken Korean step is cut, not wrapped`);
+    await shot(page, width, theme, "ko", "long");
+    if (theme === "dark" && width === 390) results.push({ what, state: "long", chip: row.chip, current: row.current });
+    console.log(`PASS ${what}: Korean chip words, step, list and an unbroken step`);
+  });
+
+  for (const width of [320, 360]) for (const theme of ["dark", "light"] as const) await scenario(browser, width, theme, "en", async (page, touch) => {
+    const what = `${width}px ${theme}`;
+    const hook = hookOf(page);
+    await hook.status({ done: 1, total: 3, current: LONG }, 2);
+    await page.locator(".bg-tasks-count").waitFor();
+    const row = await measure(page);
+    oneRow(row, what);
+    assert.ok(row.count?.drawn && row.count.inside, `${what}: the task count is whole on the narrowest phone`);
+    assert.equal(row.current?.clipped, true);
+    assert.equal(await page.locator(".composer-controls-right .composer-stop, .composer-controls-right .composer-send").count(), 1, `${what}: the round control keeps its place`);
+    await shot(page, width, theme, "en", "narrow");
+    results.push({ what, state: "narrow", chip: row.chip, current: row.current, count: row.count, card: row.card, model: row.model });
+    console.log(`PASS ${what}: one row with a long step, the figures and a task count`);
+    void touch;
+  });
+});
+if (evidence) {
+  writeFileSync(join(evidence, "plan-chip-captures.json"), JSON.stringify(captures, null, 2) + "\n");
+  writeFileSync(join(evidence, "plan-chip-results.json"), JSON.stringify(results, null, 2) + "\n");
+  console.log(`Evidence: ${evidence} (${captures.length} captures)`);
 }
+console.log("PASS plan chip demo regression");

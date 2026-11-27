@@ -4,16 +4,11 @@
  * Demo fixtures only: no herdr, hc or user state.
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { chromium, type Page } from "playwright-core";
+import type { Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 import { openSettingsFolds } from "./settings-page.ts";
 import { shownRows } from "./shown-rows.ts";
-import { serveDemo } from "./demo-server.ts";
 import { squarePng } from "./terminal-demo-pictures.ts";
 
 interface ImagesFixture { print(data: string): void }
@@ -149,96 +144,79 @@ const setPictures = async (page: Page, on: boolean) => {
   await settled(page);
 };
 
-const app = mkdtempSync(join(tmpdir(), "terminal-images-demo-"));
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n<script>(${installImagesFixture.toString()})()</script>\n<script type="module"`));
-  const prefix = "/herdr-web-ui/demo/app/";
-  const server = serveDemo(app, { prefix });
-  try {
-    const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-    try {
-      const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
-      await context.addInitScript(() => {
-        localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", terminalInputMode: "direct", alertsOn: false }));
-        localStorage.setItem("ovis:terminal-pictures", "true");
-      });
-      const page = await context.newPage();
-      page.setDefaultTimeout(10000);
-      const errors: string[] = [];
-      page.on("pageerror", (error) => errors.push(error.message));
-      await page.goto(`http://127.0.0.1:${server.port}${prefix}?pane=${encodeURIComponent(panes.shell)}&view=terminal`);
-      await page.locator(".pane-frame.is-current .pane-terminal[data-renderer=ghostty]").waitFor();
-      await settled(page);
+await withDemoBrowser({ tempPrefix: "terminal-images-demo-", afterTransport: `\n<script>(${installImagesFixture.toString()})()</script>` }, async ({ newContext, baseUrl }) => {
+  const context = await newContext({ viewport: { width: 1280, height: 900 } });
+  await context.addInitScript(() => {
+    localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", terminalInputMode: "direct", alertsOn: false }));
+    localStorage.setItem("ovis:terminal-pictures", "true");
+  });
+  const page = await context.newPage();
+  page.setDefaultTimeout(10000);
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto(`${baseUrl}?pane=${encodeURIComponent(panes.shell)}&view=terminal`);
+  await page.locator(".pane-frame.is-current .pane-terminal[data-renderer=ghostty]").waitFor();
+  await settled(page);
 
-      // A PNG for the sample pixel, independent of sixel startup
-      await print(page, `\x1b[H\x1b[2J\x1bPq\x1b\\${RED}`, "RED-PRINTED");
-      assert.deepEqual(await pixel(page, 4, 4), [255, 0, 0], "the picture is drawn where it is printed");
+  // A PNG for the sample pixel, independent of sixel startup
+  await print(page, `\x1b[H\x1b[2J\x1bPq\x1b\\${RED}`, "RED-PRINTED");
+  assert.deepEqual(await pixel(page, 4, 4), [255, 0, 0], "the picture is drawn where it is printed");
 
-      await setPictures(page, false);
-      assert.equal(await pixel(page, 4, 4), null, "off: the pictures go");
-      await print(page, `\x1b[12;1H${BLUE}`, "BLUE-WHILE-OFF");
-      assert.equal(await pixel(page, 4, 4), null, "off: a picture printed meanwhile is not drawn");
+  await setPictures(page, false);
+  assert.equal(await pixel(page, 4, 4), null, "off: the pictures go");
+  await print(page, `\x1b[12;1H${BLUE}`, "BLUE-WHILE-OFF");
+  assert.equal(await pixel(page, 4, 4), null, "off: a picture printed meanwhile is not drawn");
 
-      await setPictures(page, true);
-      await print(page, `\x1b[20;1H${BLUE}`, "BLUE-PRINTED");
-      const below = await page.evaluate(() => {
-        const layer = document.querySelector(".pane-frame.is-current .ghostty-layer")!;
-        const tops = [...layer.querySelectorAll<HTMLCanvasElement>("canvas.ghostty-image")].map((canvas) => canvas.getBoundingClientRect().top - layer.getBoundingClientRect().top);
-        return { first: tops.length ? Math.min(...tops) : -1, pictures: tops.length };
-      });
-      assert.ok(below.first > 0, `on again: the new picture is drawn lower down, where it was printed (${JSON.stringify(below)})`);
-      assert.deepEqual(await pixel(page, 4, below.first + 4), [0, 0, 255], "on again: the new picture is drawn where it was printed");
-      assert.equal(await pixel(page, 4, 4), null, "on again: the cells the first picture left draw nothing, not the new picture");
+  await setPictures(page, true);
+  await print(page, `\x1b[20;1H${BLUE}`, "BLUE-PRINTED");
+  const below = await page.evaluate(() => {
+    const layer = document.querySelector(".pane-frame.is-current .ghostty-layer")!;
+    const tops = [...layer.querySelectorAll<HTMLCanvasElement>("canvas.ghostty-image")].map((canvas) => canvas.getBoundingClientRect().top - layer.getBoundingClientRect().top);
+    return { first: tops.length ? Math.min(...tops) : -1, pictures: tops.length };
+  });
+  assert.ok(below.first > 0, `on again: the new picture is drawn lower down, where it was printed (${JSON.stringify(below)})`);
+  assert.deepEqual(await pixel(page, 4, below.first + 4), [0, 0, 255], "on again: the new picture is drawn where it was printed");
+  assert.equal(await pixel(page, 4, 4), null, "on again: the cells the first picture left draw nothing, not the new picture");
 
-      // imgcat's multipart form and chafa's TIFF without a size, which the addon takes neither of by itself (#3147)
-      await print(page, `\x1b[H\x1b[2J${multipart([0, 255, 0])}`, "IMGCAT-PRINTED");
-      assert.deepEqual(await pixel(page, 4, 4), [0, 255, 0], "imgcat's multipart picture is drawn");
-      await print(page, `\x1b[H\x1b[2J${chafaTiff([255, 0, 255])}`, "CHAFA-PRINTED");
-      assert.deepEqual(await pixel(page, 4, 4), [255, 0, 255], "chafa's TIFF picture is drawn");
-      // 1700 x 1700 RGBA: about 15 million base64 characters, past the 10,000,000 xterm holds for a string handler (#3154)
-      await print(page, `\x1b[H\x1b[2J${chafaTiff([0, 255, 255], 1700)}`, "CHAFA-LARGE-PRINTED");
-      assert.deepEqual(await pixel(page, 4, 4), [0, 255, 255], "a TIFF past xterm's string handler cap is drawn");
-      assert.deepEqual(errors, [], "no page errors");
-      console.log("PASS pictures: drawn, gone while off, and on again only where printed; imgcat's multipart and chafa's TIFF drawn too, also past 10M characters");
-      await context.close();
+  // imgcat's multipart form and chafa's TIFF without a size, which the addon takes neither of by itself (#3147)
+  await print(page, `\x1b[H\x1b[2J${multipart([0, 255, 0])}`, "IMGCAT-PRINTED");
+  assert.deepEqual(await pixel(page, 4, 4), [0, 255, 0], "imgcat's multipart picture is drawn");
+  await print(page, `\x1b[H\x1b[2J${chafaTiff([255, 0, 255])}`, "CHAFA-PRINTED");
+  assert.deepEqual(await pixel(page, 4, 4), [255, 0, 255], "chafa's TIFF picture is drawn");
+  // 1700 x 1700 RGBA: about 15 million base64 characters, past the 10,000,000 xterm holds for a string handler (#3154)
+  await print(page, `\x1b[H\x1b[2J${chafaTiff([0, 255, 255], 1700)}`, "CHAFA-LARGE-PRINTED");
+  assert.deepEqual(await pixel(page, 4, 4), [0, 255, 255], "a TIFF past xterm's string handler cap is drawn");
+  assert.deepEqual(errors, [], "no page errors");
+  console.log("PASS pictures: drawn, gone while off, and on again only where printed; imgcat's multipart and chafa's TIFF drawn too, also past 10M characters");
+  await context.close();
 
-      for (const core of [true, false]) {
-        const fresh = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
-        await fresh.addInitScript((config) => {
-          localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", terminalInputMode: "direct", alertsOn: false }));
-          window.imagesConfig = config;
-        }, { core, first: `\x1b[H\x1b[2J${RED}FIRST-PRINTED\r\n` });
-        const page = await fresh.newPage();
-        page.setDefaultTimeout(10000);
-        const errors: string[] = [];
-        page.on("pageerror", (error) => errors.push(error.message));
-        await page.goto(`http://127.0.0.1:${server.port}${prefix}?pane=${encodeURIComponent(panes.shell)}&view=terminal`);
-        await page.locator(shownRows(".pane-frame.is-current"), { hasText: "FIRST-PRINTED" }).waitFor();
-        await settled(page);
-        if (core) {
-          assert.deepEqual(await pixel(page, 4, 4), [255, 0, 0], "herdr-core, nothing stored: the picture in the first output is drawn");
-          await print(page, `\x1b[H\x1b[2J${BLUE}`, "CORE-BLUE-PRINTED");
-          assert.deepEqual(await pixel(page, 4, 4), [0, 0, 255], "herdr-core, nothing stored: a later picture is drawn");
-        } else {
-          assert.equal(await pixel(page, 4, 4), null, "herdr, nothing stored: the first output draws no picture");
-          await print(page, `\x1b[H\x1b[2J${BLUE}`, "HERDR-BLUE-PRINTED");
-          assert.equal(await pixel(page, 4, 4), null, "herdr, nothing stored: a later picture is not drawn");
-        }
-        const toggle = await picturesSwitch(page);
-        assert.equal(await toggle.getAttribute("aria-checked"), String(core), `nothing stored: the switch shows what the ${core ? "herdr-core" : "herdr"} terminal does`);
-        await closeSettings(page);
-        assert.deepEqual(errors, [], "no page errors");
-        await fresh.close();
-      }
-      console.log("PASS pictures with nothing stored: herdr-core draws them, the first output's included, and shows the switch on; herdr draws none and shows it off");
-    } finally {
-      await browser.close();
+  for (const core of [true, false]) {
+    const fresh = await newContext({ viewport: { width: 1280, height: 900 } });
+    await fresh.addInitScript((config) => {
+      localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", terminalInputMode: "direct", alertsOn: false }));
+      window.imagesConfig = config;
+    }, { core, first: `\x1b[H\x1b[2J${RED}FIRST-PRINTED\r\n` });
+    const page = await fresh.newPage();
+    page.setDefaultTimeout(10000);
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(`${baseUrl}?pane=${encodeURIComponent(panes.shell)}&view=terminal`);
+    await page.locator(shownRows(".pane-frame.is-current"), { hasText: "FIRST-PRINTED" }).waitFor();
+    await settled(page);
+    if (core) {
+      assert.deepEqual(await pixel(page, 4, 4), [255, 0, 0], "herdr-core, nothing stored: the picture in the first output is drawn");
+      await print(page, `\x1b[H\x1b[2J${BLUE}`, "CORE-BLUE-PRINTED");
+      assert.deepEqual(await pixel(page, 4, 4), [0, 0, 255], "herdr-core, nothing stored: a later picture is drawn");
+    } else {
+      assert.equal(await pixel(page, 4, 4), null, "herdr, nothing stored: the first output draws no picture");
+      await print(page, `\x1b[H\x1b[2J${BLUE}`, "HERDR-BLUE-PRINTED");
+      assert.equal(await pixel(page, 4, 4), null, "herdr, nothing stored: a later picture is not drawn");
     }
-  } finally {
-    server.stop(true);
+    const toggle = await picturesSwitch(page);
+    assert.equal(await toggle.getAttribute("aria-checked"), String(core), `nothing stored: the switch shows what the ${core ? "herdr-core" : "herdr"} terminal does`);
+    await closeSettings(page);
+    assert.deepEqual(errors, [], "no page errors");
+    await fresh.close();
   }
-} finally {
-  rmSync(app, { recursive: true, force: true });
-}
+  console.log("PASS pictures with nothing stored: herdr-core draws them, the first output's included, and shows the switch on; herdr draws none and shows it off");
+});

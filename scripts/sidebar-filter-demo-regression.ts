@@ -7,18 +7,15 @@
  * Usage: UI_EVIDENCE_DIR=<dir> bun scripts/sidebar-filter-demo-regression.ts   (SIDEBAR_FILTER_CASE=en|ko runs one half)
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright-core";
+import type { Browser, BrowserContext, Locator, Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
-import { serveDemo } from "./demo-server.ts";
+import { appContext } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 import { sheetRisen } from "./settings-page.ts";
 
 // No live session is read, and nothing leaves the loopback server below.
-const app = mkdtempSync(join(tmpdir(), "herdr-sidebar-filter-"));
 const evidence = process.env["UI_EVIDENCE_DIR"];
 const LONG_LABEL = "release-candidate-verification-pipeline-with-an-unbroken-name-that-keeps-going";
 const LONG_TITLE = "Investigate_the_intermittent_timeout_in_the_nightly_settlement_reconciliation_job";
@@ -236,9 +233,9 @@ async function turnEnded(page: Page): Promise<void> {
 }
 
 async function newPage(browser: Browser, scene: Scene, search: string, stored: Record<string, string> = {}): Promise<{ context: BrowserContext; page: Page; errors: string[] }> {
-  const context = await browser.newContext(scene.phone
+  const context = await appContext(browser, scene.phone
     ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3, locale: scene.language === "ko" ? "ko-KR" : "en-US", colorScheme: scene.theme }
-    : { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, locale: "en-US", colorScheme: scene.theme });
+    : { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, colorScheme: scene.theme });
   await context.addInitScript(({ settings, stored }) => {
     localStorage.setItem("ovis:settings", JSON.stringify(settings));
     for (const [key, value] of Object.entries(stored)) localStorage.setItem(key, value);
@@ -877,32 +874,21 @@ async function koreanShots(browser: Browser): Promise<void> {
 }
 
 let url = "";
-try {
-  await buildDemoApp(app);
+await withDemoBrowser({ tempPrefix: "herdr-sidebar-filter-", prefix: "/", afterTransport: '<script src="./sidebar-filter.js"></script>' }, async ({ app, browser, baseUrl }) => {
   writeFileSync(join(app, "sidebar-filter.js"), patch);
-  const index = join(app, "index.html");
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script><script src="./sidebar-filter.js"></script><script type="module"'));
-  const server = serveDemo(app, { prefix: "/" });
-  url = `http://127.0.0.1:${server.port}/`;
-  try {
-    const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-    try {
-      const only = process.env["SIDEBAR_FILTER_CASE"];
-      if (!only || only === "en") for (const phone of [false, true]) for (const theme of ["dark", "light"] as const) {
-        const scene: Scene = { phone, theme, language: "en" };
-        await happyPath(browser, scene);
-        await selectedNonMatch(browser, scene);
-        await liveOfflineRoster(browser, scene);
-        await foldTransitions(browser, scene);
-        await openWorktreeUnderFilter(browser, scene);
-        await observeOnly(browser, scene);
-        await composition(browser, scene);
-      }
-      if (!only || only === "ko") await koreanShots(browser);
-    } finally { await browser.close(); }
-  } finally { server.stop(true); }
-  if (evidence) writeFileSync(join(evidence, "manifest.json"), JSON.stringify(manifest, null, 2));
-  if (evidence) writeFileSync(join(evidence, "measurements.json"), JSON.stringify(measurements, null, 2));
-} finally {
-  rmSync(app, { recursive: true, force: true });
-}
+  url = baseUrl;
+  const only = process.env["SIDEBAR_FILTER_CASE"];
+  if (!only || only === "en") for (const phone of [false, true]) for (const theme of ["dark", "light"] as const) {
+    const scene: Scene = { phone, theme, language: "en" };
+    await happyPath(browser, scene);
+    await selectedNonMatch(browser, scene);
+    await liveOfflineRoster(browser, scene);
+    await foldTransitions(browser, scene);
+    await openWorktreeUnderFilter(browser, scene);
+    await observeOnly(browser, scene);
+    await composition(browser, scene);
+  }
+  if (!only || only === "ko") await koreanShots(browser);
+});
+if (evidence) writeFileSync(join(evidence, "manifest.json"), JSON.stringify(manifest, null, 2));
+if (evidence) writeFileSync(join(evidence, "measurements.json"), JSON.stringify(measurements, null, 2));

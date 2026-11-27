@@ -1,17 +1,14 @@
 /** Usage: UI_EVIDENCE_DIR=<dir> bun scripts/sidebar-declutter-demo-regression.ts */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
+import type { Browser, BrowserContext, Page } from "playwright-core";
+import { appContext } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 import { openSettingsPage } from "./settings-page.ts";
 import { closeSettings } from "./settings-pages-harness.ts";
-import { serveDemo } from "./demo-server.ts";
 
 // No herdr session is opened, and nothing leaves the loopback.
-const app = mkdtempSync(join(tmpdir(), "herdr-sidebar-declutter-"));
 const evidence = process.env["UI_EVIDENCE_DIR"];
 const patch = `(() => {
   const fetchDemo = window.fetch.bind(window), EventSourceDemo = window.EventSource;
@@ -61,9 +58,9 @@ const rosterLabels = (page: Page): Promise<string[]> => page.evaluate(async () =
 let url = "";
 
 async function newPage(browser: Browser, scene: Scene, search: string, stored: Record<string, string> = {}, openSidebar = true): Promise<{ context: BrowserContext; page: Page; errors: string[] }> {
-  const context = await browser.newContext(scene.phone
-    ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3, locale: "en-US", colorScheme: scene.theme }
-    : { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, locale: "en-US", colorScheme: scene.theme });
+  const context = await appContext(browser, scene.phone
+    ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3, colorScheme: scene.theme }
+    : { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, colorScheme: scene.theme });
   await context.addInitScript(({ settings, stored }) => {
     if (sessionStorage.getItem("declutter-seeded") !== null) return;
     sessionStorage.setItem("declutter-seeded", "1");
@@ -450,29 +447,18 @@ async function filterSetting(browser: Browser, scene: Scene): Promise<void> {
   } finally { await context.close(); }
 }
 
-try {
-  await buildDemoApp(app);
+await withDemoBrowser({ tempPrefix: "herdr-sidebar-declutter-", prefix: "/", afterTransport: '<script src="./sidebar-declutter.js"></script>' }, async ({ app, browser, baseUrl }) => {
   writeFileSync(join(app, "sidebar-declutter.js"), patch);
-  const index = join(app, "index.html");
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script><script src="./sidebar-declutter.js"></script><script type="module"'));
-  const server = serveDemo(app, { prefix: "/" });
-  url = `http://127.0.0.1:${server.port}/`;
-  try {
-    const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-    try {
-      for (const phone of [false, true]) for (const theme of ["dark", "light"] as const) {
-        const scene: Scene = { phone, theme };
-        await loneHost(browser, scene);
-        if (phone) await loneHostWatching(browser, scene);
-        await loneHostOffline(browser, scene);
-        await twoPcs(browser, scene);
-        await filterHidden(browser, scene);
-        if (!phone) await filterEdges(browser, scene);
-        await filterSetting(browser, scene);
-      }
-    } finally { await browser.close(); }
-  } finally { server.stop(true); }
-  if (evidence) writeFileSync(join(evidence, "manifest.json"), JSON.stringify(manifest, null, 2));
-} finally {
-  rmSync(app, { recursive: true, force: true });
-}
+  url = baseUrl;
+  for (const phone of [false, true]) for (const theme of ["dark", "light"] as const) {
+    const scene: Scene = { phone, theme };
+    await loneHost(browser, scene);
+    if (phone) await loneHostWatching(browser, scene);
+    await loneHostOffline(browser, scene);
+    await twoPcs(browser, scene);
+    await filterHidden(browser, scene);
+    if (!phone) await filterEdges(browser, scene);
+    await filterSetting(browser, scene);
+  }
+});
+if (evidence) writeFileSync(join(evidence, "manifest.json"), JSON.stringify(manifest, null, 2));

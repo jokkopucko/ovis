@@ -3,37 +3,26 @@
  * Open setup guide: an install types into a terminal on the PC, which it may not do.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { chromium, type Browser, type Page } from "playwright-core";
+import type { Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
-import { serveDemo } from "./demo-server.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 
-const app = mkdtempSync(join(tmpdir(), "ovis-agent-entry-"));
 const evidence = process.env["UI_EVIDENCE_DIR"] ? join(process.env["UI_EVIDENCE_DIR"], "agent-entry-points") : null;
 if (evidence) mkdirSync(evidence, { recursive: true });
 const INSTALLED = ["Claude Code", "Codex", "Oh My Pi", "pi", "Hermes"];
 const ADD_ROW = "Add another agent…";
 const settled = (page: Page) => page.evaluate(() => Promise.all(document.getAnimations().map((animation) => animation.finished.catch(() => undefined))).then(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done())))));
 
-let server: ReturnType<typeof Bun.serve> | undefined;
-let browser: Browser | undefined;
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    <script type="module"`));
-  server = serveDemo(app);
-  const root = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(panes.api)}`;
-  browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
+await withDemoBrowser({ tempPrefix: "ovis-agent-entry-" }, async ({ newContext, baseUrl }) => {
+  const root = `${baseUrl}?pane=${encodeURIComponent(panes.api)}`;
   for (const width of [1280, 390] as const) {
     for (const theme of ["dark", "light"] as const) {
       const at = `${width}-${theme}`;
-      const context = await browser.newContext(width === 390
-        ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3, locale: "en-US", colorScheme: theme }
-        : { viewport: { width: 1280, height: 800 }, locale: "en-US", colorScheme: theme });
+      const context = await newContext(width === 390
+        ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3, colorScheme: theme }
+        : { viewport: { width: 1280, height: 800 }, colorScheme: theme });
       await context.addInitScript((value) => { localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: value, palette: "codex", darkTheme: "codex", lightTheme: "codex" })); }, theme);
       const page = await context.newPage();
       page.setDefaultTimeout(10_000);
@@ -192,8 +181,4 @@ try {
       }
     }
   }
-} finally {
-  await browser?.close();
-  server?.stop(true);
-  rmSync(app, { recursive: true, force: true });
-}
+});

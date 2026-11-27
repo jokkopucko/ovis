@@ -1,14 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { chromium, devices, type Browser, type BrowserContext, type Page } from "playwright-core";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
+import { devices, type Browser, type BrowserContext, type Page } from "playwright-core";
+import { appContext } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 import { openSettingsFolds } from "./settings-page.ts";
 import { DEMO_FILE_PREVIEW_SCRIPT } from "./demo-file-preview.ts";
 import { KO } from "../src/lib/i18n.ko.ts";
-import { serveDemo } from "./demo-server.ts";
 
 /**
  * The access facts on Settings → Phone & devices, over the demo's fictional answers
@@ -17,7 +13,6 @@ import { serveDemo } from "./demo-server.ts";
  * and a failed check shown as such rather than filled in, and the open-LAN warning exactly as
  * before. No herdr session is opened; the app is served on loopback from a temporary directory.
  */
-const app = mkdtempSync(join(tmpdir(), "herdr-security-summary-demo-"));
 const SECTION = '.settings-body:not([hidden]) [data-section="access"]';
 const LAN = '[data-testid="lan-exposure-notice"]';
 const LAN_TEXT = "Anyone who can reach 0.0.0.0 on your network can type into every pane: no access token is set and no device is paired yet.Devices and PCs";
@@ -118,7 +113,7 @@ const pageErrors: string[] = [];
 const verdicts = /\b(safe|secure|protected|local only)\b/i;
 
 async function check(browser: Browser, width: 390 | 1440): Promise<void> {
-  const context = await browser.newContext(width === 390 ? { ...devices["iPhone 14"] } : { viewport: { width: 1440, height: 900 } });
+  const context = await appContext(browser, width === 390 ? { ...devices["iPhone 14"] } : { viewport: { width: 1440, height: 900 } });
   try {
     await holdOpeningTurn(context);
     await pairedDevices(context);
@@ -192,7 +187,7 @@ async function check(browser: Browser, width: 390 | 1440): Promise<void> {
 /** a Korean phone in the light theme: each fact, its value and an unanswered check in Korean */
 async function checkKorean(browser: Browser): Promise<void> {
   const ko = (name: string): string => { assert.ok(KO[name], `"${name}" has a Korean entry`); return KO[name]!; };
-  const context = await browser.newContext({ ...devices["iPhone 14"], locale: "ko" });
+  const context = await appContext(browser, { ...devices["iPhone 14"], locale: "ko" });
   try {
     await holdOpeningTurn(context);
     await pairedDevices(context);
@@ -213,24 +208,11 @@ async function checkKorean(browser: Browser): Promise<void> {
 }
 
 let url = "";
-export async function runSecuritySummary(): Promise<void> { try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>${DEMO_FILE_PREVIEW_SCRIPT}\n    <script type="module"`));
-  const server = serveDemo(app);
-  url = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/`;
-  try {
-    const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-    try {
-      await check(browser, 1440);
-      await check(browser, 390);
-      await checkKorean(browser);
-    } finally {
-      await browser.close();
-    }
-  } finally {
-    server.stop(true);
-  }
-} finally {
-  rmSync(app, { recursive: true, force: true });
-} }
+export async function runSecuritySummary(): Promise<void> {
+  await withDemoBrowser({ tempPrefix: "herdr-security-summary-demo-", afterTransport: DEMO_FILE_PREVIEW_SCRIPT }, async ({ browser, baseUrl }) => {
+    url = baseUrl;
+    await check(browser, 1440);
+    await check(browser, 390);
+    await checkKorean(browser);
+  });
+}

@@ -1,20 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Browser, type Page } from "playwright-core";
+import type { Browser } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
+import { appContext } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 import { openSettingsPage } from "./settings-page.ts";
-import { serveDemo } from "./demo-server.ts";
 
 const EVIDENCE = process.env.UI_EVIDENCE_DIR;
 
 async function run(browser: Browser, origin: string, width: number, theme: "light" | "dark"): Promise<void> {
   const phone = width === 390;
   const tag = `${width} ${theme}`;
-  const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, ...(phone ? { deviceScaleFactor: 3, isMobile: true, hasTouch: true } : {}), locale: "en-US" });
+  const context = await appContext(browser, { viewport: { width, height: phone ? 844 : 900 }, ...(phone ? { deviceScaleFactor: 3, isMobile: true, hasTouch: true } : {}) });
   await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify({ language: "en", theme, agentLocks: true }));
   const page = await context.newPage();
   const errors: string[] = [];
@@ -80,23 +77,6 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   console.log(`PASS agent lock ${tag}`);
 }
 
-async function main(): Promise<void> {
-  const app = mkdtempSync(join(tmpdir(), "ovis-agent-lock-demo-"));
-  try {
-    await buildDemoApp(app);
-    const index = join(app, "index.html");
-    writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    <script type="module"`));
-    const server = serveDemo(app, { prefix: "/" });
-    try {
-      if (EVIDENCE) mkdirSync(EVIDENCE, { recursive: true });
-      const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-      try {
-        for (const [width, theme] of [[390, "light"], [390, "dark"], [1280, "light"], [1280, "dark"]] as const) await run(browser, `http://127.0.0.1:${server.port}/`, width, theme);
-      } finally { await browser.close(); }
-    } finally { await server.stop(true); }
-  } finally {
-    rmSync(app, { recursive: true, force: true });
-  }
-}
-
-await main();
+await withDemoBrowser({ tempPrefix: "ovis-agent-lock-demo-", prefix: "/" }, async ({ browser, baseUrl }) => {
+  for (const [width, theme] of [[390, "light"], [390, "dark"], [1280, "light"], [1280, "dark"]] as const) await run(browser, baseUrl, width, theme);
+});

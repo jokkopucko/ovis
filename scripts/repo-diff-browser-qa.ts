@@ -10,6 +10,7 @@ import { chromium, type BrowserContext, type Page } from "playwright-core";
 import { build as viteBuild } from "vite";
 import { repoDiffResponse } from "../server/repo-diff.ts";
 import { serveStatic } from "../server/static.ts";
+import { appContext, installClock } from "./app-context.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { startRendererTiming } from "./repo-diff-task-timing.ts";
 import { KO as KO_TEXT } from "../src/lib/i18n.ko.ts";
@@ -715,7 +716,7 @@ try {
   for (const [width, theme] of [[1440, "dark"], [1440, "light"], [390, "dark"], [390, "light"]] as const) {
     const label = `${width}px ${theme}`;
     const phone = width === 390;
-    const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, deviceScaleFactor: phone ? 3 : 1, isMobile: phone, hasTouch: phone, colorScheme: theme });
+    const context = await appContext(browser, { viewport: { width, height: phone ? 844 : 900 }, deviceScaleFactor: phone ? 3 : 1, isMobile: phone, hasTouch: phone, colorScheme: theme });
     await context.grantPermissions(["clipboard-read", "clipboard-write"]);
     await context.addInitScript((theme) => {
       if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme }));
@@ -1229,7 +1230,7 @@ try {
   }
 
   {
-    const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, colorScheme: "dark" });
+    const context = await appContext(browser, { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, colorScheme: "dark" });
     await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "ko", theme: "dark" })));
     const page = await context.newPage();
     page.setDefaultTimeout(15_000);
@@ -1242,7 +1243,7 @@ try {
   }
 
   {
-    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const context = await appContext(browser, { viewport: { width: 1440, height: 900 } });
     await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark" })));
     const page = await context.newPage();
     page.setDefaultTimeout(15_000);
@@ -1270,7 +1271,7 @@ try {
 
   for (const width of [1440, 390] as const) {
     const phone = width === 390;
-    const context: BrowserContext = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, deviceScaleFactor: phone ? 3 : 1, isMobile: phone, hasTouch: phone });
+    const context: BrowserContext = await appContext(browser, { viewport: { width, height: phone ? 844 : 900 }, deviceScaleFactor: phone ? 3 : 1, isMobile: phone, hasTouch: phone });
     await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark" })));
     const page: Page = await context.newPage();
     page.setDefaultTimeout(15_000);
@@ -1323,7 +1324,7 @@ try {
   }
 
   {
-    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const context = await appContext(browser, { viewport: { width: 1440, height: 900 } });
     await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark" })));
     const page = await context.newPage();
     page.setDefaultTimeout(15_000);
@@ -1355,13 +1356,13 @@ try {
       const body = Bun.file(join(app, file));
       return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
     } });
-    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const context = await appContext(browser, { viewport: { width: 1440, height: 900 } });
     await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark" })));
     const page = await context.newPage();
     page.setDefaultTimeout(20_000);
     const missing: string[] = [];
     page.on("response", (response) => { if (response.status() === 404) missing.push(response.url()); });
-    await page.clock.install();
+    await installClock(page);
     await page.goto(`http://127.0.0.1:${demoServer.port}/herdr-web-ui/demo/app/`);
     await page.clock.runFor(4_500);
     await page.locator(".header-files-button").click();

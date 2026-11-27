@@ -5,14 +5,12 @@
  * scenario's record there.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { chromium, type Browser, type Page } from "playwright-core";
+import type { Browser, Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
-import { serveDemo as serveDemoFiles } from "./demo-server.ts";
+import { appContext, installClock } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 
 type Outcome = "ok" | "error" | "network";
 interface Frame { type: string; mode?: string; pane_id?: string }
@@ -171,26 +169,16 @@ const MIRROR = { version: "0.9.5", protocol: 22, terminal_attach: false, termina
 const OLDER = { version: "0.8.2", protocol: 21 };
 const SETTINGS = { language: "en", alertsOn: false };
 
-export async function serveDemo(): Promise<{ url: string; stop(): Promise<void>; dir: string }> {
-  const app = mkdtempSync(join(tmpdir(), "herdr-health-flap-demo-"));
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n<script>(${installHealthFlap.toString()})()</script>\n<script type="module"`));
-  const prefix = "/herdr-web-ui/demo/app/";
-  const server = serveDemoFiles(app, { prefix });
-  return { url: `http://127.0.0.1:${server.port}${prefix}`, dir: app, async stop() { await server.stop(true); rmSync(app, { recursive: true, force: true }); } };
-}
-
 export async function openDemo(browser: Browser, url: string, query: Record<string, string>, options: { width?: number; settings?: Record<string, unknown>; mobile?: boolean } = {}) {
   const width = options.width ?? 1440;
   const mobile = options.mobile ?? width < 500;
-  const context = await browser.newContext({ viewport: { width, height: mobile ? 844 : 900 }, deviceScaleFactor: mobile ? 3 : 1, isMobile: mobile, hasTouch: mobile, locale: "en-US" });
+  const context = await appContext(browser, { viewport: { width, height: mobile ? 844 : 900 }, deviceScaleFactor: mobile ? 3 : 1, isMobile: mobile, hasTouch: mobile });
   await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify({ ...SETTINGS, ...options.settings }));
   const page = await context.newPage();
   page.setDefaultTimeout(10_000);
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.clock.install();
+  await installClock(page);
   await page.goto(`${url}?${new URLSearchParams(query)}`);
   await page.locator(".conn-live").waitFor({ state: "attached" });
   return { context, page, errors };
@@ -435,15 +423,11 @@ async function scopeAndCapability(browser: Browser, url: string): Promise<Record
 if (import.meta.main) {
   const results = process.env["HEALTH_FLAP_RESULTS"];
   if (results) mkdirSync(results, { recursive: true });
-  const demo = await serveDemo();
-  try {
-    const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-    try {
-      for (const scenario of [transientRecovery, scopeAndCapability]) {
-        const result = await scenario(browser, demo.url);
-        if (results) writeFileSync(join(results, `${result["scenario"] as string}.json`), JSON.stringify(result, null, 2));
-        console.log(`PASS ${result["scenario"] as string}`);
-      }
-    } finally { await browser.close(); }
-  } finally { await demo.stop(); }
+  await withDemoBrowser({ tempPrefix: "herdr-health-flap-demo-", afterTransport: `\n<script>(${installHealthFlap.toString()})()</script>` }, async ({ browser, baseUrl }) => {
+    for (const scenario of [transientRecovery, scopeAndCapability]) {
+      const result = await scenario(browser, baseUrl);
+      if (results) writeFileSync(join(results, `${result["scenario"] as string}.json`), JSON.stringify(result, null, 2));
+      console.log(`PASS ${result["scenario"] as string}`);
+    }
+  });
 }

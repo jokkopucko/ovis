@@ -13,6 +13,11 @@ export interface DemoBrowserOptions {
   readonly tempPrefix: string;
   /** URL path prefix served by `serveDemo` (default: `DEMO_PREFIX`). */
   readonly prefix?: string;
+  /**
+   * The script's own server of the built app in `app`, for what `serveDemo` does not do (a header, a path beside the
+   * app, an API stand-in). It serves the app under `prefix`, which then only names where `baseUrl` points.
+   */
+  readonly serve?: (app: string) => ReturnType<typeof Bun.serve>;
   /** Optional HTML/script snippet injected directly before `./demo-transport.js`. */
   readonly beforeTransport?: string;
   /** Optional HTML/script snippet injected directly after `./demo-transport.js`, before the app's own module. */
@@ -36,7 +41,7 @@ export interface DemoBrowserSession {
 
 /**
  * Builds the disposable demo app, injects `./demo-transport.js`, serves it over loopback via
- * `serveDemo`, launches headless Chromium with `chromePath()`, and tears everything down in
+ * `serveDemo` (or the script's own `serve`), launches headless Chromium with `chromePath()`, and tears everything down in
  * `finally` (browser, server, temp dir). Creates `UI_EVIDENCE_DIR` when non-empty. A script opens its
  * contexts with the session's `newContext`, so every demo script starts from the same one.
  */
@@ -44,7 +49,7 @@ export async function withDemoBrowser<T>(
   options: DemoBrowserOptions,
   run: (session: DemoBrowserSession) => Promise<T>,
 ): Promise<T> {
-  const { tempPrefix, prefix = DEMO_PREFIX, beforeTransport = "", afterTransport = "", args = ["--no-sandbox"], ignoreDefaultArgs = [] } = options;
+  const { tempPrefix, prefix = DEMO_PREFIX, beforeTransport = "", afterTransport = "", args = ["--no-sandbox"], ignoreDefaultArgs = [], serve = (dir: string) => serveDemo(dir, { prefix }) } = options;
   const app = mkdtempSync(join(tmpdir(), tempPrefix));
   const evidence = process.env["UI_EVIDENCE_DIR"] || null;
   try {
@@ -53,7 +58,7 @@ export async function withDemoBrowser<T>(
     const html = readFileSync(index, "utf8");
     assert.match(html, /<script type="module"/);
     writeFileSync(index, html.replace(/<script type="module"/, () => `${beforeTransport}<script src="./demo-transport.js"></script>${afterTransport}\n    <script type="module"`));
-    const server = serveDemo(app, { prefix });
+    const server = serve(app);
     try {
       if (evidence !== null) mkdirSync(evidence, { recursive: true });
       const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args, ignoreDefaultArgs });

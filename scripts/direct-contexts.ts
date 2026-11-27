@@ -7,7 +7,9 @@
  *   `newContext(overrides)` of withDemoBrowser's session and `appContext(browser, overrides)` (scripts/app-context.ts)
  *   start every script from the same context instead.
  * - Demo launches, counted in scripts/demo-launches.json: a call of `launch` or `launchPersistentContext` in a script
- *   that imports scripts/demo-build.ts, under whatever name. withDemoBrowser (scripts/demo-browser.ts) builds, serves
+ *   that imports scripts/demo-build.ts or scripts/demo-browser.ts, under whatever name (a second browser beside
+ *   withDemoBrowser's is a launch of its own). A `*.test.ts` file is not counted here: it tests the factory or the
+ *   harness, and its browser is the one it tests them with. withDemoBrowser (scripts/demo-browser.ts) builds, serves
  *   and launches the same way for all.
  *
  * The calls are read from the parsed file, not matched in its text: `a.newContext()`, `a?.newContext?.()` and
@@ -47,8 +49,8 @@ function isBrowser(node: ts.Expression): boolean {
   return name !== null && /browser/i.test(name) && !/context/i.test(name);
 }
 
-const isDemoBuild = (file: string, specifier: string): boolean =>
-  specifier.startsWith(".") && posix.normalize(posix.join(posix.dirname(file), specifier.replace(/\?.*$/, ""))) === "scripts/demo-build.ts";
+const isDemoSetup = (file: string, specifier: string): boolean =>
+  specifier.startsWith(".") && ["scripts/demo-build.ts", "scripts/demo-browser.ts"].includes(posix.normalize(posix.join(posix.dirname(file), specifier.replace(/\?.*$/, ""))));
 
 interface Found { contexts: string[]; launches: string[] }
 const scanned = new Map<string, { text: string; found: Found }>();
@@ -65,13 +67,13 @@ function scan(file: string, text: string): Found {
     return `${file}:${line + 1}: ${lines[line]!.trim().slice(0, 160)}`;
   };
   const found: Found = { contexts: [], launches: [] };
-  let buildsDemo = false;
+  let setsUpDemo = false;
   const visit = (node: ts.Node): void => {
     if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier !== undefined && ts.isStringLiteralLike(node.moduleSpecifier)) {
-      buildsDemo ||= isDemoBuild(file, node.moduleSpecifier.text);
+      setsUpDemo ||= isDemoSetup(file, node.moduleSpecifier.text);
     } else if (ts.isCallExpression(node)) {
       const [first] = node.arguments;
-      if (node.expression.kind === ts.SyntaxKind.ImportKeyword && first !== undefined && ts.isStringLiteralLike(first)) buildsDemo ||= isDemoBuild(file, first.text);
+      if (node.expression.kind === ts.SyntaxKind.ImportKeyword && first !== undefined && ts.isStringLiteralLike(first)) setsUpDemo ||= isDemoSetup(file, first.text);
       const called = method(node);
       if (called !== null) {
         const { name } = called;
@@ -82,7 +84,8 @@ function scan(file: string, text: string): Found {
     ts.forEachChild(node, visit);
   };
   visit(source);
-  if (!buildsDemo) found.launches = [];
+  // a unit test that drives the factory or the harness from a browser of its own is not a demo script
+  if (!setsUpDemo || file.endsWith(".test.ts")) found.launches = [];
   scanned.set(file, { text, found });
   return found;
 }

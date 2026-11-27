@@ -9,36 +9,25 @@
  *   on auth.openai.com and its one-time code, then the account it signed in.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { chromium, type Browser, type Page } from "playwright-core";
+import type { Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 import { sheetEntryLeft } from "./sheets-settled.ts";
-import { serveDemo } from "./demo-server.ts";
 
-const app = mkdtempSync(join(tmpdir(), "ovis-agents-sign-in-"));
 const evidence = process.env["UI_EVIDENCE_DIR"] ? join(process.env["UI_EVIDENCE_DIR"], "agents-sign-in") : null;
 if (evidence) mkdirSync(evidence, { recursive: true });
 const settled = (page: Page) => page.evaluate(() => Promise.all(document.getAnimations().filter((animation) => Number.isFinite(animation.effect?.getComputedTiming().endTime ?? Infinity)).map((animation) => animation.finished.catch(() => undefined))).then(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done())))));
 
-let server: ReturnType<typeof Bun.serve> | undefined;
-let browser: Browser | undefined;
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    <script type="module"`));
-  server = serveDemo(app, { prefix: "/app/" });
-  const root = `http://127.0.0.1:${server.port}/app/?pane=${encodeURIComponent(panes.api)}&demo_sign_in=1`;
-  browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
+await withDemoBrowser({ tempPrefix: "ovis-agents-sign-in-", prefix: "/app/" }, async ({ newContext, baseUrl }) => {
+  const root = `${baseUrl}?pane=${encodeURIComponent(panes.api)}&demo_sign_in=1`;
   for (const width of [1280, 390] as const) {
     for (const theme of ["dark", "light"] as const) {
       const at = `${width}-${theme}`;
-      const context = await browser.newContext(width === 390
-        ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2, locale: "en-US", colorScheme: theme }
-        : { viewport: { width: 1280, height: 800 }, locale: "en-US", colorScheme: theme });
+      const context = await newContext(width === 390
+        ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2, colorScheme: theme }
+        : { viewport: { width: 1280, height: 800 }, colorScheme: theme });
       await context.addInitScript((value) => { localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: value, showUsage: true })); }, theme);
       const page = await context.newPage();
       page.setDefaultTimeout(10_000);
@@ -167,9 +156,4 @@ try {
       }
     }
   }
-} finally {
-  await browser?.close();
-  server?.stop(true);
-  rmSync(app, { recursive: true, force: true });
-  console.log("CLEANUP browser closed, loopback demo server stopped, demo app removed");
-}
+});

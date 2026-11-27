@@ -8,25 +8,18 @@
  */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Browser, Page } from "playwright-core";
 import { appFaces } from "./app-faces.ts";
 import panes from "../site/demo/fixtures/panes.json";
 import terminalFixture from "../site/demo/fixtures/terminal.json";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
+import { appContext } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 import { shownRow, shownRows } from "./shown-rows.ts";
-import { serveDemo } from "./demo-server.ts";
 import { KO } from "../src/lib/i18n.ko.ts";
 
-const playwrightCore = "playwright-core";
-const { chromium } = (await import(playwrightCore)) as typeof import("playwright-core");
-
-const app = mkdtempSync(join(tmpdir(), "herdr-paste-insert-demo-"));
 const evidence = process.env.UI_EVIDENCE_DIR;
-if (evidence) mkdirSync(evidence, { recursive: true });
 
 interface Hook {
   sent: { type: string; id?: number; pane_id?: string; text?: string }[];
@@ -140,9 +133,9 @@ const settled = (page: Page) => page.evaluate(() => new Promise<void>((resolve) 
 
 async function openShell(browser: Browser, origin: string, variant: Variant) {
   const phone = variant.width === 390;
-  const context = await browser.newContext(phone
+  const context = await appContext(browser, phone
     ? { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: variant.language === "ko" ? "ko-KR" : "en-US" }
-    : { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, locale: "en-US" });
+    : { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
   await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: new URL(origin).origin });
   await context.addInitScript(([theme, language, paneId]) => {
     localStorage.setItem("ovis:settings", JSON.stringify({ language, theme, terminalInputMode: "line", alertsOn: false, shortcutOverrides: { "previous-pane": "1", "next-pane": "2" } }));
@@ -719,44 +712,33 @@ async function captureStates(page: Page, variant: Variant, phone: boolean): Prom
   check("no horizontal scroll", await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), label(variant));
 }
 
-export async function runPasteInsert(): Promise<void> { try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  const html = readFileSync(index, "utf8");
-  assert.match(html, /<script type="module"/);
-  writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${HOOK}\n    <script type="module"`));
-  const prefix = "/herdr-web-ui/demo/app/";
-  const server = serveDemo(app, { prefix });
-  const origin = `http://127.0.0.1:${server.port}${prefix}`;
-  try {
-    const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
+export async function runPasteInsert(): Promise<void> {
+  await withDemoBrowser({ tempPrefix: "herdr-paste-insert-demo-", afterTransport: `\n    ${HOOK}` }, async ({ browser, baseUrl: origin }) => {
+    const main: Variant = { width: 390, theme: "light", language: "en" };
+    const { context, page, errors } = await openShell(browser, origin, main);
     try {
-      const main: Variant = { width: 390, theme: "light", language: "en" };
-      const { context, page, errors } = await openShell(browser, origin, main);
-      try {
-        await checkAcknowledgedInsert(page);
-        await checkClipboardTargetChanged(page);
-        await checkOlderBridgeAndUncertainty(page);
-        scenario = `captures-${label(main)}`;
-        await captureStates(page, main, true);
-        assert.deepEqual(errors, []);
-      } finally { await context.close(); }
-      await checkKorean(browser, origin);
-      if (evidence) {
-        for (const variant of [{ width: 1440, theme: "light", language: "en" }] as const) {
-          const opened = await openShell(browser, origin, variant);
-          try {
-            scenario = `captures-${label(variant)}`;
-            await captureStates(opened.page, variant, opened.phone);
-            assert.deepEqual(opened.errors, []);
-          } finally { await opened.context.close(); }
-        }
-        writeFileSync(join(evidence, "manifest.json"), JSON.stringify(manifest, null, 2));
-        writeFileSync(join(evidence, "measurements.json"), JSON.stringify(measurements, null, 2));
-        console.log(`PASS ${manifest.length} captures in ${evidence}`);
+      await checkAcknowledgedInsert(page);
+      await checkClipboardTargetChanged(page);
+      await checkOlderBridgeAndUncertainty(page);
+      scenario = `captures-${label(main)}`;
+      await captureStates(page, main, true);
+      assert.deepEqual(errors, []);
+    } finally { await context.close(); }
+    await checkKorean(browser, origin);
+    if (evidence) {
+      for (const variant of [{ width: 1440, theme: "light", language: "en" }] as const) {
+        const opened = await openShell(browser, origin, variant);
+        try {
+          scenario = `captures-${label(variant)}`;
+          await captureStates(opened.page, variant, opened.phone);
+          assert.deepEqual(opened.errors, []);
+        } finally { await opened.context.close(); }
       }
-    } finally { await browser.close(); }
-  } finally { server.stop(true); }
+      writeFileSync(join(evidence, "manifest.json"), JSON.stringify(manifest, null, 2));
+      writeFileSync(join(evidence, "measurements.json"), JSON.stringify(measurements, null, 2));
+      console.log(`PASS ${manifest.length} captures in ${evidence}`);
+    }
+  });
   if (evidence) {
     const tool = "UI_EVIDENCE_DIR=<evidence>/visual bun scripts/terminal-paste-insert-demo-regression.ts";
     for (const name of ["paste-acknowledged-insert", "clipboard-target-changed", "older-bridge-and-uncertainty"]) {
@@ -764,4 +746,4 @@ export async function runPasteInsert(): Promise<void> { try {
     }
     writeFileSync(join(evidence, "results.json"), JSON.stringify(results, null, 2));
   }
-} finally { rmSync(app, { recursive: true, force: true }); } }
+}

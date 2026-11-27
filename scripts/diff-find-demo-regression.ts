@@ -1,13 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Browser, type Page } from "playwright-core";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
+import type { Browser, Page } from "playwright-core";
+import { appContext, installClock } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 
 const evidence = process.env.UI_EVIDENCE_DIR;
-if (evidence) mkdirSync(evidence, { recursive: true });
 const HINT = { en: "Searches this loaded patch, including context. Content outside the patch is not searched.", ko: "불러온 이 패치를 문맥까지 포함해\u00a0검색합니다. 패치 밖의 내용은 검색하지\u00a0않습니다." } as const;
 type Language = keyof typeof HINT;
 
@@ -77,7 +74,7 @@ async function check(browser: Browser, origin: string, width: 390 | 1440, theme:
   const phone = width === 390;
   const name = `${width}-${theme}${language === "ko" ? "-ko" : ""}`;
   const label = `${width}px ${theme} ${language}`;
-  const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, deviceScaleFactor: phone ? 3 : 1, isMobile: phone, hasTouch: phone, colorScheme: theme, locale: language === "ko" ? "ko-KR" : "en-US" });
+  const context = await appContext(browser, { viewport: { width, height: phone ? 844 : 900 }, deviceScaleFactor: phone ? 3 : 1, isMobile: phone, hasTouch: phone, colorScheme: theme, locale: language === "ko" ? "ko-KR" : "en-US" });
   try {
     await context.addInitScript((theme) => { if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme })); }, theme);
     const page = await context.newPage();
@@ -85,7 +82,7 @@ async function check(browser: Browser, origin: string, width: 390 | 1440, theme:
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("console", (message) => { if (message.type() === "error") errors.push(`console: ${message.text()}`); });
-    await page.clock.install();
+    await installClock(page);
     await page.goto(origin);
     await pastDemoTurn(page);
     await openDiff(page, phone, "src/money.ts");
@@ -254,7 +251,7 @@ async function check(browser: Browser, origin: string, width: 390 | 1440, theme:
  */
 async function checkIpad(browser: Browser, origin: string, width: 1180 | 820, uiFontSize: number | null): Promise<void> {
   const label = `iPad ${width}px${uiFontSize === null ? "" : ` at a ${uiFontSize}px interface`}`;
-  const context = await browser.newContext({ viewport: { width, height: width === 1180 ? 820 : 1180 }, deviceScaleFactor: 2, hasTouch: true });
+  const context = await appContext(browser, { viewport: { width, height: width === 1180 ? 820 : 1180 }, deviceScaleFactor: 2, hasTouch: true });
   try {
     await context.addInitScript((uiFontSize) => {
       Object.defineProperty(Navigator.prototype, "platform", { configurable: true, get: () => "MacIntel" });
@@ -266,7 +263,7 @@ async function checkIpad(browser: Browser, origin: string, width: 1180 | 820, ui
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("console", (message) => { if (message.type() === "error") errors.push(`console: ${message.text()}`); });
-    await page.clock.install();
+    await installClock(page);
     await page.goto(origin);
     await pastDemoTurn(page);
     await openDiff(page, false, "src/money.ts");
@@ -293,32 +290,21 @@ async function checkIpad(browser: Browser, origin: string, width: 1180 | 820, ui
   }
 }
 
-const app = mkdtempSync(join(tmpdir(), "herdr-diff-find-demo-"));
-let server: ReturnType<typeof Bun.serve> | undefined;
-let browser: Browser | undefined;
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => '<script src="./demo-transport.js"></script>\n    <script type="module"'));
-  server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    const prefix = "/herdr-web-ui/demo/app/";
-    if (!path.startsWith(prefix) && !path.startsWith("/icons/")) return new Response("not found", { status: 404 });
-    let file = decodeURIComponent(path.startsWith("/icons/") ? path.slice(1) : path.slice(prefix.length));
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
-  browser = await chromium.launch({ executablePath: chromePath(), headless: true });
-  const origin = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/`;
+const serve = (app: string) => Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+  const path = new URL(request.url).pathname;
+  const prefix = "/herdr-web-ui/demo/app/";
+  if (!path.startsWith(prefix) && !path.startsWith("/icons/")) return new Response("not found", { status: 404 });
+  let file = decodeURIComponent(path.startsWith("/icons/") ? path.slice(1) : path.slice(prefix.length));
+  if (!file || file.endsWith("/")) file += "index.html";
+  if (file.split("/").includes("..")) return new Response("bad path", { status: 400 });
+  const body = Bun.file(join(app, file));
+  return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
+} });
+
+await withDemoBrowser({ tempPrefix: "herdr-diff-find-demo-", serve }, async ({ browser, baseUrl: origin }) => {
   for (const [width, theme, language] of [[1440, "dark", "en"], [1440, "light", "en"], [390, "dark", "en"], [390, "light", "en"], [390, "light", "ko"], [390, "dark", "ko"]] as const) {
     await check(browser, origin, width, theme, language);
   }
   for (const [width, uiFontSize] of [[1180, null], [820, null], [1180, 20]] as const) await checkIpad(browser, origin, width, uiFontSize);
   console.log("diff find: demo OK (count, steps, wrap, ring and paint, scope hint, literal text, Escape order, no patch, no requests, Korean, the iPad's field size)");
-} finally {
-  await browser?.close();
-  server?.stop(true);
-  rmSync(app, { recursive: true, force: true });
-}
+});

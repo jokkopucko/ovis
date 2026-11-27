@@ -3,14 +3,10 @@
  * the pane and a copy request in it does not write the clipboard.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { chromium, type Browser } from "playwright-core";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 import { pickTab } from "./tab-pick.ts";
-import { serveDemo } from "./demo-server.ts";
 
 interface Fixture {
   copies: string[];
@@ -54,20 +50,10 @@ const ESC = "\x1b", BEL = "\x07";
 // frame had drawn it. The mode is set as the view parses, and the replay's clear keeps it.
 const VIEW = `${ESC}[6n${ESC}]52;c;aGlzdG9yeQ==${BEL}${ESC}[?1000h`;
 const evidence = process.env["UI_EVIDENCE_DIR"];
-const app = mkdtempSync(join(tmpdir(), "ovis-view-replay-demo-"));
-let server: ReturnType<typeof Bun.serve> | null = null;
-let browser: Browser | null = null;
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n<script>(${installViewFixture.toString()})()</script>\n<script type="module"`));
-  const prefix = "/herdr-web-ui/demo/app/";
-  server = serveDemo(app, { prefix });
-  const url = `http://127.0.0.1:${server.port}${prefix}`;
-  browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
+await withDemoBrowser({ tempPrefix: "ovis-view-replay-demo-", afterTransport: `\n<script>(${installViewFixture.toString()})()</script>` }, async ({ newContext, baseUrl: url }) => {
   for (const width of [1280, 390]) {
     const phone = width === 390;
-    const context = await browser.newContext({ viewport: { width, height: phone ? 800 : 900 }, isMobile: phone, hasTouch: phone, colorScheme: "dark" });
+    const context = await newContext({ viewport: { width, height: phone ? 800 : 900 }, isMobile: phone, hasTouch: phone, colorScheme: "dark" });
     try {
       await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", defaultView: "terminal", terminalInputMode: "direct", alertsOn: false, paneClipboard: true, releasePaneAway: false })));
       const page = await context.newPage();
@@ -184,8 +170,4 @@ try {
       });
     } finally { await context.close(); }
   }
-} finally {
-  await browser?.close();
-  server?.stop(true);
-  rmSync(app, { recursive: true, force: true });
-}
+});

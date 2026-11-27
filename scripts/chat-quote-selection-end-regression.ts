@@ -1,19 +1,10 @@
 /** All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened. */
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { Page } from "playwright-core";
 import { appFaces } from "./app-faces.ts";
 import panes from "../site/demo/fixtures/panes.json";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
-import { serveDemo } from "./demo-server.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 
-const playwrightCore = "playwright-core";
-const { chromium } = (await import(playwrightCore)) as typeof import("playwright-core");
-
-const app = mkdtempSync(join(tmpdir(), "herdr-quote-end-demo-"));
 const WAIT = { timeout: 10_000 } as const;
 
 const frames = (page: Page): Promise<void> => page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
@@ -87,107 +78,90 @@ async function reaching(page: Page, from: "user" | "reply" | "work"): Promise<bo
   }, from);
 }
 
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  const html = readFileSync(index, "utf8");
-  assert.match(html, /<script type="module"/);
-  const gates = `<script>(() => {
-    const demo = window.fetch;
-    window.fetch = (input, init) => {
-      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
-      if (url.pathname !== "/api/pane/conversation" || url.searchParams.get("pane_id") !== ${JSON.stringify(panes.api)}) return demo(input, init);
-      return Promise.resolve(demo(input, init)).then(async (response) => {
-        if (!response.ok) return response;
-        const body = await response.json();
-        if (Array.isArray(body.turns)) body.turns = [...body.turns,
-          { role: "user", ts: "2026-10-29T00:00:00.000Z", parts: [{ kind: "text", text: "How do I get the report out?" }] },
-          { role: "assistant", ts: "2026-10-29T00:00:01.000Z", end_ts: "2026-10-29T00:00:05.000Z", parts: [{ kind: "text", phase: "final_answer", text: "Open Reports and press Export.\\n\\nPick the format you want: CSV or TXT" }] }];
-        return new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
-      });
-    };
-  })();</script>`;
-  writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${gates}\n    <script type="module"`));
+const gates = `<script>(() => {
+  const demo = window.fetch;
+  window.fetch = (input, init) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
+    if (url.pathname !== "/api/pane/conversation" || url.searchParams.get("pane_id") !== ${JSON.stringify(panes.api)}) return demo(input, init);
+    return Promise.resolve(demo(input, init)).then(async (response) => {
+      if (!response.ok) return response;
+      const body = await response.json();
+      if (Array.isArray(body.turns)) body.turns = [...body.turns,
+        { role: "user", ts: "2026-10-29T00:00:00.000Z", parts: [{ kind: "text", text: "How do I get the report out?" }] },
+        { role: "assistant", ts: "2026-10-29T00:00:01.000Z", end_ts: "2026-10-29T00:00:05.000Z", parts: [{ kind: "text", phase: "final_answer", text: "Open Reports and press Export.\\n\\nPick the format you want: CSV or TXT" }] }];
+      return new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+    });
+  };
+})();</script>`;
 
-  const server = serveDemo(app);
-  try {
-    const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
+await withDemoBrowser({ tempPrefix: "herdr-quote-end-demo-", afterTransport: `\n    ${gates}` }, async ({ newContext, baseUrl }) => {
+  const shapes = [
+    { name: "desktop-1280", width: 1280, height: 800, mobile: false },
+    { name: "phone-390", width: 390, height: 844, mobile: true },
+  ] as const;
+  for (const [agent, pane] of [["claude", panes.api], ["codex", panes.web]] as const) for (const shape of shapes) {
+    const label = `${agent}-${shape.name}`;
+    const context = await newContext({ viewport: { width: shape.width, height: shape.height }, hasTouch: shape.mobile, isMobile: shape.mobile });
     try {
-      const shapes = [
-        { name: "desktop-1280", width: 1280, height: 800, mobile: false },
-        { name: "phone-390", width: 390, height: 844, mobile: true },
-      ] as const;
-      for (const [agent, pane] of [["claude", panes.api], ["codex", panes.web]] as const) for (const shape of shapes) {
-        const label = `${agent}-${shape.name}`;
-        const context = await browser.newContext({ viewport: { width: shape.width, height: shape.height }, locale: "en-US", hasTouch: shape.mobile, isMobile: shape.mobile });
-        try {
-          await context.addInitScript((id) => {
-            localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", palette: "codex" }));
-            localStorage.setItem(`ovis:view:${id}`, "chat");
-          }, pane);
-          const page = await context.newPage();
-          const errors: string[] = [];
-          page.on("pageerror", (error) => errors.push(error.message));
-          page.setDefaultTimeout(WAIT.timeout);
-          await page.goto(`http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(pane)}`);
-          await page.locator(".chat-turn-agent > .markdown").last().waitFor({ state: "attached", ...WAIT });
-          await page.locator(".chat-frame[data-pane-content]").waitFor({ state: "attached", ...WAIT });
-          await appFaces(page);
-          await frames(page);
-          const composer = page.getByRole("textbox", { name: "Message", exact: true });
-          const { words } = await lastParagraph(page);
-          if (agent === "claude") assert.equal(words, "Pick the format you want: CSV or TXT", `${label}: the reply ending in TXT`);
+      await context.addInitScript((id) => {
+        localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", palette: "codex" }));
+        localStorage.setItem(`ovis:view:${id}`, "chat");
+      }, pane);
+      const page = await context.newPage();
+      const errors: string[] = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      page.setDefaultTimeout(WAIT.timeout);
+      await page.goto(`${baseUrl}?pane=${encodeURIComponent(pane)}`);
+      await page.locator(".chat-turn-agent > .markdown").last().waitFor({ state: "attached", ...WAIT });
+      await page.locator(".chat-frame[data-pane-content]").waitFor({ state: "attached", ...WAIT });
+      await appFaces(page);
+      await frames(page);
+      const composer = page.getByRole("textbox", { name: "Message", exact: true });
+      const { words } = await lastParagraph(page);
+      if (agent === "claude") assert.equal(words, "Pick the format you want: CSV or TXT", `${label}: the reply ending in TXT`);
 
-          for (const [gesture, select] of [["triple-click", tripleClick], ["drag past the end", dragPastEnd]] as const) {
-            await composer.fill("");
-            await composer.blur();
-            await page.evaluate(() => getSelection()?.removeAllRanges());
-            await frames(page);
-            await select(page, !shape.mobile);
-            await frames(page);
-            assert.ok((await page.evaluate(() => getSelection()?.toString() ?? "")).includes(words), `${label} ${gesture}: the paragraph is selected`);
-            await page.locator(".selection-offer").waitFor(WAIT).catch(async () => {
-              const where = await page.evaluate(() => {
-                const range = getSelection()!.getRangeAt(0);
-                const end = range.endContainer instanceof Element ? range.endContainer : range.endContainer.parentElement!;
-                const words = [...document.querySelectorAll(".chat-turn-agent .markdown")].at(-1)!;
-                const tail = document.createRange();
-                tail.setStart(words, words.childNodes.length);
-                tail.setEnd(range.endContainer, range.endOffset);
-                return `ends in .${end.className || end.tagName}@${range.endOffset}, after the words: ${JSON.stringify(tail.toString())}`;
-              });
-              assert.fail(`${label} ${gesture}: no Quote or Comment; the range ${where}`);
-            });
-            assert.equal(await page.locator(".selection-quote").count(), 1, `${label} ${gesture}: Quote offered`);
-            assert.equal(await page.locator(".reply-comment-offer").count(), 1, `${label} ${gesture}: Comment offered`);
-            await page.locator(".selection-quote").click();
-            await page.locator(".selection-offer").waitFor({ state: "detached", ...WAIT });
-            assert.equal(await composer.inputValue(), `> ${words}\n\n`, `${label} ${gesture}: the reply's words alone, no copy row or time`);
-          }
-
-          await composer.fill("");
-          await composer.blur();
-          let refused = 0;
-          for (const from of ["user", "reply", "work"] as const) {
-            if (!await reaching(page, from)) continue;
-            refused++;
-            await frames(page);
-            await frames(page);
-            assert.equal(await page.locator(".selection-offer").count(), 0, `${label}: nothing offered for a selection ${from === "user" ? "from the user's message" : from === "reply" ? "from the reply before" : "into a work block"}`);
-            await page.evaluate(() => getSelection()?.removeAllRanges());
-          }
-          assert.deepEqual(errors, [], `${label}: no page errors`);
-          console.log(`PASS ${label} (${refused} refused selections)`);
-        } finally {
-          await context.close();
-        }
+      for (const [gesture, select] of [["triple-click", tripleClick], ["drag past the end", dragPastEnd]] as const) {
+        await composer.fill("");
+        await composer.blur();
+        await page.evaluate(() => getSelection()?.removeAllRanges());
+        await frames(page);
+        await select(page, !shape.mobile);
+        await frames(page);
+        assert.ok((await page.evaluate(() => getSelection()?.toString() ?? "")).includes(words), `${label} ${gesture}: the paragraph is selected`);
+        await page.locator(".selection-offer").waitFor(WAIT).catch(async () => {
+          const where = await page.evaluate(() => {
+            const range = getSelection()!.getRangeAt(0);
+            const end = range.endContainer instanceof Element ? range.endContainer : range.endContainer.parentElement!;
+            const words = [...document.querySelectorAll(".chat-turn-agent .markdown")].at(-1)!;
+            const tail = document.createRange();
+            tail.setStart(words, words.childNodes.length);
+            tail.setEnd(range.endContainer, range.endOffset);
+            return `ends in .${end.className || end.tagName}@${range.endOffset}, after the words: ${JSON.stringify(tail.toString())}`;
+          });
+          assert.fail(`${label} ${gesture}: no Quote or Comment; the range ${where}`);
+        });
+        assert.equal(await page.locator(".selection-quote").count(), 1, `${label} ${gesture}: Quote offered`);
+        assert.equal(await page.locator(".reply-comment-offer").count(), 1, `${label} ${gesture}: Comment offered`);
+        await page.locator(".selection-quote").click();
+        await page.locator(".selection-offer").waitFor({ state: "detached", ...WAIT });
+        assert.equal(await composer.inputValue(), `> ${words}\n\n`, `${label} ${gesture}: the reply's words alone, no copy row or time`);
       }
+
+      await composer.fill("");
+      await composer.blur();
+      let refused = 0;
+      for (const from of ["user", "reply", "work"] as const) {
+        if (!await reaching(page, from)) continue;
+        refused++;
+        await frames(page);
+        await frames(page);
+        assert.equal(await page.locator(".selection-offer").count(), 0, `${label}: nothing offered for a selection ${from === "user" ? "from the user's message" : from === "reply" ? "from the reply before" : "into a work block"}`);
+        await page.evaluate(() => getSelection()?.removeAllRanges());
+      }
+      assert.deepEqual(errors, [], `${label}: no page errors`);
+      console.log(`PASS ${label} (${refused} refused selections)`);
     } finally {
-      await browser.close();
+      await context.close();
     }
-  } finally {
-    server.stop(true);
   }
-} finally {
-  rmSync(app, { recursive: true, force: true });
-}
+});

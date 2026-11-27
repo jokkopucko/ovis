@@ -13,20 +13,17 @@
  *   SIDEBAR_SELECTION_CASE=themes|forced runs one half)
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { chromium, type Browser, type Locator, type Page } from "playwright-core";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
+import type { Browser, Locator, Page } from "playwright-core";
+import { appContext } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 import { SUPPORTED_ENTRIES } from "../src/lib/themes.ts";
-import { serveDemo } from "./demo-server.ts";
 
 type Mode = "dark" | "light";
 type RowKind = "workspace" | "agent";
 type State = "selected" | "selected+hover" | "selected+focus";
 
-const app = mkdtempSync(join(tmpdir(), "herdr-sidebar-selection-"));
 const evidence = process.env["UI_EVIDENCE_DIR"];
 const only = process.env["SIDEBAR_SELECTION_CASE"];
 const CUE_MIN = 3;
@@ -184,9 +181,9 @@ async function selectRows(page: Page): Promise<void> {
 }
 
 async function open(browser: Browser, url: string, mode: Mode, phone: boolean): Promise<{ page: Page; errors: string[]; close(): Promise<void> }> {
-  const context = await browser.newContext(phone
-    ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3, locale: "en-US", colorScheme: mode }
-    : { viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1, locale: "en-US", colorScheme: mode });
+  const context = await appContext(browser, phone
+    ? { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3, colorScheme: mode }
+    : { viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1, colorScheme: mode });
   await context.addInitScript((mode) => {
     localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: mode, palette: "codex", defaultView: "chat" }));
   }, mode);
@@ -306,29 +303,17 @@ async function screenshots(browser: Browser, url: string, dir: string): Promise<
   }
 }
 
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script><script type="module"'));
-  const server = serveDemo(app, { prefix: "/" });
-  try {
-    const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-    try {
-      const url = `http://127.0.0.1:${server.port}/`;
-      if (!only || only === "themes") for (const mode of ["dark", "light"] as const) await measureMode(browser, url, mode);
-      if (!only || only === "forced") for (const mode of ["dark", "light"] as const) await measureForced(browser, url, mode);
-      if (evidence && !only) {
-        mkdirSync(evidence, { recursive: true });
-        writeFileSync(join(evidence, "measurements.json"), JSON.stringify(rows, null, 2));
-        await screenshots(browser, url, evidence);
-      }
-    } finally { await browser.close(); }
-  } finally { server.stop(true); }
-  const themed = new Set(rows.map((row) => row.entry).filter((entry) => !entry.startsWith("forced-colors/")));
-  if (!only || only === "themes") assert.equal(themed.size, SUPPORTED_ENTRIES.length, "every theme entry was measured");
-  if (!only || only === "forced") assert.equal(rows.filter((row) => row.entry.startsWith("forced-colors/")).length, 12, "both forced-color modes were measured");
-  assert.deepEqual(failures, [], `selected sidebar rows:\n${failures.join("\n")}`);
-  console.log(`PASS sidebar selection contrast: ${themed.size} theme entries and ${rows.length - themed.size * 6} forced-color measurements, workspace and agent rows, ${rows.length} measurements`);
-} finally {
-  rmSync(app, { recursive: true, force: true });
-}
+await withDemoBrowser({ tempPrefix: "herdr-sidebar-selection-", prefix: "/" }, async ({ browser, baseUrl: url }) => {
+  if (!only || only === "themes") for (const mode of ["dark", "light"] as const) await measureMode(browser, url, mode);
+  if (!only || only === "forced") for (const mode of ["dark", "light"] as const) await measureForced(browser, url, mode);
+  if (evidence && !only) {
+    mkdirSync(evidence, { recursive: true });
+    writeFileSync(join(evidence, "measurements.json"), JSON.stringify(rows, null, 2));
+    await screenshots(browser, url, evidence);
+  }
+});
+const themed = new Set(rows.map((row) => row.entry).filter((entry) => !entry.startsWith("forced-colors/")));
+if (!only || only === "themes") assert.equal(themed.size, SUPPORTED_ENTRIES.length, "every theme entry was measured");
+if (!only || only === "forced") assert.equal(rows.filter((row) => row.entry.startsWith("forced-colors/")).length, 12, "both forced-color modes were measured");
+assert.deepEqual(failures, [], `selected sidebar rows:\n${failures.join("\n")}`);
+console.log(`PASS sidebar selection contrast: ${themed.size} theme entries and ${rows.length - themed.size * 6} forced-color measurements, workspace and agent rows, ${rows.length} measurements`);

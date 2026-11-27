@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Page } from "playwright-core";
+import { appContext } from "./app-context.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { appFaces } from "./app-faces.ts";
@@ -136,7 +137,7 @@ const gridFocused = (page: Page) => page.evaluate(() => document.activeElement?.
 try {
   for (const width of [1280, 390]) for (const theme of ["light", "dark"] as const) {
     const touch = width === 390;
-    const context = await browser.newContext({ viewport: { width, height: 844 }, isMobile: touch, hasTouch: touch, locale: "en-US" });
+    const context = await appContext(browser, { viewport: { width, height: 844 }, isMobile: touch, hasTouch: touch });
     try {
       await context.addInitScript(({ theme, pane }) => {
         localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme, darkTheme: "amber", lightTheme: "amber", autoSendQueued: true, voiceInput: "auto" }));
@@ -545,7 +546,7 @@ try {
 
   for (const width of [1280, 390]) {
     const touch = width === 390;
-    const context = await browser.newContext({ viewport: { width, height: 844 }, isMobile: touch, hasTouch: touch, locale: "en-US" });
+    const context = await appContext(browser, { viewport: { width, height: 844 }, isMobile: touch, hasTouch: touch });
     try {
       await context.addInitScript((views) => {
         localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "light", darkTheme: "amber", lightTheme: "amber", autoSendQueued: true }));
@@ -693,7 +694,7 @@ try {
   }
 
   for (const hold of ["later", "all"] as const) {
-    const context = await browser.newContext({ viewport: { width: 1280, height: 844 }, locale: "en-US" });
+    const context = await appContext(browser, { viewport: { width: 1280, height: 844 } });
     try {
       await context.addInitScript(({ pane, hold }) => {
         localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "light", darkTheme: "amber", lightTheme: "amber", autoSendQueued: true }));
@@ -733,7 +734,7 @@ try {
     } finally { await context.close(); }
   }
 
-  const context = await browser.newContext({ viewport: { width: 1280, height: 844 }, locale: "en-US" });
+  const context = await appContext(browser, { viewport: { width: 1280, height: 844 } });
   try {
     await context.addInitScript(({ pane, other }) => {
       localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "light", darkTheme: "amber", lightTheme: "amber", autoSendQueued: true }));

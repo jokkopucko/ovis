@@ -6,17 +6,14 @@
  * directory, removed at the end.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { chromium, devices, type Browser, type BrowserContextOptions } from "playwright-core";
+import { devices, type BrowserContextOptions } from "playwright-core";
 import { CONTENT_SECURITY_POLICY } from "../server/static.ts";
-import { chromePath } from "./chrome-path.ts";
-import { buildDemoApp } from "./demo-build.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 
 const PREFIX = "/herdr-web-ui/demo/app/";
 const evidence = process.env["UI_EVIDENCE_DIR"] || null;
-const app = mkdtempSync(join(tmpdir(), "herdr-boot-loading-"));
 
 interface Case { name: string; context: BrowserContextOptions; reducedMotion?: boolean; settings?: Record<string, string> }
 // an unsaved device boots on the OS scheme: the phone on a dark one, the desktop and the reduced-motion
@@ -30,27 +27,20 @@ const CASES: Case[] = [
 const themeOf = (item: Case): "dark" | "light" => item.settings?.["theme"] === "light" ? "light" : item.settings?.["theme"] === "dark" || item.context.colorScheme === "dark" ? "dark" : "light";
 
 const rings = new Map<string, string>();
-let browser: Browser | null = null;
-let server: ReturnType<typeof Bun.serve> | null = null;
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    <script type="module"`));
-  server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const csp = { "content-security-policy": CONTENT_SECURITY_POLICY };
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith(PREFIX)) return new Response("not found", { status: 404, headers: csp });
-    let file = decodeURIComponent(path.slice(PREFIX.length));
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400, headers: csp });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body, { headers: { ...csp, "content-type": body.type } }) : new Response("not found", { status: 404, headers: csp });
-  } });
-  const url = `http://127.0.0.1:${server.port}${PREFIX}`;
-  browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
+const serve = (app: string) => Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+  const csp = { "content-security-policy": CONTENT_SECURITY_POLICY };
+  const path = new URL(request.url).pathname;
+  if (!path.startsWith(PREFIX)) return new Response("not found", { status: 404, headers: csp });
+  let file = decodeURIComponent(path.slice(PREFIX.length));
+  if (!file || file.endsWith("/")) file += "index.html";
+  if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400, headers: csp });
+  const body = Bun.file(join(app, file));
+  return (await body.exists()) ? new Response(body, { headers: { ...csp, "content-type": body.type } }) : new Response("not found", { status: 404, headers: csp });
+} });
 
+await withDemoBrowser({ tempPrefix: "herdr-boot-loading-", serve }, async ({ newContext, baseUrl: url }) => {
   for (const item of CASES) {
-    const context = await browser.newContext({ ...item.context, locale: "en-US", serviceWorkers: "block", reducedMotion: item.reducedMotion ? "reduce" : "no-preference" });
+    const context = await newContext({ ...item.context, reducedMotion: item.reducedMotion ? "reduce" : "no-preference" });
     try {
       await context.addInitScript((settings) => {
         localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", ...settings }));
@@ -122,10 +112,6 @@ try {
       await context.close();
     }
   }
-} finally {
-  await browser?.close();
-  await server?.stop(true);
-  rmSync(app, { recursive: true, force: true });
-}
+});
 assert.notEqual(rings.get("phone, saved light theme"), rings.get("phone"), "the ring takes the saved theme's colors, not the OS scheme's");
 console.log(`boot loading: ${CASES.length} cases`);

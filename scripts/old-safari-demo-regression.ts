@@ -6,20 +6,17 @@
  * session and no user state: the demo build on a loopback server on port 0 under the app's
  * Content-Security-Policy, and a temporary directory removed at the end.
  */
+import { devices } from "playwright-core";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { chromium, devices, type Browser } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { CONTENT_SECURITY_POLICY } from "../server/static.ts";
-import { chromePath } from "./chrome-path.ts";
 import { shownRows } from "./shown-rows.ts";
-import { buildDemoApp } from "./demo-build.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 
 const PREFIX = "/herdr-web-ui/demo/app/";
 const evidence = process.env["UI_EVIDENCE_DIR"] || null;
-const app = mkdtempSync(join(tmpdir(), "herdr-old-safari-"));
 
 /**
  * What each browser lacks of the built-ins the app calls. iOS 16 (the last on an iPhone 8) lacks
@@ -39,11 +36,20 @@ const PANES = [
 ];
 const failures: string[] = [];
 
-let browser: Browser | null = null;
-let server: ReturnType<typeof Bun.serve> | null = null;
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
+const serve = (app: string) => Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+  const csp = { "content-security-policy": CONTENT_SECURITY_POLICY };
+  const path = new URL(request.url).pathname;
+  if (!path.startsWith(PREFIX)) return new Response("not found", { status: 404, headers: csp });
+  let file: string;
+  try { file = decodeURIComponent(path.slice(PREFIX.length)); }
+  catch { return new Response("bad path", { status: 400, headers: csp }); }
+  if (!file || file.endsWith("/")) file += "index.html";
+  if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400, headers: csp });
+  const body = Bun.file(join(app, file));
+  return (await body.exists()) ? new Response(body, { headers: { ...csp, "content-type": body.type } }) : new Response("not found", { status: 404, headers: csp });
+} });
+
+await withDemoBrowser({ tempPrefix: "herdr-old-safari-", serve, afterTransport: '\n    <script src="./old-browser.js"></script>' }, async ({ app, newContext, baseUrl }) => {
   // the built-ins go after the demo's transport, which needs randomUUID as it loads, and before the
   // app: a file of the page's own, as the Content-Security-Policy allows no inline script
   writeFileSync(join(app, "old-browser.js"), `{
@@ -64,24 +70,9 @@ try {
       });
     }
   }\n`);
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    <script src="./old-browser.js"></script>\n    <script type="module"`));
-  server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const csp = { "content-security-policy": CONTENT_SECURITY_POLICY };
-    const path = new URL(request.url).pathname;
-    if (!path.startsWith(PREFIX)) return new Response("not found", { status: 404, headers: csp });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(PREFIX.length)); }
-    catch { return new Response("bad path", { status: 400, headers: csp }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400, headers: csp });
-    const body = Bun.file(join(app, file));
-    return (await body.exists()) ? new Response(body, { headers: { ...csp, "content-type": body.type } }) : new Response("not found", { status: 404, headers: csp });
-  } });
-  browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-
   for (const old of BROWSERS) for (const item of PANES) {
     const label = `${old.name} ${item.name}`;
-    const context = await browser.newContext({ ...devices["iPhone 14"], locale: "en-US", serviceWorkers: "block" });
+    const context = await newContext({ ...devices["iPhone 14"] });
     try {
       await context.addInitScript((lacks) => {
         localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
@@ -90,7 +81,7 @@ try {
       const page = await context.newPage();
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
-      await page.goto(`http://127.0.0.1:${server.port}${PREFIX}?pane=${encodeURIComponent(item.pane)}`);
+      await page.goto(`${baseUrl}?pane=${encodeURIComponent(item.pane)}`);
       const outcome = await page.waitForFunction((drawn) => {
         if (/can.t be shown/.test(document.body.innerText)) return "a part of the page can't be shown";
         return document.querySelector(drawn) ? "drawn" : null;
@@ -106,8 +97,4 @@ try {
     } finally { await context.close(); }
   }
   assert.deepEqual(failures, [], "panes on older browsers");
-} finally {
-  await browser?.close();
-  await server?.stop(true);
-  rmSync(app, { recursive: true, force: true });
-}
+});

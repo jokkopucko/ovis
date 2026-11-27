@@ -394,6 +394,12 @@ describe("demo launches", () => {
     expect(found("const { buildDevelopmentDemoApp } = await import(\"./demo-build.ts\");\nconst browser = await chromium.launch();")).toBe(1);
   });
 
+  it("counts a second browser a script launches beside withDemoBrowser's, but not one in a unit test", () => {
+    const second = "import { withDemoBrowser } from \"./demo-browser.ts\";\nawait withDemoBrowser({ tempPrefix: \"x-\" }, async () => { const other = await chromium.launch({ args: [\"--force-device-scale-factor=2\"] }); });";
+    expect(found(second)).toBe(1);
+    expect(demoLaunches("scripts/x.test.ts", second)).toEqual([]);
+  });
+
   it("counts none in a script that builds no demo, or leaves the launch to the harness", () => {
     expect(found("const server = await createServer();\nconst browser = await chromium.launch({ headless: true });")).toBe(0);
     expect(found("import { withDemoBrowser } from \"./demo-browser.ts\";\nawait withDemoBrowser({ tempPrefix: \"x-\" }, async ({ newContext }) => { await newContext(); });")).toBe(0);
@@ -505,7 +511,6 @@ describe("the demo app's file server", () => {
     "scripts/prompt-card-timing-demo-regression.ts": "also serves paths outside /app/",
     "scripts/repo-diff-browser-qa.ts": "serves /icons/ beside the app",
     "scripts/settings-pages-demo-regression.ts": "serves two builds side by side",
-    "scripts/settings-palette-search-demo-regression.ts": "serves two builds side by side",
     "scripts/settings-rows-demo-regression.ts": "serves two builds side by side",
     "scripts/setup-dialog-demo-regression.ts": "serves /icons/ beside the app",
     "scripts/setup-row-demo-regression.ts": "serves /icons/ beside the app",

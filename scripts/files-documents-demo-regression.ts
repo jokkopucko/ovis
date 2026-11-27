@@ -1,15 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Browser, type Page } from "playwright-core";
+import type { Browser, Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
-import { serveDemo } from "./demo-server.ts";
+import { appContext } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 
 // All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
-const app = mkdtempSync(join(tmpdir(), "ovis-files-documents-demo-"));
 const evidence = process.env.UI_EVIDENCE_DIR;
 
 const ROOT = "/home/demo/.herdr/worktrees/checkout-api";
@@ -36,7 +32,7 @@ const DOCS_SCRIPT = `<script>(${((root: string, listed: string[]) => {
 
 async function open(browser: Browser, width: number, settings: Record<string, unknown>, query = ""): Promise<{ page: Page; errors: string[]; close: () => Promise<void> }> {
   const phone = width <= 480;
-  const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, locale: "en-US", hasTouch: phone, isMobile: phone });
+  const context = await appContext(browser, { viewport: { width, height: phone ? 844 : 900 }, hasTouch: phone, isMobile: phone });
   const { filesDocuments, filesPanel, filePanelWidth, ...main } = settings;
   await context.addInitScript(([value, documents, panel, panelWidth]) => {
     if (localStorage.getItem("ovis:settings") !== null) return;
@@ -141,22 +137,10 @@ async function phone(browser: Browser, theme: "light" | "dark"): Promise<void> {
 }
 
 let origin = "";
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>${DOCS_SCRIPT}\n    <script type="module"`));
-  const server = serveDemo(app);
-  origin = `http://127.0.0.1:${server.port}`;
-  try {
-    const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-    try {
-      if (evidence) mkdirSync(evidence, { recursive: true });
-      for (const theme of ["light", "dark"] as const) {
-        await desktop(browser, theme);
-        await phone(browser, theme);
-      }
-    } finally { await browser.close(); }
-  } finally { await server.stop(true); }
-} finally {
-  rmSync(app, { recursive: true, force: true });
-}
+await withDemoBrowser({ tempPrefix: "ovis-files-documents-demo-", afterTransport: DOCS_SCRIPT }, async ({ browser, origin: served }) => {
+  origin = served;
+  for (const theme of ["light", "dark"] as const) {
+    await desktop(browser, theme);
+    await phone(browser, theme);
+  }
+});

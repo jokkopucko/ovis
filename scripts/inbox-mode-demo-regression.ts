@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { appFaces } from "./app-faces.ts";
+import { appContext } from "./app-context.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { SECOND_TAP_MS } from "../src/lib/useSidebarLayout.ts";
@@ -421,7 +422,7 @@ async function shot(page: Page, name: string): Promise<void> {
 }
 
 async function withPage(browser: Browser, base: string, settings: Settings, path: string, what: string, run: (page: Page) => Promise<void>, viewport: { width: number; height: number } = PHONE, touch: boolean = viewport.width < 769, locale = "en-US"): Promise<void> {
-  const context = await browser.newContext({ viewport, isMobile: touch, hasTouch: touch, locale });
+  const context = await appContext(browser, { viewport, isMobile: touch, hasTouch: touch, locale });
   try {
     await context.addInitScript((seed) => {
       // the blank page the tab began on, which Back out of the app returns to, has no storage to seed

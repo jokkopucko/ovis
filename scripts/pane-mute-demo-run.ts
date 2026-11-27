@@ -10,6 +10,7 @@ import { paneStorageId } from "../shared/machines.ts";
 import { preferencesConflict, type SharedPreferences } from "../shared/preferences.ts";
 import type { ServerMessage } from "../shared/protocol.ts";
 import { handlePreferencesRequest, PreferenceStore } from "../server/preferences.ts";
+import { appContext } from "./app-context.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { contextMenuKey } from "./context-menu-key.ts";
@@ -184,7 +185,7 @@ const droplet = (page: Page) => page.locator(".droplet-card");
 let url = "";
 
 async function newContext(browser: Browser, phone: boolean, settings: Record<string, unknown>): Promise<BrowserContext> {
-  const context = await browser.newContext(phone ? { ...devices["iPhone 14"], locale: settings["language"] === "ko" ? "ko-KR" : "en-US" } : { viewport: { width: 1440, height: 900 }, locale: "en-US" });
+  const context = await appContext(browser, phone ? { ...devices["iPhone 14"], locale: settings["language"] === "ko" ? "ko-KR" : "en-US" } : { viewport: { width: 1440, height: 900 } });
   await context.addInitScript((stored) => {
     localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "chat", alertsOn: true, alertInput: true, alertDone: "always", alertSound: true, ...stored }));
     localStorage.setItem("ovis:agents-resting-open", "1");

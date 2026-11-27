@@ -5,14 +5,11 @@
  * a dialog, and the settings rows that only the desktop app offers. UI_EVIDENCE_DIR keeps captures.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Browser, type Page } from "playwright-core";
+import type { Browser, Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
-import { serveDemo } from "./demo-server.ts";
+import { appContext } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 
 const EVIDENCE = process.env.UI_EVIDENCE_DIR;
 
@@ -80,7 +77,7 @@ const calls = (page: Page) => page.evaluate(() => (window as unknown as { __brow
 
 async function open(browser: Browser, origin: string, width: number, theme: "light" | "dark", on: boolean, bridge = true): Promise<Page> {
   const phone = width === 390;
-  const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 820 }, ...(phone ? { deviceScaleFactor: 3, isMobile: true, hasTouch: true } : {}), locale: "ko-KR", colorScheme: theme });
+  const context = await appContext(browser, { viewport: { width, height: phone ? 844 : 820 }, ...(phone ? { deviceScaleFactor: 3, isMobile: true, hasTouch: true } : {}), locale: "ko-KR", colorScheme: theme });
   await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify({ language: "ko", theme, builtInBrowser: on }));
   if (bridge) await context.addInitScript(standInBridge);
   const page = await context.newPage();
@@ -232,30 +229,10 @@ async function phone(browser: Browser, origin: string): Promise<void> {
   await page.context().close();
 }
 
-async function main(): Promise<void> {
-  const app = mkdtempSync(join(tmpdir(), "ovis-built-in-browser-demo-"));
-  try {
-    await buildDemoApp(app);
-    const index = join(app, "index.html");
-    writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    <script type="module"`));
-    const server = serveDemo(app, { prefix: "/" });
-    try {
-      if (EVIDENCE) mkdirSync(EVIDENCE, { recursive: true });
-      const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-      try {
-        const origin = `http://127.0.0.1:${server.port}/`;
-        for (const theme of ["light", "dark"] as const) await wide(browser, origin, theme);
-        await crowded(browser, origin);
-        await middle(browser, origin);
-        await phone(browser, origin);
-      } finally { await browser.close(); }
-    } finally {
-      await server.stop(true);
-    }
-  } finally {
-    rmSync(app, { recursive: true, force: true });
-  }
-}
-
-await main();
+await withDemoBrowser({ tempPrefix: "ovis-built-in-browser-demo-", prefix: "/" }, async ({ browser, baseUrl: origin }) => {
+  for (const theme of ["light", "dark"] as const) await wide(browser, origin, theme);
+  await crowded(browser, origin);
+  await middle(browser, origin);
+  await phone(browser, origin);
+});
 console.log("built-in browser demo regression passed");
