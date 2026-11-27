@@ -1,0 +1,40 @@
+                               ██       v19.1.0
+
+    Tip: Bulk data to classify or triage? Say `jevify` in your message — the
+     eval kernel's `judge()` processes the batch and you read only what it
+                       flags — watch it glow as you type
+
+                                                                                
+ Run the form fixture.                                                          
+                                                                                
++- Ask · 4 of 6 answered ------------------------------------------------------+
+| Sessions live in memory and are lost on restart.                             |
+|                                                                              |
+| ✓ Where should sessions persist?                                             |
+|    ✓ SQLite: one file, n…   Redis: shared acros…                             |
+|                                                                              |
+| ✓ Q2 · Targets                                                               |
+|    ✓ Desktop   Phone   Tablet                                                |
+|                                                                              |
+| ✓ Q3 · Region                                                                |
+|    Europe   ✓ United States                                                  |
+|                                                                              |
+| > Session lifetime (days)  ≥ 1                                               |
+|   | 30                                                                       |
+|                                                                              |
+| ○ Notes                                                                      |
+|   type your answer                                                           |
+|                                                                              |
+| ○ Ship it today                                                              |
+|    Ship it today                                                             |
+|                                                                              |
+|   Submit                                                                     |
+|                                                                              |
+|                                                                              |
+|                                                                              |
++------------------------------------------------------------------------------+
+
+
+  Esc Working…                                                                  
+ ? 2s > [M] Form fixture > [D] …78nzzhq00000gn/T/omp-form-UDU23Q/cwd >-6%-|131K-
+╰─                                                                              

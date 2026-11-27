@@ -1,0 +1,20 @@
+<form>
+  <p>I'm adding an offline chat cache to your Ovis fork (<code>tung-dnt/ovis</code>, remote <code>fork</code>; <code>origin</code> = devswha/ovis). It stores the newest page of messages in IndexedDB so the chat shows up instantly on a cold start.</p>
+  <fieldset>
+    <legend>Q1 · Branch and base for the chat cache</legend>
+    <label><input type="radio" name="branch" value="new-worktree-main" checked> New branch <code>feat/chat-offline-cache</code> from the latest <code>origin/main</code>, in a new worktree. Recommended.</label>
+    <label><input type="radio" name="branch" value="new-worktree-formask"> Same branch name, but based on <code>fix/omp-19-form-ask</code>.</label>
+    <label><input type="radio" name="branch" value="current-branch"> Commit straight onto <code>fix/omp-19-form-ask</code>.</label>
+  </fieldset>
+  <fieldset>
+    <legend>Q2 · How far should I go?</legend>
+    <label><input type="radio" name="ship" value="push-fork" checked> Implement, run the related tests, check it in the browser, commit, and push the branch to <code>fork</code>. No PR anywhere. Recommended because you said "personal repo".</label>
+    <label><input type="radio" name="ship" value="fork-pr"> Do the same, then open a PR into <code>tung-dnt/ovis</code> main.</label>
+    <label><input type="radio" name="ship" value="local-only"> Do the same, but commit locally only, with no push.</label>
+  </fieldset>
+  <fieldset>
+    <legend>Q3 · Install on the Mac mini?</legend>
+    <label><input type="radio" name="deploy" value="no" checked> No. Leave the running build as it is.</label>
+    <label><input type="radio" name="deploy" value="yes"> Yes. Build a local release and switch to it.</label>
+  </fieldset>
+</form>

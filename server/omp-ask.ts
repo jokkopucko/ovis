@@ -2,6 +2,7 @@ import { askedQuestions, type AskedQuestion } from "../shared/askQuestions.ts";
 import type { InteractivePrompt } from "../shared/protocol.ts";
 import { parseInline, parseMarkdown, shownText, type InlineNode, type MarkdownBlock } from "../shared/markdown.ts";
 import { parsedByPublicPrompt, publicPrompt } from "./dialogs/shared.ts";
+import { bindFormChoiceGroup } from "./dialogs/omp-form.ts";
 import type { OmoAsks } from "./omo-ask.ts";
 
 export function ompOpenCall(open: OmoAsks, session: string): string | null {
@@ -34,6 +35,25 @@ export function ompCallPrompt(prompt: InteractivePrompt, open: OmoAsks, session:
   if (shown.length > 1 && (at === undefined || !shown.includes(at))) return { prompt, unverified: true };
   const position = shown.length > 1 ? `@${at}` : "";
   return { prompt: publicPrompt({ ...parsed, id: `${parsed.id}${position}`, ompCall: call }) };
+}
+
+/**
+ * omp 19's form (dialogs/omp-form.ts) is read off the screen alone; the pane's one open `ask` call that carries a form
+ * (`{ html }`) is the call it answers, so a key goes out only while that call is still open. An unchanged option list
+ * keeps the screen's id; a restored list gets its own id so old clicks cannot use the new option indexes.
+ * A choice group the scrolled box cuts is made whole from that call's HTML. Without such a call (no session to look
+ * in, none open, several, one asked another way), the card shows but the read authorizes no key.
+ */
+export function ompFormPrompt(prompt: InteractivePrompt, open: OmoAsks, session: string): { prompt: InteractivePrompt | null; unverified?: true } {
+  const parsed = parsedByPublicPrompt.get(prompt);
+  const call = ompOpenCall(open, session);
+  const args = open[0]?.args;
+  if (!parsed) return { prompt };
+  if (parsed.ompFormPositionUnverified || call === null || typeof args !== "object" || args === null || !("html" in args) || typeof args.html !== "string") {
+    return { prompt, unverified: true };
+  }
+  const bound = bindFormChoiceGroup(parsed, args.html);
+  return bound ? { prompt: publicPrompt({ ...bound, ompCall: call }) } : { prompt: null, unverified: true };
 }
 
 /**

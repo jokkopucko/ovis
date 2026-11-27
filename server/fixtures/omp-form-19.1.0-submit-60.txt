@@ -1,0 +1,30 @@
+
+                                                            
+ Run the form fixture.                                      
+                                                            
+╭─ Ask · 3 of 4 answered ──────────────────────────────────╮
+│ Pick how the fictional report is built.                  │
+│                                                          │
+│ ✓ Which route should carry the fictional session across  │
+│   a narrow terminal that wraps long lines?               │
+│    Local socket that k…   Remote relay   ✓ Other: MySQL… │
+│                                                          │
+│ ○ Targets                                                │
+│    Desktop   Phone                                       │
+│                                                          │
+│ ✓ Region                                                 │
+│    Europe   ✓ United States   Asia Pacific               │
+│                                                          │
+│ ✓ Project name                                           │
+│   acme                                                   │
+│                                                          │
+│ ❯ Submit                                                 │
+│                                                          │
+│                                                          │
+│                                                          │
+╰──────────────────────────────────────────────────────────╯
+
+
+  ⎋ Working…                                                
+ ❓ 7s > ⬢ Form fixture > 📁 …mp-form-LS8usG/cwd ▶─6%─┃131K─
+╰─                                                          

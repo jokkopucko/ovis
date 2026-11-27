@@ -110,6 +110,7 @@ type Responder =
   | "hermes-reload-skills"
   | "omp-submit"
   | "omp-handoff"
+  | "omp-form"
   | "opencode-question"
   | "opencode-permission"
   | "opencode-v1-question"
@@ -154,6 +155,12 @@ export type ParsedPrompt = InteractivePrompt & {
   ompQuestionCut?: true;
   /** omp: the pane's one open ask call this card was read under (session and call id, omp-ask.ts), checked again before each key */
   ompCall?: string;
+  /** The choice group shown in an omp 19 form; rows may run past the scrolled box's edges. */
+  ompFormChoices?: OmpFormChoiceWindow;
+  /** A text or dropdown field whose position in a multi-field form isn't visible. */
+  ompFormPositionUnverified?: true;
+  /** The uniquely matched radio group in the bound omp form call, stable as the box scrolls. */
+  ompFormRadioGroup?: number;
   /** gjc's selector: its title's rows as drawn, top to bottom, which the card splits into a question and a body (server/gjc-ask.ts) */
   gjcTitleRows?: string[];
   /** gjc's selector: the width of its outer border rule, when framed, for width-consistent soft-wrap checks (server/gjc-ask.ts) */
@@ -194,6 +201,25 @@ export type ParsedPrompt = InteractivePrompt & {
   multiSteps?: (choices: number[]) => AnswerStep[];
   rowKey?: AnswerStep | null;
 };
+
+/** A choice group as the omp 19 form draws it: its option labels (Other apart), their ticks and the row under the cursor. */
+export interface OmpFormChoices {
+  labels: string[];
+  checked: boolean[];
+  multi: boolean;
+  /** an index into `labels`, or `labels.length` on the Other row */
+  cursor: number;
+  /** the Other row, null when none shows */
+  other: { label: string; text: string; ticked: boolean } | null;
+  caption: string;
+}
+
+/** The visible rows of a choice group: more options may be above (`top`) or below (`bottom`). */
+export interface OmpFormChoiceWindow {
+  shown: OmpFormChoices;
+  top: boolean;
+  bottom: boolean;
+}
 
 export type AnswerStep = { keys?: string[]; text?: string; pick?: true };
 

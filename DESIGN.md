@@ -4160,9 +4160,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   pane of about 40) shows the preview in unreadable pieces, so the card shows none. It follows
   Claude Code's terminal, which shows the preview beside the option it belongs to.
 - Height: at most the larger of 60% of the app's height (`--app-height`, so a phone's keyboard
-  counts) and six touch rows (`240px`), at every width. Only the reference text gives way: six
-  lines at rest, two at the least (one for a one-line command), scrolling in itself with a fade
-  on its fold. The header, step chips, question, hint, options, custom answer and confirm row
+  counts) and six touch rows (`240px`). Questions without preceding terminal words use 80%
+  instead, leaving room for their options and up to ten scrollable lines of their own context.
+  The separate terminal words keep the standard limit and give way as described above, following
+  Claude Code's terminal. Reference text gives way too: six lines at rest, two at the least
+  (one for a one-line command), scrolling in itself with a fade on its fold.
+  The header, step chips, question, hint, options, custom answer and confirm row
   never shrink. A card still taller than its limit scrolls as a whole with a fade at its bottom
   edge, and the confirm row of a typed pick stays pinned on that edge. The card's scroll is
   contained (`overscroll-behavior: contain`), so a drag past its top is never the page's

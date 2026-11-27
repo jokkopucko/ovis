@@ -1,0 +1,40 @@
+           ██  ██       ▄▀▀▄ █▀▄▀▄ █▀▀▄
+           ██  ██       ▀▄▄▀ █ █ █ █▄▄▀
+           ▒▒  ██                  █
+               ██       v19.1.0
+
+
+ Run the form fixture.
+
+╭─ Ask · 6 of 6 answered ─────────────────────╮
+│ Sessions live in memory and are lost on     │
+│ restart.                                    │
+│                                             │
+│ ✓ Where should sessions persist?            │
+│    SQLite: one file, n…   Redis: shared ac… │
+│                                             │
+│ ✓ Q2 · Targets                              │
+│    Desktop   ✓ Phone   ✓ Tablet             │
+│                                             │
+│ ✓ Q3 · Region                               │
+│    ✓ Europe   United States                 │
+│                                             │
+│ ✓ Session lifetime (days)                   │
+│   7                                         │
+│                                             │
+│ ✓ Notes                                     │
+│   line one line two                         │
+│                                             │
+│ ✓ Ship it today                             │
+│    ✓ Ship it today                          │
+│                                             │
+│ ❯ Submit                                    │
+│                                             │
+│                                             │
+│                                             │
+╰─────────────────────────────────────────────╯
+
+
+  ⎋ Working…
+ ❓ 17s > ⬢ Form fixture > 📁 …/cwd ▶─6%─┃131K─
+╰─

@@ -161,7 +161,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
   ].filter(Boolean).join(" · ");
 
   return (
-    <section className={`prompt-card${folded ? " is-folded" : ""}`} ref={cardRef} role="region" aria-label={t("Agent is asking")} aria-describedby={context ? contextId : undefined}
+    <section className={`prompt-card${prompt.kind === "question" ? " is-question" : ""}${folded ? " is-folded" : ""}`} ref={cardRef} role="region" aria-label={t("Agent is asking")} aria-describedby={context ? contextId : undefined}
       onKeyDown={(event) => { down.current = null; keyed.current = event.key === "Enter" || event.key === " " ? event.target : null; }}
       onPointerDown={(event) => {
         keyed.current = null;
@@ -286,7 +286,7 @@ export function PromptCard({ paneId, prompt, onPromptChanged, onTextChange, init
           })}
         </dl>
       )}
-      {words.body !== null && words.body.length > 0 && <pre className={`prompt-card-body${words.body.includes("\n") ? "" : " is-line"}`}>{words.body}</pre>}
+      {words.body !== null && words.body.length > 0 && <pre className={`prompt-card-body${words.body.includes("\n") ? "" : " is-line"}${prompt.kind === "question" ? " is-prose" : ""}`}>{words.body}</pre>}
       {hasChoices && (
         /* busy on the options alone, never on the card: a live region inside an aria-busy subtree is not
            read (Chromium), and the status line below has to be */
