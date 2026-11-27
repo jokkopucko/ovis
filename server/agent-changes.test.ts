@@ -65,6 +65,17 @@ it("takes the first counter after a status frame of a new agent as its start, no
   expect(times(changes.snapshot("win", snapshot(["w", "working", 13]), true))).toEqual({ w: 3_000 });
 });
 
+it("keeps the counter baseline across a live snapshot that omits it", () => {
+  const time = clock();
+  const changes = new AgentChanges(null, time.now);
+  changes.snapshot("win", snapshot(["w", "done", 12]), true);
+  const missing = snapshot(["w", "done", 12]);
+  delete missing.agents[0]!.state_change_seq;
+  expect(times(changes.snapshot("win", missing, true))).toEqual({ w: undefined });
+  time.at(4_000);
+  expect(times(changes.snapshot("win", snapshot(["w", "done", 13]), true))).toEqual({ w: 4_000 });
+});
+
 it("keeps a status frame's change over a restart before its counter is seen", () => {
   const dir = stateDir();
   const time = clock();
@@ -141,6 +152,14 @@ it("starts empty from a file that is not its table, and writes a good one", () =
   changes.snapshot("win", snapshot(["w", "done", 2]), true);
   changes.flush();
   expect(JSON.parse(readFileSync(join(dir, "agent-changes.json"), "utf8"))).toEqual({ "win\nw": { seq: 2, status: "done", at: 2_000 } });
+});
+
+it("does not mistake a damaged saved row for a prior observation", () => {
+  const dir = stateDir();
+  writeFileSync(join(dir, "agent-changes.json"), JSON.stringify({ "local\np": {} }));
+  const changes = new AgentChanges(dir, () => 4_000);
+  expect(times(changes.snapshot("local", snapshot(["p", "idle", 1]), true))).toEqual({ p: undefined });
+  changes.flush();
 });
 
 it("writes only the newest 2,000 entries even when more panes are tracked", () => {

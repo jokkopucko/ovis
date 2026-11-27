@@ -3,7 +3,7 @@ import type { AgentStatus, SessionSnapshot } from "../shared/protocol.ts";
 import { readStateDocument, writeStateDocument } from "./state-document.ts";
 
 /** What the hub last saw of one agent: herdr's counter, the status, and when either last changed. */
-interface Seen { seq?: number; status?: string; at?: number; told?: true }
+interface Seen { seq?: number; status: string; at?: number; told?: true }
 
 const FILE = "agent-changes.json";
 const SAVE_DELAY_MS = 2_000;
@@ -28,12 +28,14 @@ export class AgentChanges {
     if (this.path === null) return;
     try {
       const disk = readStateDocument(this.path);
-      if (disk.kind !== "json" || typeof disk.value !== "object" || disk.value === null) return;
+      if (disk.kind !== "json" || typeof disk.value !== "object" || disk.value === null || Array.isArray(disk.value)) return;
       for (const [key, value] of Object.entries(disk.value as Record<string, unknown>)) {
         if (typeof value !== "object" || value === null) continue;
         const { seq, status, at, told } = value as Record<string, unknown>;
+        if (typeof status !== "string") continue;
         this.seen.set(key, {
-          ...(typeof seq === "number" ? { seq } : {}), ...(typeof status === "string" ? { status } : {}), ...(typeof at === "number" ? { at } : {}),
+          status, ...(typeof seq === "number" && Number.isSafeInteger(seq) && seq >= 0 ? { seq } : {}),
+          ...(typeof at === "number" && Number.isSafeInteger(at) && at >= 0 ? { at } : {}),
           ...(told === true ? { told } : {}),
         });
       }
@@ -96,6 +98,19 @@ export class AgentChanges {
     return panesChanged ? { ...snapshot, panes } : snapshot;
   }
 
+  /** After losing the stream, a raised counter can include unseen changes, not just the last frame. */
+  disconnected(machineId: string): void {
+    const prefix = keyOf(machineId, "");
+    let changed = false;
+    for (const [key, seen] of this.seen) {
+      if (!seen.told || !key.startsWith(prefix)) continue;
+      const { told: _told, ...completed } = seen;
+      this.seen.set(key, completed);
+      changed = true;
+    }
+    if (changed) this.save();
+  }
+
   /** A PC removed from this server: its agents' times go with it. */
   forget(machineId: string): void {
     const prefix = keyOf(machineId, "");
@@ -120,7 +135,9 @@ export class AgentChanges {
     // a raised counter after a status frame is that frame's change, already dated; the first counter
     // of an agent first seen in a frame is where it starts, not a change
     const fresh = before.status !== status || before.seq !== undefined && raised && !before.told;
-    const next: Seen = { ...(seq === undefined ? {} : { seq }), status, ...(fresh ? { at: this.now() } : before.at === undefined ? {} : { at: before.at }) };
+    // Older or partial snapshots can leave the counter out; only an observed value can replace it.
+    const counter = seq ?? before.seq;
+    const next: Seen = { ...(counter === undefined ? {} : { seq: counter }), status, ...(fresh ? { at: this.now() } : before.at === undefined ? {} : { at: before.at }) };
     // the frame's counter may come in a later snapshot than the next one
     if (before.told && !raised && before.status === status) next.told = true;
     return next;

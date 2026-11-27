@@ -2227,11 +2227,16 @@ export class MachineManager {
       try { message = JSON.parse(String(event.data)); } catch { return; }
       if (message.type === "pane-status" && runtime.finishes.stale(message.finish_epoch)) return;
       if (["snapshot", "pane-status", "pane-exited"].includes(message.type)) runtime.snapshotRevision++;
-      if (message.type === "snapshot" && this.admitRemote(runtime, message.snapshot)) {
-        runtime.machine.snapshot = this.agentChanges.snapshot(runtime.machine.id, message.snapshot, true);
-        runtime.finishes.hold(message.snapshot.finish_epoch, message.snapshot.order_epoch);
-        this.push.seed(forAlerts(message.snapshot.panes), runtime.machine.id, runtime.machine.name, pcServerId(runtime.machine));
-        this.emit();
+      if (message.type === "snapshot") {
+        const snapshot = message.snapshot;
+        const admitted = this.admitRemote(runtime, snapshot);
+        message = { ...message, snapshot: this.agentChanges.snapshot(runtime.machine.id, snapshot, admitted) };
+        if (admitted) {
+          runtime.machine.snapshot = snapshot;
+          runtime.finishes.hold(snapshot.finish_epoch, snapshot.order_epoch);
+          this.push.seed(forAlerts(snapshot.panes), runtime.machine.id, runtime.machine.name, pcServerId(runtime.machine));
+          this.emit();
+        }
       }
       if (message.type === "pane-status") {
         if (runtime.machine.snapshot) { runtime.machine.snapshot = snapshotAfterStatus(runtime.machine.snapshot, message); runtime.finishes.hold(message.finish_epoch, runtime.acceptedEpoch); }
@@ -2379,6 +2384,7 @@ export class MachineManager {
     return tracked;
   }
   private disconnect(runtime: Runtime): void {
+    if (!this.stopped && runtime.observer) this.agentChanges.disconnected(runtime.machine.id);
     runtime.generation++;
     runtime.refreshQueued = false;
     clearTimeout(runtime.retry); runtime.retry = undefined; clearInterval(runtime.poll);
@@ -2441,7 +2447,8 @@ export class MachineManager {
   }
   private publish(runtime: Runtime, snapshot: SessionSnapshot, settled = false, server?: string): void {
     if (runtime.move) { runtime.move.snapshot = snapshot; runtime.move.snapshotServer = settled ? snapshot.order_epoch : server; return; }
-    runtime.machine.snapshot = this.agentChanges.snapshot(runtime.machine.id, snapshot, true);
+    this.agentChanges.snapshot(runtime.machine.id, snapshot, true);
+    runtime.machine.snapshot = snapshot;
     if (settled) runtime.finishes.settle(snapshot); else runtime.finishes.hold(snapshot.finish_epoch, server);
     this.saveSoon();
     this.push.seed(forAlerts(snapshot.panes), runtime.machine.id, runtime.machine.name, pcServerId(runtime.machine));

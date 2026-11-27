@@ -241,6 +241,53 @@ it("records a remote bridge failure and a later recovery without its address or 
 });
 
 describe("machine snapshot refresh races", () => {
+  it("dates a newer counter after the remote observer disconnects with an unmatched status frame", async () => {
+    const { manager, drive, remote, runtime, endpoint, send } = await remoteFixture();
+    const counted = (status: string, state_change_seq: number): SessionSnapshot => {
+      const state = snapshot(status);
+      return { ...state, agents: [{ ...state.panes[0]!, state_change_seq }] };
+    };
+    remote.set(counted("working", 12));
+    await drive.refresh(runtime);
+    remote.hold();
+    const frame = Promise.withResolvers<number | undefined>();
+    const off = manager.subscribe((event) => {
+      if (event.type === "machine-message" && event.machine_id === "remote" && event.message.type === "pane-status") frame.resolve(event.message.changed_at);
+    });
+    try {
+      send({ type: "pane-status", pane_id: "fixture:p1", agent_status: "done" });
+      await until(() => manager.list().find((pc) => pc.id === "remote")?.snapshot?.panes[0]?.changed_at !== undefined);
+      const before = await frame.promise;
+      expect(before).toBeGreaterThan(0);
+      drive.disconnect(runtime);
+      remote.set(counted("done", 15));
+      remote.finish();
+      await until(() => !runtime.refreshing && Date.now() > (before ?? Infinity));
+      runtime.endpoint = endpoint;
+      runtime.ssh = { close() {} };
+      await drive.observe(runtime);
+      expect(runtime.machine.snapshot?.agents[0]?.state_change_seq).toBe(15);
+      expect(manager.list().find((pc) => pc.id === "remote")?.snapshot?.panes[0]?.changed_at).toBeGreaterThan(before ?? Infinity);
+    } finally { off(); }
+  });
+
+  it("forwards the hub's timestamp in the remote snapshot as well as the roster", async () => {
+    const { manager, send } = await remoteFixture();
+    const incoming = snapshot("done");
+    incoming.panes[0]!.changed_at = 99;
+    const forwarded = Promise.withResolvers<SessionSnapshot>();
+    const off = manager.subscribe((event) => {
+      if (event.type === "machine-message" && event.machine_id === "remote" && event.message.type === "snapshot") forwarded.resolve(event.message.snapshot);
+    });
+    try {
+      send({ type: "snapshot", snapshot: incoming });
+      await until(() => manager.list().find((pc) => pc.id === "remote")?.snapshot?.panes[0]?.agent_status === "done");
+      const roster = manager.list().find((pc) => pc.id === "remote")?.snapshot?.panes[0]?.changed_at;
+      expect(roster).toBeGreaterThan(99);
+      expect((await forwarded.promise).panes[0]?.changed_at).toBe(roster);
+    } finally { off(); }
+  });
+
   it("preserves newest snapshot on oversized stale refresh", async () => {
     const { manager, drive, rosters, remote, runtime, send, answerNext } = await remoteFixture();
     const asked = Promise.withResolvers<void>();
