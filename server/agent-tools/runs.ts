@@ -1,5 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, rmSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { writeStateDocument } from "../state-document.ts";
 import { HARNESS_LIMITS } from "../../shared/harness-tool.ts";
@@ -9,8 +9,24 @@ import { idPattern, paneRegistry, readPaneRuns, readTokenRuns, type PaneSaved, t
 
 export type { Run } from "./run-state.ts";
 const digest = (token: string) => createHash("sha256").update(token).digest();
+/**
+ * Whether a Linux process is the one the pane's shell (`shell`, the terminal's own pid) started with this token file in
+ * its environment, as both launch paths set it (`OVIS_AGENT_TOKEN_FILE`). pi, OmO and Claude Code set process.title,
+ * which leaves only their name in /proc/<pid>/cmdline and hides the launch argv; the environment stays. A process the
+ * agent started inherits it too, so only the shell's own child counts. What cannot be read proves nothing.
+ */
+function launchedWith(pid: number | undefined, shell: number | null | undefined, tokenFile: string): boolean {
+  if (process.platform !== "linux" || pid === undefined || !shell) return false;
+  const entry = `OVIS_AGENT_TOKEN_FILE=${tokenFile}`;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    // pid (comm) state ppid …: comm may hold spaces and parentheses
+    if (Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]) !== shell) return false;
+    return readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").includes(entry);
+  } catch { return false; }
+}
 export interface LiveToolTerminal {
-  address: string; state: string; labels: Record<string, string>;
+  address: string; state: string; labels: Record<string, string>; pid?: number | null;
   foreground?: { pid?: number; argv: readonly string[] } | null;
   parent?: string | null;
 }
@@ -178,13 +194,13 @@ export class RunStore {
     const live = new Map(terminals.filter(t => t.state === "live").map(t => [t.address, t]));
     for (const { run, foreground } of this.entries.values()) {
       const t = live.get(run.self);
-      const config = join(this.dir, "mcp", `${run.id}.json`), extension = join(this.dir, "mcp", `${run.id}.js`);
+      const config = join(this.dir, "mcp", `${run.id}.json`), extension = join(this.dir, "mcp", `${run.id}.js`), tokenFile = join(this.dir, "tokens", `${run.id}.token`);
       const argv = t?.foreground?.argv ?? [];
       const id = keeper(run.self);
       const birth = foreground && t?.foreground?.pid === foreground.pid ? readProcessBirth(foreground.pid) : null;
       const verified = run.started_by === null
-        ? birth?.state === "identified" && birth.birth.value === foreground?.birth && argv.some((word, i) => (word === "--mcp-config" && argv[i + 1] === config) || (word === "-e" && argv[i + 1] === extension) || (word === "--additional-mcp-config" && argv[i + 1] === `@${config}`)
-          || (word.startsWith("mcp_servers.ovis-agent.args=") && argv[i - 1] === "-c" && word.includes(`'${join(this.dir, "tokens", `${run.id}.token`)}'`)))
+        ? birth?.state === "identified" && birth.birth.value === foreground?.birth && (launchedWith(foreground?.pid, t?.pid, tokenFile) || argv.some((word, i) => (word === "--mcp-config" && argv[i + 1] === config) || (word === "-e" && argv[i + 1] === extension) || (word === "--additional-mcp-config" && argv[i + 1] === `@${config}`)
+          || (word.startsWith("mcp_servers.ovis-agent.args=") && argv[i - 1] === "-c" && word.includes(`'${tokenFile}'`))))
         : !!id && t?.labels["ovis.acp"] === id && t.labels["ovis.run"] === run.id;
       if (!verified) this.revoke(run.id);
     }

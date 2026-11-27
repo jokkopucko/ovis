@@ -19,7 +19,7 @@ const EXTENSION_AGENTS: Record<string, object> = {
   pi: { timeout: 100 },
 };
 const extensionSource = (server: { name: string; command: string; args: readonly string[] }, fields: object) => [
-  "// Ovis's agent tool for one launch of this agent (server/agent-tools/launch.ts). Written by Ovis, read once at start.",
+  "// Ovis's agent tool for one launch of this agent (server/agent-tools/launch.ts). Written by Ovis; pi reads it again on /new and /reload, so it stays until the run ends.",
   `const SERVER = ${JSON.stringify({ type: "stdio", command: server.command, args: server.args, exposure: "direct", ...fields })};`,
   "export default function ovisAgentTool(pi) {",
   "  if (typeof pi.registerMcpServer !== \"function\") return;",
