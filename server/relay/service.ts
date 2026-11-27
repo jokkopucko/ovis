@@ -3,6 +3,7 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import type { DeviceConnection } from "../../shared/access.ts";
+import { isSignInMethod, type SignInMethod } from "../../shared/account-devices-api.ts";
 import { encodeOffer } from "../../shared/relay-offer.ts";
 import type { RelayOffer } from "../../shared/relay-offer.ts";
 import { parseRelayPass, relayPassAdmitsNewSessions } from "../../shared/relay-pass.ts";
@@ -310,17 +311,31 @@ export class RelayService {
    * tab's QR code is made only once one is named (offer).
    */
   savedRelayAccount(): string | null {
+    return this.savedRelayNaming()?.account ?? null;
+  }
+
+  /**
+   * The account named for this PC (savedRelayAccount) read once with how the owner who named it signed in to it (GitHub,
+   * Google or Apple; null when no naming said so): the relay tab tells a person signed in to another account which way
+   * leads to this PC's.
+   */
+  savedRelayNaming(): { readonly account: string; readonly provider: SignInMethod | null } | null {
     try {
       const saved: unknown = JSON.parse(readFileSync(this.relayAccountPath(), "utf8"));
-      return isJsonObject(saved) && typeof saved.account === "string" && ACCOUNT_ID.test(saved.account) ? saved.account : null;
+      if (!isJsonObject(saved) || typeof saved.account !== "string" || !ACCOUNT_ID.test(saved.account)) return null;
+      return { account: saved.account, provider: isSignInMethod(saved.provider) ? saved.provider : null };
     } catch { return null; }
   }
 
-  /** The account a signed-in owner listed this PC under: a relay pass is asked for under it while the PC has no members. */
-  setRelayAccount(account: string): boolean {
+  /**
+   * The account a signed-in owner listed this PC under: a relay pass is asked for under it while the PC has no members.
+   * `provider`: how that owner signed in; a naming that does not say keeps the one said for the same account before.
+   */
+  setRelayAccount(account: string, provider?: SignInMethod): boolean {
     if (!ACCOUNT_ID.test(account)) return false;
-    const before = this.passAccount(), named = this.savedRelayAccount();
-    writePrivateState(this.relayAccountPath(), { account });
+    const before = this.passAccount(), saved = this.savedRelayNaming(), named = saved?.account ?? null;
+    const method = provider ?? (named === account ? saved!.provider : null);
+    writePrivateState(this.relayAccountPath(), method === null ? { account } : { account, provider: method });
     // a device that waits under the relay tab's QR code is taken only into the account named when that code was made,
     // and only while that account is the one named (records.ts look); naming another in place of the one read here also
     // ends that code and its rows at once

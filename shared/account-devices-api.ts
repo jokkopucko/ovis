@@ -31,6 +31,11 @@ export type NoticeKind = "admit" | "drop" | "remove" | "block" | "lift" | "promo
 
 /** Device table P18, T34, T58: the registering sign-in provider for a list admission, if the snapshot still names it. */
 export type NoticeSignInMethod = "github" | "google" | "apple" | null;
+/** A way of signing in to an account, as the account service names it. */
+export type SignInMethod = Exclude<NoticeSignInMethod, null>;
+export function isSignInMethod(value: unknown): value is SignInMethod {
+  return value === "github" || value === "google" || value === "apple";
+}
 /**
  * Device table T34, T58, section 5b: two-step sign-in as the account record states it, never inferred by the app.
  * List admissions report `set` (not proof this sign-in used two-step) or `unknown`, even without a provider.

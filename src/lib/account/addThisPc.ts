@@ -281,7 +281,7 @@ export async function listThisPc(service: AccountService, options: { relistMs: n
   if (session && runs()) {
     // never in the way of pairing, so not awaited: a failing or hanging setup never holds the pairing wait, and the
     // relay status says when this PC has no pass (404: an Ovis from before relay passes)
-    void apiFetch("/api/account/relay-account", { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify({ account: session.account }) }).then(
+    void apiFetch("/api/account/relay-account", { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify({ account: session.account, provider: session.provider }) }).then(
       (named) => { if (!named.ok && named.status !== 404) console.warn("Ovis: this PC did not take the account for its relay pass", named.status); },
       (error: unknown) => console.warn("Ovis: this PC did not take the account for its relay pass", error instanceof Error ? error.name : error),
     );
@@ -387,7 +387,9 @@ export async function addInOnePress(service: AccountService, serverId: string, a
   if (still === undefined || !sameSignIn(still, session) || !running()) return "refused";
   const post = (path: string) => apiFetch(path, { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify({ account }) });
   try {
-    if (!running() || !(await post("/api/account/relay-account")).ok || !running()) return "refused";
+    if (!running()) return "refused";
+    const named = await apiFetch("/api/account/relay-account", { method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify({ account, provider: session.provider }) });
+    if (!named.ok || !running()) return "refused";
     const pressed = await post("/api/account/one-press");
     if (!pressed.ok) console.warn("Ovis: this PC did not join in one press", pressed.status);
     return pressed.ok ? "added" : "refused";

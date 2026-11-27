@@ -248,6 +248,21 @@ test("through the relay only a member of this PC's own account names the account
   expect((await post(link, "/api/account/relay-account", { account: ACCOUNT })).status).toBe(204);
 });
 
+test("the status says how the account named for this PC was signed in to, and a naming that does not say keeps it", async () => {
+  const f = fixture();
+  const { link } = await member(f);
+  const provider = async () => ((await (await link.open("/api/account/status").response).json()) as { account_provider?: unknown }).account_provider;
+  expect(await provider()).toBeUndefined();
+  expect((await post(link, "/api/account/relay-account", { account: ACCOUNT, provider: "github" })).status).toBe(204);
+  expect(await provider()).toBe("github");
+  // an older Ovis names the account alone, and a value no Ovis sends is no word on it: the way said before stays
+  expect((await post(link, "/api/account/relay-account", { account: ACCOUNT })).status).toBe(204);
+  expect((await post(link, "/api/account/relay-account", { account: ACCOUNT, provider: "myspace" })).status).toBe(204);
+  expect(await provider()).toBe("github");
+  expect((await post(link, "/api/account/relay-account", { account: ACCOUNT, provider: "google" })).status).toBe(204);
+  expect(await provider()).toBe("google");
+});
+
 test("only a member enrolls this PC, and the PC applies an enrollment's removes before its adds, whatever the order sent", async () => {
   const f = fixture();
   const { key, link } = await member(f);

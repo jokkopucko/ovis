@@ -375,4 +375,6 @@ export const DEVICES_ZH: Record<string, string> = {
   "This device keeps its place in your account's list: signed in again here, it opens your PCs with no Allow. To take it out too, use Disconnect on its own row.": "此设备会留在你的账户名单中：在这里重新登录后，无需允许即可打开你的电脑。如果也要移除它，请使用它自己那一行的“断开连接”。",
   "Not added: listed with a sign-in code": "未添加：通过登录码登记的 PC",
   "{name} was listed in your account with a sign-in code and never added. It leaves your account; to add it later, start again on {name}.": "{name} 通过登录码登记到你的账号，但从未被添加。它会从账号中移除；之后要添加，请在 {name} 上重新开始。",
+  "This PC is in another account. Sign in with {provider}.": "这台 PC 在另一个账号中。请使用 {provider} 登录。",
+  "This PC is in another account. Sign in the way you used when you first added this PC.": "这台 PC 在另一个账号中。请使用首次添加这台 PC 时的方式登录。",
 };

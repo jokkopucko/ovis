@@ -529,7 +529,10 @@ and nothing else.
 { "account": "acct_1" , "members": 3, "unlinked": ["6a1f0c9e2b7d4a10"], "own_word": ["0d4c1b7a9e2f3c58"], "removals": [<remove>, …], "adds": [<add>, …], "blocked": ["<key>", …], "enrolling": false, "mailbox": { "last_pull_at": "2026-11-05T01:02:03.000Z", "error": null } }
 ```
 
-`account` is `null` before the first member. `unlinked` lists relay rows that are not members.
+`account` is `null` before the first member. `account_provider` (`github`, `google` or `apple`), when
+present, is how the owner who named that account for this PC (`relay-account`) signed in to it: the
+relay tab of a page signed in to another account says to sign in that way. It is absent when no naming
+said so (an add from an older Ovis, `ovis add`). `unlinked` lists relay rows that are not members.
 `own_word` lists the members that joined on their own word ([How a device joined](#how-a-device-joined)).
 `removals` lists the signed `remove`s behind this PC's tombstones for its account, as received (a
 Revoke on the PC has none). `adds` lists the signed `add`s behind its rows, as received: the one
@@ -704,12 +707,14 @@ refusal's name where the PC joins no list (`list_removed`, `other_account`, `pin
 than what a member wrote into the list, and a PC that is behind does not write itself in); 503
 `not_read` or `unavailable`.
 
-`POST /api/account/relay-account` `{ "account" }` (or `{ "account": null }`, over a direct connection
+`POST /api/account/relay-account` `{ "account", "provider"? }` (or `{ "account": null }`, over a direct connection
 only and only on a PC in no account (409 `in_account` otherwise), which forgets the one named: `ovis
 join` puts back what it found): the account this PC asks its relay pass under while it
 has no members ([relay.md](relay.md#relay-pass)): over a direct connection with drive access (the PC's own
 screen, after it listed the PC), or through the relay only from a drive account member of that same
-account (`account_required` otherwise). Kept in `relay/account.json`; a
+account (`account_required` otherwise). Kept in `relay/account.json`, with `provider` (`github`,
+`google` or `apple`: how the namer signed in; any other value is taken as none, and a naming without
+one keeps the one said before for the same account); a
 name that is not an account id answers 400 `invalid_account`. Answers 204. Naming an account grants
 nothing: the service gives a pass only when that account lists the PC.
 While the PC has no member, it is also the account its first member comes from: a `link` that

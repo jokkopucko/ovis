@@ -859,6 +859,17 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, provid
   const [switchError, setSwitchError] = useState<string | null>(null);
   const [signedInProvider, setSignedInProvider] = useState<AccountSession["provider"] | null>(null);
   const [pcAccount, setPcAccount] = useState<string | null | undefined>(undefined);
+  // signed in to another account than the one this PC is in: the PC's last status read says how its owner signed in to that one
+  const elsewhere = signedIn && accountId !== null && typeof pcAccount === "string" && pcAccount !== accountId ? pcAccount : null;
+  const [pcWay, setPcWay] = useState<{ readonly account: string | null; readonly provider: AccountProvider | null } | null>(null);
+  const onPcStatus = useCallback((status: PcAccountStatus) => { setPcWay({ account: status.account, provider: status.provider ?? null }); }, []);
+  const otherAccountLine = elsewhere !== null && pcWay?.account === elsewhere ? (
+    <p className="settings-hint" role="note" data-testid="connect-other-account">
+      {pcWay.provider === null
+        ? t("This PC is in another account. Sign in the way you used when you first added this PC.")
+        : t("This PC is in another account. Sign in with {provider}.", { provider: PROVIDER_NAMES[pcWay.provider] })}
+    </p>
+  ) : null;
   const signInView = useRef<HTMLDivElement>(null);
   /** the sign-in that just finished on this tab, handed once to Add this PC below, which offers its one press at once */
   const signedInHere = useRef<SignedInHere | null>(null);
@@ -918,7 +929,7 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, provid
   const bare = inThisAccount && pcIn !== null && relay.status?.phase === "online";
   const qr = (ownSwitch: boolean) => (
     <AccountQr relay={relay} phone={phone} active={active} signedIn={signedIn} accountId={mine} provider={provider} serverId={machines.find((machine) => machine.kind === "local")?.server_id ?? null}
-      pcAccount={pcIn} onPcAccount={setPcAccount} onPairingHeld={onPairingHeld} onRevokedAll={onRevokedAll}
+      pcAccount={pcIn} onPcAccount={setPcAccount} onPcStatus={onPcStatus} onPairingHeld={onPairingHeld} onRevokedAll={onRevokedAll}
       first={bare} pairHere={addsOverSsh} {...(pairShared === undefined ? {} : { pairShared })} relayControls={ownSwitch ? <>{relaySwitch}{switchFailure}{startFailure}</> : null} />
   );
   // signed out the tab is its sign-in buttons: the relay's own switch stays in More settings. Keyed by the account, so
@@ -927,6 +938,7 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, provid
     <>
       <div ref={signInView} className="connect-signin" data-testid="connect-signin">
         {signInStatus}
+        {otherAccountLine}
         <RelaySignIn key={accountId ?? ""} service={account.service} onSignedIn={(session) => { signedInHere.current = { account: session.account, adds: false }; setSignedInProvider(session.provider); account.onSignedIn(on && pcIn !== null && session.account === pcIn); }} />
       </div>
       {qr(false)}
@@ -1040,7 +1052,7 @@ const names = (strays: readonly AccountQrStray[]): string => strays.map((stray) 
  * A press made while the page's relay state said otherwise (it is read every 15 seconds) is refused by the PC: the QR
  * code comes down with no failure to read, and the relay's state is read again, which brings that sentence.
  */
-export function AccountQr({ relay, phone, active, signedIn, accountId = null, provider = null, serverId = null, pcAccount, onPcAccount, first = false, pairHere = false, pairShared, relayControls, onPairingHeld, onRevokedAll }: {
+export function AccountQr({ relay, phone, active, signedIn, accountId = null, provider = null, serverId = null, pcAccount, onPcAccount, onPcStatus, first = false, pairHere = false, pairShared, relayControls, onPairingHeld, onRevokedAll }: {
   relay: RelayState; phone: boolean; active: boolean; signedIn: boolean;
   first?: boolean;
   /**
@@ -1057,6 +1069,8 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pr
   serverId?: string | null;
   pcAccount: string | null;
   onPcAccount: Dispatch<SetStateAction<string | null | undefined>>;
+  /** every status this PC answered, whole: its account and how its owner signed in to it come from the one answer */
+  onPcStatus?: (status: PcAccountStatus) => void;
   relayControls: ReactNode;
   onPairingHeld?: (held: boolean) => void;
   onRevokedAll?: () => void;
@@ -1081,13 +1095,14 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pr
     const timer = setInterval(() => {
       pcAccountStatus(apiFetch).then((status) => {
         if (!live) return;
+        onPcStatus?.(status);
         // the PC's account as read now: one that left it while enrolling is in no account again, and offers the add once more
         onPcAccount(status.account);
         setEnrolling(status.account !== null && status.enrolling === true);
       }, () => undefined);
     }, ACCOUNT_QR_POLL_MS);
     return () => { live = false; clearInterval(timer); };
-  }, [enrolling, onPcAccount]);
+  }, [enrolling, onPcAccount, onPcStatus]);
   const before = useRef<AccountQrBaseline | null>(null);
   const run = useRef(0);
   /** the account this tab showed when Phone QR code was pressed: its codes' PC is listed there or nowhere */
@@ -1101,7 +1116,7 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pr
 
   useEffect(() => {
     let live = true;
-    pcAccountStatus(apiFetch).then((status) => { if (live) { onPcAccount((known) => known === undefined ? status.account : known); setEnrolling(status.account !== null && status.enrolling === true); } }, () => undefined);
+    pcAccountStatus(apiFetch).then((status) => { if (live) { onPcStatus?.(status); onPcAccount((known) => known === undefined ? status.account : known); setEnrolling(status.account !== null && status.enrolling === true); } }, () => undefined);
     return () => {
       live = false;
       run.current++;
@@ -1111,7 +1126,7 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pr
       if (left.kind === "alone") holdAccountQrNotice({ kind: "alone", strays: left.strays, checking: left.checking, known });
       else if (left.kind === "joined") holdAccountQrNotice({ kind: "joined", account: left.account, device: left.device, strays: left.strays, checking: left.checking, known });
     };
-  }, [onPcAccount]);
+  }, [onPcAccount, onPcStatus]);
 
   useEffect(() => {
     const adopt = () => {
@@ -1157,6 +1172,7 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pr
       const found = takeAccountQrNotice();
       const earlier = found?.known ?? stopAccountQrWatch();
       stopAccountQrWatch();
+      onPcStatus?.(status);
       onPcAccount(status.account);
       if (earlier !== null) {
         const { due, checking } = accountQrFindings(devices, status.account, earlier, Date.now());
@@ -1186,6 +1202,7 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pr
     const [status, devices] = await Promise.all([pcAccountStatus(apiFetch), fetchDevices()]);
     const known = before.current;
     if (mine !== run.current || known === null) return null;
+    onPcStatus?.(status);
     onPcAccount(status.account);
     const { due, checking } = accountQrFindings(devices, status.account, known, Date.now());
     const up = drawn.current.kind === "shown";
@@ -1196,7 +1213,7 @@ export function AccountQr({ relay, phone, active, signedIn, accountId = null, pr
     if (next !== null) setView((current) => sameView(current, next) ? current : next);
     else if (!up) takeDown();
     return { account: status.account, unanswered: due.length + checking.length };
-  }, [onPcAccount, takeDown]);
+  }, [onPcAccount, onPcStatus, takeDown]);
 
   const online = relay.status?.phase === "online" && relay.status.blocked === null;
   const shown = view.kind === "shown";

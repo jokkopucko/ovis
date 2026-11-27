@@ -1,6 +1,7 @@
 import { canonicalBase64Url, isListHash } from "../../shared/account-list-entry.ts";
 import type { Sealed } from "../../shared/account-list.ts";
 import type { SignedNaming, SignedVouch } from "../../shared/account-list-migrate.ts";
+import { isSignInMethod } from "../../shared/account-devices-api.ts";
 import { ACCOUNT_ENROLL_MAX, ACCOUNT_RECORDS_MAX, isAccountKeyEncoding } from "../../shared/account-records.ts";
 import type { AccountAddRelay, AccountAddTaken } from "../../shared/machines.ts";
 import { toBase64Url } from "../../shared/relay-pair-sas.ts";
@@ -174,8 +175,11 @@ export async function handleAccountRequest(request: Request, pathname: string, c
     // a client about to enroll another PC reads this one's removals after its mailbox, so one waiting there counts too
     const fresh = new URL(request.url).searchParams.get("fresh") === "1" ? await mailbox.freshen() : undefined;
     const blocked = [...new Set([...devices.tombstoneKeys(), ...mailbox.waitingRemoveKeys(), ...context.services.accountHolds.list()])];
+    // how the owner who named this PC's account signed in to it: a page signed in to another account says which way leads here
+    const naming = context.services.relay.savedRelayNaming();
+    const named = devices.account() !== null && devices.account() === naming?.account ? naming.provider : null;
     return reply({
-      account: devices.account(), ...(devices.accountPolicyActive() ? { pc_add_from_account: devices.accountError === null ? true : "unavailable" } : {}),
+      account: devices.account(), ...(named === null ? {} : { account_provider: named }), ...(devices.accountPolicyActive() ? { pc_add_from_account: devices.accountError === null ? true : "unavailable" } : {}),
       // a PC its account stopped listing: a device sends it no link, and an add at the PC brings it back (docs/account.md)
       ...(devices.addAtPcRequired() ? { pc_add_required: true } : {}),
       ...devices.accountRows(), removals: devices.accountRemovals(), adds: devices.accountAdds(), blocked,
@@ -241,7 +245,8 @@ export async function handleAccountRequest(request: Request, pathname: string, c
       }
       if (typeof account !== "string") return fail("invalid_account", "Name the account", 400);
       if (peer.kind === "relay" && !(devices.isAccountApproverSession(peer.device.id, peer.key) && devices.account() === account)) return fail("account_required", "Name this PC's account from a device linked to it", 403);
-      if (!context.services.relay.setRelayAccount(account)) return fail("invalid_account", "Name the account", 400);
+      // how the namer signed in to it, when it says: anything else is no word on it, as from an Ovis that sends none
+      if (!context.services.relay.setRelayAccount(account, isSignInMethod(body.provider) ? body.provider : undefined)) return fail("invalid_account", "Name the account", 400);
       return new Response(null, { status: 204, headers: { "cache-control": "no-store" } });
     }
     case "/api/account/pc-proof": {

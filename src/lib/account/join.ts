@@ -4,6 +4,7 @@
  */
 import { ACCOUNT_ENROLL_MAX, AccountRecordError, accountDeviceId, isAccountKeyEncoding, newRecordId, readAccountRecord, signAccountRecord } from "../../../shared/account-records.ts";
 import type { AddRecord, LinkRecord, RemoveRecord } from "../../../shared/account-records.ts";
+import { isSignInMethod, type SignInMethod } from "../../../shared/account-devices-api.ts";
 import { isWssOrigin } from "../../../shared/relay-offer.ts";
 import type { RemotePairingRequest } from "../../../shared/protocol.ts";
 import type { RelayDevice, RelayDeviceStore } from "../relay/device.ts";
@@ -49,6 +50,8 @@ export async function post(fetch: PcFetch, path: string, body: unknown): Promise
 export interface PcAccountStatus {
   readonly pcAddFromAccount?: true | "unavailable";
   readonly account: string | null;
+  /** how the owner who added this PC to `account` signed in to it; absent when the PC does not know (an older Ovis, or no such naming) */
+  readonly provider?: SignInMethod;
   readonly unlinked: readonly string[];
   /** the signed `remove`s behind its tombstones, as it says: unchecked until keepRemovals verifies them */
   readonly removals: readonly unknown[];
@@ -76,6 +79,7 @@ export async function pcAccountStatus(fetch: PcFetch, options: { fresh?: boolean
   const unlinked = Array.isArray(body.unlinked) ? body.unlinked.filter((id): id is string => typeof id === "string") : [];
   return {
     account: typeof body.account === "string" ? body.account : null, unlinked,
+    ...(typeof body.account === "string" && isSignInMethod((body as { account_provider?: unknown }).account_provider) ? { provider: (body as { account_provider: SignInMethod }).account_provider } : {}),
     ...("pc_add_from_account" in body && (body.pc_add_from_account === true || body.pc_add_from_account === "unavailable")
       ? { pcAddFromAccount: body.pc_add_from_account } : {}),
     removals: Array.isArray(body.removals) ? body.removals : [], adds: Array.isArray(body.adds) ? body.adds : [],
