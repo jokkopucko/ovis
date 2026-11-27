@@ -14,7 +14,7 @@ import { serverIdOfPath, serverScopePath } from "../lib/shellMode.ts";
 import { markRemovedPc, removedPcs, type RemovedPcMark } from "../lib/relay/shellState.ts";
 import { StartScreenAccountMenu } from "./AccountHead.tsx";
 import { AddPcByNumber } from "./AddPcByNumber.tsx";
-import { confirmOffline, navigatorOffline, useOffline } from "../lib/useOffline.ts";
+import { followUnlessOffline, useOffline } from "../lib/useOffline.ts";
 import { AddressForm, atDots, canScanQr, clearOutcome, offlineOpenText, OpenError, OpenStatus, OtherWayButton, scanQr, sshHandoff, TailscaleOff, tailscaleOn, useAddressOpen, Way, type AddressOpen, type SavedPc } from "./RelayAddPc.tsx";
 import { codeFailureText, type TypedCodeFailure } from "./codeFailureText.ts";
 import { InvitePc } from "./InvitePc.tsx";
@@ -492,13 +492,8 @@ export function MyPcs({ devices, accountPcs = null, knownPcs, accountUnread = fa
     ? () => { open.setError(null); callNative(SHELL, "backToCurrent").catch(open.failed); } : undefined;
   // the PC in use is open already: its row goes back to it as Back does, rather than opening it again
   const goBack = onBack ?? backToCurrent;
-  // a relay PC's page opens nothing with no network on this device: while the device says so, the row asks the account
-  // service first (confirmOffline) and says so instead of going there, or goes there once it answers
-  const offlineLink = (href: string) => (event: { preventDefault(): void }): void => {
-    if (!navigatorOffline()) return;
-    event.preventDefault();
-    void confirmOffline().then((offline) => { if (offline) open.setError(offlineOpenText(t)); else window.location.assign(href); });
-  };
+  // a relay PC's row says so when the device has no network (followUnlessOffline), instead of going there
+  const offlineLink = (href: string) => followUnlessOffline(href, () => open.setError(offlineOpenText(t)));
   const forgetSaved = (pc: PhoneSavedPc) => () => { open.setError(null); callNative(SHELL, "forget", { url: pc.origin }).then(phone.reread, open.failed); };
   // a saved Tailscale PC asks the app first whether Tailscale is on: off, Open Tailscale takes over (TailscaleOff)
   // `other`: a saved way the open offers by name when this one fails or is refused (a row of several)

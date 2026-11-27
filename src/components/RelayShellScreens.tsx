@@ -10,6 +10,7 @@ import type { KeyMismatch } from "../lib/relay/shellState.ts";
 import { serverScopePath } from "../lib/shellMode.ts";
 import { describeUpdate } from "../lib/updateProgress.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
+import { followUnlessOffline } from "../lib/useOffline.ts";
 import { AccountSignIn, CheckPcsButton, PcStatusLine } from "./AccountPcs.tsx";
 import { JoinWait } from "./JoinWait.tsx";
 import { KeyId } from "./KeyId.tsx";
@@ -250,7 +251,8 @@ export function RelayShellCardContent({ props, other = null }: RelayShellCardCon
               const status = pcStatus?.get(device.server_id);
               return (
                 <li key={device.server_id}>
-                  <a className="relay-shell-pc" href={serverScopePath(device.server_id)}>
+                  {/* with no network the line above this list says so (useOffline) */}
+                  <a className="relay-shell-pc" href={serverScopePath(device.server_id)} onClick={followUnlessOffline(serverScopePath(device.server_id), () => {})}>
                     <span className="account-pc-text">
                       <span className="relay-shell-pc-name">{device.name ?? t("Unnamed PC")}</span>
                       {status && <PcStatusLine status={status} />}

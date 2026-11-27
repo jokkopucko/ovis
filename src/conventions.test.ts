@@ -295,6 +295,19 @@ describe("opening outside the app", () => {
   });
 });
 
+describe("the browser's offline flag", () => {
+  // a Galaxy Z Flip6's WebView said navigator.onLine === false on working Wi-Fi (#4810): the flag only starts a real ask
+  const READERS = ["src/lib/useOffline.ts", "src/lib/ws.ts"];
+
+  it("is read only by src/lib/useOffline.ts, which asks the network, and src/lib/ws.ts, whose pong does", () => {
+    const offenders = scan("src/**/*.{ts,tsx}").filter((name) => !READERS.includes(name) && !/\.test\./.test(name)).flatMap((file) => {
+      const code = stripComments(read(file));
+      return [...code.matchAll(/\bnavigator\s*\??\.\s*onLine\b/g)].map((match) => `${file}:${lineOf(code, match.index)}`);
+    });
+    fail(offenders, "Read navigator.onLine through src/lib/useOffline.ts (useOffline, confirmOffline): a WebView can say offline on a working network, and only an answer to a real ask says so.");
+  });
+});
+
 describe("popstate listeners", () => {
   // lib/useAddressBar.ts reads the entry every Back and Forward lands on, and holds the address back
   // until it has. The order of the listeners does not matter to that; a listener that stops the
