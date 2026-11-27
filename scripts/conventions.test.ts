@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, posix, sep } from "node:path";
-import { fixedSleepCounts, fixedSleeps, markedWaitCounts, markedWaits, sleepFiles } from "./fixed-sleeps.ts";
+import { fixedSleepCounts, fixedSleeps, markedWaitCounts, markedWaits, sleepFiles, turnWaitCounts, turnWaitFiles, turnWaits } from "./fixed-sleeps.ts";
 import { fail, files, lineOf, read, repo, stripComments } from "./source-scan.ts";
 
 const SOURCES = [...files("{src,server,shared,scripts,site,telemetry,integrations,tui}/**/*.{ts,tsx,mjs,js}"), "vite.config.ts"];
@@ -122,8 +122,8 @@ describe("the ratchets' base", () => {
  * Holds every file to its count in `json`, which may only shrink: never above the one at the ratchets' base, and
  * lowered when the code has fewer. `instead` says what to do in place of raising it.
  */
-function countRatchet({ json, what, counts, list, print, instead }: {
-  json: string; what: string; counts: () => Record<string, number>; list: (file: string) => string[]; print: string; instead: string;
+function countRatchet({ json, what, counts, list, print, instead, covered = sleepFiles }: {
+  json: string; what: string; counts: () => Record<string, number>; list: (file: string) => string[]; print: string; instead: string; covered?: () => string[];
 }): void {
   const baseline = JSON.parse(read(json)) as Record<string, number>;
 
@@ -156,7 +156,7 @@ function countRatchet({ json, what, counts, list, print, instead }: {
   });
 
   it("lists only files that exist", () => {
-    fail(Object.keys(baseline).filter((file) => !existsSync(join(repo, file)) || !sleepFiles().includes(file)),
+    fail(Object.keys(baseline).filter((file) => !existsSync(join(repo, file)) || !covered().includes(file)),
       `Remove these entries from ${json}: the files are gone or no longer covered. A renamed file keeps its entry under the new path, with the same count.`);
   });
 }
@@ -305,6 +305,50 @@ describe("waits marked fixed", () => {
     expect(found("await Bun.sleep(300);")).toBe(0);
     expect(found("// fixed wait: polled\nwhile (!done() && Date.now() < deadline) await Bun.sleep(25);")).toBe(0);
     expect(found("// fixed wait: raced\nawait Promise.race([event, Bun.sleep(1000)]);")).toBe(0);
+  });
+});
+
+describe("turn waits", () => {
+  countRatchet({
+    json: "scripts/turn-waits.json", what: "turn wait", counts: turnWaitCounts, list: turnWaits, print: "bun scripts/fixed-sleeps.ts --turns", covered: turnWaitFiles,
+    instead: "Wait for the work itself, not for a turn of the event loop: a turn ends before work that waits on a file, a timer or a socket, so an assertion that something did not happen passes before it could. Await the work's own promise (the status hub's `codexLooks()`, a spy's result, an event you subscribed to before acting), or poll its condition in a loop bounded by a deadline.",
+  });
+
+  it("tells a turn wait from a wait for the event", () => {
+    const found = (code: string, file = "example.test.ts") => turnWaits(file, code).length;
+    expect(found("await new Promise<void>((resolve) => setImmediate(resolve));")).toBe(1);
+    expect(found("await new Promise((resolve) => { setImmediate(resolve); });")).toBe(1);
+    expect(found("await new Promise((resolve) => setTimeout(resolve, 0));")).toBe(1);
+    expect(found("await new Promise((r) => setTimeout(() => r()));")).toBe(1);
+    expect(found("await new Promise(setImmediate);")).toBe(1);
+    expect(found("for (let turn = 0; turn < 8; turn++) { await d.settled(); await new Promise(setImmediate); }")).toBe(1);
+    expect(found("await act(async () => { for (let turn = 0; turn < 3; turn++) await new Promise((resolve) => setTimeout(resolve, 0)); });")).toBe(1);
+    expect(found("const tick = () => new Promise<void>((resolve) => setImmediate(resolve));\nawait tick();\nawait tick();")).toBe(2);
+    expect(found("import { setImmediate as turn } from \"node:timers/promises\";\nawait turn();")).toBe(1);
+    expect(found("const settled = async () => {\n  await lookup;\n  await new Promise<void>((resolve) => setImmediate(resolve));\n};\nawait settled();")).toBe(1);
+    expect(found("await new Promise((resolve) => setTimeout(resolve, 20));")).toBe(0);
+    expect(found("await h.status.codexLooks();")).toBe(0);
+    expect(found("for (let turn = 0; turn < 50 && answer === null; turn++) await new Promise((resolve) => setImmediate(resolve));")).toBe(0);
+    expect(found("while (!done()) { if (performance.now() > end) throw new Error(\"late\"); await new Promise((r) => setImmediate(r)); }")).toBe(0);
+    expect(found("for (let seen = null; seen !== lane;) { seen = lane; await lane; await new Promise((resolve) => setTimeout(resolve, 0)); }")).toBe(0);
+    expect(found("for (;;) {\n  if (seen()) break;\n  await new Promise(setImmediate);\n}")).toBe(0);
+    expect(found("expect(await Promise.race([ready, new Promise((resolve) => setImmediate(() => resolve(\"pending\")))])).toBe(\"pending\");")).toBe(0);
+    expect(found("await Promise.race([ready, new Promise(setImmediate)]); await new Promise(setImmediate);")).toBe(1);
+    expect(found("for (let i = 8; i > 0; i--) { await new Promise(setImmediate); }")).toBe(1);
+    expect(found("for (const type of types) { await page.evaluate(() => { return 1; }); await new Promise(setImmediate); }")).toBe(1);
+    expect(found("do { await new Promise(setImmediate); } while (!done() && Date.now() < deadline);")).toBe(0);
+    expect(found("function tick() { return new Promise(setImmediate); }\nawait tick();\nawait tick(\"flushed\");")).toBe(2);
+    expect(found("import { setTimeout as sleep } from \"node:timers/promises\";\nawait sleep(0);\nawait sleep();\nawait sleep(20);")).toBe(2);
+    expect(found("import * as timers from \"node:timers/promises\";\nawait timers.setImmediate();\nawait timers.setTimeout(0);\nawait timers.setTimeout(20);")).toBe(2);
+    expect(found("close: () => { setImmediate(() => socket.close()); },")).toBe(0);
+    expect(found("// await new Promise(setImmediate);")).toBe(0);
+  });
+
+  it("counts in tests and browser scripts only", () => {
+    const covered = turnWaitFiles();
+    expect(covered).toContain("server/core/codex-status-hub.test.ts");
+    expect(covered).toContain("scripts/ui-regression.ts");
+    expect(covered).not.toContain("server/core/status.ts");
   });
 });
 

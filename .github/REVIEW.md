@@ -21,8 +21,8 @@ AI review is advisory; CI and maintainer review determine whether a PR can merge
   show a notification for every push, including while the app is visible.
 - Preserve IME and native clipboard input. Use existing theme tokens for component CSS.
 - The `conventions.test.ts` baselines only shrink, and CI's shallow checkout cannot compare them
-  with main: flag a PR that raises a count in `scripts/fixed-sleeps.json` or
-  `scripts/fixed-waits.json` (a rename moves its entry with the same count) or adds an allowlist
+  with main: flag a PR that raises a count in `scripts/fixed-sleeps.json`,
+  `scripts/fixed-waits.json` or `scripts/turn-waits.json` (a rename moves its entry with the same count) or adds an allowlist
   entry (DEMO_404, DEMO_IGNORES, UNIX_CONNECT_ALLOWED, NET_CONNECT_ALLOWED, IN_A_CONTAINER) without
   a reason that holds.
 - Installed updaters discover Git tags immediately. Release only the exact commit

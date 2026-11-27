@@ -34,13 +34,11 @@ function codexHub(text: string) {
     const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("no rollout read finished")), 1_500); });
     try { await Promise.race([reads.promise, late]); } finally { clearTimeout(timer); }
     reads = Promise.withResolvers<void>();
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await h.status.codexLooks();
   };
   const restore = () => { lookups.mockRestore(); read.mockRestore(); };
-  const settled = async () => {
-    await (lookups.mock.results.at(-1)?.value as Promise<unknown> | undefined)?.catch(() => undefined);
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  };
+  // every look begun has ended: a read that must not happen has had its chance, however slow the disk
+  const settled = () => h.status.codexLooks();
   return { ...h, path, lookups, read, failures, looked, settled, restore };
 }
 
@@ -123,7 +121,7 @@ describe("a Codex pane whose turn ended in an error", () => {
       handlers.onStatus("w1:p1", "working", "codex");
       h.herdrSays(pane("idle"));
       handlers.onStatus("w1:p1", "idle", "codex");
-      await new Promise<void>((resolve) => setImmediate(resolve));
+      await h.settled();
       expect(h.last().status).toBe("idle");
       expect(h.failures).toEqual(["w1:p1"]);
       expect(h.read).not.toHaveBeenCalled();
@@ -152,7 +150,7 @@ describe("a Codex pane whose turn ended in an error", () => {
       expect(h.failures).toEqual(["w1:p1"]);
       release.resolve();
       await read.promise;
-      await new Promise<void>((resolve) => setImmediate(resolve));
+      await h.settled();
       await h.snapshot();
       expect(h.failures).toEqual(["w1:p1"]);
       expect((await h.snapshot()).panes[0]!.agent_status).toBe("idle");
@@ -303,7 +301,7 @@ describe("a Codex pane whose turn ended in an error", () => {
       await reading.promise;
       handlers.onStatus("w1:p1", "idle", "claude");
       release.resolve();
-      await new Promise<void>((resolve) => setImmediate(resolve));
+      await h.settled();
       expect(h.failures).toEqual([]);
     } finally { release.resolve(); h.restore(); }
   });

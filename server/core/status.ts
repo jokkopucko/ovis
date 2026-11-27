@@ -1124,6 +1124,9 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     return done;
   }
 
+  /** Settles once every rollout look begun so far has ended and told what it found: what a test awaits, not a turn of the event loop. */
+  const codexLooks = (): Promise<void> => Promise.all([...codexLooking.values()].map((look) => look.done)).then(() => undefined);
+
   /** What a Codex turn's end tells: a failure alerts once, and an answer after one clears it. */
   function codexEnded(paneId: string, end: "answered" | "failed"): void {
     if (end === "answered") {
@@ -1398,5 +1401,5 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     const identity = finishes.herdrIdentity();
     return identity === null || identity !== liveHerdr ? undefined : herdrLifetime(identity);
   };
-  return { push, alertWebhook, omo, gjc, letta, claudeAgents, opencodeAgents, taskAgents, plans, cards, cardTick, clientSnapshot, deliverySnapshot, currentHerdrLifetime, queueHeld, countVisit, machines, broadcastAll, logPushError, collector: tracked, waitTimer, hookTurn, contextChanged };
+  return { push, alertWebhook, omo, gjc, letta, claudeAgents, opencodeAgents, taskAgents, plans, cards, cardTick, clientSnapshot, deliverySnapshot, currentHerdrLifetime, queueHeld, countVisit, machines, broadcastAll, logPushError, collector: tracked, waitTimer, hookTurn, contextChanged, codexLooks };
 }
