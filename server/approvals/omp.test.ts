@@ -98,14 +98,20 @@ describe.skipIf(!posix)("omp's approval hook", () => {
     expect(hub.contextOf("p1", "omp")).toBeUndefined();
   }, 1500);
 
-  it("adds only its extension, for omp 18.x from 18.14.0", () => {
+  it("adds only its extension, for omp 18.x from 18.14.0 and omp 19.x", () => {
     const { hub } = hubIn();
     const args = hub.launchArgs("omp", "p1", ["--thinking", "off"], "18.14.0")!;
     expect(args.slice(0, 1)).toEqual(["-e"]);
     expect(args.slice(2)).toEqual(["--thinking", "off"]);
     expect(statSync(args[1]!).mode & 0o777).toBe(0o600);
     expect(readFileSync(args[1]!, "utf8")).toContain(hub.address);
-    for (const version of ["18.13.2", "19.0.0", null]) expect(hub.launchArgs("omp", "p1", ["--x"], version), String(version)).toEqual(["--x"]);
+    expect(hub.launchArgs("omp", "p1", ["--x"], "19.2.1")?.slice(2)).toEqual(["--x"]);
+    for (const version of ["18.13.2", "20.0.0", null]) expect(hub.launchArgs("omp", "p1", ["--x"], version), String(version)).toEqual(["--x"]);
+    // omp 19.2 refuses an extension beside these (cli/args.ts), so the launch keeps its own arguments
+    for (const args of [["--no-tools"], ["--no-tools=true"], ["--trusted-extension", "/x/ext.ts"], ["--trusted-extension=/x/ext.ts"]]) {
+      expect(hub.launchArgs("omp", "p1", args, "19.2.1"), args.join(" ")).toEqual(args);
+    }
+    for (const after of ["--no-tools", "--no-tools=true"]) expect(hub.launchArgs("omp", "p1", ["--", after], "19.2.1")?.[0], after).toBe("-e");
   });
 
   it("answers omp's own dialog for a shell command from Ovis's card, the dialog closed", async () => {
@@ -216,5 +222,9 @@ describe.skipIf(!posix)("omp's approval hook", () => {
     expect(read("omp-approval-hook-18.14.0-short.txt")).toMatchObject({ approvalCommand: "touch qa-short-a1.flag" });
     expect(read("omp-approval-hook-18.14.0-short.txt").approvalHeldOnly).toBeUndefined();
     expect(read("omp-approval-hook-18.14.0-multi.txt")).toMatchObject({ approvalCommand: null, approvalHeldOnly: true });
+    // omp 19.2.1 (its UI moved to its own library in 19.2.0) draws the same dialog, with its session grant between
+    const omp19 = parseInteractivePrompt("omp", readFileSync(new URL("../fixtures/omp-approval-hook-19.2.1-short.txt", import.meta.url), "utf8"))!;
+    expect(omp19).toMatchObject({ kind: "approval", title: "Allow tool: bash", options: [{ label: "Approve" }, { label: "Approve bash for this session" }, { label: "Deny" }] });
+    expect(parsedByPublicPrompt.get(omp19)).toMatchObject({ approvalCommand: "touch qa19.flag" });
   });
 });
