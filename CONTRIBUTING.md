@@ -89,6 +89,8 @@ bun run test:integration   # runs the files 4 at a time on `ovis-test-1` to `-4`
                            # stops itself; HERDR_TEST_SHARDS=1 runs them one by one on `-1`
 bun run test:ui            # builds, then browser regression on `ovis-test`; stop it with
                            # herdr --session ovis-test server stop
+bun scripts/browser-checks.ts   # lists the CI browser scripts covering your changed files
+                                # (`--surfaces` lists every feature surface; `--run` runs them)
 ```
 
 `bun test` runs the unit and integration suites together. Remote-PC changes also have
