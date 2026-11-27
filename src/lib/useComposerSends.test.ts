@@ -51,7 +51,7 @@ it("an offline uncertain display dismissal sends no pending action, submit or dr
   const wire: unknown[] = [], shown: string[] = [];
   const socket = { connected, pendingAction: (...args: unknown[]) => { wire.push(args); throw new Error("an offline dismissal must never call the backend"); } } as unknown as HerdrSocket;
   const key = `ovis:composer-draft:${owner}`;
-  composerDrafts.set(key, "keep my existing draft");
+  composerDrafts.set(key, "keep my existing draft", "replace");
   const pending = { id: `display-${connected}`, request_id: 7, text: "/thinking high", state: "uncertain" as const, created_at: "2026-11-17T00:00:00Z" };
   pendingMessages.accept(owner, pending, "scope");
   expect(pendingMessages.read(owner)[0]!.serverOwned).toBe(true);
@@ -66,14 +66,14 @@ it("an offline uncertain display dismissal sends no pending action, submit or dr
     // a connection that lists the ID again holds the bridge's record: only the bridge can settle it
     pendingMessages.publish(owner, [pending], [], "next-scope");
     expect(pendingMessages.read(owner)).toMatchObject([{ id: pending.id, serverOwned: true }]);
-  } finally { composerDrafts.set(key, ""); saved.restore(); }
+  } finally { composerDrafts.set(key, "", "replace"); saved.restore(); }
 });
 
 it("a live owner's uncertain dismissal asks the bridge to dismiss it, never as a withdrawal, a submit or a draft restore", async () => {
   const saved = savedStorage(), pane = "dismiss-live", owner = paneStorageId("local", pane), key = `ovis:composer-draft:${owner}`;
   const wire: unknown[] = [], shown: string[] = [];
   const pending = { id: "live-uncertain", request_id: 9, text: "/thinking high", state: "uncertain" as const, created_at: "2026-11-17T00:00:00Z" };
-  composerDrafts.set(key, "keep my existing draft");
+  composerDrafts.set(key, "keep my existing draft", "replace");
   pendingMessages.accept(owner, pending, "scope");
   // The bridge's discard of an uncertain record is its "dismissed" outcome, which also frees the pane's queue.
   const socket = { connected: true, on: () => () => {}, pendingAction: (...args: unknown[]) => {
@@ -87,7 +87,7 @@ it("a live owner's uncertain dismissal asks the bridge to dismiss it, never as a
     expect(wire).toEqual([[pane, pending.id, "discard", 0, false]]); expect(shown).toEqual([]);
     expect(composerDrafts.read(key).text).toBe("keep my existing draft");
     expect(pendingMessages.read(owner)).toEqual([]);
-  } finally { composerDrafts.set(key, ""); saved.restore(); }
+  } finally { composerDrafts.set(key, "", "replace"); saved.restore(); }
 });
 
 it.each(["pending_uncertain", "pending_not_found"])("a live owner's dismissal the bridge refuses with %s hides the copy until the bridge lists that record again", async (code) => {
@@ -529,7 +529,7 @@ it("puts an edited agent-only message back in the box agent-only", async () => {
     expect(composerDrafts.read(key).text).toBe("> q\nc");
     expect(composerDrafts.isAgentOnly(key)).toBe(true);
   } finally {
-    composerDrafts.set(key, "");
+    composerDrafts.set(key, "", "replace");
     pendingMessages.removeCopy(owner, "srv-only");
     saved.restore();
   }

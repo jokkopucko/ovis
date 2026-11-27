@@ -34,12 +34,12 @@ beforeEach(() => {
   spyOn(usageModule, "useUsage").mockReturnValue({ report: null } as ReturnType<typeof usageModule.useUsage>);
   spyOn(facesModule, "useFacesArrived").mockReturnValue(0);
   spyOn(voiceModule, "useDictation").mockReturnValue({ shown: false, voice: { state: "idle" }, forget() {} } as unknown as ReturnType<typeof voiceModule.useDictation>);
-  composerDrafts.set(draftKey, "");
+  composerDrafts.set(draftKey, "", "replace");
 });
 
 afterEach(async () => {
   await page.close();
-  composerDrafts.set(draftKey, "");
+  composerDrafts.set(draftKey, "", "replace");
   replyComments.clear(commentsKey);
   mock.restore();
   for (const [key, descriptor] of saved) {
@@ -54,7 +54,7 @@ async function resendRestored(restored: string): Promise<unknown[]> {
   const props: ComposerProps = { paneId: pane, agent: "claude", agentStatus: "idle", connected: true, autoFocus: false, onSend: (...args) => { calls.push(args); return true; }, onAbort() {}, onUploadImage: async () => "" };
   await page.render(<Composer {...props} restored={restored} />);
   expect(composerDrafts.read(draftKey).text).toBe(restored);
-  await act(async () => { composerDrafts.set(draftKey, `${restored} please`); });
+  await act(async () => { composerDrafts.set(draftKey, `${restored} please`, "replace"); });
   await page.render(<Composer {...props} agent={null} restored={null} />);
   await act(async () => { page.one('[aria-label="Send message"]').click(); });
   return calls.map((call) => call[3]);
@@ -76,7 +76,7 @@ it.each([
 ] as const)("%s in the box sends now only for Ctrl", async (_name, keys, expected) => {
   const calls: unknown[][] = [];
   const props: ComposerProps = { paneId: pane, agent: "claude", agentStatus: "working", connected: true, autoFocus: false, onSend: (...args) => { calls.push(args); return true; }, onAbort() {}, onUploadImage: async () => "" };
-  composerDrafts.set(draftKey, "steer this");
+  composerDrafts.set(draftKey, "steer this", "replace");
   await page.render(<Composer {...props} />);
   await keyDown(keys);
   expect(calls.map((call) => call[4])).toEqual([...expected]);
@@ -101,7 +101,7 @@ async function pressIn(keys: Parameters<typeof keyDown>[0], agentStatus: "workin
   if (layout !== "desktop") Object.defineProperty(page.window, "matchMedia", { configurable: true, value: (query: string) => ({ matches: layout === "phone" || query.includes("max-width"), addEventListener() {}, removeEventListener() {} }) });
   spyOn(settingsModule, "useSettings").mockImplementation(() => ({ settings: { ...settingsModule.DEFAULT_SETTINGS, showUsage: false, enterSends }, resolvedLanguage: "en" }) as ReturnType<typeof settingsModule.useSettings>);
   const props: ComposerProps = { paneId: pane, agent: "claude", agentStatus, connected: true, autoFocus: false, onSend: (...args) => { calls.push(args); return true; }, onAbort() {}, onUploadImage: async () => "" };
-  composerDrafts.set(draftKey, "keep this for later");
+  composerDrafts.set(draftKey, "keep this for later", "replace");
   await page.render(<Composer {...props} />);
   prevented = await keyDown(keys);
   return calls.map((call) => [call[4], call[5]]);
@@ -160,7 +160,7 @@ async function pressInMenu(keys: Parameters<typeof keyDown>[0], enterSends: bool
   spyOn(settingsModule, "useSettings").mockImplementation(() => ({ settings: { ...settingsModule.DEFAULT_SETTINGS, showUsage: false, enterSends }, resolvedLanguage: "en" }) as ReturnType<typeof settingsModule.useSettings>);
   spyOn(commandsModule, "usePaneCommands").mockReturnValue([{ name: "review", description: "Review the changes", source: "user" }]);
   const props: ComposerProps = { paneId: pane, agent: "claude", agentStatus: "working", connected: true, autoFocus: false, onSend: () => { sends += 1; return true; }, onAbort() {}, onUploadImage: async () => "" };
-  composerDrafts.set(draftKey, "/rev");
+  composerDrafts.set(draftKey, "/rev", "replace");
   await page.render(<Composer {...props} />);
   expect(page.container.querySelectorAll('[role="listbox"]').length).toBeGreaterThan(0);
   prevented = await keyDown(keys, key);
@@ -192,7 +192,7 @@ it("keeps the draft and says why when a hold is refused", async () => {
   const calls: unknown[][] = [];
   const refusal = "Update this PC to hold messages. Your draft stayed here.";
   const props: ComposerProps = { paneId: pane, agent: "claude", agentStatus: "working", connected: true, autoFocus: false, onSend: (...args) => { calls.push(args); return refusal; }, onAbort() {}, onUploadImage: async () => "" };
-  composerDrafts.set(draftKey, "keep this for later");
+  composerDrafts.set(draftKey, "keep this for later", "replace");
   await page.render(<Composer {...props} />);
   await keyDown({ altKey: true });
   expect(calls.map((call) => [call[4], call[5]])).toEqual([[false, true]]);

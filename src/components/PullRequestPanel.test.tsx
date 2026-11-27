@@ -31,12 +31,12 @@ beforeEach(() => {
   spyOn(paneLifetimes.paneStorage, "getItem").mockImplementation((key) => data.get(key) ?? null);
   spyOn(paneLifetimes.paneStorage, "setItem").mockImplementation((key, value) => { data.set(key, value); });
   spyOn(paneLifetimes.paneStorage, "removeItem").mockImplementation((key) => { data.delete(key); });
-  composerDrafts.set(draftKey, "");
+  composerDrafts.set(draftKey, "", "replace");
 });
 
 afterEach(async () => {
   await page.close();
-  composerDrafts.set(draftKey, "");
+  composerDrafts.set(draftKey, "", "replace");
   jest.restoreAllMocks();
 });
 
@@ -57,7 +57,7 @@ const buttonNamed = (name: string) => buttons().filter((button) => [...button.ch
 
 test("puts a failing check's name and the end of its log into the pane's draft, and sends nothing", async () => {
   const requests = serve(VIEW);
-  composerDrafts.set(draftKey, "my own words");
+  composerDrafts.set(draftKey, "my own words", "replace");
   await page.render(panel());
   const send = buttonNamed("Send to agent");
   expect(send).toHaveLength(1);

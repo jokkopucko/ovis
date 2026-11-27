@@ -66,12 +66,12 @@ beforeEach(() => {
   spyOn(usageModule, "useUsage").mockReturnValue({ report: null } as ReturnType<typeof usageModule.useUsage>);
   spyOn(facesModule, "useFacesArrived").mockReturnValue(0);
   spyOn(voiceModule, "useDictation").mockReturnValue({ shown: false, voice: { state: "idle" }, forget() {} } as unknown as ReturnType<typeof voiceModule.useDictation>);
-  composerDrafts.set(draftKey, "");
+  composerDrafts.set(draftKey, "", "replace");
 });
 
 afterEach(async () => {
   await page.close();
-  composerDrafts.set(draftKey, "");
+  composerDrafts.set(draftKey, "", "replace");
   mock.restore();
   for (const [key, descriptor] of saved) {
     if (descriptor) Object.defineProperty(globalThis, key, descriptor);
@@ -82,7 +82,7 @@ afterEach(async () => {
 
 async function tabWith(draft: string, onSend: (message: string) => ReturnType<ComposerProps["onSend"]> = () => true): Promise<{ sent: string[]; press: () => Promise<void>; disconnect: () => Promise<void>; reconnect: () => Promise<void>; quickReply: () => Promise<string>; unmount: () => Promise<void> }> {
   const sent: string[] = [];
-  composerDrafts.set(draftKey, draft);
+  composerDrafts.set(draftKey, draft, "replace");
   const props: ComposerProps = { paneId: pane, agent: "claude", agentStatus: "idle", connected: true, autoFocus: false, onSend: (message) => { sent.push(message); return onSend(message); }, onAbort() {}, onUploadImage: async () => "" };
   await page.render(<Composer {...props} />);
   return {

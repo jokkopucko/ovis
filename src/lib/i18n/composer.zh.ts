@@ -68,6 +68,7 @@ export const COMPOSER_ZH: Record<string, string> = {
   "Uploading": "正在上传",
   "No room": "放不下",
   "Attached": "已附加",
+  "{name} detached from the message": "已将 {name} 从消息中移除",
   "Remove {file}": "移除 {file}",
   "Message": "消息",
   "Attach": "附加",

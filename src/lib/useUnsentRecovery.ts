@@ -25,7 +25,9 @@ export function useUnsentRecovery({ selectedMachineId, selectedPaneId, setView, 
     const { machineId, pane } = unsentFor;
     const key = `ovis:composer-draft:${paneStorageId(machineId, pane.pane_id)}`;
     if (agentOnly || holdsQuoteLine(text)) composerDrafts.markAgentOnly(key);
-    composerDrafts.set(key, (current) => current.trim() === "" ? text : `${current}\n\n${text}`);
+    // after the draft, or into an empty one; one of blank lines alone is replaced
+    const current = composerDrafts.read(key).text;
+    composerDrafts.set(key, current.trim() === "" ? text : `${current}\n\n${text}`, current === "" || current.trim() !== "" ? "append" : "replace");
     if (machineId === selectedMachineId && pane.pane_id === selectedPaneId) setView("chat", null);
     else pickView(machineId, pane.pane_id, "chat", null);
     return paneLifetimes.stored(machineId) && !composerDrafts.isUnsaved(key);

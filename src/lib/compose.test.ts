@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import { skillSyntax } from "../../shared/skill-syntax.ts";
 import { AGENT_INPUT_DRAFT_MESSAGE, CLAUDE_FOLDED_DRAFT_MESSAGE, GROK_SEND_UNCONFIRMED_MESSAGE } from "../../shared/submit-outcome.ts";
-import { agentDisplayLabel, claudeMainAtRest, composerDelivery, composerMessage, composerSendShown, composerPayload, composerModelDraw, composerStatusCompact, composerStatusHint, composerStatusWord, COMPOSER_STATUS_COMPACT_BELOW, contextLeftPercent, formatTokens, imageMention, insertLeadingMention, insertNote, MAX_COMPOSER_CHARS, QUEUE_READY_STATUS, rankSlashCommands, submitNote, submitNotTyped, submitRefusal, sameMessage, pendingActionUncertain, draftSendNote, endsWithTurn, stoppedTurn } from "./compose.ts";
+import { agentDisplayLabel, claudeMainAtRest, composerDelivery, composerMessage, composerSendShown, composerPayload, composerModelDraw, composerStatusCompact, composerStatusHint, composerStatusWord, COMPOSER_STATUS_COMPACT_BELOW, contextLeftPercent, editBetween, followPlace, formatTokens, imageMention, insertMentionAt, insertNote, placedMention, removeMention, followMention, mentionWhole, MAX_COMPOSER_CHARS, QUEUE_READY_STATUS, rankSlashCommands, submitNote, submitNotTyped, submitRefusal, sameMessage, pendingActionUncertain, draftSendNote, endsWithTurn, stoppedTurn } from "./compose.ts";
 import { briefDescription, COMMAND_GROUPS, commandGroup, commandsForTrigger, namesHiddenCommand, sendsBarePick, slashCommandReplacement, terminalCommand, typedTerminalCommand } from "./compose.ts";
 import type { ConversationTurn, SlashCommand } from "../../shared/protocol.ts";
 import { activeTrigger, applyCompletion, type ActiveTrigger } from "./mentions.ts";
@@ -342,33 +342,137 @@ describe("imageMention", () => {
   });
 });
 
-describe("insertLeadingMention", () => {
-  const first = imageMention("/tmp/1.png");
-  const second = imageMention("/tmp/2.png");
+describe("insertMentionAt (#3216)", () => {
+  const mention = imageMention("/tmp/1.png");
 
-  it("puts an attachment's mention at the start, whatever is being typed further on", () => {
-    expect(insertLeadingMention("", first, [])).toEqual({ text: "@/tmp/1.png ", at: 0, length: 12 });
-    expect(insertLeadingMention("look at this", first, [])).toEqual({ text: "@/tmp/1.png look at this", at: 0, length: 12 });
+  it("goes where the paste was made, with one space on each side", () => {
+    expect(insertMentionAt("before after", mention, 7)).toEqual({ text: "before @/tmp/1.png after", at: 7, length: 12 });
+    expect(insertMentionAt("before after", mention, 6)).toEqual({ text: "before @/tmp/1.png after", at: 6, length: 12 });
+    expect(insertMentionAt("before after", mention, 12)).toEqual({ text: "before after @/tmp/1.png ", at: 12, length: 13 });
+    expect(insertMentionAt("", mention, 0)).toEqual({ text: "@/tmp/1.png ", at: 0, length: 12 });
   });
 
-  it("keeps a leading slash command first", () => {
-    expect(insertLeadingMention("/review the menu", first, [])).toEqual({ text: "/review @/tmp/1.png the menu", at: 8, length: 12 });
-    expect(insertLeadingMention("/review", first, [])).toEqual({ text: "/review @/tmp/1.png ", at: 7, length: 13 });
+  it("never goes inside a character", () => {
+    expect(insertMentionAt("\u{1F603}b", mention, 1).text).toBe("@/tmp/1.png \u{1F603}b");
+    expect(insertMentionAt("ae\u0301y", mention, 2).text).toBe("a @/tmp/1.png e\u0301y");
   });
 
-  it("goes after the mentions of files picked before it, so a batch reads in pick order however its uploads finish", () => {
-    expect(insertLeadingMention(`${first}notes`, second, [first])).toEqual({ text: `${first}${second}notes`, at: 12, length: 12 });
-    expect(insertLeadingMention(`${second}notes`, first, [])).toEqual({ text: `${first}${second}notes`, at: 0, length: 12 });
-    expect(insertLeadingMention("notes", second, [first])).toEqual({ text: `${second}notes`, at: 0, length: 12 });
+  it("keeps a leading slash command whole and first", () => {
+    expect(insertMentionAt("/review the menu", mention, 3)).toEqual({ text: "/review @/tmp/1.png the menu", at: 7, length: 12 });
+    expect(insertMentionAt("/review", mention, 0)).toEqual({ text: "/review @/tmp/1.png ", at: 7, length: 13 });
   });
 
   it("goes in whole or not at all: a cut path would name a file that does not exist", () => {
     const full = "x".repeat(MAX_COMPOSER_CHARS - 2);
-    expect(insertLeadingMention(full, first, [])).toEqual({ text: full, at: 0, length: 0, missing: 10 });
-    const room = "x".repeat(MAX_COMPOSER_CHARS - first.length);
-    expect(insertLeadingMention(room, first, [])).toEqual({ text: `${first}${room}`, at: 0, length: first.length });
-    const command = `/review${"x".repeat(MAX_COMPOSER_CHARS - 7 - first.length)}`;
-    expect(insertLeadingMention(command, first, [])).toEqual({ text: command, at: command.length, length: 0, missing: 1 });
+    expect(insertMentionAt(full, mention, 4)).toEqual({ text: full, at: 4, length: 0, missing: 11 });
+    const room = "x".repeat(MAX_COMPOSER_CHARS - mention.length);
+    expect(insertMentionAt(room, mention, 0)).toEqual({ text: `${mention}${room}`, at: 0, length: mention.length });
+  });
+});
+
+describe("followPlace (#3216)", () => {
+  it("stays before text typed at it and moves with text typed or removed before it", () => {
+    expect(followPlace(7, { start: 12, removed: 0, inserted: 5 }, "before after more")).toBe(7);
+    expect(followPlace(7, { start: 7, removed: 0, inserted: 1 }, "before xafter")).toBe(7);
+    expect(followPlace(7, { start: 0, removed: 0, inserted: 3 }, "so before after")).toBe(10);
+    expect(followPlace(7, { start: 5, removed: 1, inserted: 0 }, "befor after")).toBe(6);
+  });
+
+  it("goes to the start of a word typed on straight from it, never into it", () => {
+    // "scree|" pasted at, then "n" typed: the path goes before the word, not inside "screen"
+    expect(followPlace(5, { start: 5, removed: 0, inserted: 1 }, "screen")).toBe(0);
+    expect(followPlace(12, { start: 12, removed: 0, inserted: 1 }, "look at this,")).toBe(8);
+    // after a space, the typed word goes after the place
+    expect(followPlace(8, { start: 8, removed: 0, inserted: 1 }, "look at nthis")).toBe(8);
+  });
+
+  it("goes to where an edit across it began, also when it ends where text was typed over", () => {
+    expect(followPlace(7, { start: 3, removed: 6, inserted: 0 }, "befter")).toBe(3);
+    // "this" (4..8) typed over by "t": the place after it goes before the new word
+    expect(followPlace(8, { start: 4, removed: 4, inserted: 1 }, "fix t bug")).toBe(4);
+    // only removed before it: it moves back with the text
+    expect(followPlace(8, { start: 4, removed: 4, inserted: 0 }, "fix  bug")).toBe(4);
+    expect(followPlace(12, { start: 0, removed: 13, inserted: 1 }, "n")).toBe(0);
+  });
+});
+
+describe("removeMention (#3216)", () => {
+  const mention = imageMention("/tmp/1.png");
+  const removed = (text: string, place: number) => {
+    const next = insertMentionAt(text, mention, place);
+    return removeMention(next.text, placedMention(next, mention)).text;
+  };
+
+  it("takes out the path where it was put, with the spaces the upload added", () => {
+    expect(removed("before after", 7)).toBe("before after");
+    expect(removed("ab", 1)).toBe("ab");
+    expect(removed("before\nafter", 6)).toBe("before\nafter");
+    expect(removed("before\tafter", 6)).toBe("before\tafter");
+  });
+
+  it("keeps a space the user typed before the mention, and a copy of the path the user typed elsewhere", () => {
+    expect(removed("before \nafter", 7)).toBe("before \nafter");
+    expect(removed("see @/tmp/1.png x", 17)).toBe("see @/tmp/1.png x");
+  });
+
+  it("keeps one space when taking both of its own would glue another placed path to a word", () => {
+    const second = imageMention("/tmp/2.png");
+    const first = insertMentionAt("see", mention, 3);
+    const both = insertMentionAt(first.text, second, first.text.length);
+    expect(both.text).toBe("see @/tmp/1.png @/tmp/2.png ");
+    const kept = placedMention(both, second);
+    expect(removeMention(both.text, placedMention(first, mention), [kept]).text).toBe("see @/tmp/2.png ");
+    // with no other path beside it, the word split by the paste comes back as it was
+    expect(removeMention(first.text, placedMention(first, mention), [kept]).text).toBe("see");
+  });
+});
+
+describe("followMention (#3216)", () => {
+  const mention = imageMention("/tmp/1.png");
+  const next = insertMentionAt("look at this", mention, 8);
+  const placed = placedMention(next, mention);
+
+  it("moves with text typed before it, stays for text typed after it, and stays whole", () => {
+    const moved = followMention(placed, { start: 0, removed: 0, inserted: 3 })!;
+    expect(moved.start).toBe(placed.start + 3);
+    expect(mentionWhole(`so ${next.text}`, moved)).toBe(true);
+    expect(followMention(placed, { start: next.text.length, removed: 0, inserted: 3 })).toEqual(placed);
+  });
+
+  it("keeps what is left of it once an edit takes a character of it, and is whole again once it is put back", () => {
+    const cut = followMention(placed, { start: placed.start + 3, removed: 1, inserted: 0 })!;
+    const damaged = next.text.slice(0, placed.start + 3) + next.text.slice(placed.start + 4);
+    expect([cut.end - cut.start, mentionWhole(damaged, cut)]).toEqual([placed.bare.length - 1, false]);
+    const undone = followMention(cut, { start: placed.start + 3, removed: 0, inserted: 1 })!;
+    expect(mentionWhole(next.text, undone)).toBe(true);
+  });
+
+  it("is gone once an edit takes all of it, and is not whole with a character glued to it", () => {
+    expect(followMention(placed, { start: 0, removed: next.text.length, inserted: 3 })).toBeNull();
+    const glued = next.text.slice(0, placed.end) + "x" + next.text.slice(placed.end);
+    expect(mentionWhole(glued, followMention(placed, { start: placed.end, removed: 0, inserted: 1 })!)).toBe(false);
+  });
+});
+
+describe("editBetween (#3216)", () => {
+  it("reads the edit from the selection it replaced and the caret it left", () => {
+    // select all and type: the edit is the whole text, though the new one begins with the old one's letter
+    expect(editBetween("please look", "p", { caret: 1, selected: { start: 0, end: 11 } })).toEqual({ start: 0, removed: 11, inserted: 1 });
+    // typed at the start of repeated words: the caret says which copy grew
+    expect(editBetween("go go now", "go go go now", { caret: 3, selected: { start: 0, end: 0 } })).toEqual({ start: 0, removed: 0, inserted: 3 });
+    expect(editBetween("before after", "befor after", { caret: 5, selected: { start: 6, end: 6 } })).toEqual({ start: 5, removed: 1, inserted: 0 });
+  });
+
+  it("compares the texts around the caret where the selection does not describe the edit", () => {
+    expect(editBetween("go go now", "go go go now", { caret: 3, selected: { start: 6, end: 6 } })).toEqual({ start: 0, removed: 0, inserted: 3 });
+    expect(editBetween("before \u314Eafter", "before \uD558after", { caret: 8 })).toEqual({ start: 7, removed: 1, inserted: 1 });
+  });
+
+  it("never begins inside a character or a word", () => {
+    expect(editBetween("\u{1F600}a", "\u{1F603}", { caret: 2 })).toEqual({ start: 0, removed: 3, inserted: 2 });
+    expect(editBetween("x ae\u0301x", "x ae\u0300y", { caret: 6 })).toEqual({ start: 2, removed: 4, inserted: 4 });
+    // an autocorrect: the word, not its first letter on
+    expect(editBetween("fix teh bug", "fix the bug", { caret: 7 })).toEqual({ start: 4, removed: 3, inserted: 3 });
   });
 });
 

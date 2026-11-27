@@ -68,6 +68,7 @@ export const COMPOSER_KO: Record<string, string> = {
   "Uploading": "올리는 중",
   "No room": "공간 없음",
   "Attached": "첨부됨",
+  "{name} detached from the message": "{name}을(를) 메시지에서 뗐습니다",
   "Remove {file}": "{file} 제거",
   "Message": "메시지",
   "Attach": "첨부",

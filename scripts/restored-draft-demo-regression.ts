@@ -199,6 +199,10 @@ try {
         await feed(page, null, null);
         await boxValue(page, "@/tmp/notes.txt ");
         console.log("PASS a path that waited on a restored /command goes in once the fill is cleared");
+        // done with the file: Remove takes it and its path out (clearing the box would only detach it
+        // from the message, #3216)
+        await page.getByRole("button", { name: "Remove notes.txt", exact: true }).click();
+        await boxValue(page, "");
 
         await composer.fill("");
         const served = await page.evaluate(() => (window as unknown as { extraServed: number }).extraServed);

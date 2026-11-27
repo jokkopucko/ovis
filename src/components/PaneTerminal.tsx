@@ -1107,7 +1107,7 @@ export function PaneTerminal({
               const key = `ovis:composer-draft:${paneStorageId(machineId, paneId)}`;
               const next = appendQuote(composerDrafts.read(key).text, block, MAX_COMPOSER_CHARS);
               if (next === null) { noteClipboard(t("Too long for the message draft")); return; }
-              composerDrafts.set(key, next);
+              composerDrafts.set(key, next, "append");
               termRef.current?.clearSelection();
               noteClipboard(t("Added to the message draft"));
             }}>

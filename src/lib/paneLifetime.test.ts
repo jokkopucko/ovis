@@ -525,12 +525,12 @@ describe("pane state per herdr lifetime", () => {
     const drafts = new ComposerDraftStore(() => lifetimes.paneStorage, undefined, () => lifetimes.generation("local"));
     lifetimes.onRetire((machineId) => drafts.forget(machineId, lifetimes));
     lifetimes.observe([pc("local", "herdr-a")], title);
-    drafts.set(DRAFT, "deploy");
+    drafts.set(DRAFT, "deploy", "replace");
     expect(drafts.begin(DRAFT, "deploy")).toBe(true);
     const send = drafts.sendOf(DRAFT);
     lifetimes.observe([pc("local", "herdr-b")], title);
     expect(drafts.read(DRAFT).sending).toBe(false);
-    drafts.set(DRAFT, "deploy new target");
+    drafts.set(DRAFT, "deploy new target", "replace");
     expect(drafts.begin(DRAFT, "deploy new target")).toBe(true);
     const next = drafts.sendOf(DRAFT);
     expect(drafts.settle(DRAFT, "deploy", send)).toBeNull();
@@ -549,7 +549,7 @@ describe("pane state per herdr lifetime", () => {
     lifetimes.observe([pc("local", "herdr-a")], title);
     storage.setItem("ovis:terminal-line:w1:p1", "make release");
     storage.refuse = DRAFT;
-    drafts.set(DRAFT, "an edit storage refused");
+    drafts.set(DRAFT, "an edit storage refused", "replace");
     storage.refuse = "ovis:unsent:";
     lifetimes.observe([pc("local", "herdr-b")], title);
     expect(storage.getItem("ovis:terminal-line:w1:p1")).toBeNull();
@@ -659,7 +659,7 @@ describe("pane state per herdr lifetime", () => {
     const drafts = new ComposerDraftStore(() => lifetimes.paneStorage);
     lifetimes.onRetire((machineId) => drafts.forget(machineId, lifetimes));
     lifetimes.observe([pc("local", "herdr-a")], title);
-    drafts.set(DRAFT, "half a sentence");
+    drafts.set(DRAFT, "half a sentence", "replace");
     expect(drafts.read(DRAFT).text).toBe("half a sentence");
     lifetimes.observe([pc("local", "herdr-b")], title);
     expect(drafts.read(DRAFT).text).toBe("");

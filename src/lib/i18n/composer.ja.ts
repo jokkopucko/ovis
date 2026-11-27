@@ -68,6 +68,7 @@ export const COMPOSER_JA: Record<string, string> = {
   "Uploading": "アップロード中",
   "No room": "入りきりません",
   "Attached": "添付済み",
+  "{name} detached from the message": "{name} をメッセージから外しました",
   "Remove {file}": "{file} を削除",
   "Message": "メッセージ",
   "Attach": "添付",

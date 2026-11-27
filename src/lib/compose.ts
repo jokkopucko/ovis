@@ -180,29 +180,161 @@ export function imageMention(path: string): string {
   return `@${path} `;
 }
 
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+/** `index`, or the start of the character it falls inside: an emoji's two halves, or a letter and its accent, stay together */
+function characterStart(text: string, index: number): number {
+  if (index >= text.length) return index;
+  let start = 0;
+  // Segments.containing is off by one after a combining mark in JavaScriptCore: the boundaries are walked instead
+  for (const segment of graphemes.segment(text)) {
+    if (segment.index > index) break;
+    start = segment.index;
+  }
+  return start;
+}
+
+/** One edit of the message: `removed` characters at `start` gave way to `inserted` ones */
+export interface TextEdit { readonly start: number; readonly removed: number; readonly inserted: number }
+
 /**
- * Where an attached file's mention goes: at the start of the message, after a leading `/command`
- * (it must stay first to be one), and after the mentions of files picked before it in the same
- * batch that are still there, so a batch reads in pick order however its uploads finish. The mention goes in
- * whole, with its separating space, or not at all (`length` 0): a cut `@path` would name a file
- * that does not exist, so the caller keeps the attachment waiting until there is room; `missing`
- * says how many characters the message is short of it.
+ * The edit that turned `before` into `after` (#3216), as the box made it: the selection it replaced
+ * (`selected`, read before the edit) and the caret it left. When those do not describe it (an IME,
+ * an autocorrect, undo, a write with no selection), the texts are compared around the caret, and
+ * the edit begins at the start of a word.
  */
-export function insertLeadingMention(
+export function editBetween(
+  before: string,
+  after: string,
+  { caret, selected }: { caret: number; selected?: { start: number; end: number } },
+): TextEdit {
+  const grown = after.length - before.length;
+  const matches = (start: number, removed: number): boolean => {
+    const inserted = removed + grown;
+    return start >= 0 && inserted >= 0 && start + removed <= before.length && caret === start + inserted
+      && before.slice(0, start) === after.slice(0, start) && before.slice(start + removed) === after.slice(start + inserted);
+  };
+  if (selected) {
+    // typed or pasted over a selection, or at a caret; a deletion at a caret ends where the caret is left
+    const start = selected.start < selected.end || grown >= 0 ? selected.start : caret;
+    const removed = selected.start < selected.end ? selected.end - selected.start : Math.max(0, -grown);
+    if (matches(start, removed)) return { start, removed, inserted: removed + grown };
+  }
+  let suffix = 0;
+  while (suffix < Math.min(before.length, after.length - caret) && before[before.length - 1 - suffix] === after[after.length - 1 - suffix]) suffix++;
+  let prefix = 0;
+  while (prefix < Math.min(before.length, after.length) - suffix && before[prefix] === after[prefix]) prefix++;
+  let start = Math.min(characterStart(before, prefix), characterStart(after, prefix));
+  // a guessed edit takes whole words: a place it crosses goes before the word, never into it
+  while (start > 0 && /\S/u.test(before[start - 1]!)) start--;
+  return { start, removed: before.length - suffix - start, inserted: after.length - suffix - start };
+}
+
+/**
+ * Where a place moves with an edit that gave `text` (#3216): text added at it goes after it, text
+ * added or removed before it moves it, and an edit across it leaves it where the edit began. A place
+ * at the end of text that was typed over is one the edit crossed: it goes before the new text, never
+ * into it. A word typed on straight from the place (glued to the word before it) takes it to the
+ * start of that word: the path never splits the word being typed.
+ */
+export function followPlace(at: number, edit: TextEdit, text: string): number {
+  if (at < edit.start) return at;
+  if (at === edit.start) {
+    if (edit.removed > 0 || edit.inserted === 0 || !/\S/u.test(text[at] ?? " ") || !/\S/u.test(text[at - 1] ?? " ")) return at;
+    let start = at;
+    while (start > 0 && /\S/u.test(text[start - 1]!)) start--;
+    return start;
+  }
+  const end = edit.start + edit.removed;
+  if (at > end || (at === end && (edit.removed === 0 || edit.inserted === 0))) return at + edit.inserted - edit.removed;
+  return edit.start;
+}
+
+/**
+ * A pasted, picked or dropped file's mention at the place the paste, pick or drop was made (#3216),
+ * after a leading `/command` (it must stay first to be one) and never inside a character, with a
+ * space on each side and no doubled one. An upload finishes while the user may be typing: the
+ * caller shifts the caret and selection at or after `at` by `length`. The mention goes in whole or
+ * not at all (`length` 0): a cut `@path` would name a file that does not exist, so the caller keeps
+ * the attachment waiting until there is room; `missing` says how far short the message is of it.
+ */
+export function insertMentionAt(
   text: string,
   mention: string,
-  earlier: readonly string[],
+  place: number,
 ): { text: string; at: number; length: number; missing?: number } {
-  let at = /^\/\S+\s*/u.exec(text)?.[0].length ?? 0;
-  for (const previous of earlier) {
-    const found = text.indexOf(previous);
-    if (found >= 0) at = Math.max(at, found + previous.length);
-  }
+  const at = mentionPlace(text, place);
   const before = text.slice(0, at);
-  const snippet = before.length > 0 && !/\s$/u.test(before) ? ` ${mention}` : mention;
+  const after = text.slice(at);
+  const body = /^\s/u.test(after) ? mention.trimEnd() : mention;
+  const snippet = before.length > 0 && !/\s$/u.test(before) ? ` ${body}` : body;
   const missing = text.length + snippet.length - MAX_COMPOSER_CHARS;
   if (missing > 0) return { text, at, length: 0, missing };
-  return { text: before + snippet + text.slice(at), at, length: snippet.length };
+  return { text: before + snippet + after, at, length: snippet.length };
+}
+
+/** Where insertMentionAt puts a mention meant for `place`: after a leading `/command`, within the text, and never inside a character */
+export function mentionPlace(text: string, place: number): number {
+  return characterStart(text, Math.min(Math.max(place, /^\/\S+/u.exec(text)?.[0].length ?? 0), text.length));
+}
+
+/**
+ * A path an upload put in the message (#3216): what is left of it is `start`..`end` (its whole
+ * `@path`, `bare`, until an edit damages it), and whether the upload added the space before it
+ * (`lead`) and after it (`trail`).
+ */
+export interface PlacedMention { readonly start: number; readonly end: number; readonly bare: string; readonly lead: boolean; readonly trail: boolean }
+
+/** The path insertMentionAt put in: `next` is what it returned. */
+export function placedMention(next: { text: string; at: number; length: number }, mention: string): PlacedMention {
+  const snippet = next.text.slice(next.at, next.at + next.length);
+  const lead = snippet.startsWith(" ");
+  const bare = mention.trimEnd();
+  const start = next.at + (lead ? 1 : 0);
+  return { start, end: start + bare.length, bare, lead, trail: snippet.endsWith(" ") };
+}
+
+/**
+ * What is left of a placed path after an edit, or null once the edit took all of it. An edit inside
+ * it keeps what it typed there with it; one across an end keeps only the path's own side.
+ */
+export function followMention(mention: PlacedMention, edit: TextEdit): PlacedMention | null {
+  if (!edit.inserted && !edit.removed) return mention;
+  const editEnd = edit.start + edit.removed;
+  const shift = edit.inserted - edit.removed;
+  let { start, end } = mention;
+  if (editEnd <= start) { start += shift; end += shift; }
+  else if (edit.start >= end) { /* after it: it stays */ }
+  else if (edit.start <= start && editEnd >= end) return null;
+  else if (edit.start < start) { start = edit.start + edit.inserted; end += shift; }
+  else if (editEnd > end) end = edit.start;
+  else end += shift;
+  if (end <= start) return null;
+  // Removing its separator, or typing between the separator and the path, ends ownership.
+  const trail = mention.trail && edit.start !== mention.end;
+  const lead = mention.lead && editEnd !== mention.start;
+  return { ...mention, start, end, lead, trail };
+}
+
+/** Whether the placed path is whole in `text`: all of it, and no character glued to either end. */
+export function mentionWhole(text: string, mention: PlacedMention): boolean {
+  return mention.end - mention.start === mention.bare.length && text.slice(mention.start, mention.end) === mention.bare
+    && !/\S/u.test(text[mention.start - 1] ?? " ") && !/\S/u.test(text[mention.end] ?? " ");
+}
+
+/**
+ * The text without a placed path, whole or what is left of it, and the edit that takes it out: with
+ * the spaces the upload added and none the user typed (a path the user typed elsewhere stays). One
+ * of its spaces stays when taking both would glue one of the `others` placed paths to a word, so
+ * that path stays whole.
+ */
+export function removeMention(text: string, mention: PlacedMention, others: readonly PlacedMention[] = []): { text: string; edit: TextEdit } {
+  let start = mention.lead && text[mention.start - 1] === " " ? mention.start - 1 : mention.start;
+  let stop = mention.trail && text[mention.end] === " " ? mention.end + 1 : mention.end;
+  const glued = /\S/u.test(text[start - 1] ?? " ") && /\S/u.test(text[stop] ?? " ")
+    && others.some((other) => other.start === stop || other.end === start);
+  if (glued && stop > mention.end) stop--;
+  else if (glued && start < mention.start) start++;
+  return { text: text.slice(0, start) + text.slice(stop), edit: { start, removed: stop - start, inserted: 0 } };
 }
 
 /** Ready states affect the held-message hint only; sending always requires a user action. */

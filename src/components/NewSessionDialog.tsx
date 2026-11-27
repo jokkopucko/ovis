@@ -415,7 +415,7 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onPend
       }
       const outcome = firstMessageOutcome(request, result);
       if (outcome.kind === "not_queued") {
-        composerDrafts.set(`ovis:composer-draft:${paneStorageId(machineId, result.pane_id)}`, request.first_message!);
+        composerDrafts.set(`ovis:composer-draft:${paneStorageId(machineId, result.pane_id)}`, request.first_message!, "replace");
         writeNewSessionDraft(draftKey, null);
         setPending(false);
         setError({

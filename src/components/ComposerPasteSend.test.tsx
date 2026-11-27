@@ -38,14 +38,14 @@ beforeEach(() => {
   spyOn(usageModule, "useUsage").mockReturnValue({ report: null } as ReturnType<typeof usageModule.useUsage>);
   spyOn(facesModule, "useFacesArrived").mockReturnValue(0);
   spyOn(voiceModule, "useDictation").mockReturnValue({ shown: false, voice: { state: "idle" }, forget() {} } as unknown as ReturnType<typeof voiceModule.useDictation>);
-  composerDrafts.set(draftKey, "");
-  composerDrafts.set(otherKey, "");
+  composerDrafts.set(draftKey, "", "replace");
+  composerDrafts.set(otherKey, "", "replace");
 });
 
 afterEach(async () => {
   await page.close();
-  composerDrafts.set(draftKey, "");
-  composerDrafts.set(otherKey, "");
+  composerDrafts.set(draftKey, "", "replace");
+  composerDrafts.set(otherKey, "", "replace");
   mock.restore();
   for (const [key, descriptor] of saved) {
     if (descriptor) Object.defineProperty(globalThis, key, descriptor);
@@ -92,7 +92,7 @@ it("keeps the clipboard's text in the box when the send is refused", async () =>
 
 it("is off over a draft, and leaves the draft alone", async () => {
   const sent: unknown[][] = [];
-  composerDrafts.set(draftKey, "my own words");
+  composerDrafts.set(draftKey, "my own words", "replace");
   await page.render(<Composer {...props(sent)} />);
   expect(button()?.disabled).toBe(true);
   await press();
@@ -134,7 +134,7 @@ it.each([
   const base = props(sent);
   await page.render(<Composer {...base} />);
   await press();
-  if (change === null) await act(async () => { composerDrafts.set(draftKey, "typed meanwhile"); });
+  if (change === null) await act(async () => { composerDrafts.set(draftKey, "typed meanwhile", "replace"); });
   else await page.render(change(base));
   await act(async () => { answer("from the clipboard"); });
   expect(sent).toEqual([]);
@@ -142,7 +142,7 @@ it.each([
 });
 
 it.each([
-  ["the box is typed in and cleared", [() => composerDrafts.set(draftKey, "typed"), () => composerDrafts.set(draftKey, "")], ""],
+  ["the box is typed in and cleared", [() => composerDrafts.set(draftKey, "typed", "replace"), () => composerDrafts.set(draftKey, "", "replace")], ""],
   ["another tab stores a draft", [() => paneLifetimes.paneStorage.setItem(draftKey, "another tab's draft")], "another tab's draft"],
 ] as const)("sends nothing when %s while the clipboard is read", async (_name, changes, left) => {
   const sent: unknown[][] = [];

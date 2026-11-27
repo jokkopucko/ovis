@@ -110,7 +110,7 @@ it("keeps a line that holds an API key or token in this page alone, never in sto
 it("carries an older server's unsent draft when the app replaces the page, and nothing of a line that holds a key (#2523)", () => withStorage((data, written) => {
   paneLifetimes.observe([{ id: "older", snapshot: { panes: [] } } as unknown as Machine]);
   const owner = paneStorageId("older", "w1:p1");
-  composerDrafts.set(composerDraftKey(owner), "an ordinary unsent draft");
+  composerDrafts.set(composerDraftKey(owner), "an ordinary unsent draft", "replace");
   writeTerminalDraft(owner, "export OPENAI_API_KEY=" + SK);
   paneLifetimes.carry();
   expect([...data.values()].some((value) => value.includes("an ordinary unsent draft"))).toBe(true);
