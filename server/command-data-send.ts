@@ -100,6 +100,20 @@ export async function sendCommandAsData(pane: HerdrPane, route: CommandDataRoute
 }
 
 /**
+ * The control socket of the OmO process `pane` runs (omo-control.ts), while herdr still reports the pane's terminal and
+ * session as `pane` says them; null otherwise.
+ */
+export async function omoPaneSocket(pane: HerdrPane): Promise<string | null> {
+  const roots = await paneProcessRoots(pane.pane_id, "omo");
+  const agentDir = roots.omo?.agentDir;
+  const socket = roots.pid !== null && agentDir ? omoControlSocket(roots.pid, agentDir) : null;
+  if (socket === null) return null;
+  // a pane herdr cannot name now is no pane to send to: no socket, as if none were found
+  const now = await paneGet(pane.pane_id).catch(() => null);
+  return now !== null && now.terminal_id === pane.terminal_id && JSON.stringify(now.agent_session ?? null) === JSON.stringify(pane.agent_session ?? null) ? socket : null;
+}
+
+/**
  * A plain chat message for a Codex on the server Ovis started for it, as a new turn of the thread the pane shows
  * (Connection.startTurn) rather than typed. Null when nothing reached Codex (no such thread, or not at rest alone):
  * the caller types it. Throws when it went without an answer, so it is not typed again. `clientId` comes back on the
@@ -133,13 +147,9 @@ export function codexDisagrees(pane: Pick<HerdrPane, "agent_session">, threadId:
  * would refuse is typed, so it says why.
  */
 async function omoEffort(pane: HerdrPane, level: string, mayWrite: () => boolean): Promise<DataSent | null> {
-  const roots = await paneProcessRoots(pane.pane_id, "omo");
-  const agentDir = roots.omo?.agentDir;
-  const socket = roots.pid !== null && agentDir ? omoControlSocket(roots.pid, agentDir) : null;
-  if (socket === null || level === "off") return null;
-  // the session the send was made for, as herdr reports it now
-  const now = await paneGet(pane.pane_id);
-  if (now.terminal_id !== pane.terminal_id || JSON.stringify(now.agent_session ?? null) !== JSON.stringify(pane.agent_session ?? null)) return null;
+  if (level === "off") return null;
+  const socket = await omoPaneSocket(pane);
+  if (socket === null) return null;
   // last before the write: the levels the model offers now (OmO clamps an unoffered level rather than refusing it)
   const offered = await omoControlCall(socket, { type: "get_available_thinking_levels" });
   const levels = typeof offered === "object" && typeof offered["data"] === "object" && offered["data"] !== null ? (offered["data"] as { levels?: unknown }).levels : undefined;

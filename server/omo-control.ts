@@ -48,9 +48,9 @@ export function omoControlSocket(pid: number, agentDir: string, proc = "/proc"):
 /**
  * Sends one request on `socket` and reads its answer: `unsent` when nothing reached OmO (no secret, no connection, or
  * `mayWrite`, asked once connected and right before the bytes go, said no), `unknown` when the request went and no
- * answer came in time or the socket closed first.
+ * answer came within `timeoutMs` or the socket closed first.
  */
-export function omoControlCall(socket: string, request: Record<string, unknown>, mayWrite: () => boolean = () => true): Promise<Record<string, unknown> | "unsent" | "unknown"> {
+export function omoControlCall(socket: string, request: Record<string, unknown>, mayWrite: () => boolean = () => true, timeoutMs = CONTROL_MS): Promise<Record<string, unknown> | "unsent" | "unknown"> {
   let secret: Buffer;
   try { secret = readFileSync(`${socket}.secret`); } catch { return Promise.resolve("unsent"); }
   if (secret.length !== SECRET_BYTES) return Promise.resolve("unsent");
@@ -63,7 +63,7 @@ export function omoControlCall(socket: string, request: Record<string, unknown>,
       client.destroy();
       resolve(answer);
     };
-    const timer = setTimeout(() => done(sent ? "unknown" : "unsent"), CONTROL_MS);
+    const timer = setTimeout(() => done(sent ? "unknown" : "unsent"), Math.max(0, timeoutMs));
     const client = connect(socket, () => {
       if (!mayWrite()) return done("unsent");
       sent = true;

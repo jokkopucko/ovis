@@ -20,6 +20,8 @@ export interface OmoAskCall {
   id: string;
   wait: boolean;
   args: unknown;
+  /** the tool's name, which says how OmO numbers its questions (omo-questions.ts omoAskOf) */
+  tool?: string;
 }
 
 export type OmoAsks = readonly OmoAskCall[];
@@ -219,7 +221,7 @@ export function omoAsksAfter(open: OmoAsks, entry: Entry): OmoAsks {
   if (message?.role === "assistant") {
     const calls = (Array.isArray(message.content) ? message.content as Record<string, unknown>[] : [])
       .filter((part) => part?.["type"] === "toolCall" && typeof part["id"] === "string" && OMO_ASK_TOOLS.has(part["name"] as string) && part["incomplete"] !== true)
-      .map((part) => ({ id: part["id"] as string, wait: waits(part["arguments"]), args: part["arguments"] }));
+      .map((part) => ({ id: part["id"] as string, wait: waits(part["arguments"]), args: part["arguments"], tool: part["name"] as string }));
     const ids = new Set(calls.map((call) => call.id));
     return calls.length > 0 ? [...open.filter((call) => !ids.has(call.id)), ...calls] : open;
   }
