@@ -9,6 +9,13 @@ with what is installed there (see `shared/protocol.ts`). A version flag gets 5 s
 whose flag is slower (Hermes loads the whole agent for it) sets `detect.version_timeout_ms`, at most
 30 s. The first catalog read waits for every agent's flag, so it can take that long.
 
+Clients send `providers=<comma-separated usage provider IDs>` on `GET /api/agent-catalog`,
+`GET /api/usage` and `GET /api/usage/login` (provider discovery). The server ignores unknown IDs.
+If `providers` is omitted, it assumes the providers clients knew before Devin. Usage and sign-in
+discovery omit providers the client does not know; the catalog keeps the agent but sets its
+`sign_in.provider` to `null`. The same query on `GET /api/usage/login/prompt` limits which providers'
+sign-in prompts the client can read.
+
 A version is read only from what the version flag prints on stdout when it succeeds. A flag that
 exits with an error or does not start is `version_error: "failed"`, and one that hangs is
 `"timeout"`: such an agent is there but does not run (`agentRuns()`), as a wrapper whose target was

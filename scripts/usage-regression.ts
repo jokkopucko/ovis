@@ -40,7 +40,7 @@ const report = (): UsageReport => ({
 
 async function usageContext(browser: Browser, options: BrowserContextOptions): Promise<BrowserContext> {
   const context = await browser.newContext(options);
-  await context.route("**/api/agent-catalog", (route) => route.fulfill({ json: { platform: "linux", agents: [] } }));
+  await context.route((url) => url.pathname === "/api/agent-catalog", (route) => route.fulfill({ json: { platform: "linux", agents: [] } }));
   return context;
 }
 
@@ -111,7 +111,10 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
       mkdirSync(process.env.UI_EVIDENCE_DIR, { recursive: true });
       await page.locator(".sidebar-shell").screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "usage-popover.png") });
     }
-    const refreshed = page.waitForRequest((request) => request.url().endsWith("/api/usage?refresh=1"));
+    const refreshed = page.waitForRequest((request) => {
+      const url = new URL(request.url());
+      return url.pathname === "/api/usage" && url.searchParams.get("refresh") === "1";
+    });
     await popover.getByRole("button", { name: "Refresh", exact: true }).click();
     await refreshed;
     await page.keyboard.press("Escape");
@@ -271,7 +274,7 @@ async function checkRecordedAccounts(browser: Browser, origin: string): Promise<
   const installed = { installed: true, binary: "/usr/bin/claude", on_path: true, version: "2.1.311", version_error: null, meets_min_version: true };
   const claudeCode = catalogRow(AGENT_CATALOG.find((entry) => entry.id === "claude")!, "linux", installed);
   const staged = async (context: BrowserContext, report: () => UsageReport = recordedReport): Promise<void> => {
-    await context.route("**/api/agent-catalog", (route) => route.fulfill({ json: { platform: "linux", agents: [claudeCode] } }));
+    await context.route((url) => url.pathname === "/api/agent-catalog", (route) => route.fulfill({ json: { platform: "linux", agents: [claudeCode] } }));
     await context.route("**/api/usage/statusline", (route) => route.fulfill({ json: { installed: false, supported: true } }));
     await context.route("**/api/usage*", (route) => route.fulfill({ json: report() }));
     await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ showUsage: true })));
@@ -569,7 +572,7 @@ export async function checkUsageSignInAgain(browser: Browser, origin: string): P
       await context.route("**/api/usage*", (route) => route.fulfill({ json: expiredReport() }));
       await context.route("**/api/usage/login?provider=*", (route) => route.fulfill({ json: { accounts: ["me@team.example"] } }));
       await context.route("**/api/usage/login/prompt*", (route) => route.fulfill({ json: { provider: "claude", url: null, user_code: null, wants_code: false, ended: false } }));
-      await context.route("**/api/usage/login", (route) => {
+      await context.route((url) => url.pathname === "/api/usage/login" && !url.searchParams.has("provider"), (route) => {
         if (route.request().method() !== "POST") return route.continue();
         const body = route.request().postDataJSON() as { follow?: boolean };
         posted.push(body);

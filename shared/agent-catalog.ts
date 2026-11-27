@@ -760,7 +760,7 @@ const CATALOG_ENTRIES: readonly AgentCatalogEntry[] = [
     packages: ["brew:devin-cli"],
     sources: [source("https://docs.devin.ai/cli/index"), source("https://docs.devin.ai/cli/reference/commands")],
     detect: { binaries: ["devin"], version_args: ["--version"], install_dirs: { macos: ["~/.local/bin"], linux: ["~/.local/bin"] } },
-    sign_in: { provider: null, command: ["devin", "auth", "login"], in_agent: null, api_keys: [], required: true },
+    sign_in: { provider: "devin", command: ["devin", "auth", "login"], in_agent: null, api_keys: [], required: true },
     after_install: [],
     min_version: null,
   },

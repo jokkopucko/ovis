@@ -2859,7 +2859,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   as the number is not ours, and the age is in the line, as a phone has no tooltip. No code is borrowed.
 - Under the limits, only when the provider reports them: **Usage credits** (Claude's extra usage,
   spent against its monthly cap in the provider's currency, over a bar counted like the limits) or
-  **Credits** (Codex's balance, in whole credits), then **Limit resets** (Codex's: how many are
+  **Credits** (a balance left to spend: Codex's in whole credits, Devin's extra-usage wallet in its
+  currency, which can go negative), then **Limit resets** (Codex's: how many are
   left, and when the soonest expires). Reference: Claude Code's `/usage` (its "Usage credits" row) and
   Codex's `/status` (its "Credits" row), whose own readings these are; no code is borrowed.
 

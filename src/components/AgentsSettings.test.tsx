@@ -16,9 +16,11 @@ async function withAgentsPage({ installed, pathProblem, recheck }: { installed: 
     });
   });
   const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: string | URL | Request) => {
-    switch (String(input)) {
-      case "/api/agent-catalog": return Response.json({ platform: "linux", agents, path_problem: pathProblem });
-      case "/api/agent-catalog?recheck=1": return recheck ? recheck() : new Response(null, { status: 503 });
+    const url = new URL(String(input), "http://localhost");
+    switch (url.pathname) {
+      case "/api/agent-catalog": return url.searchParams.get("recheck") === "1"
+        ? recheck?.() ?? new Response(null, { status: 503 })
+        : Response.json({ platform: "linux", agents, path_problem: pathProblem });
       case "/api/integrations": return Response.json({ integrations: [] });
       case "/api/cliproxy": return Response.json({ configured: false });
       default: throw new Error(`Unexpected request: ${String(input)}`);

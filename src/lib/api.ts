@@ -115,9 +115,12 @@ import { chatReadDeadlineMs, withChatReadDeadline } from "./chatReadDeadline.ts"
 import { movingHerdrFocus } from "./followFocus.ts";
 import { observeWaitingClock, waitingKey } from "./sentWaiting.ts";
 import type { UsageAccountRemoval, UsageLoginAccounts, UsageLoginCode, UsageLoginFollowed, UsageLoginPrompt, UsageLoginProvider, UsageLoginRequest, UsageLoginStarted } from "../../shared/usage-login.ts";
+import { PROVIDER_NAME } from "./usage-provider-names.ts";
+
+const USAGE_PROVIDERS_QUERY = `providers=${Object.keys(PROVIDER_NAME).join(",")}`;
 
 export function fetchUsageLoginProviders(signal: AbortSignal): Promise<{ providers: readonly UsageLoginProvider[] }> {
-  return getJson("/api/usage/login", { signal });
+  return getJson(`/api/usage/login?${USAGE_PROVIDERS_QUERY}`, { signal });
 }
 
 export function fetchUsageLoginAccounts(provider: string, signal: AbortSignal): Promise<UsageLoginAccounts> {
@@ -132,7 +135,7 @@ export function followUsageLogin(request: Extract<UsageLoginRequest, { provider:
 }
 
 export function fetchUsageLoginPrompt(login: string, signal: AbortSignal): Promise<UsageLoginPrompt> {
-  return getJson(`/api/usage/login/prompt?login=${encodeURIComponent(login)}`, { signal, cache: "no-store" });
+  return getJson(`/api/usage/login/prompt?login=${encodeURIComponent(login)}&${USAGE_PROVIDERS_QUERY}`, { signal, cache: "no-store" });
 }
 
 export async function sendUsageLoginCode(request: UsageLoginCode): Promise<void> {
@@ -173,7 +176,7 @@ export async function openTailscaleApp(): Promise<boolean> {
 }
 
 export function fetchUsage(refresh = false): Promise<UsageReport> {
-  return getJson<UsageReport>(refresh ? "/api/usage?refresh=1" : "/api/usage");
+  return getJson<UsageReport>(`/api/usage?${USAGE_PROVIDERS_QUERY}${refresh ? "&refresh=1" : ""}`);
 }
 
 export async function removeUsageAccount(account: string): Promise<void> {
@@ -1215,7 +1218,7 @@ export async function fetchAgentCatalog(machineId = "local", signal?: AbortSigna
   if (signal?.aborted) end();
   else signal?.addEventListener("abort", end, { once: true });
   try {
-    return await getJson<AgentCatalogResponse>(`${machinePath(machineId, "agent-catalog")}${recheck ? "?recheck=1" : ""}`, { signal: bounded.signal, cache: "no-store" });
+    return await getJson<AgentCatalogResponse>(`${machinePath(machineId, "agent-catalog")}?${USAGE_PROVIDERS_QUERY}${recheck ? "&recheck=1" : ""}`, { signal: bounded.signal, cache: "no-store" });
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener("abort", end);

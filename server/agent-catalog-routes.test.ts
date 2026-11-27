@@ -104,6 +104,13 @@ describe("GET /api/agent-catalog", () => {
     const direct = await (await fetch(url("/api/agent-catalog"), { headers: bearer(BROWSER_TOKEN) })).json();
     expect(await response.json()).toEqual(direct);
   });
+
+  it.each([["", null], ["?providers=devin", "devin"]] as const)("only advertises Devin usage to catalog clients that know it (%s)", async (query, provider) => {
+    const response = await fetch(url(`/api/agent-catalog${query}`), { headers: bearer(BROWSER_TOKEN) });
+    expect(response.status).toBe(200);
+    const catalog: AgentCatalogResponse = await response.json();
+    expect(catalog.agents.find(({ id }) => id === "devin")?.sign_in?.provider).toBe(provider);
+  });
 });
 
 it("says why the interactive shell's PATH was not read, and has Check again read it afresh", async () => {
