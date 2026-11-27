@@ -118,7 +118,7 @@ export function dimmedColor(fg: string, bg: string, ratio = 4.5): string {
   return readableColor(mixed, bg, ratio);
 }
 
-export function cellStyle(cell: ScreenCell, theme: RendererTheme, minimumContrast = 4.5): string {
+export function cellStyle(cell: ScreenCell, theme: RendererTheme, minimumContrast = 4.5, decorated = true): string {
   const bold = cell.isBold() !== 0;
   let fgColor = colorOf(cell.isFgDefault(), cell.isFgRGB(), cell.getFgColor());
   let bgColor = colorOf(cell.isBgDefault(), cell.isBgRGB(), cell.getBgColor());
@@ -152,13 +152,22 @@ export function cellStyle(cell: ScreenCell, theme: RendererTheme, minimumContras
   if (bold) style += "font-weight:bold;";
   if (cell.isItalic() !== 0) style += "font-style:italic;";
   const lines = [cell.isUnderline() !== 0 ? "underline" : "", cell.isStrikethrough() !== 0 ? "line-through" : "", cell.isOverline() !== 0 ? "overline" : ""].filter(Boolean);
-  if (lines.length > 0) style += `text-decoration:${lines.join(" ")};`;
+  if (decorated && lines.length > 0) style += `text-decoration:${lines.join(" ")};`;
   return style;
 }
 
 const escapeHtml = (text: string): string => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const isKittyPlaceholder = (text: string): boolean => text.startsWith("\u{10eeee}");
+/** a cell's text as a folded row draws it: a Kitty graphics placeholder is the image layer's, a blank here */
+const drawnText = (cell: ScreenCell): string => {
+  const chars = cell.getChars();
+  return isKittyPlaceholder(chars) ? " " : chars || " ";
+};
 const run = (text: string, style: string): string => !text ? "" : style ? `<span style="${style}">${escapeHtml(text)}</span>` : escapeHtml(text);
-const blank = (cell: ScreenCell): boolean => (cell.getChars() === "" || cell.getChars() === " ") && cell.isBgDefault() && cell.isInverse() === 0;
+const blank = (cell: ScreenCell): boolean => {
+  const ch = cell.getChars();
+  return (ch === "" || ch === " " || isKittyPlaceholder(ch)) && cell.isBgDefault() && cell.isInverse() === 0;
+};
 
 export interface FoldCursor { x: number; shape: "block" | "outline" | "bar" | "underline" | "none" }
 
@@ -196,11 +205,12 @@ export function rowHtml(line: ScreenLine, cols: number, theme: RendererTheme, sc
     const cell = line.getCell(x, scratch);
     if (!cell) break;
     if (cell.getWidth() === 0) continue;
-    const next = cellStyle(cell, theme, minimumContrast);
+    const drawn = drawnText(cell);
+    const next = cellStyle(cell, theme, minimumContrast, !isKittyPlaceholder(cell.getChars()));
     if (cursor !== null && x <= at && at < x + Math.max(1, cell.getWidth())) {
       html += run(text, style);
       const drawnStyle = next + cursorStyle(cursor.shape, theme);
-      html += `<span class="${FOLD_CURSOR_CLASS}"${drawnStyle ? ` style="${drawnStyle}"` : ""}>${escapeHtml(cell.getChars() || " ")}</span>`;
+      html += `<span class="${FOLD_CURSOR_CLASS}"${drawnStyle ? ` style="${drawnStyle}"` : ""}>${escapeHtml(drawn)}</span>`;
       text = "";
       style = next;
       continue;
@@ -210,7 +220,7 @@ export function rowHtml(line: ScreenLine, cols: number, theme: RendererTheme, sc
       text = "";
       style = next;
     }
-    text += cell.getChars() || " ";
+    text += drawn;
   }
   return html + run(text, style);
 }
@@ -238,7 +248,7 @@ export function columnAt(line: ScreenLine, cols: number, offset: number, scratch
     const cell = line.getCell(x, scratch);
     if (!cell) break;
     if (cell.getWidth() === 0) continue;
-    at += (cell.getChars() || " ").length;
+    at += drawnText(cell).length;
     if (offset < at) return x;
   }
   return -1;

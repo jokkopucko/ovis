@@ -12,6 +12,9 @@ const escapeHtml = (s: string): string => s.replace(/[&<>"]/g, (c) => (c === "&"
 
 /** Nerd Font icons and the like, which a font means to fill one cell (terminalGlyphs.ts oversizedIcon) */
 const PRIVATE_USE = /[\ue000-\uf8ff\u{f0000}-\u{ffffd}\u{100000}-\u{10fffd}]/u;
+/** Kitty graphics Unicode placeholder (U+10EEEE + row/col diacritics); drawn by the image layer, not as text */
+const KITTY_PLACEHOLDER = "\u{10eeee}";
+const isKittyPlaceholder = (glyph: string): boolean => glyph.startsWith(KITTY_PLACEHOLDER);
 /** Powerline's separators run from the top of the row to the bottom: made smaller, a prompt's coloured segments would not join, so they are only narrowed */
 const POWERLINE = /^[\ue0b0-\ue0d7]$/u;
 /** Powerline glyphs drawn in their own colour whatever the contrast (xterm's isPowerlineGlyph) */
@@ -242,19 +245,26 @@ export function createRowsRenderer(screen: HTMLElement, vt: GhosttyVt, style: ()
     return `<span style="${(leaves ? box : [...box, ...glyph]).join(";")}">${body}</span>`;
   };
 
+  // a placeholder cell is drawn as a blank cell of its style (inverse and selection included), undecorated: the image
+  // layer paints the placement
+  const placeholderHtml = (run: GhosttyRun, selected: boolean): string =>
+    pieceHtml({ ...run, flags: run.flags & ~(STYLE_UNDERLINE_MASK | STYLE_STRIKE), cells: run.cells.map((cell) => ({ ...cell, text: " " })) }, selected);
+
   const runHtml = (run: GhosttyRun, selected: readonly [number, number] | null): string => {
-    if (!selected) return pieceHtml(run, false);
-    const pieces: { run: GhosttyRun; inside: boolean }[] = [];
+    const hasPlaceholder = run.cells.some((cell) => isKittyPlaceholder(cell.text));
+    if (!selected && !hasPlaceholder) return pieceHtml(run, false);
+    const pieces: { run: GhosttyRun; inside: boolean; placeholder: boolean }[] = [];
     let x = run.x;
     for (const cell of run.cells) {
       // a wide cell is selected by its first column alone, as a copy takes it
-      const inside = x >= selected[0] && x < selected[1];
+      const inside = selected !== null && x >= selected[0] && x < selected[1];
+      const placeholder = isKittyPlaceholder(cell.text);
       const last = pieces.at(-1);
-      if (last?.inside === inside) last.run.cells.push(cell);
-      else pieces.push({ run: { ...run, x, cells: [cell] }, inside });
+      if (last && last.inside === inside && last.placeholder === placeholder) last.run.cells.push(cell);
+      else pieces.push({ run: { ...run, x, cells: [cell] }, inside, placeholder });
       x += cell.wide ? 2 : 1;
     }
-    return pieces.map((piece) => pieceHtml(piece.run, piece.inside)).join("");
+    return pieces.map((piece) => (piece.placeholder ? placeholderHtml(piece.run, piece.inside) : pieceHtml(piece.run, piece.inside))).join("");
   };
 
   const paintRow = (y: number, runs: GhosttyRun[], selection: RowSelection): boolean => {
@@ -341,7 +351,7 @@ export function createRowsRenderer(screen: HTMLElement, vt: GhosttyVt, style: ()
         if (!rowEls[y]) return;
         rowRuns[y] = runs;
         if (!paintRow(y, runs, selection)) return;
-        rowText[y] = runs.map((run) => run.cells.map((cell) => cell.text).join("")).join("").trimEnd();
+        rowText[y] = runs.map((run) => run.cells.map((cell) => (isKittyPlaceholder(cell.text) ? " " : cell.text)).join("")).join("").trimEnd();
       });
       rowRuns.forEach((runs, y) => { if (rowSelected[y] !== String(selection(y))) paintRow(y, runs, selection); });
       // lines are told from the screen at the bottom, the one a program writes to: a view scrolled back holds a

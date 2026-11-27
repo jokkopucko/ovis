@@ -95,6 +95,19 @@ describe("the folded view of a mirrored grid", () => {
     expect(columnAt(row, 6, 9, scratch)).toBe(-1);
   });
 
+  test("a folded row's character after a Kitty graphics placeholder is found in its grid column", () => {
+    const row = line([{ chars: "\u{10eeee}\u0305\u0305" }, ...plain("ab")], 4);
+    expect([0, 1, 2].map((offset) => columnAt(row, 4, offset, scratch))).toEqual([0, 1, 2]);
+  });
+
+  test("a folded Kitty graphics placeholder under reverse video paints its neighbour's background", () => {
+    const row = line([{ chars: "\u{10eeee}\u0305\u0305", fg: 1, bg: 4, inverse: true }, { chars: "x", fg: 1, bg: 4, inverse: true }], 2);
+    const html = rowHtml(row, 2, { foreground: "#d4d4d4", background: "#1e1e1e" }, scratch);
+    const backgrounds = [...html.matchAll(/background:([^;]*)/g)].map((m) => m[1]);
+    expect(new Set(backgrounds).size).toBe(1);
+    expect(html).not.toContain("\u{10eeee}");
+  });
+
   test("a colour that cannot reach the contrast one way reaches it the other", () => {
     const grey = readableColor("#aaaaaa", "#aaaaaa", 4.5);
     expect(contrastRatio(grey, "#aaaaaa")!).toBeGreaterThanOrEqual(4.5);
