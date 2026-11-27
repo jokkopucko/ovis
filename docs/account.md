@@ -2095,9 +2095,24 @@ or by the digits typed at `ovis approve`; what changes is what the approval writ
   says so, and that `ovis add` on this PC gives it its keys. A join of a key this PC itself keeps out (a
   block here, which closes the PC to every key newer than its target, whatever the list holds) is
   marked `list_held`, and `ovis approve` says that the device is not let in here until that block is
-  lifted, and where. A PC that follows no list marks a first or members join of such a key
-  `list_held` the same way, and a device approved here anyway hears `list_held_here`, not that
-  nobody approved it. A join into the account on a pinned
+  lifted, and where. A PC that follows no list marks a first or members join of a key it keeps out
+  with `held_why`, which names what an approval here would meet (server/relay/join-verdict.ts):
+  `block`, `freeze` (the account service's freeze that follows a block), `account_hold`,
+  `account_removed`, `untrusted` (an earlier pairing of that key here whose time this PC cannot
+  trust), `closed` (this PC cannot trust its account state) or `locked`; a block or a freeze marks
+  it `list_held` too, as before (a block or a freeze is named first where several reasons stand).
+  The answer to an approval of a join of no list (`POST /api/relay/join`) names `held_why` again as
+  it stands when the approval is taken (`null` when nothing keeps it out), which may differ from
+  what the list said a moment before. `ovis approve`
+  then says that the device was not let in and why, never that it is let in or approved (a reason
+  it does not know: only that this PC keeps it out).
+  A device whose account join the account service admitted is approved anyway hears why in its
+  refusal's `message`, not that nobody approved it (any other pairing names a key it never proves,
+  and hears only `auth_failed`):
+  `list_held_here` for a block or a freeze, else `kept_out_` and the reason (`kept_out_account_hold`,
+  `kept_out_account_removed`, `kept_out_untrusted`, `kept_out_closed`, `kept_out_locked`, and
+  `kept_out_revoked` for one a member approved from afar whose key was revoked here). An app that
+  knows none of them shows its general refusal, as before. A join into the account on a pinned
   PC from an app that knows no join into a list (it did not offer `account-list-allow-1`: an Ovis older
   than 0.5.10) is marked `list_unknown`: nothing lets it in here, so `ovis approve`, and `ovis add`'s
   wait for a first device, ask nothing for it and say to update Ovis on that device and ask again.

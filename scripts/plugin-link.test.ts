@@ -4452,6 +4452,37 @@ describe("ovis approve, a members join typed with all six of its digits (#28)", 
     expect(out.join("")).not.toMatch(/Approved:|is let in;/);
   });
 
+  it("never says a first or members join is let in or approved where this PC keeps the device out, and says each reason its own way", async () => {
+    // what GET /api/relay/joins names in held_why (server/devices.ts KeptOut), and one this command does not know yet
+    const reasons = ["block", "freeze", "account_hold", "account_removed", "untrusted", "closed", "locked", "a_later_reason"];
+    const said = new Set<string>();
+    for (const held_why of reasons) {
+      for (const join of [{ ...joinOf("j1"), held_why }, { ...joinOf("j1"), digits: "482913", held_why }]) {
+        const { code, out } = await joining({ joins: [join], said: (text, answer) => { if (prompt(text, "j1")) answer("482913"); } });
+        expect(code).toBe(0);
+        expect(out.join("")).not.toMatch(/Approved:|is let in;|was received/);
+        expect(out.at(-1)).toStartWith("Tablet one was not let in");
+        said.add(out.at(-1)!);
+      }
+    }
+    expect(said.size).toBe(reasons.length);
+  });
+
+  it("goes by what the approval's answer names, which may have come since the joins were read, and never says the device is let in", async () => {
+    for (const join of [joinOf("j1"), { ...joinOf("j1"), digits: "482913" }, { ...joinOf("j1"), list_held: true }]) {
+      const { code, out } = await joining({ joins: [join], said: (text, answer) => { if (prompt(text, "j1")) answer("482913"); }, approve: () => ({ held_why: "account_hold" }) });
+      expect(code).toBe(0);
+      expect(out.join("")).not.toMatch(/Approved:|is let in;|was received|blocked/);
+      expect(out.at(-1)).toStartWith("Tablet one was not let in here");
+    }
+  });
+
+  it("lets the answer say that nothing keeps the device out any more, whatever the joins said a moment before", async () => {
+    const lifted = async (join: OwnJoin) => (await joining({ joins: [join], said: (text, answer) => { if (prompt(text, "j1")) answer("482913"); }, approve: () => ({ held_why: null }) })).out.at(-1);
+    expect(await lifted({ ...joinOf("j1"), digits: "482913", held_why: "block", list_held: true })).toBe("Tablet one is let in; it opens this PC in a moment.\n");
+    expect(await lifted({ ...joinOf("j1"), held_why: "freeze", list_held: true })).toStartWith("Approved: Tablet one");
+  });
+
   it("approves nothing when its input is not a terminal: it reads no line and sends nothing", async () => {
     const { code, sent, reads } = await joining({ joins: [joinOf("j1")], terminal: false, said: (_said, answer) => answer("123456") });
     expect(code).toBe(1);

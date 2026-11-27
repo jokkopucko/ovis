@@ -112,6 +112,14 @@ export class DeviceReadOnlyError extends Error {
 /** The final admission guard refused (G3): the PC is locked or closed to the key. Nothing was written. */
 /** What a key confirm proves to the admission guard: that code's reserved key, confirmed on this PC's screen or by ovis recover. */
 export interface ConfirmProof { readonly codeId: string; readonly key: string; readonly source: "screen" | "recover"; readonly recoveredOver?: readonly string[] }
+/**
+ * Why the admission guard keeps a key out (DeviceStore.keptOut), a block or a freeze named before the rest: this PC
+ * cannot trust its account state (`closed`); a row of the key here has a pairing time it cannot trust (`untrusted`); the account holds the key
+ * back (`account_hold`) or removed it (`account_removed`); it was revoked here (`revoked`, never for a pairing on this
+ * PC); the PC is locked (`locked`); a block (`block`), or the account service's freeze that follows one (`freeze`),
+ * keeps out every key newer than its target.
+ */
+export type KeptOut = "closed" | "untrusted" | "account_hold" | "account_removed" | "revoked" | "locked" | "block" | "freeze";
 /** The proofs admitConfirmed made from a live reservation; admits() honours no other. */
 const MINTED_PROOFS = new WeakSet<ConfirmProof>();
 /** How long a key waiting to replace a screen-approved key waits for its confirm (P22). */
@@ -1044,52 +1052,55 @@ export class DeviceStore {
   admits(key: string | undefined, confirm?: ConfirmProof, options?: { pairingHere?: boolean; retainId?: string }): boolean {
     if (options?.retainId !== undefined) {
       const row = this.devices.find(device => device.id === options.retainId);
-      return row !== undefined && row.relay_public_key === key && this.admissionAllowed(key, confirm, { retainedRow: row });
+      return row !== undefined && row.relay_public_key === key && this.admissionVerdict(key, confirm, { retainedRow: row }) === null;
     }
-    return this.admissionAllowed(key, confirm, options);
+    return this.admissionVerdict(key, confirm, options) === null;
   }
 
-  private admissionAllowed(key: string | undefined, proof: ConfirmProof | "list" | "legacy_credential" | undefined, options?: { pairingHere?: boolean; retainedRow?: StoredDevice }): boolean {
-    if (this.failsClosed || (this.opensAll() && proof !== "legacy_credential" && this.accountError !== null)) return false;
+  /**
+   * Why admits() would refuse a pairing of `key` with no key confirm, read and nothing written; null when it would let it
+   * in (server/relay/join-verdict.ts). `pairingHere`: approved on this PC itself, which a Revoke here does not keep out.
+   */
+  keptOut(key: string, options?: { pairingHere?: boolean }): KeptOut | null {
+    return this.admissionVerdict(key, undefined, options);
+  }
+
+  /** The admission guard itself: what keeps `key` out, in the order it is asked, or null when nothing does. */
+  private admissionVerdict(key: string | undefined, proof: ConfirmProof | "list" | "legacy_credential" | undefined, options?: { pairingHere?: boolean; retainedRow?: StoredDevice }): KeptOut | null {
+    if (this.failsClosed || (this.opensAll() && proof !== "legacy_credential" && this.accountError !== null)) return "closed";
     const state = this.safety?.state();
-    if (state === undefined) return true;
-    if (key !== undefined) {
-      if (proof !== "legacy_credential" && this.devices.some(row => row.relay_public_key === key && row.untrusted_created_at === row.created_at)) return false;
-      if (this.accountHeld?.(key) || this.removedByAccount(key)) return false;
-      if (!options?.pairingHere && (this.isTombstoned(key) || (this.evidence?.standingRevokes(key).length ?? 0) > 0)) return false;
-    }
+    if (state === undefined) return null;
+    const keyWhy = key === undefined ? null
+      : proof !== "legacy_credential" && this.devices.some(row => row.relay_public_key === key && row.untrusted_created_at === row.created_at) ? "untrusted"
+      : this.accountHeld?.(key) ? "account_hold"
+      : this.removedByAccount(key) ? "account_removed"
+      : !options?.pairingHere && (this.isTombstoned(key) || (this.evidence?.standingRevokes(key).length ?? 0) > 0) ? "revoked"
+      : null;
     // only a proof admitConfirmed minted from a live reservation counts: a hand-built one passes nothing
     const confirm = typeof proof === "string" ? undefined : proof;
     const confirmed = confirm !== undefined && MINTED_PROOFS.has(confirm) && key !== undefined && confirm.key === key;
     // a locked PC admits only the key approved on its own screen (P11); a recover admit is ended by the lock (P22)
-    if (state.locked && !(confirmed && confirm.source === "screen")) return false;
-    if (state.freezes.length === 0) return true;
+    const lockWhy = state.locked && !(confirmed && confirm.source === "screen") ? "locked" : null;
     // a key confirm on this PC's own screen, or ovis recover --admit, of this very key passes a freeze (P23, rule R1)
-    if (confirmed) return true;
-    return this.passesFreezes(state.freezes, key, proof, options?.retainedRow);
+    const freezeWhy = state.freezes.length === 0 || confirmed ? null : this.freezeKeepingOut(state.freezes, key, proof, options?.retainedRow);
+    // any of them keeps the key out; a block or a freeze is named first, as readers that know only that one name it
+    return freezeWhy ?? keyWhy ?? lockWhy;
   }
 
-  /**
-   * Whether a block or a freeze in force on this PC keeps `key` out, whatever else would admit it: a key with no row here
-   * counts as newer than its target. What a join refused for it is told, apart from a hold or a removal.
-   */
-  keptOutByBlock(key: string): boolean {
-    const freezes = this.safety?.state().freezes ?? [];
-    return freezes.length > 0 && !this.passesFreezes(freezes, key, undefined, undefined);
-  }
-
-  private passesFreezes(freezes: SafetyState["freezes"], key: string | undefined, proof: ConfirmProof | "list" | "legacy_credential" | undefined, retainedRow: StoredDevice | undefined): boolean {
+  /** The kind of the first block or freeze in force that keeps `key` out: a key with no row here counts as newer than its target. */
+  private freezeKeepingOut(freezes: SafetyState["freezes"], key: string | undefined, proof: ConfirmProof | "list" | "legacy_credential" | undefined, retainedRow: StoredDevice | undefined): "block" | "freeze" | null {
     const rows = proof === "legacy_credential" && retainedRow ? [retainedRow] : key === undefined ? [] : this.devices.filter((d) => d.relay_public_key === key);
     // Only retaining a current list admission can use its age: a new pairing or readmission cannot inherit it.
     const listed = proof === "list" && key !== undefined ? this.joinedRows?.rowsByKey(key).find(candidate => candidate.state !== "expired") : undefined;
     if (listed) rows.push(this.joinedAsStored(listed));
-    return freezes.every(({ record, asof, targetOnlyCompanion }) => {
-      if (key === record.target) return false;
+    const stops = freezes.find(({ record, asof, targetOnlyCompanion }) => {
+      if (key === record.target) return true;
       if (record.kind === "freeze") {
-        return this.beforeServiceCutoff(key, record, retainedRow, targetOnlyCompanion === true && proof === "legacy_credential");
+        return !this.beforeServiceCutoff(key, record, retainedRow, targetOnlyCompanion === true && proof === "legacy_credential");
       }
-      return rows.length > 0 && rows.every((row) => !this.newerThanFreeze(row, record.id, asof));
+      return rows.length === 0 || rows.some((row) => this.newerThanFreeze(row, record.id, asof));
     });
+    return stops === undefined ? null : stops.record.kind === "freeze" ? "freeze" : "block";
   }
 
   /** Hears every end of a code (cancel, expiry, an admission, Revoke all, a relay identity reset), by its id (T71). */
@@ -1108,7 +1119,7 @@ export class DeviceStore {
 
   /** A list read is not local pairing: it cannot supersede any standing removal. */
   admitsFromList(key: string, account: string): boolean {
-    return this.admissionAllowed(key, "list") && !this.isTombstoned(key) && !this.coveredByEvidence({ relay_public_key: key, account });
+    return this.admissionVerdict(key, "list") === null && !this.isTombstoned(key) && !this.coveredByEvidence({ relay_public_key: key, account });
   }
 
   /** Hears every key a deny takes, in the deny turn, rows or not (Revoke, account remove, block, Revoke all). */
@@ -1291,7 +1302,7 @@ export class DeviceStore {
     };
     const signers = legacyTarget && useAccountOrder
       ? this.memberRows(record.signer, record.account).filter(row => !row.imported && !row.invalid_origin && row.held === undefined
-        && admissionPosition(row) !== null && standing(row) && this.admissionAllowed(record.signer, "legacy_credential", { retainedRow: row }))
+        && admissionPosition(row) !== null && standing(row) && this.admissionVerdict(record.signer, "legacy_credential", { retainedRow: row }) === null)
       : this.signingRows(record.signer, record.account);
     if (signers.length === 0) return refused("signer_not_member");
     if (signers.some((d) => this.frozen(d))) return refused("frozen");
@@ -2578,7 +2589,7 @@ export class DeviceStore {
     const offPair = device.off_pair_binding !== undefined && !device.imported && device.relay_public_key === undefined
       && this.pc?.binding()?.bind_id === device.off_pair_binding && this.pc.serviceStep2Off();
     return this.catchUp?.waits({ id, origin: device.origin }, credential && (this.isLegacyCredential(device) || offPair)
-      ? () => this.admissionAllowed(device.relay_public_key, "legacy_credential", { retainedRow: device }) : undefined,
+      ? () => this.admissionVerdict(device.relay_public_key, "legacy_credential", { retainedRow: device }) === null : undefined,
       // the pairing a PC keeps when it leaves its account is its own; what the row may do for the account waits on
       credential ? () => keepsPairingOnUnlist(device) && this.admits(device.relay_public_key, undefined, { retainId: device.id }) : undefined,
       () => this.listAdmits(device) && this.admits(device.relay_public_key, undefined, { retainId: device.id })) ?? false;

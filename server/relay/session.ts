@@ -9,7 +9,8 @@ import { ACCOUNT_FEATURE, ACCOUNT_LIST_ALLOW, ACCOUNT_LIST_FEATURE, ACCOUNT_LIST
 import type { HeaderList, PairApprover, SessionError } from "../../shared/relay-mux.ts";
 import { PC_CODE_ACCOUNT_ONLY } from "../../shared/relay-mux.ts";
 import type { BlockReceipt } from "../../shared/account-devices-api.ts";
-import { PairingRateLimitedError, type DeviceMatch, type PairingPath } from "../devices.ts";
+import { PairingRateLimitedError, type DeviceMatch, type KeptOut, type PairingPath } from "../devices.ts";
+import { joinVerdict } from "./join-verdict.ts";
 import { accountDeviceId } from "../../shared/account-records.ts";
 import type { KeyProofPairings } from "../account/key-proof.ts";
 import { bytesToHex } from "@noble/hashes/utils.js";
@@ -104,6 +105,17 @@ const LIST_ALLOW_CAUSES: Partial<Record<AllowRefusal, string>> = {
   needs_keys: "list_needs_keys",
   // this PC itself keeps the key out (a block here): the list may hold the device, and this PC lets it in once that ends
   held_here: "list_held_here",
+};
+
+/**
+ * Why a join approved on both sides ends with nobody let in, as SESSION_ERROR `auth_failed` says it in its message, when
+ * this PC itself keeps the key out (join-verdict.ts, docs/account.md "A PC allows a device into the list"). A block or
+ * the account's freeze says `list_held_here`, as a list PC does; an app that knows none of the others says its
+ * general refusal, as before.
+ */
+const KEPT_OUT_CAUSES: Readonly<Record<KeptOut, string>> = {
+  block: "list_held_here", freeze: "list_held_here", closed: "kept_out_closed", untrusted: "kept_out_untrusted", account_hold: "kept_out_account_hold",
+  account_removed: "kept_out_account_removed", revoked: "kept_out_revoked", locked: "kept_out_locked",
 };
 
 export interface RelaySessionOptions {
@@ -755,25 +767,20 @@ export class RelaySession {
     // a member's remote approval never lets in a key this PC holds back (removed elsewhere, or a remove for it waits here);
     // only a pairing approved on this PC itself does
     const id = accountDeviceId(this.options.serverId, sas.publicKey);
-    const { devices, accountMailbox } = this.options.services;
+    const { devices } = this.options.services;
     // the relay key it proved is asked about again in the turn that writes its row: the list may have removed that PC
     // while the comparison waited for a member
     if (this.intent === "vouched" && (!sas.approvedBy || !this.vouchedEligible(sas.publicKey) || !this.vouchedInList())) { this.close("auth_failed"); return; }
     // a join that came with the device's card for the list is let in by the list, or not at all
     if (this.listCard !== undefined) { void this.allowIntoList(sas, id, this.listCard).catch(() => this.close("internal_error")); return; }
-    if (sas.approvedBy !== undefined) {
-      const gates = accountMailbox.gates();
-      const approverKey = devices.relayKeyOf(sas.approvedBy);
-      // the recheck of the approver's standing is account work (flag on); flag off keeps main's held check only
-      if (gates.held(sas.publicKey) || (devices.opensAll() && devices.has(id) && (gates.enrolling() || !approverKey || gates.removing?.(approverKey)))) {
-        this.close("auth_failed"); return;
-      }
-    }
-    // approved on this PC for a key a block here keeps out: the device hears that cause, as from a list PC
-    if (this.intent === "account" && sas.approvedBy === undefined && devices.keptOutByBlock(sas.publicKey)) {
-      this.endPairing(true);
-      this.failJoin(LIST_ALLOW_CAUSES.held_here!);
-      return;
+    const verdict = joinVerdict(this.options.services, sas.publicKey, sas.approvedBy === undefined ? undefined : { by: sas.approvedBy, id });
+    if (verdict.lets === "out") {
+      // an account join the account service admitted with that key (membersOnly) hears why, as from a list PC. A
+      // pairing names a key it never proves, so any other hears nothing of it: refused here, or below by the guard
+      const cause = verdict.why !== null && this.intent === "account" && sas.membersOnly ? KEPT_OUT_CAUSES[verdict.why] : null;
+      // an approval from afar that no longer stands counts as a failed pairing (failJoin and close both count it)
+      if (verdict.by === "approval") { if (cause !== null) this.failJoin(cause); else this.close("auth_failed"); return; }
+      if (cause !== null) { this.endPairing(true); this.failJoin(cause); return; }
     }
     let device: DeviceMatch | undefined;
     try { device = devices.pairRelayApproved(sas.label, sas.publicKey, { path: this.path, id, ...(sas.approvedBy === undefined ? {} : { addedBy: sas.approvedBy }), ...(this.intent === "vouched" && this.vouchedEndpoint !== null ? { vouchedPc: this.vouchedEndpoint } : {}) }, undefined, this.admitNewDevice)?.device; }
