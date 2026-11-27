@@ -66,7 +66,7 @@ const withoutEscapes = (screen: string): string => screen.replace(/\u001b\[[0-?]
 /** a first message's lease is the delivering connection's, taken at each attempt: none is kept on the record */
 type PendingItem = PendingRecord<PendingOwner, PendingLease | null>;
 type SubmitReply = { ok: boolean; pending?: PendingMessage; sending_at?: string; code?: string; message?: string; refusal?: { draft: string | null; box: string | null; identity: PendingIdentity };
-  unannounced?: true };
+  unannounced?: true; keepTurnGate?: true };
 /**
  * `agent_blocked` for one of Codex's own screens (dialogs/codex.ts codexOwnScreenOpen). herdr reports Codex at rest
  * under it and says nothing when it closes. So a queued message refused for it is held with this reason, for its
@@ -1037,7 +1037,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         try { recordPiTyped(owner, paneId, requestId, receiptText, beforeEnter.identity, piAnchor, piReservation, piTemplate); } catch {}
       }
       let statusAtRead = pending.current(paneId);
-      await interruptCodexSteering(interruptWorkingCodex, closeMention(text), { agent: beforeEnter.identity.agent, working: beforeEnter.working, screen: beforeEnter.screen }, {
+      const steeringOutcome = await interruptCodexSteering(interruptWorkingCodex, closeMention(text), { agent: beforeEnter.identity.agent, working: beforeEnter.working, screen: beforeEnter.screen }, {
         read: async () => {
           const status = pending.current(paneId);
           const current = await pendingContext(owner, paneId, lease, identity, true);
@@ -1051,6 +1051,10 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         // write is refused when the lease, the deadline or the pane's status moved meanwhile
         press: (key, fresh) => paneSendKeys(paneId, [key], undefined, () => allowed() && fresh() && pending.current(paneId) === statusAtRead),
       });
+      if (steeringOutcome === "unconfirmed") {
+        watch?.cancel();
+        return { ok: false, code: "submit_changed", message: "Pending-message delivery could not be confirmed. Check the terminal before sending again.", keepTurnGate: true };
+      }
       noteSubmitted(paneId, sent, command, sentAt);
       if (command) watch?.commit(command, prompt, attached);
       return { ok: true };
@@ -1091,12 +1095,13 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     const fault = reply.ok ? undefined : left ?? (unattended && retryable ? FIRST_MESSAGE_UNATTENDED : { code: reply.code!, message: reply.message! });
     // a paste left in the input line (#511) is uncertain like a delivery not confirmed: the pane's queue stops behind it, and
     // only the user copies or discards it
-    pending.settle(item, fault, reply.code === "submit_changed" || reply.code === "pasted_not_sent", retry && left === undefined);
+    const { keepTurnGate, ...result } = reply;
+    pending.settle(item, fault, keepTurnGate ? "preserve-turn" : reply.code === "submit_changed" || reply.code === "pasted_not_sent", retry && left === undefined);
     // The messages queued behind one held for a screen of Codex's own are held with it, in the same step: tried one
     // by one, a later one would be typed ahead of it if the screen closed between two tries.
     if (automatic && reply.unannounced === true && fault !== undefined) pending.holdPane(item.paneId, fault);
     void reconcileCodexDeliveries(item.paneId);
-    return reply;
+    return result;
   }
   function drainPending(paneId: string): void {
     const learning = launchBoundIn(paneId).length > 0;

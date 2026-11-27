@@ -89,6 +89,7 @@ export class PendingInputs<Owner, Lease> {
   private readonly waits = new Map<string, NonNullable<PendingMessage["waiting"]>>();
   private readonly closed = new Map<Owner, number>();
   private readonly movedInFlight = new WeakSet<PendingRecord<Owner, Lease>>();
+  private readonly reviewOnly = new WeakSet<PendingRecord<Owner, Lease>>();
   private readonly removed = new Map<string, { owner: Owner; paneId: string; outcome: Removed["outcome"]; at: number }>();
   private readonly resends = new Map<string, { id: string; paneId: string; fingerprint: string; reply: Promise<HeldCopyReply>; settledAt: number | null; uncertain: boolean }>();
 
@@ -139,7 +140,7 @@ export class PendingInputs<Owner, Lease> {
         const item = this.records.get(id);
         const paneId = entry.paneId;
         if (reply.ok && item?.paneId === paneId) this.finish(item, "sent");
-        else if (entry.uncertain && item?.paneId === paneId) {
+        else if (entry.uncertain && item?.paneId === paneId && !this.reviewOnly.has(item)) {
           // Another connection may have committed input. An Edit already waiting
           // on its discard must see this uncertainty before it can withdraw.
           item.message.state = "uncertain";
@@ -227,7 +228,7 @@ export class PendingInputs<Owner, Lease> {
     if (this.records.size + this.removed.size >= MAX_PENDING_DISPOSITIONS) {
       throw new PendingInputError("pending_limit", "Too many recent pending-message outcomes are retained; try again later");
     }
-    if ([...this.records.values()].some((item) => item.paneId === paneId && item.message.state === "uncertain")) throw new PendingInputError("pending_uncertain", "Check the terminal before sending more pending messages");
+    if ([...this.records.values()].some((item) => item.paneId === paneId && this.blocksQueue(item))) throw new PendingInputError("pending_uncertain", "Check the terminal before sending more pending messages");
     if (this.closed.has(owner)) fault ??= { code: "input_not_ready", message: "The sending connection closed; review the saved message before sending it" };
     const item: PendingRecord<Owner, Lease> = {
       owner, paneId, lease, identity, inFlight: false,
@@ -251,9 +252,13 @@ export class PendingInputs<Owner, Lease> {
 
   holds(paneId: string): boolean { return [...this.records.values()].some((item) => item.paneId === paneId); }
 
+  private blocksQueue(item: PendingRecord<Owner, Lease>): boolean {
+    return item.message.state === "uncertain" && !this.reviewOnly.has(item);
+  }
+
   next(paneId: string): PendingRecord<Owner, Lease> | null {
     if (!ready(this.statuses.get(paneId)) || this.gates.has(paneId)
-      || [...this.records.values()].some((item) => item.paneId === paneId && (item.inFlight || item.message.state === "uncertain"))) return null;
+      || [...this.records.values()].some((item) => item.paneId === paneId && (item.inFlight || this.blocksQueue(item)))) return null;
     return [...this.records.values()].find((item) => item.paneId === paneId && item.message.state === "queued") ?? null;
   }
 
@@ -302,11 +307,12 @@ export class PendingInputs<Owner, Lease> {
       : { by: "", committed: true, sawWorking: false, completed: false, deadline: now + this.startTimeoutMs, since: now });
   }
 
-  settle(item: PendingRecord<Owner, Lease>, fault?: Fault, uncertain = false, retryWhenReady = false): void {
+  settle(item: PendingRecord<Owner, Lease>, fault?: Fault, uncertain: boolean | "preserve-turn" = false, retryWhenReady = false): void {
     if (this.records.get(item.message.id) !== item || !item.inFlight) return;
     item.inFlight = false;
     // a send the pane's move overtook is never tried again by itself under the new ID: it waits for its Send
-    if (this.movedInFlight.delete(item)) retryWhenReady = false;
+    const moved = this.movedInFlight.delete(item);
+    if (moved) retryWhenReady = false;
     if (!fault) {
       this.finish(item, "sent");
       const gate = this.gates.get(item.paneId);
@@ -317,8 +323,14 @@ export class PendingInputs<Owner, Lease> {
     if (!uncertain) delete item.message.sending_at;
     if (retryWhenReady && !uncertain) delete item.message.error; else item.message.error = fault;
     const gate = this.gates.get(item.paneId);
-    if (uncertain || gate?.by === item.message.id || gate?.completed) this.gates.delete(item.paneId);
-    if (uncertain) this.holdPane(item.paneId, fault.code === "pasted_not_sent" ? BEHIND_PASTE : fault);
+    if (uncertain === "preserve-turn" && !moved) {
+      // Enter reached the terminal: keep its normal turn ordering while only this row waits for review.
+      this.reviewOnly.add(item);
+      if (gate?.completed) this.gates.delete(item.paneId);
+    } else {
+      if (uncertain || gate?.by === item.message.id || gate?.completed) this.gates.delete(item.paneId);
+      if (uncertain) this.holdPane(item.paneId, fault.code === "pasted_not_sent" ? BEHIND_PASTE : fault);
+    }
     this.publish(item.owner, item.paneId);
   }
 
@@ -488,7 +500,9 @@ export class PendingInputs<Owner, Lease> {
     const released: string[] = [];
     for (const [paneId, gate] of this.gates) {
       if (gate.deadline !== null && this.now() >= gate.deadline && ![...this.records.values()].some((item) => item.paneId === paneId && item.inFlight)) {
-        if (gate.lenient) released.push(paneId);
+        // a Send now still waiting for review may not have started its turn yet: its pane's queue waits for the user
+        const reviewing = [...this.records.values()].some((item) => item.paneId === paneId && this.reviewOnly.has(item) && item.message.state === "uncertain");
+        if (gate.lenient && !reviewing) released.push(paneId);
         else this.holdPane(paneId, { code: "pending_turn_unconfirmed", message: "The next turn did not start in time; review and send the remaining messages explicitly" });
         this.gates.delete(paneId);
       }

@@ -1156,17 +1156,22 @@ describe("connection-owned pending input", () => {
     expect(result).toMatchObject({ ok: false, code: "submit_changed" });
   }, 30_000);
 
-  it("interrupts an explicit Codex Send now only after its native steering panel appears", async () => {
-    const f = await setup("codex-send-now", "codex"); const message = await f.queue(1, "send this now");
+  it("keeps terminal Codex Send now uncertain after a matching panel without a receipt (#4769)", async () => {
+    const f = await setup("codex-send-now-panel", "codex"); const message = await f.queue(1, "send this now");
     f.socket.send({ type: "pending-action", id: 10, pane_id: f.pane, pending_id: message.id, action: "steer" });
-    await f.waitBytes("\r"); expect(f.bytes()).toBe(`${paste("send this now")}\r`);
-    await f.showScreen(codexSteering());
-    expect(await f.socket.action(10)).toMatchObject({ ok: true }); await f.removed(message.id); await f.waitBytes("\u001b");
-    const received = f.socket.seen.length;
+    await f.waitBytes("\r");
+    expect(f.bytes()).toBe(`${paste(message.text)}\r`);
+    await f.showScreen(codexSteering(message.text));
+    const result = await f.socket.action(10);
+    const settled = await f.socket.event((frame) => frame.messages.some((item) => item.id === message.id && item.state === "uncertain")
+      || frame.removed?.some((item) => item.id === message.id) === true);
+    expect(settled.messages).toMatchObject([{ id: message.id, state: "uncertain", error: { code: "submit_changed" } }]);
+    expect(result).toMatchObject({ ok: false, code: "submit_changed" });
+
     f.socket.send({ type: "pending-action", id: 11, pane_id: f.pane, pending_id: message.id, action: "steer" });
-    expect(await f.socket.action(11)).toMatchObject({ ok: true });
-    await f.socket.wait((frame) => frame.type === "pending-messages" && frame.removed?.some((item: any) => item.id === message.id), received);
-    expect(f.bytes()).toBe(`${paste("send this now")}\r\u001b`);
+    expect(await f.socket.action(11)).toMatchObject({ ok: false, code: "pending_uncertain" });
+    await f.waitBytes("\u001b");
+    expect(f.bytes()).toBe(`${paste(message.text)}\r\u001b`);
   }, 30_000);
 
   it("withholds Codex Escape when its sender's lease lapses while the key RPC connects", async () => {
@@ -1942,7 +1947,7 @@ describe("connection-owned pending input", () => {
 
   // Claude Code queues what Enter commits during a turn; its Ctrl+Enter sends it at once (#737).
   // The stand-in asks for modifyOtherKeys as Claude Code does, so herdr types Ctrl+Enter as xterm does.
-  it("steers Claude with Ctrl+Enter and Codex with Enter then a confirmed interruption", async () => {
+  it("steers Claude with Ctrl+Enter and sends Codex an unmodified Escape after its steering panel appears", async () => {
     const ctrlEnter = "\u001b[27;5;13~";
     const f = await setup("steer-claude", "claude", "\\x1b[>4;2m› Message\n");
     const steer = await f.queue(1, "steer now"); const next = await f.queue(2, "next turn");
@@ -1957,7 +1962,7 @@ describe("connection-owned pending input", () => {
     codex.socket.send({ type: "pending-action", id: 10, pane_id: codex.pane, pending_id: other.id, action: "steer" });
     await codex.waitBytes("\r");
     await codex.showScreen(codexSteering("codex steer"));
-    expect(await codex.socket.action(10)).toMatchObject({ ok: true }); await codex.waitBytes("\u001b");
+    expect(await codex.socket.action(10)).toMatchObject({ ok: false, code: "submit_changed" }); await codex.waitBytes("\u001b");
     expect(codex.bytes()).toBe(`${paste("codex steer")}\r\u001b`);
   }, 45_000);
 

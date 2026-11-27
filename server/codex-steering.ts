@@ -83,14 +83,21 @@ const SEND_NOW: Record<string, { pending: (screen: string, text: string) => bool
 };
 
 /** Enter can leave steering pending until a tool boundary. Only Send now may send it at once, and only for `text`. */
-export async function interruptCodexSteering(explicit: boolean, text: string, submitted: CodexSteeringContext, io: SteeringIO): Promise<void> {
+export async function interruptCodexSteering(explicit: boolean, text: string, submitted: CodexSteeringContext, io: SteeringIO): Promise<"unconfirmed" | undefined> {
   const agent = submitted.agent;
   const steer = agent !== null && Object.hasOwn(SEND_NOW, agent) ? SEND_NOW[agent] : undefined;
-  if (!explicit || !steer || !submitted.working) return;
+  if (!explicit || !steer) return;
+  const unconfirmed = () => new Error("Immediate delivery was not confirmed. Check the terminal before sending again.");
+  if (!submitted.working) {
+    if (!steer.restart) return;
+    // This could be Enter's own new turn or a turn that started before Enter landed. Do not interrupt it.
+    const current = await io.read();
+    if (current.agent !== agent) throw unconfirmed();
+    return current.working ? "unconfirmed" : undefined;
+  }
   const now = io.now ?? Date.now;
   const wait = io.wait ?? Bun.sleep;
   const deadline = now() + 1500;
-  const unconfirmed = () => new Error("Immediate delivery was not confirmed. Check the terminal before sending again.");
   // The pane can already be holding identical text from its terminal, underneath our paste.
   if (agent === "codex" && codexSteeringPending(submitted.screen, text, true)) throw unconfirmed();
   while (now() < deadline) {
@@ -98,12 +105,13 @@ export async function interruptCodexSteering(explicit: boolean, text: string, su
     const current = await io.read();
     if (current.agent !== agent) throw unconfirmed();
     if (now() >= deadline) break;
-    if (!current.working) return;
+    // A successful Enter or Escape write is enough to keep its turn gate, not a delivery receipt.
+    if (!current.working) return steer.restart ? "unconfirmed" : undefined;
     if (steer.pending(current.screen, text)) {
       if (steer.restart) io.restarting();
       // the RPC's connect is awaited: by the time herdr is written to, the deadline may have passed
       await io.press(steer.key, () => now() < deadline);
-      return;
+      return steer.restart ? "unconfirmed" : undefined;
     }
     // A user row in scrollback can belong to an earlier terminal send. It cannot acknowledge Enter.
     await wait(Math.min(50, deadline - now()));

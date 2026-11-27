@@ -52,6 +52,36 @@ function fixture() {
 }
 
 describe("bridge pending input", () => {
+  it("holds the pane when a joined turn behind a review-only Send now never shows working, rather than releasing its queue (#4838)", () => {
+    const { queue, enqueue, advance } = fixture();
+    queue.status("p1", "working");
+    const sent = enqueue(1, "a", "p1", "steered");
+    const next = enqueue(2, "a", "p1", "behind it");
+    expect(queue.claim(sent, false)).toBe(true);
+    queue.committing(sent, true);
+    // an early ready inside the joined window: the wait goes on leniently for the Send's own turn
+    queue.status("p1", "idle");
+    queue.settle(sent, { code: "submit_changed", message: "Check the terminal" }, "preserve-turn");
+    expect(sent.message.state).toBe("uncertain");
+    advance(150);
+    expect(queue.next("p1")).toBeNull();
+    expect(next.message.state).toBe("held");
+  });
+
+  it("still releases a lenient wait with no review-only row on its pane (control #4838)", () => {
+    const { queue, enqueue, advance } = fixture();
+    queue.status("p1", "working");
+    const sent = enqueue(1, "a", "p1", "steered");
+    const next = enqueue(2, "a", "p1", "behind it");
+    expect(queue.claim(sent, false)).toBe(true);
+    queue.committing(sent, true);
+    queue.status("p1", "idle");
+    queue.settle(sent);
+    advance(150);
+    expect(next.message.state).toBe("queued");
+    expect(queue.next("p1")).toBe(next);
+  });
+
   it("holds a message with no reason only when its sender asked for the hold, and the page tells the two kinds apart by that for the copy's whole life", () => {
     let id = 0;
     const data = new Map<string, string>();

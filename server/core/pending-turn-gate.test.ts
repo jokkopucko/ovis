@@ -88,7 +88,7 @@ describe("the queue's turn gate (#4118)", () => {
     await d.sendNow("X");
     await d.settled();
     expect(d.typed).toEqual(["paste:X", "Enter"]);
-    expect(d.rows()).toEqual(["Y queued"]);
+    expect(d.rows()).toEqual(["X uncertain", "Y queued"]);
     await d.turnSeen();
     expect(d.typed).toEqual(["paste:X", "Enter", "paste:Y", "Enter"]);
   });
@@ -108,7 +108,12 @@ describe("the queue's turn gate (#4118)", () => {
     await d.queue("Z");
     await d.settled();
     expect(d.typed).toEqual(["paste:X", "Enter"]);
-    expect(d.rows()).toEqual(["Y queued", "Z queued"]);
+    expect(d.rows()).toEqual(["X uncertain", "Y queued", "Z queued"]);
+    await d.turnSeen();
+    expect(d.typed).toEqual(["paste:X", "Enter", "paste:Y", "Enter"]);
+    await d.turnSeen();
+    expect(d.typed).toEqual(["paste:X", "Enter", "paste:Y", "Enter", "paste:Z", "Enter"]);
+    expect(d.rows()).toEqual(["X uncertain"]);
   });
 
   // B stays open (#4118): no herdr event carries its order against a snapshot, and every rule that takes an event as older
@@ -154,7 +159,7 @@ describe("the queue's turn gate (#4118)", () => {
     await d.sendNow("Y");
     await d.settled();
     expect(d.typed).toEqual(["paste:X", "Enter", "Escape", "paste:Y", "Enter"]);
-    expect(d.rows()).toEqual(["Z queued"]);
+    expect(d.rows()).toEqual(["X uncertain", "Y uncertain", "Z queued"]);
     await d.turnSeen();
     expect(d.typed).toEqual(["paste:X", "Enter", "Escape", "paste:Y", "Enter", "paste:Z", "Enter"]);
   });
@@ -174,7 +179,7 @@ describe("the queue's turn gate (#4118)", () => {
     d.event("idle");
     await d.settled();
     expect(d.typed).toEqual(["paste:X", "Enter", "Escape"]);
-    expect(d.rows()).toEqual(["Y queued"]);
+    expect(d.rows()).toEqual(["X uncertain", "Y queued"]);
   });
 
   it("E: a message sent to the queue right behind the queue's Enter waits behind that Enter's turn", async () => {

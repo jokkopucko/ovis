@@ -97,7 +97,8 @@ function fixture(contexts: CodexSteeringContext[] = [pending]) {
 
 describe("explicit Codex Send now", () => {
   it("arms the restart gate before one Escape on a freshly checked native panel", async () => {
-    const f = fixture(); await interruptCodexSteering(true, "send this now", working, f.io);
+    const f = fixture();
+    expect(await interruptCodexSteering(true, "send this now", working, f.io)).toBe("unconfirmed");
     expect(f.effects).toEqual(["restart gate", "Escape"]);
     expect(f.reads()).toBe(1);
   });
@@ -106,7 +107,7 @@ describe("explicit Codex Send now", () => {
     for (const composer of ["»", "» Ask Codex to do anything"]) {
       const ultra = { ...working, screen: frame(hint, composer).replace("default ·", "ultra ·") };
       const f = fixture([ultra]);
-      await interruptCodexSteering(true, "send this now", working, f.io);
+      expect(await interruptCodexSteering(true, "send this now", working, f.io)).toBe("unconfirmed");
       expect(f.effects).toEqual(["restart gate", "Escape"]);
       expect(f.reads()).toBe(1);
     }
@@ -172,23 +173,37 @@ describe("explicit Codex Send now", () => {
 
   for (const [name, explicit, context] of [
     ["ordinary Send racing with work", false, working],
-    ["idle Codex", true, { ...working, working: false }],
     ["another working agent", true, { ...working, agent: "claude" }],
   ] as const) it(`never interrupts ${name}`, async () => {
     const f = fixture(); await interruptCodexSteering(explicit, "send this now", context, f.io);
     expect(f.effects).toEqual([]); expect(f.reads()).toBe(0);
   });
 
+  it("checks after Enter when Codex was idle before it, without interrupting a newly visible turn", async () => {
+    const idle = { ...working, working: false };
+    const turned = fixture([pending]);
+    expect(await interruptCodexSteering(true, "send this now", idle, turned.io)).toBe("unconfirmed");
+    expect(turned.effects).toEqual([]);
+    expect(turned.reads()).toBe(1);
+    const stillIdle = fixture([idle]);
+    expect(await interruptCodexSteering(true, "send this now", idle, stillIdle.io)).toBeUndefined();
+    expect(stillIdle.effects).toEqual([]);
+    expect(stillIdle.reads()).toBe(1);
+  });
+
   it("waits for the native panel instead of appending Escape blindly", async () => {
     const f = fixture([working, pending]);
-    await interruptCodexSteering(true, "send this now", working, f.io);
+    expect(await interruptCodexSteering(true, "send this now", working, f.io)).toBe("unconfirmed");
     expect(f.reads()).toBe(2); expect(f.elapsed()).toBeGreaterThan(0);
     expect(f.effects).toEqual(["restart gate", "Escape"]);
   });
 
   it("does not interrupt a turn that already finished after Enter", async () => {
     const f = fixture([{ ...working, working: false }]);
-    await interruptCodexSteering(true, "send this now", working, f.io); expect(f.effects).toEqual([]);
+    expect(await interruptCodexSteering(true, "send this now", working, f.io)).toBe("unconfirmed");
+    expect(f.effects).toEqual([]);
+    expect(f.reads()).toBe(1);
+    expect(f.elapsed()).toBe(0);
   });
 
   for (const cause of ["disconnected", "read_only", "agent_blocked", "pending_target_changed", "input_not_ready"]) it(`keeps additional input cancelled after ${cause}`, async () => {
