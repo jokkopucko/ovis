@@ -20,6 +20,7 @@ import { kiroCodexProcess, kiroNested, kiroWrapper } from "./kiro-terminal.ts";
 import { resolveAgent } from "./pane-context.ts";
 import { FOOTER } from "./codex-steering.ts";
 import { codexStartScreenUnused } from "./start-screen.ts";
+import { servedConversations } from "./approvals/codex.ts";
 
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): RecordValue => value !== null && typeof value === "object" && !Array.isArray(value) ? value as RecordValue : {};
@@ -2720,6 +2721,9 @@ function theirs(rollouts: string[], paneId: string, claimed: ReadonlySet<string>
   return rollouts.filter((rollout) => !elsewhere.has(rollout) && !claimed.has(rollout));
 }
 
+/** A Codex executable, also a release binary named for its target, and any letter case of Windows' file names. */
+const CODEX_EXECUTABLE = /(?:^|[\\/])codex(?:-(?:x86_64|aarch64)-[a-z0-9_-]+)?(?:\.js|\.exe|\.opencodex-real)?$/i;
+
 const CODE_OPTIONS = new Set(["eval", "print", "require", "import", "loader", "experimental-loader", "input-type"]);
 const VALUELESS_OPTIONS = new Set([
   "", "no-warnings", "no-deprecation", "trace-warnings", "trace-deprecation", "pending-deprecation", "throw-deprecation",
@@ -2748,9 +2752,7 @@ async function codexProcessesOf(paneId: string, known?: ProcessInfo | null): Pro
     .filter((foreground) => {
       const argv: string[] = Array.isArray(foreground.argv) ? foreground.argv : [];
       const executable = argv[0] ?? "";
-      // also a release binary named for its target, and any letter case of Windows' file names
-      const codex = /(?:^|[\\/])codex(?:-(?:x86_64|aarch64)-[a-z0-9_-]+)?(?:\.js|\.exe|\.opencodex-real)?$/i;
-      if (codex.test(executable)) return true;
+      if (CODEX_EXECUTABLE.test(executable)) return true;
       // `node codex.js` and shell shebangs name the script after the interpreter and its
       // `--flag` options (`node --no-warnings codex.js`). Only options known to take no
       // value may precede the script, plus `--name=value` forms that do not run code: an
@@ -2765,7 +2767,7 @@ async function codexProcessesOf(paneId: string, known?: ProcessInfo | null): Pro
         if (CODE_OPTIONS.has(name)) return false;
         if (!option.includes("=") && !VALUELESS_OPTIONS.has(name)) return false;
       }
-      return codex.test(argv[script] ?? "");
+      return CODEX_EXECUTABLE.test(argv[script] ?? "");
     });
   if (list.length === 0) {
     const nested = await kiroCodexProcess(processInfo);
@@ -3218,10 +3220,150 @@ async function openRollouts(paneId: string, home: string, known?: ProcessInfo | 
   return { codexProcesses, processes, open, held };
 }
 
+/** The value of `--name value` or `--name=value` among `argv`'s options (before `--`), or null. */
+function optionValue(argv: readonly string[], name: string): string | null {
+  for (const [index, arg] of argv.entries()) {
+    if (arg === "--") return null;
+    if (arg === name) return argv[index + 1] ?? null;
+    if (arg.startsWith(`${name}=`)) return arg.slice(name.length + 1);
+  }
+  return null;
+}
+
+/** The descriptors `pid` has open, each with the file it names, or null when they cannot be listed. */
+function descriptorTargets(pid: number): Map<string, string> | null {
+  let descriptors: string[];
+  try { descriptors = readdirSync(`/proc/${pid}/fd`); } catch { return null; }
+  if (descriptors.length > 512) return null;
+  const targets = new Map<string, string>();
+  for (const descriptor of descriptors) {
+    try { targets.set(descriptor, readlinkSync(`/proc/${pid}/fd/${descriptor}`)); } catch { /* closed while listed */ }
+  }
+  return targets;
+}
+
+/**
+ * The rollout the Codex app server beside a pane's TUI holds, with the identity of the held file. A TUI on
+ * `codex --remote unix://<socket>` holds no rollout: the server its launcher started beside it does
+ * (server/approvals/codex.ts). That server is the TUI's own when it is the TUI's sibling under the launcher, its
+ * command line listens on the socket the TUI names, and the kernel shows it listening there (/proc/net/unix).
+ * null when no such server is proven: the lookup goes on as before. "unproven" when it is, but does not say which
+ * conversation the TUI shows: it holds more or other than one rollout and that thread's write flock (a /new not
+ * written yet, a resume), or its descriptors or its birth changed while they were read. Linux only.
+ */
+function ownServerRollout(codexProcesses: readonly { pid: number; argv?: string[] }[], home: string): { path: string; identity: string } | "unproven" | null {
+  if (globalThis.process.platform !== "linux") return null;
+  const servers = new Map<number, string>();
+  for (const tui of codexProcesses) {
+    const remote = optionValue(tui.argv ?? [], "--remote");
+    if (remote === null || !remote.startsWith("unix:///")) continue;
+    try {
+      const stat = readFileSync(`/proc/${tui.pid}/stat`, "utf8");
+      const parent = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+      for (const sibling of readFileSync(`/proc/${parent}/task/${parent}/children`, "utf8").trim().split(/\s+/).map(Number)) {
+        if (sibling === tui.pid || !Number.isInteger(sibling) || sibling <= 0) continue;
+        let argv: string[];
+        try { argv = readFileSync(`/proc/${sibling}/cmdline`, "utf8").split("\0"); } catch { continue; }
+        const options = argv.slice(0, argv.includes("--") ? argv.indexOf("--") : undefined);
+        if (CODEX_EXECUTABLE.test(argv[0] ?? "") && options.includes("app-server") && optionValue(argv, "--listen") === remote) servers.set(sibling, remote.slice("unix://".length));
+      }
+    } catch { return null; }
+  }
+  if (servers.size !== 1) return null;
+  const [server, socket] = [...servers][0]!;
+  const born = processStartedAt(server);
+  const before = descriptorTargets(server);
+  let socketFile: string;
+  let lockFolder: string;
+  let table: string;
+  let listening: string;
+  try {
+    // 0.171 makes the socket a link to the one it listens on (serverSocket)
+    socketFile = realpathSync(socket);
+    lockFolder = join(realpathSync(home), "thread-writer-locks");
+    listening = readFileSync("/proc/net/unix", "utf8");
+    table = readFileSync("/proc/locks", "utf8");
+  } catch { return null; }
+  if (born === null || before === null) return null;
+  // the server's own sockets, one of them listening (__SO_ACCEPTCON) at that path
+  const sockets = new Set([...before.values()].flatMap((target) => /^socket:\[(\d+)\]$/.exec(target)?.[1] ?? []));
+  const listens = listening.split("\n").some((line) => {
+    const [, , , flags, , , inode, ...path] = line.trim().split(/\s+/);
+    return flags !== undefined && (Number.parseInt(flags, 16) & 0x10000) !== 0 && sockets.has(inode ?? "") && path.join(" ") === socketFile;
+  });
+  if (!listens) return null;
+  const rollouts = new Map<string, string | null>();
+  const opened = new Set<string>();
+  for (const [descriptor, target] of before) {
+    try {
+      const link = `/proc/${server}/fd/${descriptor}`;
+      if (nodePath.dirname(target) === lockFolder) {
+        if (!WRITER_LOCK.test(nodePath.basename(target))) return "unproven";
+        opened.add(statSync(link, { bigint: true }).ino.toString());
+        continue;
+      }
+      if (!target.endsWith(".jsonl")) continue;
+      const path = codexRolloutPath(target, home);
+      if (path === null) continue;
+      // as openRollouts: the file the descriptor holds, its name read again after the stat
+      const proven = statSync(link, { bigint: true });
+      const identity = readlinkSync(link) === target ? `${proven.dev}:${proven.ino}` : null;
+      // two files held under one path prove nothing
+      rollouts.set(path, rollouts.has(path) && rollouts.get(path) !== identity ? null : identity);
+    } catch { return "unproven"; }
+  }
+  // each lock file it has open must be its own write flock in the kernel's table: an open file alone is no lock
+  const flocked = new Set(table.split("\n").flatMap((line) => {
+    const lock = /^\d+:\s+FLOCK\s+\S+\s+WRITE\s+(\d+)\s+[0-9a-f]+:[0-9a-f]+:(\d+)\s/.exec(line);
+    return lock !== null && Number(lock[1]) === server ? [lock[2]!] : [];
+  }));
+  const after = descriptorTargets(server);
+  const same = after !== null && after.size === before.size && [...before].every(([descriptor, target]) => after.get(descriptor) === target);
+  if (!same || processStartedAt(server) !== born || rollouts.size !== 1 || opened.size !== 1) return "unproven";
+  const [path, identity] = [...rollouts][0]!;
+  const id = ROLLOUT_NAME.exec(nodePath.basename(path))?.[1]?.toLowerCase();
+  const [lockInode] = [...opened];
+  let lockOfThread: string;
+  try { lockOfThread = statSync(join(lockFolder, `${id}.lock`), { bigint: true }).ino.toString(); } catch { return "unproven"; }
+  if (identity === null || id === undefined || lockOfThread !== lockInode || !flocked.has(lockInode!)) return "unproven";
+  return { path, identity };
+}
+
+/**
+ * The conversations the Codex server Ovis started beside a pane's one TUI holds for it, as that server says
+ * (approvals/codex.ts servedConversations): only that TUI is on it, so none is another pane's. `only` for the one it
+ * holds, written in `home` under its own name, with the identity of its file; `among` for the written ones of `home`
+ * when it holds more (a /new, a /resume of a thread still loaded), none written yet, or it did not tell. null where Ovis
+ * has no connection to such a server: the lookup goes on as before.
+ */
+async function servedRollouts(paneId: string, codexProcesses: readonly { argv?: string[] }[], home: string): Promise<{ only: { path: string; identity: string } } | { among: string[]; running?: true } | null> {
+  if (codexProcesses.length !== 1) return null;
+  const threads = await servedConversations(paneId, codexProcesses[0]!.argv ?? []);
+  if (threads === null) return null;
+  // the pane's server did not tell: no folder or screen evidence stands in for it
+  if (threads === "unknown") return { among: [] };
+  // one that runs a turn now may show an answer its rollout does not hold yet
+  const among = threads.flatMap(({ threadId, path }) => {
+    const rollout = path === null ? null : codexRolloutPath(path, home);
+    // the file the store resolves the path to must be that thread's, not one a link in the store leads to
+    return rollout !== null && ROLLOUT_NAME.exec(nodePath.basename(rollout))?.[1]?.toLowerCase() === threadId.toLowerCase() ? [rollout] : [];
+  });
+  if (threads.length === 1 && among.length === 1) {
+    try {
+      const file = statSync(among[0]!, { bigint: true });
+      return { only: { path: among[0]!, identity: `${file.dev}:${file.ino}` } };
+    } catch { return { among: [] }; }
+  }
+  return { among, ...(threads.some(({ running }) => running) ? { running: true as const } : {}) };
+}
+
 export async function codexOpenRollout(paneId: string, cwd: string | null | undefined, home = defaultCodexHome()): Promise<string | null> {
   const agent = await codexAgentInfo(paneId);
   const { codexProcesses, processes, open } = await openRollouts(paneId, home);
   if (open.size === 1) return [...open][0]!;
+  const told = open.size === 0 ? await servedRollouts(paneId, codexProcesses, home) : null;
+  // the pane's server knows it holds more than one: no earlier report or binding says which the TUI shows
+  if (told !== null) return "only" in told ? told.only.path : null;
   const reported = cwd ? reportedRollout(agent.agent_session, home) : null;
   if (reported !== null && !agent.nestedTerminal && !agent.unlabelled && resumedThread(codexProcesses.map((process) => process.argv ?? [])) === null
     && await freshReportedThread(paneId, cwd!, home, reported, codexProcesses)) return reported;
@@ -3403,6 +3545,30 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
   // bind a conversation to the wrong one
   const { codexProcesses, processes, open, held } = await openRollouts(paneId, home, agent.processRead?.info);
   if (codexProcesses.length === 0) return null;
+  const told = open.size === 0 ? await servedRollouts(paneId, codexProcesses, home) : null;
+  if (told !== null) {
+    if ("only" in told) {
+      proofs?.set(told.only.path, told.only.identity);
+      return told.only.path;
+    }
+    // which of its own conversations the TUI shows is the server's to say, and it does not: the screen tells it among
+    // those only, never among the folder's
+    // each one the server holds is weighed whole, and none may run a turn now: an answer another of them gave too, or
+    // streams and has not written yet, or wrote before a cut, proves nothing (a fork, a resumed copy)
+    if (told.among.length === 0 || "running" in told || !told.among.every(readWhole)) return null;
+    const shown = await paneRead({ paneId, source: "recent", lines: 400, stripAnsi: true }).catch(() => null);
+    const candidates = told.among.flatMap((path) => {
+      try { return [{ path, text: codexHistoryTail(path, 1024 * 1024, home) }]; } catch { return []; }
+    });
+    if (shown === null || candidates.length !== told.among.length) return null;
+    // answers too short for the long match: the newest of them shown, each under its own prompt
+    const matched = matchCodexTranscript(shown.text, candidates, new Set(told.among))
+      ?? matchShortCodexAnswers(shown.text, candidates.map((candidate) => ({ ...candidate, cut: false })));
+    // the screen read is held to what the server held around it: a resume in between may show another
+    const again = matched === null ? null : await servedRollouts(paneId, codexProcesses, home);
+    return again !== null && "among" in again && !("running" in again) && again.among.length === told.among.length
+      && again.among.every((path, at) => path === told.among[at]) ? matched : null;
+  }
   // an unlabelled pane on an app server elsewhere (--remote) shows that server's conversation: nothing this store
   // holds is proof of it, by the id its command line resumed or by an answer both happen to hold
   if (agent.unlabelled && codexProcesses.some(({ argv = [] }) => argv.some((arg) => arg === "--remote" || arg.startsWith("--remote=")))) return null;
@@ -3418,6 +3584,13 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     // the outcome read never matches, rather than the unchecked read a rollout chosen by other means keeps (#3402)
     proofs?.set(only, held.get(only) ?? "");
     return only;
+  }
+  const served = open.size === 0 ? ownServerRollout(codexProcesses, home) : null;
+  // the pane's own server is known: no screen or folder evidence stands in for what it does not tell
+  if (served === "unproven") return null;
+  if (served !== null) {
+    proofs?.set(served.path, served.identity);
+    return served.path;
   }
   const resumed = resumedThread(codexProcesses.map((process) => process.argv ?? []));
 

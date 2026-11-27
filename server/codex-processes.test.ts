@@ -1021,6 +1021,110 @@ async function holding(ids: string[], kind: "readable" | "unreadable"): Promise<
   return child;
 }
 
+/**
+ * A Codex TUI on `--remote unix://<socket>` beside the app server its launcher started (server/approvals/codex.ts):
+ * both are children of one launcher. Its command line listens on `listen`, it binds `bound`, has `held` open and
+ * write-flocks `locked`.
+ */
+async function besideOwnServer(socket: string, listen: string, held: string[], locked: string[], bound = listen): Promise<void> {
+  const bin = mkdtempSync(join(root, "launch-"));
+  const child = Bun.spawn(["python3", "-c", [
+    "import fcntl, json, os, signal, socket, sys",
+    "codex, listen, held, locked, bound = sys.argv[1], sys.argv[2], json.loads(sys.argv[3]), json.loads(sys.argv[4]), sys.argv[5]",
+    "sleep = 'import time; time.sleep(600)'",
+    "tui = os.fork()",
+    "if tui == 0: os.execv(sys.executable, [codex, '-c', sleep])",
+    // the server tells it runs under its own command line, its files open, through a pipe its parent waits on
+    "up, told = os.pipe()",
+    "server = os.fork()",
+    "if server == 0:",
+    "  for path in held:",
+    "    fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT)",
+    "    if path in locked: fcntl.flock(fd, fcntl.LOCK_EX)",
+    "    os.set_inheritable(fd, True)",
+    "  path = bound[len('unix://'):]",
+    "  os.makedirs(os.path.dirname(path), exist_ok=True)",
+    "  server_socket = socket.socket(socket.AF_UNIX)",
+    "  server_socket.bind(path)",
+    "  server_socket.listen()",
+    "  os.set_inheritable(server_socket.fileno(), True)",
+    "  os.set_inheritable(told, True)",
+    "  os.execv(sys.executable, [codex, '-c', f'import os; os.write({told}, b\"x\"); {sleep}', 'app-server', '--listen', listen])",
+    "os.read(up, 1)",
+    "def stop(*_):",
+    "  for pid in (tui, server): os.kill(pid, signal.SIGKILL)",
+    "  os._exit(0)",
+    "signal.signal(signal.SIGTERM, stop)",
+    "print(tui, flush=True)",
+    "sys.stdin.read()",
+    "stop()",
+  ].join("\n"), join(bin, "codex"), listen, JSON.stringify(held), JSON.stringify(locked), bound], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  children.push(child);
+  const tui = Number((await firstLine(child.stdout)).trim());
+  foreground = [{ pid: tui, name: "codex", argv: [join(bin, "codex"), "--remote", `unix://${socket}`] }];
+}
+
+describe("a Codex TUI on the app server its own launcher started (codex --remote)", () => {
+  const served = "01a21926-fab0-7380-8781-a54f0544e7a5";
+  const other = "01a21931-27d9-7fe2-a119-2c0d822e4809";
+  const shown = "An answer the screen still shows from before a /new.";
+  const launchIt = (name: string, test: () => Promise<void>) => it.skipIf(process.platform !== "linux")(name, test, 20_000);
+  let socket: string;
+  let rollout: string;
+  let lock: (id: string) => string;
+
+  beforeEach(() => {
+    socket = join(root, "s", "codex.sock");
+    rollout = join(home, "sessions", `rollout-2026-11-27T03-38-34-${served}.jsonl`);
+    writeFileSync(rollout, [
+      { type: "session_meta", payload: { id: served, cwd: root } },
+      { type: "event_msg", payload: { type: "user_message", message: "Say it again" } },
+      { type: "event_msg", payload: { type: "agent_message", message: shown } },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    const db = new Database(join(home, "state_5.sqlite"));
+    db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 2, 2, 'vscode')").run(served, rollout, root);
+    db.close();
+    mkdirSync(join(home, "thread-writer-locks"), { recursive: true });
+    lock = (id) => join(home, "thread-writer-locks", `${id}.lock`);
+    screen = "› Ask Codex to do anything";
+  });
+
+  launchIt("reads the one conversation the server beside it holds, with no screen evidence", async () => {
+    await besideOwnServer(socket, `unix://${socket}`, [rollout, lock(served)], [lock(served)]);
+    expect(await resolve()).toBe(rollout);
+  });
+
+  launchIt("takes none, not even by the screen, while the server holds another thread's lock too: a /new not written yet", async () => {
+    screen = `› Say it again\n\n• ${shown}\n\n› Ask Codex to do anything`;
+    await besideOwnServer(socket, `unix://${socket}`, [rollout, lock(served), lock(other)], [lock(served), lock(other)]);
+    expect(await resolve()).toBeNull();
+  });
+
+  launchIt("takes none when the one lock it holds is another thread's", async () => {
+    writeFileSync(lock(served), "");
+    await besideOwnServer(socket, `unix://${socket}`, [rollout, lock(other)], [lock(other)]);
+    expect(await resolve()).toBeNull();
+  });
+
+  launchIt("takes none for a lock file the server has open but does not flock", async () => {
+    await besideOwnServer(socket, `unix://${socket}`, [rollout, lock(served)], []);
+    expect(await resolve()).toBeNull();
+  });
+
+  launchIt("takes none from a server that listens on another socket than the TUI's", async () => {
+    await besideOwnServer(socket, `unix://${join(root, "o", "codex.sock")}`, [rollout, lock(served)], [lock(served)]);
+    expect(await resolve()).toBeNull();
+  });
+
+  launchIt("takes none from a server whose command line names the TUI's socket but that listens elsewhere", async () => {
+    // a file left at the socket's path, which no process listens on
+    mkdirSync(join(root, "s"), { recursive: true });
+    writeFileSync(socket, "");
+    await besideOwnServer(socket, `unix://${socket}`, [rollout, lock(served)], [lock(served)], `unix://${join(root, "o", "codex.sock")}`);
+    expect(await resolve()).toBeNull();
+  });
+});
+
 function elsewhereThread(id: string, records: (string | { type: string; payload: Record<string, unknown> })[], source = "cli"): string {
   const folder = join(root, `elsewhere-${id.slice(-4)}`);
   mkdirSync(folder, { recursive: true });
