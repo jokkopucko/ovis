@@ -400,6 +400,21 @@ test("Q20: only an established connection names the peer, and two exact rows nam
   expect(peerUidInTable([TCP_HEADER, tcpRow(local, remote, 1000), tcpRow(local, remote, 2000)].join("\n"), 0x9c40, 0xa000)).toBeNull();
 });
 
+test("Q20: a read of the socket table that missed the live row, or showed it twice, is read again, a bounded number of times; rows naming two users are final", () => {
+  const hex = (port: number) => port.toString(16).toUpperCase();
+  const row = tcpRow(`0100007F:${hex(0xa000)}`, `0100007F:${hex(0x9c40)}`, 1000);
+  const other = tcpRow(`0100007F:${hex(0xa000)}`, `0100007F:${hex(0x9c40)}`, 1001);
+  const reads = (tables: string[][]) => {
+    let count = 0;
+    const uid = peerUidOnLinux(0x9c40, 0xa000, () => [TCP_HEADER, ...(tables[count++] ?? [])].join("\n"));
+    return { uid, count };
+  };
+  expect(reads([[], [row, row], [row]])).toEqual({ uid: 1000, count: 3 });
+  expect(reads([[], [], [], [row]])).toEqual({ uid: null, count: 3 });
+  expect(reads([[other]])).toEqual({ uid: 1001, count: 1 });
+  expect(reads([[row, other], [row]])).toEqual({ uid: null, count: 1 });
+});
+
 test("R8: the confirm page counts as opened only once xdg-open started; a desktop without it is told so", async () => {
   const bin = stateDir();
   const env = { DISPLAY: ":0", PATH: bin };
