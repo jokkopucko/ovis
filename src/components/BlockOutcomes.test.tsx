@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { act } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import type { PcBlockOutcome } from "../../shared/account-devices-api.ts";
 import { SettingsProvider } from "../lib/settings.ts";
@@ -13,29 +14,9 @@ const D = "e".repeat(32);
 const names = new Map([[A, "Desk"], [B, "Lab"], [C, "Away"], [D, "Old box"]]);
 
 describe("a block's outcome on each PC", () => {
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
-
-  beforeEach(() => {
-    for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
-    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"] } });
-    const events = new EventTarget();
-    Object.defineProperty(globalThis, "window", { configurable: true, value: { addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events) } });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: { documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, querySelector: () => null } });
-  });
-
-  afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
-    for (const [key, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-  });
-
-  const text = (node: ReactTestInstance): string => node.children.map((child) => typeof child === "string" ? child : text(child)).join("");
+  let page: Page;
+  beforeEach(() => { page = openPage(); });
+  afterEach(async () => { await page.close(); });
 
   it("T60, T65: only a PC's own receipt reads blocked; a refusal says why; a PC not reached promises no time", async () => {
     const outcomes: PcBlockOutcome[] = [
@@ -44,8 +25,8 @@ describe("a block's outcome on each PC", () => {
       { server_id: C, state: "unreachable" },
       { server_id: D, state: "waiting" },
     ];
-    await act(async () => { renderer = create(<SettingsProvider><BlockOutcomes outcomes={outcomes} names={names} /></SettingsProvider>); });
-    const lines = renderer!.root.findAll((node) => node.type === "li").map(text);
+    await page.render(<SettingsProvider><BlockOutcomes outcomes={outcomes} names={names} /></SettingsProvider>);
+    const lines = [...page.container.querySelectorAll("li")].map((node) => node.textContent ?? "");
     expect(lines[0]).toBe("Desk: blocked");
     expect(lines[1]).toContain("Lab: not blocked");
     expect(lines.slice(1).every((line) => !line.endsWith(": blocked"))).toBe(true);
@@ -55,10 +36,10 @@ describe("a block's outcome on each PC", () => {
 
   it("T51: Not me answers once and cannot be pressed again while it is sent", async () => {
     let presses = 0;
-    await act(async () => { renderer = create(<SettingsProvider><NotMeButton sending={false} onPress={() => { presses += 1; }} /></SettingsProvider>); });
-    await act(async () => { renderer!.root.findByType("button").props.onClick(); });
+    await page.render(<SettingsProvider><NotMeButton sending={false} onPress={() => { presses += 1; }} /></SettingsProvider>);
+    await act(async () => { page.one("button").click(); });
     expect(presses).toBe(1);
-    await act(async () => { renderer!.update(<SettingsProvider><NotMeButton sending onPress={() => { presses += 1; }} /></SettingsProvider>); });
-    expect(renderer!.root.findByType("button").props.disabled).toBe(true);
+    await page.render(<SettingsProvider><NotMeButton sending onPress={() => { presses += 1; }} /></SettingsProvider>);
+    expect(page.one<HTMLButtonElement>("button").disabled).toBe(true);
   });
 });

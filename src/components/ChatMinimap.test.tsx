@@ -1,29 +1,25 @@
 import { afterEach, beforeEach, expect, it, spyOn } from "bun:test";
-import { createRef } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, createRef } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import * as i18n from "../lib/i18n.ts";
 import { ChatMinimap } from "./ChatMinimap.tsx";
 
-const globals = ["document", "requestAnimationFrame", "cancelAnimationFrame", "ResizeObserver", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"];
+const globals = ["requestAnimationFrame", "cancelAnimationFrame", "ResizeObserver"];
 const saved = new Map<string, PropertyDescriptor | undefined>();
-let page: EventTarget & { hidden: boolean };
+let page: Page;
 let frames: Map<number, FrameRequestCallback>;
-let renderer: ReactTestRenderer | undefined;
 let restoreTranslation = () => {};
 
 beforeEach(() => {
-  page = Object.assign(new EventTarget(), { hidden: false });
+  page = openPage();
   frames = new Map();
   let next = 0;
   const translated = spyOn(i18n, "useT").mockReturnValue((text) => text);
   restoreTranslation = () => translated.mockRestore();
   const values: Record<string, unknown> = {
-    IS_REACT_ACT_ENVIRONMENT: true,
-    document: page,
     requestAnimationFrame: (callback: FrameRequestCallback) => { frames.set(++next, callback); return next; },
     cancelAnimationFrame: (id: number) => { frames.delete(id); },
-    getComputedStyle: () => ({ fontSize: "16px" }),
     ResizeObserver: class { observe() {} disconnect() {} },
   };
   for (const key of globals) {
@@ -32,9 +28,8 @@ beforeEach(() => {
   }
 });
 
-afterEach(() => {
-  act(() => renderer?.unmount());
-  renderer = undefined;
+afterEach(async () => {
+  await page.close();
   restoreTranslation();
   for (const key of globals) {
     const descriptor = saved.get(key);
@@ -43,25 +38,23 @@ afterEach(() => {
   }
 });
 
-it("measures a hidden chat in no frame until the page is shown again (IS-092)", () => {
+it("measures a hidden chat in no frame until the page is shown again (IS-092)", async () => {
   let measured = 0;
-  const scroller = Object.assign(new EventTarget(), {
-    getBoundingClientRect: () => { measured++; return { top: 0, bottom: 800, width: 1000, height: 800 }; },
-    querySelectorAll: () => [],
-    querySelector: () => null,
-  });
   const ref = createRef<HTMLDivElement>();
-  page.hidden = true;
-  act(() => {
-    renderer = create(<><div ref={ref} /><ChatMinimap turns={[]} rowKeys={["a", "b"]} scroller={ref} onJump={() => {}} /></>, { createNodeMock: () => scroller });
+  const setHidden = (value: boolean) => Object.defineProperty(page.window.document, "hidden", { configurable: true, value });
+  setHidden(true);
+  Object.defineProperty(page.window.HTMLElement.prototype, "getBoundingClientRect", {
+    configurable: true,
+    value: () => { measured++; return { top: 0, bottom: 800, width: 1000, height: 800 }; },
   });
-  scroller.dispatchEvent(new Event("scroll"));
+  await page.render(<><div ref={ref} /><ChatMinimap turns={[]} rowKeys={["a", "b"]} scroller={ref} onJump={() => {}} /></>);
+  await act(async () => { Reflect.apply(page.one("div").dispatchEvent, page.one("div"), [new page.window.Event("scroll")]); });
   expect(frames.size).toBe(0);
   expect(measured).toBe(0);
-  page.hidden = false;
-  page.dispatchEvent(new Event("visibilitychange"));
+  setHidden(false);
+  await act(async () => { page.window.document.dispatchEvent(new page.window.Event("visibilitychange")); });
   expect(frames.size).toBe(1);
-  act(() => {
+  await act(async () => {
     const due = [...frames.values()];
     frames.clear();
     for (const callback of due) callback(0);

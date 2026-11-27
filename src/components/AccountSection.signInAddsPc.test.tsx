@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
-import { createElement, type ReactNode } from "react";
-import * as ReactDom from "react-dom";
-import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { act } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { exportPublicKey, generateKeyPair, importPublicKey } from "../../shared/relay-e2ee.ts";
@@ -13,9 +12,7 @@ import { fakeIndexedDB } from "../lib/indexedDB.fake.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { nativeTransport, setTransport } from "../lib/transport.ts";
 
-// a portal is drawn in place, so the test renderer sees Manage account's sheet
-await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => createElement("div", { "data-portal": "" }, node) }));
-const { AccountSection } = await import("./AccountSection.tsx");
+import { AccountSection } from "./AccountSection.tsx";
 
 // Signing in on a PC's own page adds the PC in the same step (docs/account.md, "Adding a PC"): the sign-in
 // that finishes on this screen lists the PC and waits; one that was already there only offers the button.
@@ -28,11 +25,10 @@ const OFFER = encodeOffer({ v: 1, server_id: SERVER, server_public_key: publicKe
 
 describe("signing in on a PC's own page", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
   let fake: FakeAccountService;
   let pcAccount: string | null;
   let asked: { path: string; localOnly: boolean }[];
-  let tab: Map<string, string>;
   let userCode: string | null;
   let approveWith: "github" | "google";
   let ahead: number;
@@ -60,30 +56,20 @@ describe("signing in on a PC's own page", () => {
     directoryWrites = [];
     boundOnDirectoryRead = false;
     membershipGate = undefined;
-    tab = new Map();
     userCode = null;
-    for (const key of ["window", "document", "navigator", "indexedDB", "getComputedStyle", "location", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    // Manage account's sheet keeps the focus in it, which asks what an element is
-    Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: class {} });
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, writable: true, value: true });
-    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
+    page = openPage("https://workstation.example.ts.net/");
+    Object.defineProperty(page.window, "isSecureContext", { configurable: true, value: true });
+    for (const key of ["indexedDB", "location", "HTMLElement", "Event", "CustomEvent"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, "Event", { configurable: true, value: page.window.Event });
+    Object.defineProperty(globalThis, "CustomEvent", { configurable: true, value: page.window.CustomEvent });
     Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: fakeIndexedDB().factory });
-    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36", maxTouchPoints: 0 } });
-    Object.defineProperty(globalThis, "location", { configurable: true, writable: true, value: { pathname: "/", origin: "https://workstation.example.ts.net" } });
-    const storage = { getItem: (key: string) => tab.get(key) ?? null, setItem: (key: string, value: string) => { tab.set(key, value); }, removeItem: (key: string) => { tab.delete(key); } };
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      isSecureContext: true,
-      location: { href: "https://workstation.example.ts.net/" },
-      sessionStorage: storage,
-      localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {}, key: () => null, length: 0 },
-      addEventListener: () => {}, removeEventListener: () => {},
-    } });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: {
-      hidden: false,
-      documentElement: { lang: "", dataset: {}, style: { setProperty() {}, removeProperty() {}, getPropertyValue: () => "" } },
-      querySelector: (selector: string) => selector === 'meta[name="ovis-pc-account-service"]' ? { getAttribute: () => SERVICE } : null,
-      addEventListener: () => {}, removeEventListener: () => {},
-    } });
+    Object.defineProperty(globalThis, "location", { configurable: true, value: page.window.location });
+    Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: page.window.HTMLElement });
+    Object.defineProperty(page.window.navigator, "userAgent", { configurable: true, value: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36" });
+    const meta = page.window.document.createElement("meta");
+    meta.name = "ovis-pc-account-service";
+    meta.content = SERVICE;
+    page.window.document.head.append(meta);
     const fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       const url = new URL(String(input instanceof Request ? input.url : input), "https://workstation.example.ts.net");
       if (url.origin !== SERVICE) {
@@ -133,8 +119,7 @@ describe("signing in on a PC's own page", () => {
   });
 
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
+    await page.close();
     setTransport(nativeTransport);
     mock.restore();
     for (const [key, descriptor] of descriptors) {
@@ -144,25 +129,25 @@ describe("signing in on a PC's own page", () => {
     descriptors.clear();
   });
 
-  const text = (node: ReactTestInstance): string => node.children.map((child) => typeof child === "string" ? child : text(child)).join("");
-  const buttons = (): string[] => renderer!.root.findAll((node) => node.type === "button").map(text);
+  const text = (node: { textContent: string | null }): string => node.textContent ?? "";
+  const buttons = (): string[] => [...document.body.querySelectorAll<HTMLButtonElement>("button")].map(text);
   const until = async (shown: () => boolean): Promise<void> => {
     for (let turn = 0; turn < 400 && !shown(); turn++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
     expect(shown()).toBe(true);
   };
   const mount = async (): Promise<void> => {
-    await act(async () => { renderer = create(<SettingsProvider><AccountSection /></SettingsProvider>); });
+    await page.render(<SettingsProvider><AccountSection /></SettingsProvider>);
   };
   const recheck = async (count: number): Promise<void> => {
-    await act(async () => { renderer!.update(<SettingsProvider><AccountSection recheck={count} /></SettingsProvider>); });
+    await page.render(<SettingsProvider><AccountSection recheck={count} /></SettingsProvider>);
   };
   const press = async (label: string): Promise<void> => {
-    const found = renderer!.root.findAll((node) => node.type === "button" && text(node) === label);
+    const found = [...document.body.querySelectorAll<HTMLButtonElement>("button")].filter((node) => text(node) === label);
     expect(found).toHaveLength(1);
-    await act(async () => { (found[0]!.props as { onClick: () => void }).onClick(); });
+    await act(async () => { found[0]?.click(); });
   };
   /** the one button that also turns the relay on: it reads like the plain one, and is marked apart */
-  const relayButtons = (): ReactTestInstance[] => renderer!.root.findAll((node) => node.type === "button" && node.props["data-relay"] === "off");
+  const relayButtons = (): HTMLButtonElement[] => [...document.body.querySelectorAll<HTMLButtonElement>('button[data-relay="off"]')];
   const links = (): { path: string; localOnly: boolean }[] => asked.filter((request) => request.path === "/api/relay/link");
 
   it("lists the PC and waits once the sign-in finishes, with no second press, and only then", async () => {
@@ -172,22 +157,22 @@ describe("signing in on a PC's own page", () => {
     await press("Sign in and add this PC");
     await until(() => buttons().includes("Stop waiting"));
     expect((await indexedAccountStore.get("session"))?.account).toBe(ACCOUNT);
-    expect(text(renderer!.root)).toContain("On another device of your account, choose Add on desk.");
+    expect(text(document.body)).toContain("On another device of your account, choose Add on desk.");
     // listed once in the account's directory, behind a window only this PC approves; the relay was not asked to start
     expect(links()).toEqual([{ path: "/api/relay/link", localOnly: true }]);
     expect(asked.some((request) => request.path === "/api/relay/start")).toBe(false);
     expect((await new AccountService({ store: indexedAccountStore }).listPcs()).map((pc) => pc.server_id)).toEqual([SERVER]);
-    expect(JSON.parse(tab.get(MARKER)!)).toMatchObject({ name: "desk", serverId: SERVER, account: ACCOUNT });
+    expect(JSON.parse(page.window.sessionStorage.getItem(MARKER)!)).toMatchObject({ name: "desk", serverId: SERVER, account: ACCOUNT });
 
     await press("Stop waiting");
     await until(() => asked.some((request) => request.path === "/api/relay/link/close"));
     expect(buttons()).toContain("Add this PC to my account");
 
-    await act(async () => { renderer?.unmount(); });
+    await page.render(null);
     const before = asked.length;
     await mount();
     await until(() => buttons().includes("Add this PC to my account"));
-    expect(text(renderer!.root)).not.toContain("Signed in. Adding this PC to your account…");
+    expect(text(document.body)).not.toContain("Signed in. Adding this PC to your account…");
     expect(asked.slice(before).map((request) => request.path).filter((path) => path !== "/api/account/status" && path !== "/api/health")).toEqual([]);
   });
 
@@ -209,14 +194,14 @@ describe("signing in on a PC's own page", () => {
       directoryWrites.length = 0;
       boundOnDirectoryRead = bound;
       await press("Add this PC to my account");
-      await until(() => text(renderer!.root).includes("Added") || buttons().includes("Stop waiting"));
+      await until(() => text(document.body).includes("Added") || buttons().includes("Stop waiting"));
       expect(directoryWrites).toEqual(bound ? [] : ["DELETE", "PUT"]);
       const [after] = await service.listPcs();
       expect(after?.server_id).toBe(SERVER);
       if (bound) {
         expect(after?.added_at).toBe(listed?.added_at);
         expect(pcAccount).toBe(ACCOUNT);
-        expect(text(renderer!.root)).toContain("Added");
+        expect(text(document.body)).toContain("Added");
         expect(buttons()).not.toContain("Stop waiting");
       } else {
         expect(Date.parse(after?.added_at ?? "")).toBeGreaterThan(Date.parse(listed?.added_at ?? ""));
@@ -251,11 +236,11 @@ describe("signing in on a PC's own page", () => {
     await press("Sign in again");
     // The list must reflect the completed removal, not the empty state while reloading.
     await until(() => {
-      const screen = text(renderer!.root);
+      const screen = text(document.body);
       return screen.includes("Google, connected") && !screen.includes("GitHub, connected") && buttons().includes("Add this PC to my account");
     });
     expect(buttons()).not.toContain("Stop waiting");
-    expect(text(renderer!.root)).not.toContain("Signed in. Adding this PC to your account…");
+    expect(text(document.body)).not.toContain("Signed in. Adding this PC to your account…");
     // Manage account's own device list reads this PC's devices; nothing writes to the PC or lists it
     expect(asked.slice(before).map((request) => request.path).filter((path) => path !== "/api/account/status" && path !== "/api/health" && path !== "/api/devices")).toEqual([]);
   });
@@ -290,7 +275,7 @@ describe("signing in on a PC's own page", () => {
     await until(() => relayButtons().length === 1);
     expect(asked.some((request) => request.path === "/api/relay/start")).toBe(false);
     expect(await new AccountService({ store: indexedAccountStore }).listPcs()).toEqual([]);
-    await act(async () => { (relayButtons()[0]!.props as { onClick: () => void }).onClick(); });
+    await act(async () => { relayButtons()[0]!.click(); });
     await until(() => buttons().includes("Stop waiting"));
     expect(asked.filter((request) => request.path === "/api/relay/start")).toHaveLength(1);
     expect(links().every((request) => request.localOnly)).toBe(true);
@@ -315,8 +300,8 @@ describe("signing in on a PC's own page", () => {
     // fixed wait: proves that nothing is listed, opened or offered after the sign-in
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
     expect(links()).toHaveLength(0);
-    expect(text(renderer!.root)).not.toContain("Adding this PC");
-    expect(text(renderer!.root)).not.toContain("could not be listed");
+    expect(text(document.body)).not.toContain("Adding this PC");
+    expect(text(document.body)).not.toContain("could not be listed");
     expect(buttons()).not.toContain("Add this PC to my account");
     expect(relayButtons()).toHaveLength(0);
   });
@@ -331,11 +316,11 @@ describe("signing in on a PC's own page", () => {
     await until(() => buttons().includes("Add this PC to my account"));
     // fixed wait: proves that nothing is listed or opened by itself
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
-    expect(text(renderer!.root)).not.toContain("Signed in. Adding this PC to your account…");
+    expect(text(document.body)).not.toContain("Signed in. Adding this PC to your account…");
     expect(buttons()).not.toContain("Stop waiting");
     expect(links()).toHaveLength(0);
     expect(await new AccountService({ store: indexedAccountStore }).listPcs()).toEqual([]);
-    expect(tab.has(MARKER)).toBe(false);
+    expect((page.window.sessionStorage.getItem(MARKER) !== null)).toBe(false);
   });
 
   it("the button's words follow the relay: read again when Settings asks, and by itself", async () => {
@@ -361,7 +346,7 @@ describe("signing in on a PC's own page", () => {
     await until(() => buttons().includes("Add this PC to my account"));
     // fixed wait: proves that nothing is listed or opened by itself
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
-    expect(text(renderer!.root)).not.toContain("Signed in. Adding this PC to your account…");
+    expect(text(document.body)).not.toContain("Signed in. Adding this PC to your account…");
     expect(buttons()).not.toContain("Stop waiting");
     expect(links()).toHaveLength(0);
     expect(await new AccountService({ store: indexedAccountStore }).listPcs()).toEqual([]);
@@ -375,7 +360,7 @@ describe("signing in on a PC's own page", () => {
     await until(() => buttons().includes("Sign out"));
     refuses = true;
     await recheck(1);
-    await until(() => text(renderer!.root).includes("Your sign-in ended."));
+    await until(() => text(document.body).includes("Your sign-in ended."));
     expect(ended?.account).toBe(ACCOUNT);
     expect(links()).toHaveLength(0);
 

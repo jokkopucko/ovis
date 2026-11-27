@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { act } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import type { ConversationTurn } from "../../shared/protocol.ts";
 import { SettingsProvider } from "../lib/settings.ts";
@@ -7,78 +8,52 @@ import * as clipboard from "../lib/clipboard.ts";
 import * as plainTextModule from "../lib/plainText.ts";
 import { Turn } from "./ChatView.tsx";
 
-const descriptors = new Map<string, PropertyDescriptor | undefined>();
-
-function installBrowserGlobals(): void {
-  for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-  const style = { setProperty() {}, removeProperty() {}, getPropertyValue: () => "", backgroundColor: "" };
-  const listen = { addEventListener() {}, removeEventListener() {} };
-  // setTimeout/clearTimeout are no-ops: a copy's "Copied" timer must not outlive the fixture
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, writable: true, value: true });
-  Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, writable: true, value: () => style });
-  Object.defineProperty(globalThis, "navigator", { configurable: true, writable: true, value: { languages: ["en"] } });
-  Object.defineProperty(globalThis, "window", { configurable: true, writable: true, value: { ...listen, setTimeout: () => 0, clearTimeout() {} } });
-  Object.defineProperty(globalThis, "document", { configurable: true, writable: true, value: { ...listen, documentElement: { lang: "", dataset: {}, style }, querySelector: () => null } });
-}
-
-function uninstallBrowserGlobals(): void {
-  for (const [key, descriptor] of descriptors) {
-    if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-    else Reflect.deleteProperty(globalThis, key);
-  }
-}
-
 /** One assistant turn whose words are its whole content; `ts` null keeps its row free of clocks. */
 const assistantTurn = (textParts?: string[]): ConversationTurn => ({ role: "assistant", ts: null, parts: textParts === undefined ? [{ kind: "text", text: "An answer." }] : textParts.map((text) => ({ kind: "text", text })) });
 
 const turnProps = (turn: ConversationTurn) => ({ paneId: "p1", turn, rowKey: "row", live: false, waiting: false, showThinking: false });
 
-const copyButton = (renderer: ReactTestRenderer, label: string): ReactTestInstance => renderer.root.findAll((node) => node.type === "button" && node.props["aria-label"] === label)[0]!;
-
 describe("an assistant turn's TXT copy derives its words only when copied", () => {
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
+  const copySelector = (label: string) => `button[aria-label="${label}"]`;
   let plainTextSpy: ReturnType<typeof spyOn>;
   let copyTextSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
-    installBrowserGlobals();
+    page = openPage();
+    // Keep the copy affordance's reset timer inside this fixture.
+    Object.defineProperty(page.window, "setTimeout", { configurable: true, value: () => 0 });
     const realPlainText = plainTextModule.plainText; // the original implementation, captured before any spy is installed; the spy counts while delegating to it byte-for-byte
     plainTextSpy = spyOn(plainTextModule, "plainText").mockImplementation((markdown) => realPlainText(markdown));
     copyTextSpy = spyOn(clipboard, "copyText").mockImplementation(() => Promise.resolve(true)); // the clipboard write is observed, not performed (no live browser here)
   });
 
-  afterEach(() => {
-    act(() => { renderer?.unmount(); });
-    renderer = undefined;
+  afterEach(async () => {
+    await page.close();
     plainTextSpy.mockRestore();
     copyTextSpy.mockRestore();
-    uninstallBrowserGlobals();
   });
 
   const renderTurn = async (turn: ConversationTurn): Promise<void> => {
-    await act(async () => { renderer = create(<SettingsProvider><Turn {...turnProps(turn)} /></SettingsProvider>); });
-  };
-
-  const updateTurn = async (turn: ConversationTurn): Promise<void> => {
-    await act(async () => { renderer!.update(<SettingsProvider><Turn {...turnProps(turn)} /></SettingsProvider>); });
+    await page.render(<SettingsProvider><Turn {...turnProps(turn)} /></SettingsProvider>);
   };
 
   const clickCopy = async (label: string): Promise<void> => {
     // onClick is `void copy()`: its synchronous part - deriving plain text and calling copyText - runs
     // inside this act; only its state update (setCopied) settles later as a microtask, which no assertion
     // here depends on
-    await act(async () => { copyButton(renderer!, label).props.onClick(); });
+    await act(async () => { page.one(copySelector(label)).click(); });
   };
   it("renders an answer without deriving its plain text (baseline)", async () => {
     await renderTurn(assistantTurn(["# Plan\n\n**One** step:\n\n```\nrun tests\n```\n\nSee [the docs](https://example.com/docs) for more."])); // markdown with a heading, bold, a code fence and a link (AC-002 content shapes)
-    expect(copyButton(renderer!, "Copy as markdown")).toBeDefined(); // both copy buttons are drawn beside the answer's words
-    expect(copyButton(renderer!, "Copy as plain text")).toBeDefined();
+    expect(page.container.querySelector(copySelector("Copy as markdown"))).not.toBeNull(); // both copy buttons are drawn beside the answer's words
+    expect(page.container.querySelector(copySelector("Copy as plain text"))).not.toBeNull();
     expect(plainTextSpy).toHaveBeenCalledTimes(0); // RED before TASK-002: the row derived it on every render; GREEN after: zero until a TXT copy is asked for (AC-002)
   });
 
   it("streams new words into the answer without deriving its plain text", async () => {
     await renderTurn(assistantTurn(["First words."]));
-    await updateTurn(assistantTurn(["First words.", "More words arrive while the turn runs."])); // a streaming update just before the click (AC-002)
+    await renderTurn(assistantTurn(["First words.", "More words arrive while the turn runs."])); // a streaming update just before the click (AC-002)
     expect(plainTextSpy).toHaveBeenCalledTimes(0); // nothing derived while the words streamed in or settled into their row
     await clickCopy("Copy as plain text");
     expect(copyTextSpy).toHaveBeenCalledTimes(1); // one clipboard write for one click: the gesture semantics are unchanged (AC-006)
@@ -98,7 +73,7 @@ describe("an assistant turn's TXT copy derives its words only when copied", () =
   it("starts the plain-text clipboard write inside the click gesture", async () => {
     await renderTurn(assistantTurn(["# Heading\n\n> quoted\n~~gone~~ and **kept**."]));
     await act(async () => {
-      copyButton(renderer!, "Copy as plain text").props.onClick();
+      page.one(copySelector("Copy as plain text")).click();
       // Check before act flushes microtasks: the browser may require an active user gesture.
       expect(copyTextSpy.mock.calls).toEqual([["Heading\n\nquoted\ngone and kept."]]);
     });
@@ -113,9 +88,9 @@ describe("an assistant turn's TXT copy derives its words only when copied", () =
   ])("does not stall the clipboard write on a long run of $kind", async ({ answer, expected }) => {
     await renderTurn(assistantTurn([answer]));
     await act(async () => {
-      const button = copyButton(renderer!, "Copy as plain text");
+      const button = page.one(copySelector("Copy as plain text"));
       const start = process.cpuUsage();
-      button.props.onClick();
+      button.click();
       const { user, system } = process.cpuUsage(start);
       expect(copyTextSpy.mock.calls).toEqual([[expected]]);
       // Legacy rescanning used seconds of CPU. Allow a full second for the synchronous write.
@@ -125,8 +100,8 @@ describe("an assistant turn's TXT copy derives its words only when copied", () =
 
   it("shows no copy buttons for an empty answer, so nothing is derived", async () => {
     await renderTurn({ role: "assistant", ts: null, parts: [{ kind: "text", text: "" }] }); // an answer with no words (AC-002 boundary)
-    expect(copyButton(renderer!, "Copy as markdown")).toBeUndefined(); // the copy row is drawn only beside words (AC-006)
-    expect(copyButton(renderer!, "Copy as plain text")).toBeUndefined();
+    expect(page.container.querySelector(copySelector("Copy as markdown"))).toBeNull(); // the copy row is drawn only beside words (AC-006)
+    expect(page.container.querySelector(copySelector("Copy as plain text"))).toBeNull();
     expect(plainTextSpy).toHaveBeenCalledTimes(0); // nothing derived for an empty answer (AC-002)
   });
 

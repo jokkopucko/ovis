@@ -1,13 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 import { SettingsProvider } from "../lib/settings.ts";
-import { useEffect } from "react";
+import { act, useEffect } from "react";
 import { useAccessState, usePairFromAddress } from "../lib/useAccess.ts";
 import { AccessGate } from "./AccessGate.tsx";
 
 describe("pairing link access gate", () => {
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
   let access: ReturnType<typeof useAccessState>;
   let gateKey = 0;
   let pairRequests: number;
@@ -19,23 +18,8 @@ describe("pairing link access gate", () => {
     pairRequests = 0;
     pairStatus = 204;
     gateKey = 0;
-    for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) {
-      descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    }
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Test browser", maxTouchPoints: 0 } });
-    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
-    const events = new EventTarget();
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      location: { href: "https://ovis.example/?pair=123456" },
-      history: { state: null, replaceState() {} },
-      addEventListener: events.addEventListener.bind(events),
-      removeEventListener: events.removeEventListener.bind(events),
-    } });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: {
-      documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
-      querySelector: () => null,
-    } });
+    page = openPage("https://ovis.example/?pair=123456");
+    Object.defineProperty(page.window.navigator, "languages", { configurable: true, value: ["en"] });
     const fetch = async (input: string | URL | Request) => {
       if (String(input).includes("/api/devices/pair")) {
         pairRequests++;
@@ -48,17 +32,11 @@ describe("pairing link access gate", () => {
   });
 
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
+    await page.close();
     mock.restore();
-    for (const [key, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    descriptors.clear();
   });
 
-  function Page() {
+  function Probe() {
     access = useAccessState();
     usePairFromAddress({ ...access, loadHealth: access.readBridgeHealth });
     useEffect(() => { if (initiallyOpen) void access.readBridgeHealth(); }, []);
@@ -67,10 +45,10 @@ describe("pairing link access gate", () => {
       consumePairCode={access.consumePairCode} pairingUnconfirmed={access.pairingUnconfirmed}
       onPaired={access.onPaired} onUnlocked={() => access.setLocked(false)} />;
   }
-  const view = () => <SettingsProvider><Page /></SettingsProvider>;
+  const view = () => <SettingsProvider><Probe /></SettingsProvider>;
 
   it("does not let the App effect submit a code already sent by the gate after unlock", async () => {
-    await act(async () => { renderer = create(view()); });
+    await page.render(view());
     expect(access!.locked).toBe(false);
     expect(pairRequests).toBe(1);
     expect(access!.pairCode).toBe("");
@@ -78,45 +56,45 @@ describe("pairing link access gate", () => {
 
   it("leaves no link code in the field after a failed automatic attempt", async () => {
     pairStatus = 401;
-    await act(async () => { renderer = create(view()); });
+    await page.render(view());
     expect(pairRequests).toBe(1);
-    expect(renderer!.root.findByProps({ id: "access-gate-code" }).props.value).toBe("");
+    expect(page.one<HTMLInputElement>("#access-gate-code").value).toBe("");
   });
 
   it("pairs an already-open browser from the address once, without mounting the gate", async () => {
     initiallyOpen = true;
-    await act(async () => { renderer = create(view()); });
+    await page.render(view());
     expect(access!.locked).toBe(false);
     expect(pairRequests).toBe(1);
     expect(access!.pairCode).toBe("");
-    expect(renderer!.root.findAllByType(AccessGate)).toHaveLength(0);
+    expect(page.container.childNodes).toHaveLength(0);
     await act(async () => { await access!.readBridgeHealth(); });
     expect(pairRequests).toBe(1);
   });
 
   it("does not replay a successful link when health rejects the cookie, and explains the relock", async () => {
-    await act(async () => { renderer = create(view()); });
+    await page.render(view());
     expect(pairRequests).toBe(1);
     expect(access!.locked).toBe(false);
     await act(async () => { await access!.readBridgeHealth(); });
     expect(access!.locked).toBe(true);
     expect(pairRequests).toBe(1);
-    const alerts = renderer!.root.findAllByProps({ role: "alert" }).map((node) => node.children.join(""));
+    const alerts = [...page.container.querySelectorAll('[role="alert"]')].map((node) => node.textContent);
     expect(alerts).toContain("Could not confirm this browser is paired. Check that cookies are enabled, then try again.");
     expect(alerts.join(" ")).not.toContain("That code is wrong");
-    const input = renderer!.root.findByProps({ id: "access-gate-code" });
-    expect(input.props.value).toBe("");
-    expect(input.props["aria-invalid"]).toBe(false);
-    expect(input.props["aria-describedby"]).toBeUndefined();
+    const input = page.one<HTMLInputElement>("#access-gate-code");
+    expect(input.value).toBe("");
+    expect(input.getAttribute("aria-invalid")).toBe("false");
+    expect(input.getAttribute("aria-describedby")).toBeNull();
   });
 
   it("does not replay a failed link when the gate remounts", async () => {
     pairStatus = 401;
-    await act(async () => { renderer = create(view()); });
+    await page.render(view());
     expect(pairRequests).toBe(1);
     gateKey++;
-    await act(async () => { renderer!.update(view()); });
+    await page.render(view());
     expect(pairRequests).toBe(1);
-    expect(renderer!.root.findByProps({ id: "access-gate-code" }).props.value).toBe("");
+    expect(page.one<HTMLInputElement>("#access-gate-code").value).toBe("");
   });
 });

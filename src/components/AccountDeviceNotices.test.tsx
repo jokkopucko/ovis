@@ -1,5 +1,6 @@
 import { afterEach, expect, it, jest, spyOn } from "bun:test";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act } from "react";
+import { openPage, reactProps, type Page } from "../lib/page.fixture.ts";
 
 import { LOCAL_MACHINE, type Machine } from "../../shared/machines.ts";
 import type { DeviceNotice } from "../../shared/account-devices-api.ts";
@@ -12,6 +13,33 @@ import { SettingsProvider } from "../lib/settings.ts";
 import { HerdrSocket } from "../lib/ws.ts";
 import { ACCOUNT_SIGN_OUT_EVENT, AccountService } from "../lib/account/service.ts";
 import { useAccountDeviceNotices } from "./AccountDeviceNotices.tsx";
+
+function openNoticePage(): Page {
+  const page = openPage();
+  Object.defineProperty(page.window.document, "hasFocus", { configurable: true, value: () => true });
+  return page;
+}
+
+const buttonsNamed = (root: HTMLElement, label: string) => [...root.querySelectorAll("button")].filter((button) => button.textContent === label);
+const noticeButton = (root: HTMLElement, label: string) => {
+  const button = buttonsNamed(root, label)[0];
+  if (!button) throw new Error(`Missing button: ${label}`);
+  return button;
+};
+
+// DOM click does not return the handler promise. Wait for the real signature before flushing its result.
+async function pressNotMe(button: HTMLButtonElement): Promise<void> {
+  const signed = Promise.withResolvers<ArrayBuffer>();
+  const sign = crypto.subtle.sign.bind(crypto.subtle);
+  const spy = spyOn(crypto.subtle, "sign").mockImplementation((...args) => {
+    const result = sign(...args);
+    signed.resolve(result);
+    return result;
+  });
+  try {
+    await act(async () => { button.click(); await signed.promise; });
+  } finally { spy.mockRestore(); }
+}
 
 function noticeSockets(...wires: DeviceNoticeWire[]) {
   return class {
@@ -37,7 +65,6 @@ it.each([
   const dismissWhilePending = failure === "503 after dismissal";
   const notice = deviceNotice({ key: (await newKey()).public_spki });
   const wire = new DeviceNoticeWire("ws://localhost/ws");
-  const events = new EventTarget();
   const posted: BlockRecord[] = [];
   const pcPosts: string[] = [];
   const onPc: string[] = [];
@@ -68,18 +95,9 @@ it.each([
   const store = memoryAccountStore();
   await store.set("session", session);
   await store.set("signin_key", { account: session.account, sign_in_id: session.sign_in_id, no: 1, key: await newKey() });
-  const replaced = new Map<string, PropertyDescriptor | undefined>();
-  for (const [key, value] of Object.entries({
-    window: Object.assign(events, { location: new URL("http://localhost/"), setTimeout, clearTimeout, setInterval, clearInterval }),
-    document: Object.assign(new EventTarget(), { visibilityState: "visible", hasFocus: () => true, querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } }),
-    navigator: { languages: ["en"] },
-    getComputedStyle: () => ({ getPropertyValue: () => "" }),
-    WebSocket: noticeSockets(...wires.values()),
-    IS_REACT_ACT_ENVIRONMENT: true,
-  })) {
-    replaced.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, key, { configurable: true, value });
-  }
+  const page = openNoticePage();
+  const oldSocket = Object.getOwnPropertyDescriptor(globalThis, "WebSocket");
+  Object.defineProperty(globalThis, "WebSocket", { configurable: true, value: noticeSockets(...wires.values()) });
   const get = spyOn(indexedAccountStore, "get").mockImplementation(store.get);
   const update = spyOn(indexedAccountStore, "update").mockImplementation(store.update);
   const updateMany = spyOn(indexedAccountStore, "updateMany").mockImplementation(store.updateMany);
@@ -127,7 +145,6 @@ it.each([
   function Probe() {
     return useAccountDeviceNotices({ machines, machineSessions, selectedMachineId: LOCAL_MACHINE, pageServerId: serverId });
   }
-  let renderer: ReactTestRenderer | undefined;
   try {
     machineSessions.get(LOCAL_MACHINE);
     if (showRoster) {
@@ -140,20 +157,19 @@ it.each([
         if (capable) connection.snapshot(); else connection.snapshot([]);
       }
     }
-    await act(async () => { renderer = create(<SettingsProvider><Probe /></SettingsProvider>); });
+    await page.render(<SettingsProvider><Probe /></SettingsProvider>);
     socket.connect();
     wire.open();
     await act(async () => { wire.snapshot(); wire.read({ type: "device-notice", notice }); });
-    const root = renderer?.root;
-    if (root === undefined) throw new TypeError("Missing notice view");
-    const button = (label: string) => root.findAllByType("button").find((node) => node.children.includes(label));
+    const root = page.container;
+    const button = (label: string) => buttonsNamed(root, label)[0];
 
     const notMe = button("Not me");
     if (notMe === undefined) throw new TypeError("Missing Not me button");
     if (showRoster) {
-      await act(async () => { await notMe.props.onClick(); });
+      await pressNotMe(notMe);
       expect(pcPosts).toEqual(["/api/machines/studio/account/records"]);
-      const lines = root.findAllByType("li").map(node => node.children.join(""));
+      const lines = [...root.querySelectorAll("li")].map((node) => node.textContent ?? "");
       expect(lines).toContain("Study: not reached; it applies the block at its next check");
       expect(lines).toContain("Lab: needs an Ovis update to block");
       expect(lines.filter(line => line.startsWith("Lab:"))).toHaveLength(1);
@@ -163,44 +179,42 @@ it.each([
       return;
     }
     if (dismissWhilePending) {
-      let delivery: Promise<void> | undefined;
-      await act(async () => { delivery = notMe.props.onClick(); await started.promise; });
-      await act(async () => { root.findByProps({ "aria-label": "Dismiss" }).props.onClick(); });
-      expect(root.findAllByProps({ "data-testid": "device-notice" })).toHaveLength(0);
-      await act(async () => { pendingReply.resolve(new Response(null, { status: 503 })); await delivery; });
-      expect(root.findAllByProps({ "data-testid": "device-notice" })).toHaveLength(0);
+      await act(async () => { notMe.click(); await started.promise; });
+      await act(async () => { page.one('button[aria-label="Dismiss"]').click(); });
+      expect(root.querySelectorAll('[data-testid="device-notice"]')).toHaveLength(0);
+      await act(async () => { pendingReply.resolve(new Response(null, { status: 503 })); });
+      expect(root.querySelectorAll('[data-testid="device-notice"]')).toHaveLength(0);
     } else {
-      await act(async () => { await notMe.props.onClick(); });
-      expect(root.findAllByProps({ "data-state": "applied" })).toHaveLength(1);
+      await pressNotMe(notMe);
+      expect(root.querySelectorAll('[data-state="applied"]')).toHaveLength(1);
     }
-    expect(root.findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(1);
+    expect(root.querySelectorAll('[data-account-delivery="failed"]')).toHaveLength(1);
 
     // The PC already applied the block. Its decision and a disconnected notice feed must not drop the account retry.
     await act(async () => { wire.read({ type: "device-notice", notice: { ...notice, open: false } }); wire.close(); });
     const retry = button("Try again");
     if (retry === undefined) throw new TypeError("Missing account retry");
-    await act(async () => { await retry.props.onClick(); });
+    await act(async () => { retry.click(); });
 
     const [pcRecordId] = onPc;
     if (pcRecordId === undefined) throw new TypeError("The PC did not receive a block");
     expect(posted.map((record) => record.id)).toEqual([pcRecordId, pcRecordId]);
     expect(posted[0]).toEqual(posted[1]);
     expect(onPc).toHaveLength(1);
-    expect(root.findAllByProps({ "data-state": "applied" })).toHaveLength(dismissWhilePending ? 0 : 1);
-    expect(root.findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(0);
+    expect(root.querySelectorAll('[data-state="applied"]')).toHaveLength(dismissWhilePending ? 0 : 1);
+    expect(root.querySelectorAll('[data-account-delivery="failed"]')).toHaveLength(0);
     expect(button("Try again")).toBeUndefined();
   } finally {
-    await act(async () => { renderer?.unmount(); });
+    await page.render(null);
     machineSessions.closeAll();
+    await page.close();
     send.mockRestore();
     post.mockRestore();
     updateMany.mockRestore();
     update.mockRestore();
     get.mockRestore();
-    for (const [key, descriptor] of replaced) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
+    if (oldSocket) Object.defineProperty(globalThis, "WebSocket", oldSocket);
+    else Reflect.deleteProperty(globalThis, "WebSocket");
   }
 });
 
@@ -209,17 +223,18 @@ const itsMeMachines: readonly Machine[] = [
   { id: "lab", name: "Lab", kind: "relay", enabled: true, state: "connected", error: null, snapshot: null },
 ];
 
-let itsMeRenderer: ReactTestRenderer | undefined;
+let itsMePage: Page | undefined;
 let sessions: MachineSessionRegistry | undefined;
 const globals = new Map<string, PropertyDescriptor | undefined>();
 
 afterEach(async () => {
-  await act(async () => { itsMeRenderer?.unmount(); });
-  itsMeRenderer = undefined;
+  jest.useRealTimers();
+  await itsMePage?.render(null);
   sessions?.retainMachines(new Set());
+  await itsMePage?.close();
+  itsMePage = undefined;
   sessions = undefined;
   jest.restoreAllMocks();
-  jest.useRealTimers();
   for (const [key, old] of globals) {
     if (old) Object.defineProperty(globalThis, key, old);
     else Reflect.deleteProperty(globalThis, key);
@@ -243,20 +258,12 @@ async function setupItsMe({
   readonly localOnly?: boolean;
   readonly seed?: boolean;
 } = {}) {
+  const view = itsMePage = openNoticePage();
   jest.useFakeTimers();
   const desk = new DeviceNoticeWire("ws://localhost/ws?pc=desk");
   const lab = new DeviceNoticeWire("ws://localhost/ws?pc=lab");
-  for (const [key, value] of Object.entries({
-    window: Object.assign(new EventTarget(), { location: new URL("http://localhost/"), setTimeout, clearTimeout, setInterval, clearInterval }),
-    document: Object.assign(new EventTarget(), { visibilityState: "visible", hasFocus: () => true, querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } }),
-    navigator: { languages: ["en"] },
-    getComputedStyle: () => ({ getPropertyValue: () => "" }),
-    WebSocket: noticeSockets(desk, lab),
-    IS_REACT_ACT_ENVIRONMENT: true,
-  })) {
-    globals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, key, { configurable: true, value });
-  }
+  globals.set("WebSocket", Object.getOwnPropertyDescriptor(globalThis, "WebSocket"));
+  Object.defineProperty(globalThis, "WebSocket", { configurable: true, value: noticeSockets(desk, lab) });
   const store = memoryAccountStore();
   await store.set("session", session);
   if (!localOnly && session.sign_in_id !== undefined) {
@@ -272,13 +279,11 @@ async function setupItsMe({
   function Notices({ selected }: { selected: string }) {
     return useAccountDeviceNotices({ machines, machineSessions: registry, selectedMachineId: selected, pageServerId: undefined });
   }
-  await act(async () => { itsMeRenderer = create(<SettingsProvider><Notices selected="local" /></SettingsProvider>); });
-  const view = itsMeRenderer;
-  if (view === undefined) throw new TypeError("Missing notice view");
-  const select = (selected: string) => act(async () => { view.update(<SettingsProvider><Notices selected={selected} /></SettingsProvider>); });
-  const actions = () => view.root.findAll((node) => node.type === "button" && node.children.includes("It's me"));
-  const button = () => view.root.find((node) => node.type === "button" && node.children.includes("It's me"));
-  const refusal = () => view.root.findAll((node) => node.type === "p" && node.children.includes("Desk did not accept It's me from this device."));
+  await view.render(<SettingsProvider><Notices selected="local" /></SettingsProvider>);
+  const select = (selected: string) => view.render(<SettingsProvider><Notices selected={selected} /></SettingsProvider>);
+  const actions = () => buttonsNamed(view.container, "It's me");
+  const button = () => noticeButton(view.container, "It's me");
+  const refusal = () => [...view.container.querySelectorAll("p")].filter((node) => node.textContent === "Desk did not accept It's me from this device.");
   const answers = (wire = desk) => wire.sent.filter(({ type }) => type === "notice-answer");
   if (seed) await act(async () => {
     desk.snapshot();
@@ -296,7 +301,7 @@ it("a device is never shown the notice of its own admission: one about this sign
   const own = await store.get("signin_key");
   if (own === undefined) throw new TypeError("Missing sign-in key");
   const other = (await newKey()).public_spki;
-  const shown = () => view.root.findAllByProps({ "data-testid": "device-notice" });
+  const shown = () => view.container.querySelectorAll('[data-testid="device-notice"]');
   await act(async () => {
     desk.snapshot();
     desk.read({ type: "device-notice", notice: deviceNotice({ row: "phone-joined-row", key: own.key.public_spki }) });
@@ -322,17 +327,25 @@ it("T53, T57: It's me uses only the admission PC's socket and retries only until
   expect(actions()).toHaveLength(1);
   const [button] = actions();
   if (button === undefined) throw new TypeError("Missing admission action");
-  await act(async () => { button.props.onClick(); });
-  expect(button.props.disabled).toBe(true);
+  await act(async () => { button.click(); });
+  expect(button.disabled).toBe(true);
   expect(answers(desk)).toEqual([answer]);
   // away to Lab and back while it is out: still one answer out for this PC's notice
   await select("lab");
   await select("local");
   const [again] = actions();
-  expect(again?.props.disabled).toBe(true);
-  const notMe = view.root.find((node) => node.type === "button" && node.children.includes("Not me"));
-  expect(notMe.props.disabled).toBe(true);
-  await act(async () => { await Promise.all([again?.props.onClick(), notMe.props.onClick()]); });
+  if (again === undefined) throw new TypeError("Missing remounted admission action");
+  expect(again).not.toBe(button);
+  expect(again.disabled).toBe(true);
+  const notMe = noticeButton(view.container, "Not me");
+  expect(notMe.disabled).toBe(true);
+  await act(async () => { again.click(); notMe.click(); });
+  for (const action of [again, notMe]) {
+    const { onClick } = reactProps(action);
+    if (typeof onClick !== "function") throw new Error("Missing notice click handler");
+    // a guard returns at once; one that let the answer start would leave this waiting on it
+    await act(async () => { await onClick(); });
+  }
   expect(answers(desk)).toEqual([answer]);
   expect(answers(lab)).toEqual([]);
   await act(async () => { lab.read({ type: "device-notice", notice: confirmation }); jest.advanceTimersByTime(5_000); });
@@ -353,37 +366,37 @@ it.each([
   const { desk, view, admission, button: findButton, answers } = await setupItsMe({ localOnly: true });
   const confirm = deviceNotice({ ...admission, id: "b".repeat(32), seq: 2, kind: "confirm", how: "its_me", open: false, ...(reply === "other" ? { row: "another-phone" } : {}) });
   const button = findButton();
-  await act(async () => { button.props.onClick(); });
+  await act(async () => { button.click(); });
   await act(async () => { desk.read({ type: "device-notice", notice: confirm }); });
   await act(async () => { jest.advanceTimersByTime(5_000); });
   await act(async () => { jest.advanceTimersByTime(5_000); });
   expect(answers()).toHaveLength(sentTimes);
   // another admission's confirm leaves this card where it was; this one's own closes it
-  expect(view.root.findAllByProps({ "data-testid": "device-notice" })).toHaveLength(reply === "other" ? 1 : 0);
-  if (reply === "other") expect(button.props.disabled).toBe(false);
+  expect(view.container.querySelectorAll('[data-testid="device-notice"]')).toHaveLength(reply === "other" ? 1 : 0);
+  if (reply === "other") expect(button.disabled).toBe(false);
   fetched.mockRestore();
 });
 
 it("T53: an It's me refusal survives switching PCs and clears on the next press", async () => {
   const { desk, view, admission, select, button, refusal, answers } = await setupItsMe();
-  const notMe = () => view.root.find((node) => node.type === "button" && node.children.includes("Not me"));
-  await act(async () => { button().props.onClick(); });
+  const notMe = () => noticeButton(view.container, "Not me");
+  await act(async () => { button().click(); });
   expect(refusal()).toHaveLength(0);
   // one answer at a time per notice: Not me waits while It's me is out
-  expect(notMe().props.disabled).toBe(true);
+  expect(notMe().disabled).toBe(true);
   await act(async () => { jest.advanceTimersByTime(5_000); });
   expect(answers()).toHaveLength(2);
   expect(refusal()).toHaveLength(0);
   // away to Lab while Desk still waits: Desk's last wait ends there, and its refusal is not Lab's
   await select("lab");
   await act(async () => { jest.advanceTimersByTime(5_000); });
-  expect(button().props.disabled).toBe(false);
-  expect(view.root.findAllByProps({ className: "settings-hint its-me-refused" })).toHaveLength(0);
+  expect(button().disabled).toBe(false);
+  expect(view.container.querySelectorAll('[class="settings-hint its-me-refused"]')).toHaveLength(0);
   await select("local");
   expect(refusal()).toHaveLength(1);
-  expect(button().props.disabled).toBe(false);
-  expect(notMe().props.disabled).toBe(false);
-  await act(async () => { button().props.onClick(); });
+  expect(button().disabled).toBe(false);
+  expect(notMe().disabled).toBe(false);
+  await act(async () => { button().click(); });
   expect(refusal()).toHaveLength(0);
   expect(answers()).toHaveLength(3);
   // decided on that PC another way meanwhile: its silence is no refusal, through both waits
@@ -391,7 +404,7 @@ it("T53: an It's me refusal survives switching PCs and clears on the next press"
   await act(async () => { jest.advanceTimersByTime(5_000); });
   await act(async () => { jest.advanceTimersByTime(5_000); });
   expect(refusal()).toHaveLength(0);
-  expect(view.root.findAll((node) => node.type === "button" && node.children.includes("It's me"))).toHaveLength(0);
+  expect(buttonsNamed(view.container, "It's me")).toHaveLength(0);
 });
 
 it.each([
@@ -401,9 +414,9 @@ it.each([
   const { session, store, button, refusal } = await setupItsMe();
   const signInAgain = async () => {
     await store.set("session", { ...session, refresh_token: "refresh-2", sign_in_id: "a-later-sign-in" });
-    window.dispatchEvent(new Event(ACCOUNT_SIGN_OUT_EVENT));
+    itsMePage?.window.dispatchEvent(new itsMePage.window.Event(ACCOUNT_SIGN_OUT_EVENT));
   };
-  await act(async () => { button().props.onClick(); });
+  await act(async () => { button().click(); });
   await act(async () => { jest.advanceTimersByTime(5_000); });
   if (when === "during") await act(async () => { await signInAgain(); });
   await act(async () => { jest.advanceTimersByTime(5_000); });
@@ -416,7 +429,7 @@ it.each([
 
 it("S2P-6: a refusal goes with its notice even while another PC is shown: the same id opened again shows none", async () => {
   const { desk, admission, select, button, refusal } = await setupItsMe();
-  await act(async () => { button().props.onClick(); });
+  await act(async () => { button().click(); });
   await act(async () => { jest.advanceTimersByTime(5_000); });
   await act(async () => { jest.advanceTimersByTime(5_000); });
   expect(refusal()).toHaveLength(1);
@@ -430,7 +443,7 @@ it("S2P-6: a refusal goes with its notice even while another PC is shown: the sa
 
 it("S2P-6: an It's me still out when its notice closes records no refusal, also once the same id opens again", async () => {
   const { desk, admission, select, button, refusal } = await setupItsMe();
-  await act(async () => { button().props.onClick(); });
+  await act(async () => { button().click(); });
   await act(async () => { jest.advanceTimersByTime(5_000); });
   await select("lab");
   // closed on Desk and opened again while the answer was still out, then its last wait ends
@@ -444,30 +457,30 @@ it("S2P-6: an It's me still out when its notice closes records no refusal, also 
 it("S2P-7: reopening offscreen releases the old press without letting it unlock the new press", async () => {
   const { desk, lab, admission, select, button, view, answers } = await setupItsMe();
   const answer = { type: "notice-answer", id: admission.id, answer: "its_me" };
-  await act(async () => { button().props.onClick(); });
+  await act(async () => { button().click(); });
   expect(answers()).toEqual([answer]);
   await act(async () => { jest.advanceTimersByTime(1_000); });
   await select("lab");
   await act(async () => { desk.read({ type: "device-notice", notice: { ...admission, open: false } }); });
   await act(async () => { desk.read({ type: "device-notice", notice: admission }); });
   await select("local");
-  expect(button().props.disabled).toBe(false);
-  await act(async () => { button().props.onClick(); });
+  expect(button().disabled).toBe(false);
+  await act(async () => { button().click(); });
   expect(answers()).toEqual([answer, answer]);
 
   // Only the first press's deadline has passed. The second press still owns the lock.
   await act(async () => { jest.advanceTimersByTime(4_000); });
-  expect(button().props.disabled).toBe(true);
+  expect(button().disabled).toBe(true);
   expect(answers()).toEqual([answer, answer]);
   expect(answers(lab)).toEqual([]);
   const confirmation = deviceNotice({ ...admission, id: "b".repeat(32), seq: 2, kind: "confirm", how: "its_me", open: false });
   await act(async () => { desk.read({ type: "device-notice", notice: confirmation }); });
-  expect(view.root.findAllByProps({ "data-testid": "device-notice" })).toHaveLength(0);
+  expect(view.container.querySelectorAll('[data-testid="device-notice"]')).toHaveLength(0);
 });
 
 it("S2P-7: a closed press sends no retry, even after its notice reopens", async () => {
   const { desk, admission, button, answers } = await setupItsMe();
-  await act(async () => { button().props.onClick(); });
+  await act(async () => { button().click(); });
   expect(answers()).toHaveLength(1);
   await act(async () => { desk.read({ type: "device-notice", notice: { ...admission, open: false } }); });
   await act(async () => { desk.read({ type: "device-notice", notice: admission }); });
@@ -480,15 +493,15 @@ it.each([
   ["S2P-L3: closing a notice with a colon in its ID drops only that notice's refusal", "separate", "admission:phone"],
 ] as const)("%s", async (_title, delivery, id) => {
   const { desk, lab, admission, select, button, refusal } = await setupItsMe({ admission: deviceNotice({ id, row: "new-phone" }) });
-  await act(async () => { button().props.onClick(); });
+  await act(async () => { button().click(); });
   await act(async () => { jest.advanceTimersByTime(5_000); });
   await act(async () => { jest.advanceTimersByTime(5_000); });
   expect(refusal()).toHaveLength(1);
   await select("lab");
-  expect(button().props.disabled).toBe(false);
+  expect(button().disabled).toBe(false);
   if (delivery === "separate") {
-    await act(async () => { button().props.onClick(); });
-    expect(button().props.disabled).toBe(true);
+    await act(async () => { button().click(); });
+    expect(button().disabled).toBe(true);
   }
   const close = () => desk.read({ type: "device-notice", notice: { ...admission, open: false } });
   const reopen = () => desk.read({ type: "device-notice", notice: admission });
@@ -497,23 +510,23 @@ it.each([
   } else {
     await act(async () => { close(); });
     await act(async () => { reopen(); });
-    expect(button().props.disabled).toBe(true);
+    expect(button().disabled).toBe(true);
     const confirmation = deviceNotice({ ...admission, id: "b".repeat(32), seq: 2, kind: "confirm", how: "its_me", open: false });
     await act(async () => { lab.read({ type: "device-notice", notice: confirmation }); });
   }
   await select("local");
   expect(refusal()).toHaveLength(0);
-  expect(button().props.disabled).toBe(false);
+  expect(button().disabled).toBe(false);
 });
 
 it("S2P-9, T53: replacing the sign-in ID before the first timeout prevents a resend with the same refresh token", async () => {
   const { session, store, button, refusal, answers } = await setupItsMe();
-  await act(async () => { button().props.onClick(); });
+  await act(async () => { button().click(); });
   expect(answers()).toHaveLength(1);
   await act(async () => { await store.set("session", { ...session, sign_in_id: "a-later-sign-in" }); });
   await act(async () => { jest.advanceTimersByTime(5_000); });
   expect(answers()).toHaveLength(1);
-  expect(button().props.disabled).toBe(false);
+  expect(button().disabled).toBe(false);
   expect(refusal()).toHaveLength(0);
 });
 
@@ -525,18 +538,18 @@ it.each([
 ] as const)("S2P-L2, S2P-9: records no refusal for %s", async (_name, initial, replacement, sent) => {
   const expires_at = Date.now() + 60_000;
   const { session, store, button, refusal, answers } = await setupItsMe({ session: { ...initial, expires_at } });
-  await act(async () => { button().props.onClick(); });
+  await act(async () => { button().click(); });
   await act(async () => { jest.advanceTimersByTime(5_000); });
   expect(answers()).toHaveLength(sent);
   if (replacement !== undefined) await act(async () => {
     await store.set("session", { ...replacement, expires_at });
-    window.dispatchEvent(new Event(ACCOUNT_SIGN_OUT_EVENT));
+    itsMePage?.window.dispatchEvent(new itsMePage.window.Event(ACCOUNT_SIGN_OUT_EVENT));
   });
   await act(async () => { jest.advanceTimersByTime(5_000); });
-  expect(button().props.disabled).toBe(false);
+  expect(button().disabled).toBe(false);
   if (replacement !== undefined) await act(async () => {
     await store.set("session", session);
-    window.dispatchEvent(new Event(ACCOUNT_SIGN_OUT_EVENT));
+    itsMePage?.window.dispatchEvent(new itsMePage.window.Event(ACCOUNT_SIGN_OUT_EVENT));
   });
   expect(refusal()).toHaveLength(0);
 });
@@ -551,23 +564,12 @@ async function notMePage(options: {
   const session = { account: "acct", provider: "github", service: "https://account.example", sign_in_id: "test", access_token: "access", refresh_token: "refresh", expires_at: options.token === undefined ? Date.now() + 3600_000 : Date.now() } as const;
   const notice = options.notice ?? deviceNotice({ key: (await newKey()).public_spki });
   const wire = new DeviceNoticeWire("ws://localhost/ws");
-  const events = new EventTarget();
   const store = memoryAccountStore();
   await store.set("session", session);
   await store.set("signin_key", { account: session.account, sign_in_id: session.sign_in_id, no: 1, key: options.own ?? await newKey() });
-  const page = Object.assign(new EventTarget(), { visibilityState: "visible" as "visible" | "hidden", hasFocus: () => true, querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } });
-  const replaced = new Map<string, PropertyDescriptor | undefined>();
-  for (const [key, value] of Object.entries({
-    window: Object.assign(events, { location: new URL("http://localhost/"), setTimeout, clearTimeout, setInterval, clearInterval }),
-    document: page,
-    navigator: { languages: ["en"] },
-    getComputedStyle: () => ({ getPropertyValue: () => "" }),
-    WebSocket: noticeSockets(wire),
-    IS_REACT_ACT_ENVIRONMENT: true,
-  })) {
-    replaced.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, key, { configurable: true, value });
-  }
+  const page = openNoticePage();
+  const oldSocket = Object.getOwnPropertyDescriptor(globalThis, "WebSocket");
+  Object.defineProperty(globalThis, "WebSocket", { configurable: true, value: noticeSockets(wire) });
   const order: string[] = [];
   const spies = [
     spyOn(indexedAccountStore, "get").mockImplementation(store.get),
@@ -599,7 +601,6 @@ async function notMePage(options: {
     }),
   ];
   const machines: readonly Machine[] = [{ id: LOCAL_MACHINE, name: "Desk", kind: "local", enabled: true, state: "connected", error: null, snapshot: null }];
-  let renderer: ReactTestRenderer | undefined;
   let registry: MachineSessionRegistry | undefined;
   let live: HerdrSocket | undefined;
   const mount = async () => {
@@ -613,26 +614,25 @@ async function notMePage(options: {
       return options.drawn === false ? null : drawn;
     }
     sessions.get(LOCAL_MACHINE);
-    await act(async () => { renderer = create(<SettingsProvider><Probe /></SettingsProvider>); });
+    await page.render(<SettingsProvider><Probe /></SettingsProvider>);
     socket.connect();
     wire.readyState = 0;
     await act(async () => { wire.open(); if (options.capable === false) wire.snapshot([]); else wire.snapshot(); });
   };
   const unmount = async () => {
-    await act(async () => { renderer?.unmount(); });
+    await page.render(null);
     registry?.closeAll();
   };
-  const root = () => { if (renderer === undefined) throw new TypeError("Missing notice view"); return renderer.root; };
-  const button = (label: string) => root().findAllByType("button").find((node) => node.children.includes(label));
+  const root = () => page.container;
+  const button = (label: string) => buttonsNamed(root(), label)[0];
   const restore = async () => {
     await unmount();
+    await page.close();
     for (const spy of spies) spy.mockRestore();
-    for (const [key, descriptor] of replaced) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
+    if (oldSocket) Object.defineProperty(globalThis, "WebSocket", oldSocket);
+    else Reflect.deleteProperty(globalThis, "WebSocket");
   };
-  return { store, session, notice, wire, events, page, order, socket: () => live, mount, unmount, root, button, restore, setCapable: (on: boolean) => { options.capable = on; } };
+  return { store, session, notice, wire, page, order, socket: () => live, mount, unmount, root, button, restore, setCapable: (on: boolean) => { options.capable = on; } };
 }
 
 it("S32-1, T51: the signed block is stored before it goes to any PC or the service; a reload sends it again with the same id", async () => {
@@ -644,10 +644,9 @@ it("S32-1, T51: the signed block is stored before it goes to any PC or the servi
     await act(async () => { page.wire.read({ type: "device-notice", notice: page.notice }); });
     const notMe = page.button("Not me");
     if (notMe === undefined) throw new TypeError("Missing Not me button");
-    let pressed: Promise<void> | undefined;
-    await act(async () => { pressed = notMe.props.onClick(); });
+    await pressNotMe(notMe);
     expect(page.order).toEqual([]);
-    await act(async () => { stored.resolve(); await pressed; });
+    await act(async () => { stored.resolve(); });
     expect(page.order[0]).toBe("stored");
     const id = page.order.find((step) => step.startsWith("service "))?.slice("service ".length);
     expect(page.order.filter((step) => step.startsWith("pc ") || step.startsWith("service ")).every((step) => step.endsWith(id ?? "?"))).toBe(true);
@@ -664,13 +663,13 @@ it("S32-1: while no PC here offers the account release, a reload sends nothing a
   try {
     await page.mount();
     await act(async () => { page.wire.read({ type: "device-notice", notice: page.notice }); });
-    await act(async () => { await page.button("Not me")!.props.onClick(); });
+    await pressNotMe(page.button("Not me")!);
     const before = page.order.length;
     await page.unmount();
     page.setCapable(false);
     await page.mount();
     expect(page.order.slice(before).filter((step) => step.startsWith("service "))).toEqual([]);
-    expect(page.root().findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(0);
+    expect(page.root().querySelectorAll('[data-account-delivery="failed"]')).toHaveLength(0);
     expect(Object.keys(await page.store.get("unsent_blocks") ?? {})).toHaveLength(1);
   } finally { await page.restore(); }
 });
@@ -680,11 +679,11 @@ it("S32-1: signing out takes the unsent line and its Try again away", async () =
   try {
     await page.mount();
     await act(async () => { page.wire.read({ type: "device-notice", notice: page.notice }); });
-    await act(async () => { await page.button("Not me")!.props.onClick(); });
+    await pressNotMe(page.button("Not me")!);
     await page.unmount();
     await page.mount();
     expect(page.button("Try again")).toBeDefined();
-    await act(async () => { page.events.dispatchEvent(new Event(ACCOUNT_SIGN_OUT_EVENT)); });
+    await act(async () => { page.page.window.dispatchEvent(new page.page.window.Event(ACCOUNT_SIGN_OUT_EVENT)); });
     expect(page.button("Try again")).toBeUndefined();
   } finally { await page.restore(); }
 });
@@ -694,12 +693,12 @@ it("S32-1: a final refusal from the service shows the line with no Try again, an
   try {
     await page.mount();
     await act(async () => { page.wire.read({ type: "device-notice", notice: page.notice }); });
-    await act(async () => { await page.button("Not me")!.props.onClick(); });
-    expect(page.root().findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(1);
+    await pressNotMe(page.button("Not me")!);
+    expect(page.root().querySelectorAll('[data-account-delivery="failed"]')).toHaveLength(1);
     expect(page.button("Try again")).toBeUndefined();
     expect(Object.values(await page.store.get("unsent_blocks") ?? {}).map((entry) => entry.refused)).toEqual([true]);
-    await act(async () => { await page.button("OK")!.props.onClick(); });
-    expect(page.root().findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(0);
+    await act(async () => { page.button("OK")!.click(); });
+    expect(page.root().querySelectorAll('[data-account-delivery="failed"]')).toHaveLength(0);
     expect(await page.store.get("unsent_blocks")).toBeUndefined();
   } finally { await page.restore(); }
 });
@@ -718,17 +717,23 @@ it("F6: Not me claims the account's number of the device, not the PC's own admis
   }));
   // a PC numbers its own admissions (server/account/account-devices.ts `admit_no`): one that paired a device itself
   // before the account's came is a number ahead of the account for the fourth
+  const delivered = Promise.withResolvers<Response>();
   const page = await notMePage({
     own: keys[0], notice: deviceNotice({ key: keys[3]!.public_spki, no: 5 }),
     devices: () => asFirst("/v1/devices"),
-    service: (record) => asFirst("/v1/safety-records", { method: "POST", body: JSON.stringify({ record }) }),
+    service: (record) => {
+      const answer = asFirst("/v1/safety-records", { method: "POST", body: JSON.stringify({ record }) });
+      delivered.resolve(answer);
+      return answer;
+    },
   });
   try {
     await page.mount();
     await act(async () => { page.wire.read({ type: "device-notice", notice: page.notice }); });
-    await act(async () => { await page.button("Not me")!.props.onClick(); });
-    expect(page.root().findAllByProps({ "data-state": "applied" })).toHaveLength(1);
-    expect(page.root().findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(0);
+    await pressNotMe(page.button("Not me")!);
+    await act(async () => { await delivered.promise; });
+    expect(page.root().querySelectorAll('[data-state="applied"]')).toHaveLength(1);
+    expect(page.root().querySelectorAll('[data-account-delivery="failed"]')).toHaveLength(0);
     expect(await page.store.get("unsent_blocks")).toBeUndefined();
     const rows = (await (await asFirst("/v1/devices")).json() as { devices: { no: number; removed: boolean }[] }).devices;
     expect(rows.map((row) => [row.no, row.removed])).toEqual([[1, false], [2, false], [3, false], [4, true]]);
@@ -740,7 +745,7 @@ it("S32-1: a refused token refresh is no refusal of the block: it stays stored a
   try {
     await page.mount();
     await act(async () => { page.wire.read({ type: "device-notice", notice: page.notice }); });
-    await act(async () => { await page.button("Not me")!.props.onClick(); });
+    await pressNotMe(page.button("Not me")!);
     expect(page.order.filter((step) => step.startsWith("service "))).toEqual([]);
     expect(page.order).toContain("token");
     expect(page.button("Try again")).toBeDefined();
@@ -755,25 +760,25 @@ it("S32-1: a final refusal answered after a sign-out is shown at the next sign-i
   try {
     await page.mount();
     await act(async () => { page.wire.read({ type: "device-notice", notice: page.notice }); });
-    await act(async () => { await page.button("Not me")!.props.onClick(); });
+    await pressNotMe(page.button("Not me")!);
     await page.unmount();
     await page.mount();
     await act(async () => {
       await page.store.set("session", undefined);
-      page.events.dispatchEvent(new Event(ACCOUNT_SIGN_OUT_EVENT));
+      page.page.window.dispatchEvent(new page.page.window.Event(ACCOUNT_SIGN_OUT_EVENT));
     });
     await act(async () => { held.resolve(Response.json({ error: { code: "signer_not_older", message: "x" } }, { status: 403 })); await held.promise; });
-    expect(page.root().findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(0);
+    expect(page.root().querySelectorAll('[data-account-delivery="failed"]')).toHaveLength(0);
     expect(Object.values(await page.store.get("unsent_blocks") ?? {}).map((entry) => entry.refused)).toEqual([true]);
     await act(async () => {
       await page.store.set("session", { ...page.session, sign_in_id: "a-later-sign-in" });
-      page.events.dispatchEvent(new Event(ACCOUNT_SESSION_EVENT));
+      page.page.window.dispatchEvent(new page.page.window.Event(ACCOUNT_SESSION_EVENT));
     });
     await act(async () => {});
-    expect(page.root().findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(1);
+    expect(page.root().querySelectorAll('[data-account-delivery="failed"]')).toHaveLength(1);
     expect(page.button("Try again")).toBeUndefined();
     expect(Object.keys(await page.store.get("unsent_blocks") ?? {})).toHaveLength(1);
-    await act(async () => { await page.button("OK")!.props.onClick(); });
+    await act(async () => { page.button("OK")!.click(); });
     expect(await page.store.get("unsent_blocks")).toBeUndefined();
   } finally { await page.restore(); }
 });
@@ -794,11 +799,11 @@ it("S32-1: a final refusal drawn on a seen page stays queued until its owner pre
     await page.store.set("unsent_blocks", { r1: { account: page.session.account, sign_in_id: page.session.sign_in_id, records: [{ id: "r1" } as unknown as BlockRecord], refused: true } });
     await page.mount();
     await act(async () => {});
-    expect(page.root().findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(1);
-    await act(async () => { page.page.dispatchEvent(new Event("visibilitychange")); });
+    expect(page.root().querySelectorAll('[data-account-delivery="failed"]')).toHaveLength(1);
+    await act(async () => { page.page.window.document.dispatchEvent(new page.page.window.Event("visibilitychange")); });
     expect(Object.keys(await page.store.get("unsent_blocks") ?? {})).toEqual(["r1"]);
-    await act(async () => { await page.button("OK")!.props.onClick(); });
-    expect(page.root().findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(0);
+    await act(async () => { page.button("OK")!.click(); });
+    expect(page.root().querySelectorAll('[data-account-delivery="failed"]')).toHaveLength(0);
     expect(await page.store.get("unsent_blocks")).toBeUndefined();
   } finally { await page.restore(); }
 });
@@ -813,7 +818,7 @@ it("S32-1: Try again asks again right before the record goes out, after a token 
   try {
     await page.mount();
     await act(async () => { page.wire.read({ type: "device-notice", notice: page.notice }); });
-    await act(async () => { await page.button("Not me")!.props.onClick(); });
+    await pressNotMe(page.button("Not me")!);
     const retry = page.button("Try again");
     if (retry === undefined) throw new TypeError("Missing account retry");
     await page.store.update("session", (current) => current === undefined ? undefined : { ...current, expires_at: Date.now() });
@@ -821,12 +826,11 @@ it("S32-1: Try again asks again right before the record goes out, after a token 
     const held = { asked: Promise.withResolvers<void>(), answer: Promise.withResolvers<Response>() };
     hold = held;
     await act(async () => {
-      const pressed = retry.props.onClick();
+      retry.click();
       await held.asked.promise;
       // the release goes while the refresh is out
       page.wire.snapshot([]);
       held.answer.resolve(fresh());
-      await pressed;
     });
     expect(page.order.filter((step) => step.startsWith("service "))).toHaveLength(posts);
     expect(Object.keys(await page.store.get("unsent_blocks") ?? {})).toHaveLength(1);
@@ -839,16 +843,16 @@ it("S32-1: a sign-in again to the same account on the open page sends the waitin
   try {
     await page.mount();
     await act(async () => { page.wire.read({ type: "device-notice", notice: page.notice }); });
-    await act(async () => { await page.button("Not me")!.props.onClick(); });
+    await pressNotMe(page.button("Not me")!);
     const id = page.order.find((step) => step.startsWith("service "))?.slice("service ".length);
     await act(async () => {
       await page.store.set("session", undefined);
-      page.events.dispatchEvent(new Event(ACCOUNT_SIGN_OUT_EVENT));
+      page.page.window.dispatchEvent(new page.page.window.Event(ACCOUNT_SIGN_OUT_EVENT));
     });
     answer = 200;
     await act(async () => {
       await page.store.set("session", { ...page.session, sign_in_id: "a-later-sign-in" });
-      page.events.dispatchEvent(new Event(ACCOUNT_SESSION_EVENT));
+      page.page.window.dispatchEvent(new page.page.window.Event(ACCOUNT_SESSION_EVENT));
     });
     await act(async () => {});
     expect(page.order.filter((step) => step === `service ${id}`)).toHaveLength(2);
@@ -861,17 +865,17 @@ it("S32-1: another account signed in on the open page (no sign-out event: its si
   try {
     await page.mount();
     await act(async () => { page.wire.read({ type: "device-notice", notice: page.notice }); });
-    await act(async () => { await page.button("Not me")!.props.onClick(); });
+    await pressNotMe(page.button("Not me")!);
     await page.unmount();
     await page.mount();
     expect(page.button("Try again")).toBeDefined();
     await act(async () => {
       await page.store.set("session", { ...page.session, account: "another-account", sign_in_id: "b" });
-      page.events.dispatchEvent(new Event(ACCOUNT_SESSION_EVENT));
+      page.page.window.dispatchEvent(new page.page.window.Event(ACCOUNT_SESSION_EVENT));
     });
     await act(async () => {});
     expect(page.button("Try again")).toBeUndefined();
-    expect(page.root().findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(0);
+    expect(page.root().querySelectorAll('[data-account-delivery="failed"]')).toHaveLength(0);
   } finally { await page.restore(); }
 });
 
@@ -880,12 +884,12 @@ it("S32-1: Try again on the press's own line sends nothing once no PC offers the
   try {
     await page.mount();
     await act(async () => { page.wire.read({ type: "device-notice", notice: page.notice }); });
-    await act(async () => { await page.button("Not me")!.props.onClick(); });
+    await pressNotMe(page.button("Not me")!);
     const retry = page.button("Try again");
     if (retry === undefined) throw new TypeError("Missing account retry");
     const posts = page.order.filter((step) => step.startsWith("service ")).length;
     await act(async () => { page.wire.snapshot([]); });
-    await act(async () => { await retry.props.onClick(); });
+    await act(async () => { retry.click(); });
     expect(page.order.filter((step) => step.startsWith("service "))).toHaveLength(posts);
     expect(Object.keys(await page.store.get("unsent_blocks") ?? {})).toHaveLength(1);
   } finally { await page.restore(); }
@@ -897,15 +901,15 @@ it("S32-1: a final refusal met on an in-session Try again keeps the line once, w
   try {
     await page.mount();
     await act(async () => { page.wire.read({ type: "device-notice", notice: page.notice }); });
-    await act(async () => { await page.button("Not me")!.props.onClick(); });
+    await pressNotMe(page.button("Not me")!);
     const retry = page.button("Try again");
     if (retry === undefined) throw new TypeError("Missing account retry");
     answer = Response.json({ error: { code: "signer_not_older", message: "x" } }, { status: 403 });
-    await act(async () => { await retry.props.onClick(); });
-    expect(page.root().findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(1);
+    await act(async () => { retry.click(); });
+    expect(page.root().querySelectorAll('[data-account-delivery="failed"]')).toHaveLength(1);
     expect(page.button("Try again")).toBeUndefined();
     expect(Object.keys(await page.store.get("unsent_blocks") ?? {})).toHaveLength(1);
-    await act(async () => { await page.button("OK")!.props.onClick(); });
+    await act(async () => { page.button("OK")!.click(); });
     expect(await page.store.get("unsent_blocks")).toBeUndefined();
   } finally { await page.restore(); }
 });
@@ -915,13 +919,13 @@ it("S32-1: once the PC withdrew the account release, Try again sends nothing, al
   try {
     await page.mount();
     await act(async () => { page.wire.read({ type: "device-notice", notice: page.notice }); });
-    await act(async () => { await page.button("Not me")!.props.onClick(); });
+    await pressNotMe(page.button("Not me")!);
     const retry = page.button("Try again");
     if (retry === undefined) throw new TypeError("Missing account retry");
     const posts = page.order.filter((step) => step.startsWith("service ")).length;
     await act(async () => { page.wire.snapshot([]); });
     await act(async () => { page.wire.close(); });
-    await act(async () => { await retry.props.onClick(); });
+    await act(async () => { retry.click(); });
     expect(page.order.filter((step) => step.startsWith("service "))).toHaveLength(posts);
     expect(Object.keys(await page.store.get("unsent_blocks") ?? {})).toHaveLength(1);
   } finally { await page.restore(); }
@@ -932,7 +936,7 @@ it("S32-1: an explicit withdrawal holds through a reconnect that has listed noth
   try {
     await page.mount();
     await act(async () => { page.wire.read({ type: "device-notice", notice: page.notice }); });
-    await act(async () => { await page.button("Not me")!.props.onClick(); });
+    await pressNotMe(page.button("Not me")!);
     const retry = page.button("Try again");
     if (retry === undefined) throw new TypeError("Missing account retry");
     const posts = page.order.filter((step) => step.startsWith("service ")).length;
@@ -940,7 +944,7 @@ it("S32-1: an explicit withdrawal holds through a reconnect that has listed noth
     await act(async () => { page.wire.close(); });
     // back, with no feature list yet
     await act(async () => { page.socket()?.connect(); page.wire.readyState = 0; page.wire.open(); });
-    await act(async () => { await retry.props.onClick(); });
+    await act(async () => { retry.click(); });
     expect(page.order.filter((step) => step.startsWith("service "))).toHaveLength(posts);
     expect(Object.keys(await page.store.get("unsent_blocks") ?? {})).toHaveLength(1);
   } finally { await page.restore(); }
@@ -960,9 +964,9 @@ it("S32-1: a block this browser could not store is not sent: it says so and offe
   try {
     await page.mount();
     await act(async () => { page.wire.read({ type: "device-notice", notice: page.notice }); });
-    await act(async () => { await page.button("Not me")!.props.onClick(); });
+    await pressNotMe(page.button("Not me")!);
     expect(page.order.filter((step) => step.startsWith("pc ") || step.startsWith("service "))).toEqual([]);
-    expect(page.root().findAll((node) => node.type === "p" && node.children.join("").includes("The block was not sent. Try again."))).toHaveLength(1);
+    expect([...page.root().querySelectorAll("p")].filter((node) => node.textContent?.includes("The block was not sent. Try again."))).toHaveLength(1);
     expect(page.button("Try again")).toBeDefined();
   } finally { await page.restore(); }
 });
@@ -974,16 +978,16 @@ it("S32-1: a replay that answers after sign-out brings no line and no entry back
   try {
     await page.mount();
     await act(async () => { page.wire.read({ type: "device-notice", notice: page.notice }); });
-    await act(async () => { await page.button("Not me")!.props.onClick(); });
+    await pressNotMe(page.button("Not me")!);
     await page.unmount();
     await page.mount();
     await act(async () => {
       await page.store.set("session", undefined);
       await page.store.set("unsent_blocks", undefined);
-      page.events.dispatchEvent(new Event(ACCOUNT_SIGN_OUT_EVENT));
+      page.page.window.dispatchEvent(new page.page.window.Event(ACCOUNT_SIGN_OUT_EVENT));
     });
     await act(async () => { answer.resolve(new Response(null, { status: 503 })); await answer.promise; });
-    expect(page.root().findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(0);
+    expect(page.root().querySelectorAll('[data-account-delivery="failed"]')).toHaveLength(0);
     expect(await page.store.get("unsent_blocks")).toBeUndefined();
     answer = Promise.withResolvers<Response>();
   } finally { await page.restore(); }
@@ -995,11 +999,11 @@ it("S32-1: a final refusal on a Try again after the notice was dismissed is stil
   try {
     await page.mount();
     await act(async () => { page.wire.read({ type: "device-notice", notice: page.notice }); });
-    await act(async () => { await page.button("Not me")!.props.onClick(); });
-    await act(async () => { page.root().findByProps({ "aria-label": "Dismiss" }).props.onClick(); });
+    await pressNotMe(page.button("Not me")!);
+    await act(async () => { page.page.one('button[aria-label="Dismiss"]').click(); });
     status = 403;
-    await act(async () => { await page.button("Try again")!.props.onClick(); });
-    expect(page.root().findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(1);
+    await act(async () => { page.button("Try again")!.click(); });
+    expect(page.root().querySelectorAll('[data-account-delivery="failed"]')).toHaveLength(1);
     expect(page.button("Try again")).toBeUndefined();
   } finally { await page.restore(); }
 });
@@ -1009,13 +1013,13 @@ it("S32-1: when the PC stops offering the account release, the unsent line and i
   try {
     await page.mount();
     await act(async () => { page.wire.read({ type: "device-notice", notice: page.notice }); });
-    await act(async () => { await page.button("Not me")!.props.onClick(); });
+    await pressNotMe(page.button("Not me")!);
     await page.unmount();
     await page.mount();
     expect(page.button("Try again")).toBeDefined();
     await act(async () => { page.wire.snapshot([]); });
     expect(page.button("Try again")).toBeUndefined();
-    expect(page.root().findAllByProps({ "data-account-delivery": "failed" })).toHaveLength(0);
+    expect(page.root().querySelectorAll('[data-account-delivery="failed"]')).toHaveLength(0);
   } finally { await page.restore(); }
 });
 
@@ -1028,7 +1032,7 @@ it.each([
   try {
     await page.mount();
     await act(async () => { page.wire.read({ type: "device-notice", notice: page.notice }); });
-    await act(async () => { await page.button("Not me")!.props.onClick(); });
+    await pressNotMe(page.button("Not me")!);
     const id = page.order.find((step) => step.startsWith("service "))?.slice("service ".length);
     await page.unmount();
     const before = (await page.store.get("session"))!;

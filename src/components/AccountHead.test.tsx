@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, jest, spyOn } from "bun:test";
-import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { act } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import { keepShellAccount, useHostedSignIn } from "../lib/account/hostedSignIn.ts";
 import { ACCOUNT_SIGN_OUT_EVENT } from "../lib/account/service.ts";
@@ -13,56 +14,40 @@ const session = { account: "acct", provider: "github", service: "https://account
 const english = (key: string, vars?: Record<string, string | number>) => translate("en", key, vars);
 
 let store: AccountStore;
-let renderer: ReactTestRenderer | null = null;
+let page: Page;
 let more: RowMenuItem[] = [];
 const openAccount = jest.fn();
-const replaced = new Map<string, PropertyDescriptor | undefined>();
 
 beforeEach(() => {
   store = memoryAccountStore();
-  for (const [key, value] of Object.entries({
-    window: Object.assign(new EventTarget(), { location: new URL("https://app.ovis.sh/pc/abc"), setTimeout, clearTimeout, setInterval, clearInterval }),
-    document: Object.assign(new EventTarget(), { visibilityState: "visible", querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } }),
-    navigator: { languages: ["en"] },
-    getComputedStyle: () => ({ getPropertyValue: () => "" }),
-    IS_REACT_ACT_ENVIRONMENT: true,
-  })) {
-    replaced.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, key, { configurable: true, value });
-  }
+  page = openPage("https://app.ovis.sh/pc/abc");
   spyOn(indexedAccountStore, "get").mockImplementation((name) => store.get(name));
 });
 
 afterEach(async () => {
-  await act(async () => { renderer?.unmount(); });
-  renderer = null;
+  await page.close();
   more = [];
   openAccount.mockClear();
   keepShellAccount(null);
   jest.restoreAllMocks();
-  for (const [key, descriptor] of replaced) {
-    if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-    else Reflect.deleteProperty(globalThis, key);
-  }
-  replaced.clear();
 });
 
-function Page() {
+function AccountProbe() {
   const signIn = useHostedSignIn();
   more = hostedAccountItems(signIn, english, openAccount);
   return <HostedAccountGroup signIn={signIn} />;
 }
 
 async function render(): Promise<void> {
-  await act(async () => { renderer = create(<SettingsProvider><Page /></SettingsProvider>); });
+  await page.render(<SettingsProvider><AccountProbe /></SettingsProvider>);
 }
 
 const actions = (signOut: () => void) => ({ signOut, leave: jest.fn(), deleteAccount: async () => null, signOutEverywhere: async () => null });
 
-const buttons = (): ReactTestInstance[] => renderer?.root.findAll((node) => node.type === "button") ?? [];
+const buttons = () => [...page.container.querySelectorAll("button")];
 
 async function fire(name: string): Promise<void> {
-  await act(async () => { window.dispatchEvent(new Event(name)); });
+  await act(async () => { page.window.dispatchEvent(new page.window.Event(name)); });
 }
 
 it("Settings shows the hosted sign-in with Manage account and Sign out, which runs the hosted app's own Sign out", async () => {
@@ -70,11 +55,11 @@ it("Settings shows the hosted sign-in with Manage account and Sign out, which ru
   keepShellAccount(actions(signOut));
   await store.set("session", session);
   await render();
-  expect(buttons().map((node) => node.children)).toEqual([["Manage account"], ["Sign out"]]);
+  expect(buttons().map((node) => node.textContent)).toEqual(["Manage account", "Sign out"]);
   const button = buttons()[1];
-  expect(button?.props["aria-label"]).toBe("Sign out of GitHub");
-  expect(button?.children).toEqual(["Sign out"]);
-  await act(async () => { button?.props.onClick(); });
+  expect(button?.getAttribute("aria-label")).toBe("Sign out of GitHub");
+  expect(button?.textContent).toBe("Sign out");
+  await act(async () => { button?.click(); });
   expect(signOut).toHaveBeenCalledTimes(1);
   // it names the account it shows: a sign-in another tab stored meanwhile is not the one ended
   expect(signOut).toHaveBeenCalledWith({ account: "acct", scope: null });

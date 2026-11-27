@@ -1,7 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
-import { act, createElement, type ReactNode } from "react";
-import * as ReactDom from "react-dom";
-import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { act, createElement } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 import { FakeAccountService, WEB_REDIRECT } from "../../shared/account-service-fake.ts";
 import { generateKeyPair } from "../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
@@ -13,7 +12,6 @@ import type { AccountList } from "../lib/account/accountList.ts";
 import type { RelayDevice } from "../lib/relay/device.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 
-await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
 const { AccountJoinRequests } = await import("./AccountJoinRequests.tsx");
 type ListAdds = Awaited<ReturnType<NonNullable<Parameters<typeof AccountJoinRequests>[0]["listOf"]>>>;
 
@@ -26,7 +24,7 @@ const DESK = deriveServerId(desk);
 const MAC = deriveServerId(mac);
 
 const globals = new Map<string, PropertyDescriptor | undefined>();
-let renderer: ReactTestRenderer | undefined;
+let page: Page;
 let now = Date.now();
 let fake: FakeAccountService;
 let store: AccountStore;
@@ -36,14 +34,14 @@ let opened: string[] = [];
 /** what this phone knows of the account's signed list (AccountJoinRequests `listOf`): null, none (the default) */
 let lists: ListAdds = null;
 
-const textOf = (node: ReactTestInstance): string => node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
-const buttons = (): string[] => renderer!.root.findAll((node) => node.type === "button").map((node) => textOf(node).trim());
+const buttons = (): string[] => [...page.window.document.body.querySelectorAll("button")].map((node) => node.textContent.trim());
 const settle = async (): Promise<void> => { for (let i = 0; i < 20; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
-const text = (): string => renderer!.root.findAll((node) => node.type === "div").map(textOf).join(" ");
+const text = (): string => [...document.body.querySelectorAll("div")]
+  .filter((node) => node !== page.container).map((node) => node.textContent).join(" ");
 const press = async (label: string): Promise<void> => {
-  const found = renderer!.root.findAll((node) => node.type === "button" && textOf(node).trim() === label);
+  const found = [...page.window.document.body.querySelectorAll("button")].filter((node) => node.textContent.trim() === label);
   if (found.length !== 1) throw new Error(`${found.length} buttons say ${label}`);
-  await act(async () => { await found[0]!.props.onClick(); });
+  await act(async () => { found[0]!.click(); });
   await settle();
 };
 
@@ -65,26 +63,14 @@ async function listedByItsOwner(key: Uint8Array, label: string): Promise<void> {
 }
 
 async function mount(): Promise<void> {
-  if (renderer !== undefined) await act(async () => { renderer!.unmount(); });
-  await act(async () => {
-    renderer = create(createElement(SettingsProvider, { children: createElement(AccountJoinRequests, { service, devices: async () => paired, now: () => now, open: (serverId: string) => { opened.push(serverId); }, listOf: async () => lists }) }));
-  });
+  await page.render(null);
+  await page.render(createElement(SettingsProvider, { children: createElement(AccountJoinRequests, { service, devices: async () => paired, now: () => now, open: (serverId: string) => { opened.push(serverId); }, listOf: async () => lists }) }));
   await settle();
 }
 
 beforeEach(async () => {
-  const events = new EventTarget();
-  const local = new Map<string, string>();
-  const storage = { getItem: (k: string) => local.get(k) ?? null, setItem: (k: string, v: string) => { local.set(k, v); }, removeItem: (k: string) => { local.delete(k); } };
-  for (const [name, value] of Object.entries({
-    window: Object.assign(events, { location: new URL("https://app.ovis.sh/"), localStorage: storage, sessionStorage: storage }),
-    IS_REACT_ACT_ENVIRONMENT: true,
-    document: Object.assign(new EventTarget(), { visibilityState: "visible", querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } }),
-    getComputedStyle: () => ({ getPropertyValue: () => "" }),
-    navigator: { languages: ["en"] },
-    localStorage: storage,
-    sessionStorage: storage,
-  })) {
+  page = openPage("https://app.ovis.sh/");
+  for (const [name, value] of Object.entries({ Event: page.window.Event, CustomEvent: page.window.CustomEvent, HTMLElement: page.window.HTMLElement, localStorage: page.window.localStorage, sessionStorage: page.window.sessionStorage })) {
     globals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
     Object.defineProperty(globalThis, name, { value, configurable: true });
   }
@@ -104,8 +90,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await act(async () => { renderer?.unmount(); });
-  renderer = undefined;
+  await page.close();
   for (const [name, descriptor] of globals) {
     if (descriptor === undefined) Reflect.deleteProperty(globalThis, name);
     else Object.defineProperty(globalThis, name, descriptor);
@@ -126,8 +111,8 @@ describe("a PC that asks to join the account, on a signed-in phone", () => {
       expect(text()).toContain("\"hasang-MacBookPro\" asks to join your account");
       await press("Allow");
       expect(opened).toEqual([]);
-      const dialog = renderer!.root.findAll((node) => node.props["data-testid"] === "add-pc-number");
-      expect(dialog.map((node) => node.props["data-pc-id"])).toEqual([MAC]);
+      const dialog = [...page.window.document.body.querySelectorAll('[data-testid="add-pc-number"]')];
+      expect(dialog.map((node) => node.getAttribute("data-pc-id"))).toEqual([MAC]);
       // nothing is written to the account by the press: the number, confirmed at the PC, is what adds it
       expect(fake.requests.filter((line) => !line.startsWith("GET ") && !line.startsWith("POST /v1/token"))).toEqual([`PUT /v1/pcs/${DESK}`, `PUT /v1/pcs/${MAC}`]);
     });
@@ -137,14 +122,14 @@ describe("a PC that asks to join the account, on a signed-in phone", () => {
       lists = { account: ACCOUNT, list, posts: [postOf(mac)] };
       await mount();
       await press("Allow");
-      const dialogs = () => renderer!.root.findAll((node) => node.props["data-testid"] === "add-pc-number");
+      const dialogs = () => [...page.window.document.body.querySelectorAll('[data-testid="add-pc-number"]')];
       expect(dialogs()).toHaveLength(1);
       // another tab signs in to another account, which keeps a list of its own with the same PC's post
       const other = "acct_other";
       fake.signInAs("github", other);
       await store.set("session", { ...(await store.get("session"))!, account: other, access_token: fake.issueToken(other) });
       lists = { account: other, list, posts: [postOf(mac)] };
-      await act(async () => { window.dispatchEvent(new Event(ACCOUNT_SIGN_OUT_EVENT)); });
+      await act(async () => { page.window.dispatchEvent(new page.window.Event(ACCOUNT_SIGN_OUT_EVENT)); });
       await settle();
       expect(dialogs().length).toBe(0);
     });

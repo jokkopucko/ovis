@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, jest, setSystemTime, spyOn } from "bun:test";
 import { act, useLayoutEffect, useState } from "react";
-import { create, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import type { Machine } from "../../shared/machines.ts";
 import type { AgentStatus } from "../../shared/protocol.ts";
@@ -15,7 +15,6 @@ import type { SidebarFilter } from "../lib/sidebarFilter.ts";
 import { SidebarFilterProvider } from "../lib/sidebarFilterContext.ts";
 import { setSidebarPins } from "../lib/sidebarPins.ts";
 import { AgentSidebar } from "./AgentSidebar.tsx";
-import { RowMenu, type RowMenuItem } from "./RowMenu.tsx";
 
 const fixture: Machine[] = JSON.parse(JSON.stringify(machinesFixture.machines));
 const paneId = "w1C:p1";
@@ -35,62 +34,69 @@ function roster(tokens: Record<string, string> = { quota: "95%" }): Machine[] {
   }));
 }
 
+const all = (selector: string) => [...page.window.document.body.querySelectorAll(selector)];
+const one = (selector: string) => {
+  const [element, ...others] = all(selector);
+  if (!element || others.length) throw new Error(`Expected one element matching ${selector}`);
+  return element;
+};
+const rowOf = (id: string) => one(`[data-machine="local"][data-pane="${id}"]`);
+const label = (element: { textContent: string | null }) => element.textContent ?? "";
+const pointer = (element: ReturnType<typeof one>, type: "pointerover" | "pointerout") => element.dispatchEvent(new page.window.PointerEvent(type, { bubbles: true }));
+const menuItems = () => all('.row-sheet button[data-item]');
+const menuItem = (id: string) => one(`.row-sheet button[data-item="${id}"]`);
+const openRowMenu = () => act(async () => { one(`[data-machine="local"][data-pane="${paneId}"] .row-menu-toggle`).click(); });
+const expanded = (element: { getAttribute(name: string): string | null }): boolean => {
+  const value = element.getAttribute("aria-expanded");
+  if (value !== "true" && value !== "false") throw new Error("Expected aria-expanded");
+  return value === "true";
+};
+let page: Page;
+const descriptors = new Map<string, PropertyDescriptor | undefined>();
+function installPage() {
+  page = openPage();
+  for (const [key, value] of Object.entries({ HTMLElement: page.window.HTMLElement, Element: page.window.Element, Node: page.window.Node, Event: page.window.Event, CustomEvent: page.window.CustomEvent, ResizeObserver: page.window.ResizeObserver })) {
+    descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { configurable: true, value });
+  }
+  Object.assign(page.window, { requestAnimationFrame: () => 1, cancelAnimationFrame() {} });
+}
+async function closePage() {
+  jest.useRealTimers();
+  await page.close();
+  for (const [key, descriptor] of descriptors) {
+    if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+    else Reflect.deleteProperty(globalThis, key);
+  }
+  descriptors.clear();
+}
+
 describe("AgentSidebar phone sheet live row", () => {
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
   let historyState: unknown;
   let steppedBack: Promise<void>;
   let originalTokens: ReturnType<typeof currentAgentRowTokens>;
-  const anchor = { isConnected: true, focus() {}, querySelector: () => null, closest: () => null };
 
   beforeEach(() => {
     originalTokens = currentAgentRowTokens();
     setAgentRowTokens(null);
-    for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) {
-      descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    }
+    installPage();
     historyState = null;
     let onBack = () => {};
     steppedBack = new Promise<void>((resolve) => { onBack = resolve; });
-    const events = new EventTarget();
     const media = { matches: true, addEventListener() {}, removeEventListener() {} };
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en-US"] } });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      matchMedia: () => media,
-      addEventListener: events.addEventListener.bind(events),
-      removeEventListener: events.removeEventListener.bind(events),
-      requestAnimationFrame: () => 1,
-      cancelAnimationFrame() {},
-      location: { href: "http://localhost/" },
-      history: {
-        get state() { return historyState; },
-        pushState(state: unknown) { historyState = state; },
-        replaceState(state: unknown) { historyState = state; },
-        back() { historyState = null; onBack(); },
-      },
+    Object.defineProperty(page.window, "matchMedia", { configurable: true, value: () => media });
+    Object.defineProperty(page.window, "history", { configurable: true, value: {
+      get state() { return historyState; },
+      pushState(state: unknown) { historyState = state; },
+      replaceState(state: unknown) { historyState = state; },
+      back() { historyState = null; onBack(); },
     } });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: {
-      // Portals use the test renderer's host container, not a DOM renderer.
-      body: { nodeType: 1, children: [], createNodeMock: () => null },
-      documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
-      querySelector: () => null,
-      addEventListener: events.addEventListener.bind(events),
-      removeEventListener: events.removeEventListener.bind(events),
-    } });
-    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
   });
 
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
+    await closePage();
     if (historyState !== null) await steppedBack;
     setAgentRowTokens(originalTokens);
-    for (const [key, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    descriptors.clear();
   });
 
   const view = (machines: Machine[]) => <SettingsProvider>
@@ -102,16 +108,16 @@ describe("AgentSidebar phone sheet live row", () => {
     const at = (status: AgentStatus) => roster().map((machine) => ({ ...machine, snapshot: machine.snapshot && {
       ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: status } : pane),
     } }));
-    const since = () => renderer!.root.findByProps({ "data-machine": "local", "data-pane": paneId }).findAll((node) => node.props.className === "agent-since").map((node) => node.children.join(""));
+    const since = () => [...rowOf(paneId).querySelectorAll('[class="agent-since"]')].map(label);
     // already waiting when the page opened: herdr says nothing of when it began, so the row says no time
-    await act(async () => { renderer = create(view(at("blocked"))); });
+    await page.render(view(at("blocked")));
     expect(since()).toEqual([]);
-    await act(async () => { renderer!.update(view(at("working"))); });
+    await page.render(view(at("working")));
     expect(since()).toEqual(["<1m"]);
     const otherChanged = at("working").map((machine) => ({ ...machine, snapshot: machine.snapshot && {
       ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => pane.pane_id === "w1E:p1" ? { ...pane, agent_status: "working" as const } : pane),
     } }));
-    await act(async () => { renderer!.update(view(otherChanged)); });
+    await page.render(view(otherChanged));
     expect(since()).toEqual(["<1m"]);
   });
 
@@ -119,47 +125,40 @@ describe("AgentSidebar phone sheet live row", () => {
     const at = (status: AgentStatus, state: Machine["state"] = "connected") => roster().map((machine) => ({ ...machine, ...(machine.id === "local" ? { state } : {}), snapshot: machine.snapshot && {
       ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: status } : pane),
     } }));
-    const since = () => renderer!.root.findByProps({ "data-machine": "local", "data-pane": paneId }).findAll((node) => node.props.className === "agent-since").map((node) => node.children.join(""));
-    await act(async () => { renderer = create(view(at("working"))); });
-    await act(async () => { renderer!.update(view(at("working", "disconnected"))); });
-    await act(async () => { renderer!.update(view(at("blocked"))); });
+    const since = () => [...rowOf(paneId).querySelectorAll('[class="agent-since"]')].map(label);
+    await page.render(view(at("working")));
+    await page.render(view(at("working", "disconnected")));
+    await page.render(view(at("blocked")));
     expect(since()).toEqual([]);
   });
 
   async function open() {
-    await act(async () => {
-      renderer = create(view(roster()), { createNodeMock: () => anchor });
-    });
-    if (!renderer) throw new Error("sidebar did not mount");
-    const mounted = renderer;
-    const row = () => mounted.root.findByProps({ "data-machine": "local", "data-pane": paneId });
-    await act(async () => { row().findByProps({ className: "sidebar-row-action row-menu-toggle" }).props.onClick({ currentTarget: anchor }); });
-    expect(mounted.root.findAllByProps({ role: "dialog" })).toHaveLength(1);
-    expect(mounted.root.findByProps({ className: "row-menu-target-name" }).children).toEqual(["Idempotent payments"]);
-    expect(mounted.root.findByProps({ className: "row-menu-target-place" }).children).toEqual(["checkout-api"]);
-    expect(mounted.root.findByProps({ className: "row-sheet-detail" }).children).toEqual(["95%"]);
+    await page.render(view(roster()));
+    const row = () => rowOf(paneId);
+    await act(async () => { row().querySelector('[class="sidebar-row-action row-menu-toggle"]')!.click(); });
+    expect(all('[role="dialog"]')).toHaveLength(1);
+    expect(label(one('[class="row-menu-target-name"]'))).toBe("Idempotent payments");
+    expect(label(one('[class="row-menu-target-place"]'))).toBe("checkout-api");
+    expect(label(one('[class="row-sheet-detail"]'))).toBe("95%");
     return {
-      mounted,
       row,
-      update: async (machines: Machine[]) => { await act(async () => { mounted.update(view(machines)); }); },
+      update: async (machines: Machine[]) => { await page.render(view(machines)); },
     };
   }
 
   const lockSetting = (agentLocks: boolean, lockedAgents: string[] = []) => {
-    (globalThis.window as unknown as { localStorage: Pick<Storage, "getItem" | "setItem" | "removeItem"> }).localStorage = {
-      getItem: (key) => key === "ovis:settings" ? JSON.stringify({ agentLocks, lockedAgents }) : null, setItem() {}, removeItem() {},
-    };
+    page.window.localStorage.setItem("ovis:settings", JSON.stringify({ agentLocks, lockedAgents }));
   };
 
   it("offers no lock, and holds none, until Lock pinned agents is turned on (#2432)", async () => {
     lockSetting(false, [`local:${paneId}`]);
     setSidebarPins([`local:${paneId}`]);
     try {
-      const { mounted } = await open();
-      expect((mounted.root.findByType(RowMenu).props.items as RowMenuItem[]).map((item) => item.id)).toEqual(["unpin"]);
-      expect(mounted.root.findAllByProps({ "data-testid": "agent-locked" })).toHaveLength(0);
+      await open();
+      expect(menuItems().map((item) => item.dataset.item)).toEqual(["unpin"]);
+      expect(all('[data-testid="agent-locked"]')).toHaveLength(0);
     } finally {
-      setSidebarPins([]);
+      await act(async () => { setSidebarPins([]); });
     }
   });
 
@@ -167,13 +166,16 @@ describe("AgentSidebar phone sheet live row", () => {
     lockSetting(true);
     setSidebarPins([]);
     try {
-      const { mounted } = await open();
-      const items = () => mounted.root.findByType(RowMenu).props.items as RowMenuItem[];
-      const ids = () => items().map((item) => item.id);
-      const run = async (id: string) => { await act(async () => { items().find((item) => item.id === id)!.run(); }); };
-      const lockIcons = () => mounted.root.findAllByProps({ "data-testid": "agent-locked" });
+      await open();
+      const ids = () => menuItems().map((item) => item.dataset.item);
+      const run = async (id: string) => {
+        await act(async () => { menuItem(id).click(); });
+        await openRowMenu();
+      };
+      const lockIcons = () => all('[data-testid="agent-locked"]');
       expect(ids()).toEqual(["pin"]);
       await act(async () => { setSidebarPins([`local:${paneId}`]); });
+      if (!menuItems().length) await openRowMenu();
       expect(ids()).toEqual(["unpin", "lock"]);
       await run("lock");
       expect(ids()).toEqual(["unlock"]);
@@ -182,65 +184,63 @@ describe("AgentSidebar phone sheet live row", () => {
       expect(ids()).toEqual(["unpin", "lock"]);
       expect(lockIcons()).toHaveLength(0);
     } finally {
-      setSidebarPins([]);
+      await act(async () => { setSidebarPins([]); });
     }
   });
 
   const groupSetting = (agentNamedGroups: boolean, agentGroupOf: Record<string, string> = {}, folded: string[] = []) => {
-    (globalThis.window as unknown as { localStorage: Pick<Storage, "getItem" | "setItem" | "removeItem"> }).localStorage = {
-      getItem: (key) => key === "ovis:settings" ? JSON.stringify({ agentNamedGroups, agentGroupNames: ["Agents", "Tasks"], agentGroupOf })
-        : key === "ovis:agent-group-folds" ? JSON.stringify(folded) : null,
-      setItem() {}, removeItem() {},
-    };
+    page.window.localStorage.setItem("ovis:settings", JSON.stringify({ agentNamedGroups, agentGroupNames: ["Agents", "Tasks"], agentGroupOf }));
+    page.window.localStorage.setItem("ovis:agent-group-folds", JSON.stringify(folded));
   };
-  const groupHeadings = (mounted: ReactTestRenderer) => mounted.root.findAllByProps({ className: "agent-named-group-name" }).map((node) => node.children.join(""));
+  const groupHeadings = () => all('[class="agent-named-group-name"]').map(label);
 
   it("draws no named group and offers no move until Named agent groups is turned on (#2431)", async () => {
     groupSetting(false, { [`local:${paneId}`]: "Tasks" });
-    const { mounted } = await open();
-    expect(groupHeadings(mounted)).toEqual([]);
-    expect((mounted.root.findByType(RowMenu).props.items as RowMenuItem[]).map((item) => item.id)).toEqual(["pin"]);
+    await open();
+    expect(groupHeadings()).toEqual([]);
+    expect(menuItems().map((item) => item.dataset.item)).toEqual(["pin"]);
   });
 
   it("draws a row under its named group and moves it from the row's menu (#2431)", async () => {
     groupSetting(true, { [`local:${paneId}`]: "Tasks" });
-    const { mounted } = await open();
-    const items = () => mounted.root.findByType(RowMenu).props.items as RowMenuItem[];
-    const run = async (id: string) => { await act(async () => { items().find((item) => item.id === id)!.run(); }); };
-    expect(groupHeadings(mounted)).toContain("Tasks");
-    expect(items().map((item) => item.id)).toEqual(["pin", "group:Agents", "ungroup"]);
+    await open();
+    const run = async (id: string) => {
+      await act(async () => { menuItem(id).click(); });
+      await openRowMenu();
+    };
+    expect(groupHeadings()).toContain("Tasks");
+    expect(menuItems().map((item) => item.dataset.item)).toEqual(["pin", "group:Agents", "ungroup"]);
     await run("group:Agents");
-    expect(groupHeadings(mounted)).toContain("Agents");
-    expect(groupHeadings(mounted)).not.toContain("Tasks");
-    expect(items().map((item) => item.id)).toEqual(["pin", "group:Tasks", "ungroup"]);
+    expect(groupHeadings()).toContain("Agents");
+    expect(groupHeadings()).not.toContain("Tasks");
+    expect(menuItems().map((item) => item.dataset.item)).toEqual(["pin", "group:Tasks", "ungroup"]);
     await run("ungroup");
-    expect(groupHeadings(mounted)).toEqual([]);
+    expect(groupHeadings()).toEqual([]);
   });
 
   it("folds a named group, keeping its count and its rows out of sight (#2431)", async () => {
     groupSetting(true, { [`local:${paneId}`]: "Tasks" });
-    const { mounted, row } = await open();
-    const toggle = mounted.root.findByProps({ "data-named-group": "Tasks" }).findByType("button");
-    expect(toggle.props["aria-expanded"]).toBe(true);
-    await act(async () => { toggle.props.onClick(); });
-    expect(mounted.root.findByProps({ "data-named-group": "Tasks" }).findByType("button").props["aria-expanded"]).toBe(false);
-    expect(row().props.hidden).toBe(true);
+    const { row } = await open();
+    const toggle = one('[data-named-group="Tasks"] button');
+    expect(expanded(toggle)).toBe(true);
+    await act(async () => { toggle.click(); });
+    expect(expanded(one('[data-named-group="Tasks"] button'))).toBe(false);
+    expect(row().hidden).toBe(true);
   });
 
   it("offers no group move for a background agent, which stays under Background agents (#2431)", async () => {
     groupSetting(true);
-    await act(async () => { renderer = create(view(roster({ role: "background" })), { createNodeMock: () => anchor }); });
-    const mounted = renderer!;
-    await act(async () => { mounted.root.findByProps({ "data-machine": "local", "data-pane": paneId }).findByProps({ className: "sidebar-row-action row-menu-toggle" }).props.onClick({ currentTarget: anchor }); });
-    expect((mounted.root.findByType(RowMenu).props.items as RowMenuItem[]).map((item) => item.id)).toEqual(["pin"]);
+    await page.render(view(roster({ role: "background" })));
+    await act(async () => { rowOf(paneId).querySelector('[class="sidebar-row-action row-menu-toggle"]')!.click(); });
+    expect(menuItems().map((item) => item.dataset.item)).toEqual(["pin"]);
   });
 
   it("opens a folded group a row is moved into, so the row stays in sight (#2431)", async () => {
     groupSetting(true, { [`local:${paneId}`]: "Tasks" }, ["Agents"]);
-    const { mounted, row } = await open();
-    await act(async () => { (mounted.root.findByType(RowMenu).props.items as RowMenuItem[]).find((item) => item.id === "group:Agents")!.run(); });
-    expect(mounted.root.findByProps({ "data-named-group": "Agents" }).findByType("button").props["aria-expanded"]).toBe(true);
-    expect(row().props.hidden).toBeUndefined();
+    const { row } = await open();
+    await act(async () => { menuItem("group:Agents").click(); });
+    expect(expanded(one('[data-named-group="Agents"] button'))).toBe(true);
+    expect(row().hidden).toBe(false);
   });
 
   it("stops the agents a row called from its menu, counting those still taking its work, and marks a stopped one", async () => {
@@ -257,34 +257,33 @@ describe("AgentSidebar phone sheet live row", () => {
       return { ...machine, snapshot: { ...machine.snapshot, panes: [...machine.snapshot.panes, child("w1C:c1", false), child("w1C:c2", true)] } };
     });
     try {
-      await act(async () => { renderer = create(view(called), { createNodeMock: () => anchor }); });
-      const mounted = renderer!;
-      const held = (id: string) => mounted.root.findByProps({ "data-machine": "local", "data-pane": id }).findAllByProps({ className: "agent-held" }).length;
+      await page.render(view(called));
+      const held = (id: string) => rowOf(id).querySelectorAll('[class="agent-held"]').length;
       expect([held("w1C:c1"), held("w1C:c2")]).toEqual([0, 1]);
-      await act(async () => { mounted.root.findByProps({ "data-machine": "local", "data-pane": paneId }).findByProps({ className: "sidebar-row-action row-menu-toggle" }).props.onClick({ currentTarget: anchor }); });
-      const stop = (mounted.root.findByType(RowMenu).props.items as RowMenuItem[]).find((item) => item.id === "stop-called");
-      expect(stop?.label).toBe("Stop agents it called (1)");
-      await act(async () => { stop!.run(); });
+      await act(async () => { rowOf(paneId).querySelector('[class="sidebar-row-action row-menu-toggle"]')!.click(); });
+      const stop = menuItem("stop-called");
+      expect(stop.querySelector(".row-sheet-label")?.textContent).toBe("Stop agents it called (1)");
+      await act(async () => { stop.click(); });
       expect(sent).toEqual([{ url: "/api/pane/turn/cancel-children", body: { pane_id: paneId } }]);
-      expect(mounted.root.findAllByProps({ role: "alert" })).toHaveLength(0);
+      expect(all('[role="alert"]')).toHaveLength(0);
     } finally {
       fetchSpy.mockRestore();
     }
   });
 
   it("offers no stop for a row that called no agent", async () => {
-    const { mounted } = await open();
-    expect((mounted.root.findByType(RowMenu).props.items as RowMenuItem[]).map((item) => item.id)).not.toContain("stop-called");
+    await open();
+    expect(menuItems().map((item) => item.dataset.item)).not.toContain("stop-called");
   });
 
   it("updates the open sheet when a plugin value changes", async () => {
-    const { mounted, update } = await open();
+    const { update } = await open();
     await update(roster({ quota: "40%" }));
-    expect(mounted.root.findByProps({ className: "row-sheet-detail" }).children).toEqual(["40%"]);
+    expect(label(one('[class="row-sheet-detail"]'))).toBe("40%");
   });
 
   it("says a blocked agent's whole reason in the open sheet, which has no tooltip", async () => {
-    const { mounted, update } = await open();
+    const { update } = await open();
     await update(roster().map((machine) => ({
       ...machine,
       snapshot: machine.snapshot === null ? null : {
@@ -292,116 +291,86 @@ describe("AgentSidebar phone sheet live row", () => {
         panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: "blocked" as const, agent_kind: "permission", agent_message: "Allow bash?" } : pane),
       },
     })));
-    expect(mounted.root.findByProps({ className: "row-sheet-alert" }).children).toEqual(["Needs permission: Allow bash?"]);
-    expect(mounted.root.findByProps({ className: "row-sheet-detail" }).children).toEqual(["95%"]);
+    expect(label(one('[class="row-sheet-alert"]'))).toBe("Needs permission: Allow bash?");
+    expect(label(one('[class="row-sheet-detail"]'))).toBe("95%");
   });
 
   it("removes the sheet detail when a token is deleted", async () => {
-    const { mounted, update } = await open();
+    const { update } = await open();
     await update(roster({}));
-    expect(mounted.root.findAllByProps({ role: "dialog" })).toHaveLength(1);
-    expect(mounted.root.findAllByProps({ className: "row-sheet-detail" })).toHaveLength(0);
+    expect(all('[role="dialog"]')).toHaveLength(1);
+    expect(all('[class="row-sheet-detail"]')).toHaveLength(0);
   });
 
   it("removes the sheet detail when a new hide rule matches", async () => {
-    const { mounted } = await open();
+    await open();
     await act(async () => { setAgentRowTokens({ rows: [{ name: "quota", rules: [{ equals: "95%", hide: true }] }], by_agent: {} }); });
-    expect(mounted.root.findAllByProps({ role: "dialog" })).toHaveLength(1);
-    expect(mounted.root.findAllByProps({ className: "row-sheet-detail" })).toHaveLength(0);
+    expect(all('[role="dialog"]')).toHaveLength(1);
+    expect(all('[class="row-sheet-detail"]')).toHaveLength(0);
   });
 
   for (const state of ["connecting", "reconnecting"] as const) {
     it(`keeps the sheet open when its PC briefly enters ${state} then recovers`, async () => {
-      const { mounted, row, update } = await open();
+      const { row, update } = await open();
       await update(roster().map((machine) => ({ ...machine, state })));
-      expect(mounted.root.findAllByProps({ role: "dialog" })).toHaveLength(1);
-      expect(row().findByProps({ className: "sidebar-row-action row-menu-toggle" }).props["aria-expanded"]).toBe(true);
-      expect(row().findAllByProps({ className: "agent-tokens" })).toHaveLength(0);
-      expect(mounted.root.findAllByProps({ className: "row-sheet-detail" })).toHaveLength(0);
+      expect(all('[role="dialog"]')).toHaveLength(1);
+      expect(expanded(row().querySelector('[class="sidebar-row-action row-menu-toggle"]')!)).toBe(true);
+      expect(row().querySelectorAll('[class="agent-tokens"]')).toHaveLength(0);
+      expect(all('[class="row-sheet-detail"]')).toHaveLength(0);
       await update(roster({ quota: "40%" }));
-      expect(mounted.root.findAllByProps({ role: "dialog" })).toHaveLength(1);
-      expect(mounted.root.findByProps({ className: "row-sheet-detail" }).children).toEqual(["40%"]);
+      expect(all('[role="dialog"]')).toHaveLength(1);
+      expect(label(one('[class="row-sheet-detail"]'))).toBe("40%");
     });
   }
 
   for (const state of ["disconnected", "error"] as const) {
     it(`closes the sheet when its PC enters ${state} with a cached roster`, async () => {
-      const { mounted, row, update } = await open();
+      const { row, update } = await open();
       await update(roster().map((machine) => ({ ...machine, state })));
-      expect(row().findByProps({ className: "agent-select agent-row" }).props.disabled).toBe(true);
-      expect(mounted.root.findAllByProps({ role: "dialog" })).toHaveLength(0);
-      expect(row().findByProps({ className: "sidebar-row-action row-menu-toggle" }).props["aria-expanded"]).toBe(false);
+      expect(row().querySelector('[class="agent-select agent-row"]')!.hasAttribute("disabled")).toBe(true);
+      expect(all('[role="dialog"]')).toHaveLength(0);
+      expect(expanded(row().querySelector('[class="sidebar-row-action row-menu-toggle"]')!)).toBe(false);
     });
   }
 
   it("keeps the sheet closed when a disconnected PC reconnects", async () => {
-    const { mounted, update } = await open();
+    const { update } = await open();
     await update(roster().map((machine) => ({ ...machine, state: "disconnected" })));
     await update(roster({ quota: "40%" }));
-    expect(mounted.root.findAllByProps({ role: "dialog" })).toHaveLength(0);
+    expect(all('[role="dialog"]')).toHaveLength(0);
   });
 
   it("keeps the sheet closed when a removed row returns", async () => {
-    const { mounted, update } = await open();
+    const { update } = await open();
     await update([]);
-    expect(mounted.root.findAllByProps({ role: "dialog" })).toHaveLength(0);
+    expect(all('[role="dialog"]')).toHaveLength(0);
     await update(roster());
-    expect(mounted.root.findAllByProps({ role: "dialog" })).toHaveLength(0);
+    expect(all('[role="dialog"]')).toHaveLength(0);
   });
 });
 
 describe("AgentSidebar fold memory", () => {
-  const focusedRow = { closest: () => null };
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
   const FOLD_KEY = "ovis:agents-collapsed";
-  let renderer: ReactTestRenderer | undefined;
-  let stored: Map<string, string>;
+  let stored: { get(key: string): string | null; set(key: string, value: string): void; delete(key: string): void };
   let writes: string[];
   let phone: boolean;
 
   beforeEach(() => {
-    for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) {
-      descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    }
-    stored = new Map();
+    installPage();
+    const storage = page.window.localStorage;
     writes = [];
     phone = false;
-    const events = new EventTarget();
-    const localStorage = {
-      getItem: (key: string) => stored.get(key) ?? null,
-      setItem: (key: string, value: string) => { writes.push(key); stored.set(key, value); },
-      removeItem: (key: string) => { writes.push(key); stored.delete(key); },
-    };
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en-US"] } });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      localStorage,
-      matchMedia: () => ({ matches: phone, addEventListener() {}, removeEventListener() {} }),
-      addEventListener: events.addEventListener.bind(events),
-      removeEventListener: events.removeEventListener.bind(events),
-      requestAnimationFrame: () => 1,
-      cancelAnimationFrame() {},
-      location: { href: "http://localhost/" },
-    } });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: {
-      body: { nodeType: 1, children: [] },
-      documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
-      querySelector: () => null,
-      addEventListener: events.addEventListener.bind(events),
-      removeEventListener: events.removeEventListener.bind(events),
-    } });
-    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
+    const setItem = storage.setItem.bind(storage);
+    const removeItem = storage.removeItem.bind(storage);
+    stored = { get: (key: string) => storage.getItem(key), set: setItem, delete: removeItem };
+    Object.defineProperties(storage, {
+      setItem: { configurable: true, value: (key: string, value: string) => { writes.push(key); setItem(key, value); } },
+      removeItem: { configurable: true, value: (key: string) => { writes.push(key); removeItem(key); } },
+    });
+    Object.defineProperty(page.window, "matchMedia", { configurable: true, value: () => ({ matches: phone, addEventListener() {}, removeEventListener() {} }) });
   });
 
-  afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
-    for (const [key, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    descriptors.clear();
-  });
+  afterEach(closePage);
 
   const inactive: SidebarFilter = { query: "", active: false, machines: new Map(), matches: 0 };
   const view = (filter: SidebarFilter) => <SettingsProvider>
@@ -411,15 +380,13 @@ describe("AgentSidebar fold memory", () => {
   </SettingsProvider>;
 
   async function mount(filter = inactive) {
-    await act(async () => { renderer = create(view(filter)); });
-    if (!renderer) throw new Error("sidebar did not mount");
-    const mounted = renderer;
-    const toggle = () => mounted.root.findByProps({ className: "agent-section-toggle sidebar-section-label" });
+    await page.render(view(filter));
+    const toggle = () => one('[class="agent-section-toggle sidebar-section-label"]');
     return {
-      expanded: (): boolean => toggle().props["aria-expanded"],
-      click: async () => { await act(async () => { toggle().props.onClick(); }); },
+      expanded: (): boolean => expanded(toggle()),
+      click: async () => { await act(async () => { toggle().click(); }); },
       remount: async (next = filter) => {
-        await act(async () => { mounted.unmount(); });
+        await page.render(null);
         return mount(next);
       },
     };
@@ -427,7 +394,7 @@ describe("AgentSidebar fold memory", () => {
 
   it("keeps the defaults with nothing stored: open on a desktop, folded in the phone drawer", async () => {
     expect((await mount()).expanded()).toBe(true);
-    await act(async () => { renderer?.unmount(); });
+    await page.render(null);
     phone = true;
     expect((await mount()).expanded()).toBe(false);
     expect(writes).toEqual([]);
@@ -447,7 +414,7 @@ describe("AgentSidebar fold memory", () => {
     phone = true;
     stored.set(FOLD_KEY, "0");
     expect((await mount()).expanded()).toBe(true);
-    await act(async () => { renderer?.unmount(); });
+    await page.render(null);
     phone = false;
     stored.set(FOLD_KEY, "1");
     expect((await mount()).expanded()).toBe(false);
@@ -459,17 +426,15 @@ describe("AgentSidebar fold memory", () => {
     const parents: Record<string, string> = { "w1E:p1": "w1C:p1", "w1F:p1": "w1D:p1" };
     const machines = roster().map((machine) => machine.snapshot === null ? machine : { ...machine, snapshot: { ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => parents[pane.pane_id] ? { ...pane, parent_pane_id: parents[pane.pane_id] } : pane) } });
     machines.push({ id: "pc2", name: "laptop", kind: "ssh", enabled: true, state: "connecting", error: null, snapshot: null } as Machine);
-    await act(async () => {
-      renderer = create(<SettingsProvider><SidebarFilterProvider value={{ filter: inactive, reportBranches: () => {} }}>
+    await page.render(<SettingsProvider><SidebarFilterProvider value={{ filter: inactive, reportBranches: () => {} }}>
         <AgentSidebar machines={machines} selectedMachineId="local" selectedPaneId={null} stateWord={(machine) => machine.state} onSelect={() => {}} />
       </SidebarFilterProvider></SettingsProvider>);
-    });
-    const line = (agent: string) => renderer!.root.find((node) => node.props["data-helpers-of"] === `local:${agent}`).findByType("button");
-    expect(line("w1C:p1").props["aria-expanded"]).toBe(false);
+    const line = (agent: string) => one(`li[data-helpers-of="local:${agent}"] button`);
+    expect(expanded(line("w1C:p1"))).toBe(false);
     stored.set("ovis:agents-helpers-open", JSON.stringify(["pc2:w1:p1", "local:gone:p1", "local:w1D:p1"]));
-    await act(async () => { line("w1C:p1").props.onClick(); });
+    await act(async () => { line("w1C:p1").click(); });
     expect(JSON.parse(stored.get("ovis:agents-helpers-open")!)).toEqual(["pc2:w1:p1", "local:w1D:p1", "local:w1C:p1"]);
-    expect(line("w1C:p1").props["aria-expanded"]).toBe(true);
+    expect(expanded(line("w1C:p1"))).toBe(true);
   });
 
   it("never writes the filter's temporary fold", async () => {
@@ -488,35 +453,35 @@ describe("AgentSidebar fold memory", () => {
       <AgentSidebar machines={machines} selectedMachineId="local" selectedPaneId={null} watching={watching} stateWord={(machine) => machine.state} onSelect={() => {}} />
     </SidebarFilterProvider>
   </SettingsProvider>;
-  const heading = (group: string) => renderer!.root.find((node) => node.type === "li" && node.props.className === "agent-group-label" && node.props["data-group"] === group).findByType("button");
-  const foldedRows = (): string[] => renderer!.root.findAll((node) => node.type === "li" && node.props["data-pane"] !== undefined && node.props.hidden === true).map((node) => node.props["data-pane"]);
+  const heading = (group: string) => one(`li[class="agent-group-label"][data-group="${group}"] button`);
+  const foldedRows = (): string[] => all('li[data-pane][hidden]').map((node) => node.dataset.pane ?? "");
 
   it("starts with Idle folded and the other groups open, and keeps what the reader then folds and opens (#3505)", async () => {
     stored.set("ovis:agent-groups", "true");
-    await act(async () => { renderer = create(groupedList(inactive)); });
-    expect(heading("idle").props["aria-expanded"]).toBe(false);
-    expect(heading("working").props["aria-expanded"]).toBe(true);
+    await page.render(groupedList(inactive));
+    expect(expanded(heading("idle"))).toBe(false);
+    expect(expanded(heading("working"))).toBe(true);
     expect(foldedRows()).toEqual(["w1E:p1", "w1F:p1"]);
-    expect(heading("idle").findByProps({ className: "agent-group-count" }).children).toEqual(["2"]);
-    await act(async () => { heading("idle").props.onClick(); });
-    await act(async () => { heading("working").props.onClick(); });
+    expect(label(one('li[data-group="idle"] [class="agent-group-count"]'))).toBe("2");
+    await act(async () => { heading("idle").click(); });
+    await act(async () => { heading("working").click(); });
     expect(foldedRows()).toEqual([paneId]);
-    expect(heading("working").findByProps({ className: "agent-group-count" }).children).toEqual(["1"]);
-    await act(async () => { renderer!.unmount(); });
-    await act(async () => { renderer = create(groupedList(inactive)); });
-    expect(heading("idle").props["aria-expanded"]).toBe(true);
+    expect(label(one('li[data-group="working"] [class="agent-group-count"]'))).toBe("1");
+    await page.render(null);
+    await page.render(groupedList(inactive));
+    expect(expanded(heading("idle"))).toBe(true);
     expect(foldedRows()).toEqual([paneId]);
   });
 
   it("keeps the fold another tab made when this one folds another group (#3505)", async () => {
     stored.set("ovis:agent-groups", "true");
     stored.set("ovis:agent-state-folds", "[]");
-    await act(async () => { renderer = create(groupedList(inactive)); });
+    await page.render(groupedList(inactive));
     stored.set("ovis:agent-state-folds", JSON.stringify(["working"]));
-    await act(async () => { heading("idle").props.onClick(); });
+    await act(async () => { heading("idle").click(); });
     expect(JSON.parse(stored.get("ovis:agent-state-folds")!)).toEqual(["working", "idle"]);
-    expect(heading("working").props["aria-expanded"]).toBe(false);
-    expect(heading("idle").props["aria-expanded"]).toBe(false);
+    expect(expanded(heading("working"))).toBe(false);
+    expect(expanded(heading("idle"))).toBe(false);
   });
 
   it("keeps the selected agent in sight under its folded group, as the list's other folds do (#3505)", async () => {
@@ -526,10 +491,10 @@ describe("AgentSidebar fold memory", () => {
         <AgentSidebar machines={roster()} selectedMachineId="local" selectedPaneId={pane} stateWord={(machine) => machine.state} onSelect={() => {}} />
       </SidebarFilterProvider>
     </SettingsProvider>;
-    await act(async () => { renderer = create(selecting("w1E:p1")); });
+    await page.render(selecting("w1E:p1"));
     expect(foldedRows()).toEqual(["w1F:p1"]);
-    expect(heading("idle").findByProps({ className: "agent-group-count" }).children).toEqual(["2"]);
-    await act(async () => { renderer!.update(selecting(paneId)); });
+    expect(label(one('li[data-group="idle"] [class="agent-group-count"]'))).toBe("2");
+    await page.render(selecting(paneId));
     expect(foldedRows()).toEqual(["w1E:p1", "w1F:p1"]);
   });
 
@@ -541,26 +506,21 @@ describe("AgentSidebar fold memory", () => {
         panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: "blocked" as const, agent_kind: "permission", agent_message: "Allow bash?" } : pane),
       },
     }));
-    // the menu places itself by its button's box and its own size; a portal's elements take their node from its container
-    const node = { isConnected: true, offsetWidth: 220, offsetHeight: 120, focus() {}, contains: () => false, querySelector: () => null, closest: () => null, getBoundingClientRect: () => ({ top: 40, bottom: 64, left: 260, right: 284 }) };
-    Object.assign(document.body, { createNodeMock: () => node });
-    await act(async () => {
-      renderer = create(<SettingsProvider>
+    await page.render(<SettingsProvider>
         <SidebarFilterProvider value={{ filter: inactive, reportBranches: () => {} }}>
           <AgentSidebar machines={blocked} selectedMachineId="local" selectedPaneId={null} stateWord={(machine) => machine.state} onSelect={() => {}} />
         </SidebarFilterProvider>
-      </SettingsProvider>, { createNodeMock: () => node });
-    });
-    await act(async () => { renderer!.root.findByProps({ "data-machine": "local", "data-pane": paneId }).findByProps({ className: "sidebar-row-action row-menu-toggle" }).props.onClick({ currentTarget: node }); });
-    expect(renderer!.root.findAllByProps({ role: "dialog" })).toHaveLength(0);
-    const reason = renderer!.root.findByProps({ role: "menu" }).findByProps({ className: "row-menu-alert" });
-    expect(reason.children).toEqual(["Needs permission: Allow bash?"]);
+      </SettingsProvider>);
+    await act(async () => { rowOf(paneId).querySelector('[class="sidebar-row-action row-menu-toggle"]')!.click(); });
+    expect(all('[role="dialog"]')).toHaveLength(0);
+    const reason = one('[role="menu"] [class="row-menu-alert"]');
+    expect(label(reason)).toBe("Needs permission: Allow bash?");
     // And the menu is described by it: a screen reader inside a menu reads its items, and nothing between them.
-    expect(reason.props.id).toEqual(expect.any(String));
-    expect(renderer!.root.findByProps({ role: "menu" }).props["aria-describedby"]).toBe(reason.props.id);
-    await act(async () => { renderer!.root.findByProps({ "data-machine": "local", "data-pane": "w1E:p1" }).findByProps({ className: "sidebar-row-action row-menu-toggle" }).props.onClick({ currentTarget: node }); });
-    expect(renderer!.root.findByProps({ role: "menu" }).findAllByProps({ className: "row-menu-alert" })).toHaveLength(0);
-    expect(renderer!.root.findByProps({ role: "menu" }).props["aria-describedby"]).toBeUndefined();
+    expect(reason.getAttribute("id")).toEqual(expect.any(String));
+    expect(one('[role="menu"]').getAttribute("aria-describedby")).toBe(reason.getAttribute("id"));
+    await act(async () => { one('[data-machine="local"][data-pane="w1E:p1"]').querySelector('[class="sidebar-row-action row-menu-toggle"]')!.click(); });
+    expect(all('[role="menu"] [class="row-menu-alert"]')).toHaveLength(0);
+    expect(one('[role="menu"]').getAttribute("aria-describedby")).toBeNull();
   });
 
   it("opens every folded group while the filter is in use, and leaves the stored fold alone (#3505)", async () => {
@@ -569,11 +529,11 @@ describe("AgentSidebar fold memory", () => {
     const keepsIdle: SidebarFilter = { query: "backup", active: true, matches: 1, machines: new Map([["local", {
       shown: true, matched: false, workspaces: new Set(), matchedWorkspaces: new Set(), revealedWorkspaces: new Set(), panes: new Set(["w1E:p1"]), matchedPanes: new Set(["w1E:p1"]),
     }]]) };
-    await act(async () => { renderer = create(groupedList(keepsIdle)); });
-    expect(heading("idle").props["aria-expanded"]).toBe(true);
-    expect(heading("idle").props.disabled).toBe(true);
+    await page.render(groupedList(keepsIdle));
+    expect(expanded(heading("idle"))).toBe(true);
+    expect(heading("idle").hasAttribute("disabled")).toBe(true);
     expect(foldedRows()).toEqual([]);
-    await act(async () => { renderer!.update(groupedList(inactive)); });
+    await page.render(groupedList(inactive));
     expect(foldedRows()).toEqual(["w1E:p1", "w1F:p1"]);
     expect(JSON.parse(stored.get("ovis:agent-state-folds")!)).toEqual(["idle"]);
   });
@@ -581,8 +541,8 @@ describe("AgentSidebar fold memory", () => {
   it("lets a watching device fold its groups: the fold is the device's own, and nothing is sent for it (#3505)", async () => {
     stored.set("ovis:agent-groups", "true");
     stored.set("ovis:agent-state-folds", "[]");
-    await act(async () => { renderer = create(groupedList(inactive, roster(), true)); });
-    await act(async () => { heading("working").props.onClick(); });
+    await page.render(groupedList(inactive, roster(), true));
+    await act(async () => { heading("working").click(); });
     expect(foldedRows()).toEqual([paneId]);
     expect(JSON.parse(stored.get("ovis:agent-state-folds")!)).toEqual(["working"]);
   });
@@ -595,28 +555,27 @@ describe("AgentSidebar fold memory", () => {
       panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: status, finish_id: finishes } : pane),
       agents: machine.snapshot.agents.map((agent) => agent.pane_id === paneId ? { ...agent, agent_status: status, state_change_seq: seq } : agent),
     } }));
-    const since = () => renderer!.root.findByProps({ "data-machine": "local", "data-pane": paneId }).findAll((node) => node.props.className === "agent-since").map((node) => node.children.join(""));
+    const since = () => [...rowOf(paneId).querySelectorAll('[class="agent-since"]')].map(label);
     jest.useFakeTimers();
     jest.setSystemTime(new Date(start));
     try {
-      await act(async () => { renderer = create(groupedList(inactive, at("working", 50, 0))); });
-      await act(async () => { renderer!.update(groupedList(inactive, at("done", 51, 1))); });
+      await page.render(groupedList(inactive, at("working", 50, 0)));
+      await page.render(groupedList(inactive, at("done", 51, 1)));
       expect(since()).toEqual(["<1m"]);
       jest.setSystemTime(new Date(start + 5 * 60_000));
       await act(async () => { jest.advanceTimersByTime(30_000); });
       expect(since()).toEqual(["5m"]);
-      await act(async () => { renderer!.update(groupedList(inactive, at("idle", 51, 1))); });
-      await act(async () => { renderer!.update(groupedList(inactive, at("idle", 52, 1))); });
+      await page.render(groupedList(inactive, at("idle", 51, 1)));
+      await page.render(groupedList(inactive, at("idle", 52, 1)));
       expect(since()).toEqual(["5m"]);
-      await act(async () => { renderer!.unmount(); });
-      await act(async () => { renderer = create(groupedList(inactive, at("idle", 52, 1))); });
+      await page.render(null);
+      await page.render(groupedList(inactive, at("idle", 52, 1)));
       expect(since()).toEqual(["5m"]);
-      await act(async () => { renderer!.unmount(); });
-      await act(async () => { renderer = create(groupedList(inactive, at("idle", 52, 2))); });
+      await page.render(null);
+      await page.render(groupedList(inactive, at("idle", 52, 2)));
       expect(since()).toEqual([]);
     } finally {
-      await act(async () => { renderer?.unmount(); });
-      renderer = undefined;
+      await page.render(null);
       jest.useRealTimers();
       setSystemTime();
     }
@@ -627,24 +586,23 @@ describe("AgentSidebar fold memory", () => {
     const at = (status: AgentStatus) => roster().map((machine) => ({ ...machine, snapshot: machine.snapshot && {
       ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: status } : pane),
     } }));
-    const since = () => renderer!.root.findByProps({ "data-machine": "local", "data-pane": paneId }).findAll((node) => node.props.className === "agent-since").map((node) => node.children.join(""));
-    const section = () => renderer!.root.findByProps({ className: "agent-section-toggle sidebar-section-label" });
+    const since = () => [...rowOf(paneId).querySelectorAll('[class="agent-since"]')].map(label);
+    const section = () => one('[class="agent-section-toggle sidebar-section-label"]');
     stored.set("ovis:agent-groups", "true");
     stored.set("ovis:agent-state-folds", "[]");
     jest.useFakeTimers();
     jest.setSystemTime(new Date(start));
     try {
-      await act(async () => { renderer = create(groupedList(inactive, at("working"))); });
-      await act(async () => { renderer!.update(groupedList(inactive, at("done"))); });
+      await page.render(groupedList(inactive, at("working")));
+      await page.render(groupedList(inactive, at("done")));
       expect(since()).toEqual(["<1m"]);
-      await act(async () => { section().props.onClick(); });
-      expect(section().props["aria-expanded"]).toBe(false);
+      await act(async () => { section().click(); });
+      expect(expanded(section())).toBe(false);
       await act(async () => { jest.setSystemTime(new Date(start + 2 * 3_600_000)); });
-      await act(async () => { section().props.onClick(); });
+      await act(async () => { section().click(); });
       expect(since()).toEqual(["2h"]);
     } finally {
-      await act(async () => { renderer?.unmount(); });
-      renderer = undefined;
+      await page.render(null);
       jest.useRealTimers();
       setSystemTime();
     }
@@ -665,29 +623,28 @@ describe("AgentSidebar fold memory", () => {
       useLayoutEffect(() => { if (machines.length > 0) beforePaint.push(kept()); });
       return null;
     }
-    const page = (machines: Machine[]) => <SettingsProvider>
+    const view = (machines: Machine[]) => <SettingsProvider>
       <Stamping machines={machines} />
       <SidebarFilterProvider value={{ filter: inactive, reportBranches: () => {} }}>
         <AgentSidebar machines={machines} selectedMachineId="local" selectedPaneId={null} stateWord={(machine) => machine.state} onSelect={() => {}} />
       </SidebarFilterProvider>
       <LaidOut machines={machines} />
     </SettingsProvider>;
-    const since = () => renderer!.root.findByProps({ "data-machine": "local", "data-pane": paneId }).findAll((node) => node.props.className === "agent-since").map((node) => node.children.join(""));
+    const since = () => [...rowOf(paneId).querySelectorAll('[class="agent-since"]')].map(label);
     jest.useFakeTimers();
     jest.setSystemTime(new Date(start));
     try {
       // When the page loads, as the app does with no roster yet: nothing is looked at, so nothing the device keeps is
       // touched (a look at no PC would mark every stamp as its PC's having left the roster, for other tabs to read).
       const seeded = kept();
-      await act(async () => { renderer = create(page([])); });
+      await page.render(view([]));
       expect(kept()).toEqual(seeded);
       expect(writes.filter((key) => key === "ovis:agent-state-since")).toEqual([]);
-      await act(async () => { renderer!.update(page(loaded)); });
+      await page.render(view(loaded));
       expect(beforePaint).toEqual([undefined]);
       expect(since()).toEqual([]);
     } finally {
-      await act(async () => { renderer?.unmount(); });
-      renderer = undefined;
+      await page.render(null);
       jest.useRealTimers();
       setSystemTime();
     }
@@ -709,25 +666,24 @@ describe("AgentSidebar fold memory", () => {
       useLayoutEffect(() => { firstRead.push(read); }, [read]);
       return null;
     }
-    const page = (machines: Machine[], list: boolean) => <SettingsProvider><Stamping machines={machines} />{list && <FirstDrawn />}</SettingsProvider>;
+    const view = (machines: Machine[], list: boolean) => <SettingsProvider><Stamping machines={machines} />{list && <FirstDrawn />}</SettingsProvider>;
     jest.useFakeTimers();
     jest.setSystemTime(new Date(start));
     try {
       stored.set("ovis:agent-state-since", unproven);
-      await act(async () => { renderer = create(page([], false)); });
-      await act(async () => { renderer!.update(page(withLocal("connected"), true)); });
+      await page.render(view([], false));
+      await page.render(view(withLocal("connected"), true));
       expect(firstRead).toEqual([null]);
-      await act(async () => { renderer!.unmount(); });
+      await page.render(null);
 
       firstRead.length = 0;
       stored.set("ovis:agent-state-since", unproven);
-      await act(async () => { renderer = create(page(withLocal("connecting"), false)); });
+      await page.render(view(withLocal("connecting"), false));
       expect(JSON.parse(stored.get("ovis:agent-state-since")!)).toEqual(JSON.parse(unproven));
-      await act(async () => { renderer!.update(page(withLocal("connected"), true)); });
+      await page.render(view(withLocal("connected"), true));
       expect(firstRead).toEqual([null]);
     } finally {
-      await act(async () => { renderer?.unmount(); });
-      renderer = undefined;
+      await page.render(null);
       jest.useRealTimers();
       setSystemTime();
     }
@@ -738,22 +694,21 @@ describe("AgentSidebar fold memory", () => {
     const at = (status: AgentStatus) => roster().map((machine) => ({ ...machine, snapshot: machine.snapshot && {
       ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: status } : pane),
     } }));
-    const since = () => renderer!.root.findByProps({ "data-machine": "local", "data-pane": paneId }).findAll((node) => node.props.className === "agent-since").map((node) => node.children.join(""));
+    const since = () => [...rowOf(paneId).querySelectorAll('[class="agent-since"]')].map(label);
     jest.useFakeTimers();
     jest.setSystemTime(new Date(start));
     try {
-      await act(async () => { renderer = create(groupedList(inactive, at("working"))); });
+      await page.render(groupedList(inactive, at("working")));
       await act(async () => { stateWatch.read(stateWatch.asked()); });
       jest.setSystemTime(new Date(start + 60 * 60_000));
-      await act(async () => { renderer!.update(groupedList(inactive, at("blocked"))); });
+      await page.render(groupedList(inactive, at("blocked")));
       expect(since()).toEqual([]);
       await act(async () => { stateWatch.read(stateWatch.asked()); });
       expect(since()).toEqual([]);
-      await act(async () => { renderer!.update(groupedList(inactive, at("working"))); });
+      await page.render(groupedList(inactive, at("working")));
       expect(since()).toEqual(["<1m"]);
     } finally {
-      await act(async () => { renderer?.unmount(); });
-      renderer = undefined;
+      await page.render(null);
       jest.useRealTimers();
       setSystemTime();
     }
@@ -764,13 +719,13 @@ describe("AgentSidebar fold memory", () => {
     const at = (status: AgentStatus) => roster().map((machine) => ({ ...machine, snapshot: machine.snapshot && {
       ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: status } : pane),
     } }));
-    const since = () => renderer!.root.findByProps({ "data-machine": "local", "data-pane": paneId }).findAll((node) => node.props.className === "agent-since").map((node) => node.children.join(""));
+    const since = () => [...rowOf(paneId).querySelectorAll('[class="agent-since"]')].map(label);
     jest.useFakeTimers();
     jest.setSystemTime(new Date(start));
     try {
-      await act(async () => { renderer = create(groupedList(inactive, at("working"))); });
+      await page.render(groupedList(inactive, at("working")));
       await act(async () => { stateWatch.subscription("opened"); stateWatch.pushed(); });
-      await act(async () => { renderer!.update(groupedList(inactive, at("blocked"))); });
+      await page.render(groupedList(inactive, at("blocked")));
       expect(since()).toEqual(["<1m"]);
       await act(async () => { jest.advanceTimersByTime(10 * 60_000); });
       await act(async () => { stateWatch.read(stateWatch.asked()); });
@@ -778,8 +733,7 @@ describe("AgentSidebar fold memory", () => {
       await act(async () => { jest.advanceTimersByTime(6_000); stateWatch.subscription("lost"); });
       expect(since()).toEqual([]);
     } finally {
-      await act(async () => { renderer?.unmount(); });
-      renderer = undefined;
+      await page.render(null);
       jest.useRealTimers();
       setSystemTime();
     }
@@ -793,20 +747,19 @@ describe("AgentSidebar fold memory", () => {
       // herdr names the moved pane anew wherever it names it (the panes, the agents, the layouts) and leaves it its terminal
       return { ...machine, snapshot: JSON.parse(JSON.stringify(snapshot).replaceAll(JSON.stringify(paneId), JSON.stringify(id))) as typeof snapshot };
     });
-    const since = (id: string) => renderer!.root.findByProps({ "data-machine": "local", "data-pane": id }).findAll((node) => node.props.className === "agent-since").map((node) => node.children.join(""));
+    const since = (id: string) => [...rowOf(id).querySelectorAll('[class="agent-since"]')].map(label);
     jest.useFakeTimers();
     jest.setSystemTime(new Date(start));
     try {
-      await act(async () => { renderer = create(groupedList(inactive, at("working"))); });
+      await page.render(groupedList(inactive, at("working")));
       await act(async () => { stateWatch.subscription("opened"); stateWatch.pushed(); });
-      await act(async () => { renderer!.update(groupedList(inactive, at("blocked"))); });
+      await page.render(groupedList(inactive, at("blocked")));
       await act(async () => { jest.advanceTimersByTime(120 * 60_000); });
       expect(since(paneId)).toEqual(["2h"]);
-      await act(async () => { renderer!.update(groupedList(inactive, at("blocked", "w9:p1"))); });
+      await page.render(groupedList(inactive, at("blocked", "w9:p1")));
       expect(since("w9:p1")).toEqual(["2h"]);
     } finally {
-      await act(async () => { renderer?.unmount(); });
-      renderer = undefined;
+      await page.render(null);
       jest.useRealTimers();
       setSystemTime();
     }
@@ -816,12 +769,12 @@ describe("AgentSidebar fold memory", () => {
     const finished = roster().map((machine) => ({ ...machine, snapshot: machine.snapshot && {
       ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: "done" as const } : pane),
     } }));
-    const since = () => renderer!.root.findByProps({ "data-machine": "local", "data-pane": paneId }).findAll((node) => node.props.className === "agent-since").map((node) => node.children.join(""));
-    await act(async () => { renderer = create(groupedList(inactive)); });
-    await act(async () => { renderer!.update(groupedList(inactive, finished)); });
+    const since = () => [...rowOf(paneId).querySelectorAll('[class="agent-since"]')].map(label);
+    await page.render(groupedList(inactive));
+    await page.render(groupedList(inactive, finished));
     expect(since()).toEqual(["<1m"]);
-    await act(async () => { renderer!.unmount(); });
-    await act(async () => { renderer = create(<SettingsProvider><AgentSidebar machines={finished} selectedMachineId="local" selectedPaneId={null} stateWord={(machine) => machine.state} onSelect={() => {}} /></SettingsProvider>); });
+    await page.render(null);
+    await page.render(<SettingsProvider><AgentSidebar machines={finished} selectedMachineId="local" selectedPaneId={null} stateWord={(machine) => machine.state} onSelect={() => {}} /></SettingsProvider>);
     expect(since()).toEqual([]);
     expect(JSON.parse(stored.get("ovis:agent-state-since")!).pcs.local.rows[paneId].state).toBe("idle");
   });
@@ -837,12 +790,12 @@ describe("AgentSidebar fold memory", () => {
       snapshot: machine.snapshot === null ? null : { ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => contexts[pane.pane_id] ? { ...pane, context: contexts[pane.pane_id] } : pane) },
     }));
     const rings = async () => {
-      await act(async () => { renderer?.unmount(); });
-      await act(async () => { renderer = create(<SettingsProvider><SidebarFilterProvider value={{ filter: inactive, reportBranches: () => {} }}>
+      await page.render(null);
+      await page.render(<SettingsProvider><SidebarFilterProvider value={{ filter: inactive, reportBranches: () => {} }}>
         <AgentSidebar machines={filled} selectedMachineId="local" selectedPaneId={null} stateWord={(machine) => machine.state} onSelect={() => {}} />
-      </SidebarFilterProvider></SettingsProvider>); });
-      return renderer!.root.findAll((node) => node.type === "span" && node.props["data-testid"] === "context-left")
-        .map((node) => [node.props["aria-label"], node.props.className]);
+      </SidebarFilterProvider></SettingsProvider>);
+      return all('span[data-testid="context-left"]')
+        .map((node) => [node.getAttribute("aria-label"), node.className]);
     };
     expect(await rings()).toEqual([]);
     stored.set("ovis:sidebar-context", "true");
@@ -863,22 +816,20 @@ describe("AgentSidebar fold memory", () => {
         <AgentSidebar machines={machines} selectedMachineId="local" selectedPaneId={null} stateWord={(machine) => machine.state} onSelect={() => {}} />
       </SidebarFilterProvider>
     </SettingsProvider>;
-    await act(async () => { renderer = create(grouped(blockedRoster(false))); });
-    const mounted = renderer!;
-    const list = () => mounted.root.findByProps({ className: "agent-list agent-list-grouped" });
+    await page.render(grouped(blockedRoster(false)));
+    const list = () => one('[class="agent-list agent-list-grouped"]');
     const groupOf = (pane: string): string | undefined => {
       let group: string | undefined;
-      for (const child of list().children) {
-        if (typeof child === "string") continue;
-        if (child.props.className === "agent-group-label") group = child.props["data-group"];
-        if (child.props["data-pane"] === pane) return group;
+      for (const child of [...list().children]) {
+        if (child.className === "agent-group-label") group = child.getAttribute("data-group") ?? "";
+        if (child.getAttribute("data-pane") === pane) return group;
       }
       return undefined;
     };
     expect(groupOf(paneId)).toBe("working");
-    await act(async () => { mounted.update(grouped(blockedRoster(true))); });
+    await page.render(grouped(blockedRoster(true)));
     expect(groupOf(paneId)).toBe("blocked");
-    expect(mounted.root.findAllByProps({ className: "agent-list" })).toHaveLength(0);
+    expect(all('[class="agent-list"]')).toHaveLength(0);
   });
 
   it("keeps a row's own mark where its heading says another state than its own: BG under Working, a state nobody knows under Idle (#3505)", async () => {
@@ -890,13 +841,15 @@ describe("AgentSidebar fold memory", () => {
           : pane.pane_id === "w1E:p1" ? { ...pane, agent_status: "unknown" as const }
             : pane) },
     }));
-    await act(async () => { renderer = create(groupedList(inactive, machines)); });
+    await page.render(groupedList(inactive, machines));
     const drawn: Record<string, { under: string | undefined; said: boolean; own: boolean }> = {};
     let under: string | undefined;
-    for (const child of renderer!.root.findByProps({ className: "agent-list agent-list-grouped" }).children) {
-      if (typeof child === "string") continue;
-      if (child.props.className === "agent-group-label") under = child.props["data-group"];
-      else if (child.props["data-pane"] !== undefined) drawn[child.props["data-pane"]] = { under, said: child.props["data-state-said"] === "", own: child.props["data-state-own"] === "" };
+    for (const child of [...one('[class="agent-list agent-list-grouped"]').children]) {
+      if (child.className === "agent-group-label") under = child.getAttribute("data-group") ?? "";
+      else {
+        const pane = child.getAttribute("data-pane");
+        if (pane !== null) drawn[pane] = { under, said: child.getAttribute("data-state-said") === "", own: child.getAttribute("data-state-own") === "" };
+      }
     }
     expect(drawn).toEqual({
       [paneId]: { under: "working", said: true, own: false },
@@ -917,40 +870,44 @@ describe("AgentSidebar fold memory", () => {
         <AgentSidebar machines={machines} selectedMachineId="local" selectedPaneId={null} stateWord={(machine) => machine.state} onSelect={() => {}} />
       </SidebarFilterProvider>
     </SettingsProvider>;
-    await act(async () => { renderer = create(grouped(inState("working"))); });
-    const mounted = renderer!;
-    const section = () => mounted.root.findByType("section");
-    const hidden = (): boolean => mounted.root.find((node) => node.type === "li" && node.props["data-pane"] === paneId).props.hidden === true;
-    const idleHeading = () => mounted.root.find((node) => node.type === "li" && node.props.className === "agent-group-label" && node.props["data-group"] === "idle").findByType("button");
-    const focusHeading = jest.fn();
-    const heading = { focus: focusHeading, getAttribute: (name: string) => name === "aria-expanded" ? String(idleHeading().props["aria-expanded"]) : null };
-    const line = { previousElementSibling: null, hasAttribute: () => false, matches: () => true, querySelector: () => heading };
-    const control = { closest: () => ({ get hidden() { return hidden(); }, previousElementSibling: line }) };
-    const focusIsOn = (element: unknown): void => { Object.assign(document, { activeElement: element }); };
-    const composer = {};
-    const becomes = async (status: AgentStatus): Promise<void> => { await act(async () => { mounted.update(grouped(inState(status))); }); };
-    const rowTakesFocus = async (): Promise<void> => { await act(async () => { section().props.onFocus({ target: control }); }); };
-    expect(String(idleHeading().props["aria-expanded"])).toBe("false");
+    await page.render(grouped(inState("working")));
+    const hidden = (): boolean => rowOf(paneId).hidden;
+    const idleHeading = () => one('li[class="agent-group-label"][data-group="idle"] button');
+    const focusHeading = spyOn(idleHeading(), "focus");
+    const composer = page.window.document.createElement("textarea");
+    page.window.document.body.append(composer);
+    const control = () => rowOf(paneId).querySelector<HTMLButtonElement>(".agent-select")!;
+    const becomes = (status: AgentStatus) => page.render(grouped(inState(status)));
+    const rowTakesFocus = () => act(async () => { control().focus(); });
+    expect(idleHeading().getAttribute("aria-expanded")).toBe("false");
 
     await rowTakesFocus();
-    focusIsOn(document.body);
+    // A browser can return focus to the body when the focused row moves.
+    const document = page.window.document;
+    const focusReturnsToBody = async (update: () => Promise<void>) => {
+      Object.defineProperty(document, "activeElement", { configurable: true, value: document.body });
+      try { await update(); }
+      finally { Reflect.deleteProperty(document, "activeElement"); }
+    };
+    await focusReturnsToBody(() => becomes("idle"));
+    expect(hidden()).toBe(true);
+    expect(focusHeading).toHaveBeenCalledTimes(1);
+
+    await act(async () => { composer.focus(); });
+    await becomes("working");
+    await rowTakesFocus();
+    await act(async () => { composer.focus(); });
     await becomes("idle");
     expect(hidden()).toBe(true);
     expect(focusHeading).toHaveBeenCalledTimes(1);
 
     await becomes("working");
     await rowTakesFocus();
-    focusIsOn(composer);
-    await becomes("idle");
-    expect(hidden()).toBe(true);
-    expect(focusHeading).toHaveBeenCalledTimes(1);
-
-    await becomes("working");
-    await rowTakesFocus();
-    focusIsOn(document.body);
-    await becomes("blocked");
-    expect(hidden()).toBe(false);
-    await becomes("idle");
+    await focusReturnsToBody(async () => {
+      await becomes("blocked");
+      expect(hidden()).toBe(false);
+      await becomes("idle");
+    });
     expect(hidden()).toBe(true);
     expect(focusHeading).toHaveBeenCalledTimes(1);
   });
@@ -968,13 +925,12 @@ describe("AgentSidebar fold memory", () => {
         <AgentSidebar machines={machines} selectedMachineId="local" selectedPaneId={null} stateWord={(machine) => machine.state} onSelect={() => {}} />
       </SidebarFilterProvider>
     </SettingsProvider>;
-    await act(async () => { renderer = create(view(tagged(false))); });
-    const mounted = renderer!;
-    const row = () => mounted.root.find((node) => node.type === "li" && node.props["data-pane"] === paneId);
-    const order = () => mounted.root.findAll((node) => node.type === "li" && (node.props["data-pane"] !== undefined || node.props.className === "agent-background-label")).map((node) => node.props["data-pane"] ?? "BG");
+    await page.render(view(tagged(false)));
+    const row = () => one(`li[data-pane="${paneId}"]`);
+    const order = () => all('li[data-pane], li[class="agent-background-label"]').map((node) => node.getAttribute("data-pane") ?? "BG");
     expect(order().indexOf(paneId)).toBeGreaterThan(order().indexOf("BG"));
     const before = row();
-    await act(async () => { mounted.update(view(tagged(true))); });
+    await page.render(view(tagged(true)));
     expect(order().indexOf(paneId)).toBeLessThan(order().indexOf("BG"));
     expect(row()).toBe(before);
   });
@@ -990,13 +946,13 @@ describe("AgentSidebar fold memory", () => {
     const activity = { seqs: () => seqs, status: (_machineId: string, pane: { agent_status?: AgentStatus }) => pane.agent_status };
     const order = async (agentOrder: string): Promise<string[]> => {
       stored.set("ovis:settings", JSON.stringify({ agentOrder }));
-      await act(async () => { renderer?.unmount(); });
-      await act(async () => { renderer = create(<SettingsProvider><SidebarActivityProvider value={activity}>
+      await page.render(null);
+      await page.render(<SettingsProvider><SidebarActivityProvider value={activity}>
         <SidebarFilterProvider value={{ filter: inactive, reportBranches: () => {} }}>
           <AgentSidebar machines={sameNames} selectedMachineId="local" selectedPaneId={null} stateWord={(machine) => machine.state} onSelect={() => {}} />
         </SidebarFilterProvider>
-      </SidebarActivityProvider></SettingsProvider>); });
-      return renderer!.root.findAll((node) => typeof node.type === "string" && node.props["data-pane"] !== undefined).map((node) => node.props["data-pane"]);
+      </SidebarActivityProvider></SettingsProvider>);
+      return all('[data-pane]').map((node) => node.dataset.pane ?? "");
     };
     expect(await order("activity")).toEqual(await order("workspace"));
   });
@@ -1015,27 +971,25 @@ describe("AgentSidebar fold memory", () => {
         <AgentSidebar machines={machines} selectedMachineId="local" selectedPaneId={paneId} stateWord={(machine) => machine.state} onSelect={() => {}} />
       </SidebarFilterProvider>
     </SettingsProvider>;
-    await act(async () => { renderer = create(renderList(roster())); });
-    if (!renderer) throw new Error("sidebar did not mount");
-    const mounted = renderer;
-    const section = () => mounted.root.findByType("section");
-    const drawnEntries = () => mounted.root.findAll((node) => node.type === "li" && !node.props.hidden && (node.props["data-pane"] !== undefined || node.props.className === "agent-background-label agent-resting-label"))
-      .map((node) => node.props["data-pane"] ?? "RESTING");
-    const restingLabel = () => mounted.root.findByProps({ className: "agent-background-label agent-resting-label" }).findByType("span").children.join("");
+    await page.render(renderList(roster()));
+    const section = () => { const section = one("section"); section.tabIndex = -1; return section; };
+    const drawnEntries = () => all('li[data-pane]:not([hidden]), li[class="agent-background-label agent-resting-label"]:not([hidden])')
+      .map((node) => node.getAttribute("data-pane") ?? "RESTING");
+    const restingLabel = () => label(one('[class="agent-background-label agent-resting-label"] span'));
     expect(drawnEntries()).toEqual(["w1D:p1", "w1C:p1", "RESTING"]);
     expect(restingLabel()).toBe("+2 resting");
 
-    await act(async () => { section().props.onPointerEnter(); });
-    await act(async () => { mounted.update(renderList(withStatuses({ "w1E:p1": "blocked" }))); });
+    await act(async () => { pointer(section(), "pointerover"); });
+    await page.render(renderList(withStatuses({ "w1E:p1": "blocked" })));
     expect(drawnEntries()).toEqual(["w1D:p1", "w1C:p1", "RESTING"]);
     expect(restingLabel()).toBe("+1 resting");
-    await act(async () => { section().props.onPointerLeave(); });
+    await act(async () => { pointer(section(), "pointerout"); });
     expect(drawnEntries()).toEqual(["w1D:p1", "w1E:p1", "w1C:p1", "RESTING"]);
 
-    await act(async () => { section().props.onFocus({ target: focusedRow }); });
-    await act(async () => { mounted.update(renderList(withStatuses({ "w1E:p1": "blocked", "w1F:p1": "blocked" }))); });
+    await act(async () => { section().focus(); });
+    await page.render(renderList(withStatuses({ "w1E:p1": "blocked", "w1F:p1": "blocked" })));
     expect(drawnEntries()).toEqual(["w1D:p1", "w1E:p1", "w1C:p1", "RESTING"]);
-    await act(async () => { section().props.onBlur({ target: focusedRow, currentTarget: { contains: () => false }, relatedTarget: null }); });
+    await act(async () => { section().blur(); });
     expect(drawnEntries()).toEqual(["w1D:p1", "w1E:p1", "w1F:p1", "w1C:p1"]);
   });
 
@@ -1053,25 +1007,23 @@ describe("AgentSidebar fold memory", () => {
         <AgentSidebar machines={machines} selectedMachineId="local" selectedPaneId={paneId} stateWord={(machine) => machine.state} onSelect={() => {}} />
       </SidebarFilterProvider>
     </SettingsProvider>;
-    await act(async () => { renderer = create(renderList(roster())); });
-    if (!renderer) throw new Error("sidebar did not mount");
-    const mounted = renderer;
-    const section = () => mounted.root.findByType("section");
-    const drawnEntries = () => mounted.root.findAll((node) => node.type === "li" && !node.props.hidden && (node.props["data-pane"] !== undefined || node.props.className === "agent-background-label agent-resting-label"))
-      .map((node) => node.props["data-pane"] ?? "RESTING");
-    const restingLabel = () => mounted.root.findByProps({ className: "agent-background-label agent-resting-label" }).findByType("span").children.join("");
+    await page.render(renderList(roster()));
+    const section = () => { const section = one("section"); section.tabIndex = -1; return section; };
+    const drawnEntries = () => all('li[data-pane]:not([hidden]), li[class="agent-background-label agent-resting-label"]:not([hidden])')
+      .map((node) => node.getAttribute("data-pane") ?? "RESTING");
+    const restingLabel = () => label(one('[class="agent-background-label agent-resting-label"] span'));
     expect(drawnEntries()).toEqual(["w1D:p1", "w1C:p1", "RESTING"]);
     expect(restingLabel()).toBe("+2 resting");
 
-    await act(async () => { section().props.onPointerEnter(); section().props.onFocus({ target: focusedRow }); });
-    await act(async () => { mounted.update(renderList(withStatuses({ [paneId]: "idle", "w1D:p1": "idle" }))); });
+    await act(async () => { pointer(section(), "pointerover"); section().focus(); });
+    await page.render(renderList(withStatuses({ [paneId]: "idle", "w1D:p1": "idle" })));
     expect(drawnEntries()).toEqual(["w1D:p1", "w1C:p1", "RESTING"]);
     expect(restingLabel()).toBe("+4 resting");
 
-    await act(async () => { section().props.onPointerLeave(); });
+    await act(async () => { pointer(section(), "pointerout"); });
     expect(drawnEntries()).toEqual(["w1D:p1", "w1C:p1", "RESTING"]);
 
-    await act(async () => { section().props.onBlur({ target: focusedRow, currentTarget: { contains: () => false }, relatedTarget: null }); });
+    await act(async () => { section().blur(); });
     expect(drawnEntries()).toEqual(["RESTING", "w1C:p1"]);
   });
 
@@ -1087,16 +1039,14 @@ describe("AgentSidebar fold memory", () => {
         <AgentSidebar machines={machines} selectedMachineId="local" selectedPaneId={null} stateWord={(machine) => machine.state} onSelect={() => {}} />
       </SidebarFilterProvider>
     </SettingsProvider>;
-    await act(async () => { renderer = create(renderList(family("working", "done"))); });
-    if (!renderer) throw new Error("sidebar did not mount");
-    const mounted = renderer;
-    const drawnEntries = () => mounted.root.findAll((node) => node.type === "li" && !node.props.hidden && (node.props["data-pane"] !== undefined || node.props.className === "agent-background-label agent-resting-label"))
-      .map((node) => [node.props["data-pane"] ?? "RESTING", node.props["data-depth"] ?? 0]);
-    const restingLabel = () => mounted.root.findByProps({ className: "agent-background-label agent-resting-label" }).findByType("span").children.join("");
+    await page.render(renderList(family("working", "done")));
+    const drawnEntries = () => all('li[data-pane]:not([hidden]), li[class="agent-background-label agent-resting-label"]:not([hidden])')
+      .map((node) => [node.getAttribute("data-pane") ?? "RESTING", Number(node.getAttribute("data-depth"))]);
+    const restingLabel = () => label(one('[class="agent-background-label agent-resting-label"] span'));
     expect(drawnEntries()).toEqual([["w1C:p1", 0], ["w1D:p1", 0], ["w1E:p1", 1], ["RESTING", 0]]);
     expect(restingLabel()).toBe("+1 resting");
 
-    await act(async () => { mounted.update(renderList(family("idle", "working"))); });
+    await page.render(renderList(family("idle", "working")));
     expect(drawnEntries()).toEqual([["w1C:p1", 0], ["w1D:p1", 0], ["w1E:p1", 1], ["RESTING", 0]]);
     expect(restingLabel()).toBe("+1 resting");
   });
@@ -1114,26 +1064,24 @@ describe("AgentSidebar fold memory", () => {
         <AgentSidebar machines={machines} selectedMachineId="local" selectedPaneId={null} stateWord={(machine) => machine.state} onSelect={() => {}} />
       </SidebarFilterProvider>
     </SettingsProvider>;
-    await act(async () => { renderer = create(renderList(helped(true))); });
-    if (!renderer) throw new Error("sidebar did not mount");
-    const mounted = renderer;
-    const section = () => mounted.root.findByType("section");
-    const drawnEntries = () => mounted.root.findAll((node) => node.type === "li" && !node.props.hidden && (node.props["data-pane"] !== undefined || node.props.className === "agent-background-label agent-resting-label"))
-      .map((node) => [node.props["data-pane"] ?? "RESTING", node.props["data-depth"] ?? 0]);
-    const restingLabel = () => mounted.root.findByProps({ className: "agent-background-label agent-resting-label" }).findByType("span").children.join("");
+    await page.render(renderList(helped(true)));
+    const section = () => { const section = one("section"); section.tabIndex = -1; return section; };
+    const drawnEntries = () => all('li[data-pane]:not([hidden]), li[class="agent-background-label agent-resting-label"]:not([hidden])')
+      .map((node) => [node.getAttribute("data-pane") ?? "RESTING", Number(node.getAttribute("data-depth"))]);
+    const restingLabel = () => label(one('[class="agent-background-label agent-resting-label"] span'));
     expect(drawnEntries()).toEqual([["w1C:p1", 0], ["w1D:p1", 0], ["w1E:p1", 1], ["RESTING", 0]]);
 
-    await act(async () => { section().props.onPointerEnter(); });
-    await act(async () => { mounted.update(renderList(helped(false))); });
+    await act(async () => { pointer(section(), "pointerover"); });
+    await page.render(renderList(helped(false)));
     expect(drawnEntries()).toEqual([["w1C:p1", 0], ["w1D:p1", 0], ["RESTING", 0]]);
-    await act(async () => { section().props.onPointerLeave(); });
+    await act(async () => { pointer(section(), "pointerout"); });
     expect(drawnEntries()).toEqual([["w1C:p1", 0], ["RESTING", 0]]);
 
-    await act(async () => { mounted.update(renderList(working(false))); });
+    await page.render(renderList(working(false)));
     const before = restingLabel();
     expect(drawnEntries()).toEqual([["w1C:p1", 0], ["w1D:p1", 0], ["RESTING", 0]]);
-    await act(async () => { section().props.onPointerEnter(); });
-    await act(async () => { mounted.update(renderList(working(true))); });
+    await act(async () => { pointer(section(), "pointerover"); });
+    await page.render(renderList(working(true)));
     expect(drawnEntries()).toEqual([["w1C:p1", 0], ["w1D:p1", 0], ["w1D:p9", 1], ["RESTING", 0]]);
     expect(restingLabel()).toBe(before);
   });
@@ -1148,14 +1096,12 @@ describe("AgentSidebar fold memory", () => {
         <AgentSidebar machines={machines} selectedMachineId="local" selectedPaneId={null} stateWord={(machine) => machine.state} onSelect={() => {}} />
       </SidebarFilterProvider>
     </SettingsProvider>;
-    await act(async () => { renderer = create(renderList(helpers(["w1D:p7", "w1D:p8"]))); });
-    if (!renderer) throw new Error("sidebar did not mount");
-    const mounted = renderer;
-    const family = () => mounted.root.findAll((node) => node.type === "li" && typeof node.props["data-pane"] === "string" && node.props["data-pane"].startsWith("w1D:"))
-      .map((node) => [node.props["data-pane"], node.props["data-more"] === ""]);
+    await page.render(renderList(helpers(["w1D:p7", "w1D:p8"])));
+    const family = () => all('li[data-pane^="w1D:"]')
+      .map((node) => [node.getAttribute("data-pane"), node.getAttribute("data-more") === ""]);
     expect(family()).toEqual([["w1D:p1", false], ["w1D:p7", true], ["w1D:p8", false]]);
-    await act(async () => { mounted.root.findByType("section").props.onPointerEnter(); });
-    await act(async () => { mounted.update(renderList(helpers(["w1D:p7", "w1D:p8", "w1D:p9"]))); });
+    await act(async () => { pointer(one("section"), "pointerover"); });
+    await page.render(renderList(helpers(["w1D:p7", "w1D:p8", "w1D:p9"])));
     expect(family()).toEqual([["w1D:p1", false], ["w1D:p9", true], ["w1D:p7", true], ["w1D:p8", false]]);
   });
 
@@ -1170,21 +1116,18 @@ describe("AgentSidebar fold memory", () => {
           } }))} selectedMachineId="local" selectedPaneId={paneId} stateWord={(machine) => machine.state} onSelect={() => {}} />
         </SidebarFilterProvider>
       </SettingsProvider>;
-      await act(async () => { renderer = create(renderList(false)); });
-      if (!renderer) throw new Error("sidebar did not mount");
-      const mounted = renderer;
-      const section = () => mounted.root.findByType("section");
-      const order = () => mounted.root.findAll((node) => node.type === "li" && !node.props.hidden && node.props["data-pane"] !== undefined).map((node) => node.props["data-pane"]);
-      await act(async () => { section().props.onPointerEnter(); });
-      await act(async () => { section().props.onTouchEnd?.(); section().props.onPointerLeave(); });
-      await act(async () => { mounted.update(renderList(true)); jest.advanceTimersByTime(999); });
+      await page.render(renderList(false));
+      const section = () => one("section");
+      const order = () => all('li[data-pane]:not([hidden])').map((node) => node.dataset.pane ?? "");
+      await act(async () => { pointer(section(), "pointerover"); });
+      await act(async () => { section().dispatchEvent(new page.window.Event("touchend", { bubbles: true })); pointer(section(), "pointerout"); });
+      await page.render(renderList(true)); jest.advanceTimersByTime(999);
       expect(order()).toEqual(["w1D:p1", paneId]);
       await act(async () => { jest.advanceTimersByTime(1); });
       expect(order()).toEqual(["w1D:p1", "w1E:p1", paneId]);
-      expect(mounted.root.findAll((node) => node.type === "li" && node.props.className.includes("is-selected")).map((node) => node.props["data-pane"])).toEqual([paneId]);
+      expect(all('li[class*="is-selected"]').map((node) => node.getAttribute("data-pane"))).toEqual([paneId]);
     } finally {
-      await act(async () => { renderer?.unmount(); });
-      renderer = undefined;
+      await page.render(null);
       jest.useRealTimers();
     }
   });
@@ -1199,14 +1142,12 @@ describe("AgentSidebar fold memory", () => {
         <AgentSidebar machines={roster()} selectedMachineId="local" selectedPaneId={null} stateWord={(machine) => machine.state} onSelect={() => {}} />
       </SidebarFilterProvider>
     </SettingsProvider>;
-    await act(async () => { renderer = create(renderList(keepsWorking)); });
-    if (!renderer) throw new Error("sidebar did not mount");
-    const mounted = renderer;
-    const drawnEntries = () => mounted.root.findAll((node) => node.type === "li" && !node.props.hidden && (node.props["data-pane"] !== undefined || node.props.className === "agent-background-label agent-resting-label"))
-      .map((node) => node.props["data-pane"] ?? "RESTING");
+    await page.render(renderList(keepsWorking));
+    const drawnEntries = () => all('li[data-pane]:not([hidden]), li[class="agent-background-label agent-resting-label"]:not([hidden])')
+      .map((node) => node.getAttribute("data-pane") ?? "RESTING");
     expect(drawnEntries()).toEqual([paneId]);
-    await act(async () => { mounted.root.findByType("section").props.onPointerEnter(); });
-    await act(async () => { mounted.update(renderList(inactive)); });
+    await act(async () => { pointer(one("section"), "pointerover"); });
+    await page.render(renderList(inactive));
     expect(drawnEntries()).toEqual(["w1D:p1", paneId, "RESTING"]);
   });
 });

@@ -1,5 +1,6 @@
 import { afterEach, expect, it } from "bun:test";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import { LOCAL_MACHINE, type Machine } from "../../shared/machines.ts";
 import type { AccountList, AccountListView } from "../lib/account/accountList.ts";
@@ -10,17 +11,13 @@ import { SettingsProvider } from "../lib/settings.ts";
 import { HerdrSocket } from "../lib/ws.ts";
 import { useAccountDeviceNotices } from "./AccountDeviceNotices.tsx";
 
-const replaced = new Map<string, PropertyDescriptor | undefined>();
-let renderer: ReactTestRenderer | undefined;
+let page: Page;
+let socketDescriptor: PropertyDescriptor | undefined;
 afterEach(async () => {
-  await act(async () => { renderer?.unmount(); });
-  renderer = undefined;
+  await page.close();
   setPageAccountList(null);
-  for (const [key, descriptor] of replaced) {
-    if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-    else Reflect.deleteProperty(globalThis, key);
-  }
-  replaced.clear();
+  if (socketDescriptor) Object.defineProperty(globalThis, "WebSocket", socketDescriptor);
+  else Reflect.deleteProperty(globalThis, "WebSocket");
 });
 
 /** A page's list that shows this device following `account`'s list and in it, and signs nothing (no notices of its own). */
@@ -36,17 +33,10 @@ function followingList(account: string): AccountList {
 
 async function drawn(list: AccountList | null): Promise<number> {
   const wire = new DeviceNoticeWire("ws://localhost/ws");
-  for (const [key, value] of Object.entries({
-    window: Object.assign(new EventTarget(), { location: new URL("http://localhost/"), setTimeout, clearTimeout, setInterval, clearInterval }),
-    document: Object.assign(new EventTarget(), { visibilityState: "visible", hasFocus: () => true, querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } }),
-    navigator: { languages: ["en"] },
-    getComputedStyle: () => ({ getPropertyValue: () => "" }),
-    WebSocket: class { constructor() { return wire; } },
-    IS_REACT_ACT_ENVIRONMENT: true,
-  })) {
-    if (!replaced.has(key)) replaced.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, key, { configurable: true, value });
-  }
+  page = openPage();
+  Object.defineProperty(page.window.document, "hasFocus", { configurable: true, value: () => true });
+  socketDescriptor = Object.getOwnPropertyDescriptor(globalThis, "WebSocket");
+  Object.defineProperty(globalThis, "WebSocket", { configurable: true, value: class { constructor() { return wire; } } });
   setPageAccountList(list);
   const machines: readonly Machine[] = [{ id: LOCAL_MACHINE, name: "Desk", kind: "local", enabled: true, state: "connected", error: null, snapshot: null }];
   const socket = new HerdrSocket(wire.url);
@@ -55,11 +45,11 @@ async function drawn(list: AccountList | null): Promise<number> {
   function Probe() {
     return useAccountDeviceNotices({ machines, machineSessions: sessions, selectedMachineId: LOCAL_MACHINE, pageServerId: "a".repeat(32) });
   }
-  await act(async () => { renderer = create(<SettingsProvider><Probe /></SettingsProvider>); });
+  await page.render(<SettingsProvider><Probe /></SettingsProvider>);
   socket.connect();
   wire.open();
   await act(async () => { wire.snapshot(); wire.read({ type: "device-notice", notice: deviceNotice({ account: "acct", key: "member-key" }) }); });
-  const count = renderer!.root.findAllByProps({ "data-testid": "device-notice" }).length;
+  const count = page.container.querySelectorAll('[data-testid="device-notice"]').length;
   sessions.retainMachines(new Set());
   return count;
 }

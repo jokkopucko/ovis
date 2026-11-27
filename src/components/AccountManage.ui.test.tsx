@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
-import { act, createElement, type ReactNode } from "react";
-import * as ReactDom from "react-dom";
-import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { act, createElement } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import type { PairedDevice } from "../../shared/protocol.ts";
 import * as Api from "../lib/api.ts";
@@ -32,8 +31,6 @@ let readsFail = false;
 let deviceReads = 0;
 const SESSION = { account: "acct", provider: "github", service: "https://account.example", sign_in_id: "s", access_token: "a", refresh_token: "r", expires_at: NOW + 3_600_000 };
 
-// the confirmation is a portal into document.body: drawn in place here, so the test renderer holds it
-await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
 await mock.module("../lib/api.ts", () => ({ ...Api, fetchDevices: async () => { deviceReads++; if (readsFail) throw new Error("503 from the PC"); return devices; } }));
 await mock.module("../lib/account/leave.ts", () => ({ ...Leave, removeFromAccount: async (options: { key: string }) => { calls.push(`disconnect ${options.key}`); return { remove: {}, unconfirmed: [], queued: [] }; } }));
 await mock.module("../lib/account/store.ts", () => ({ ...Store, indexedAccountStore: { ...Store.indexedAccountStore, key: async () => ({ public_spki: MY_KEY }), get: async (name: string) => name === "session" ? SESSION : undefined } }));
@@ -67,11 +64,11 @@ const { HostedAccountGroup } = await import("./AccountHead.tsx");
 const { RelayShell } = await import("./RelayShell.tsx");
 const { keepShellAccount } = await import("../lib/account/hostedSignIn.ts");
 
-const textOf = (node: ReactTestInstance): string => node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
+const textOf = (node: Element): string => node.textContent ?? "";
 
 describe("Manage account's devices and PCs", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
   let warn: typeof console.warn;
 
   beforeEach(() => {
@@ -94,33 +91,19 @@ describe("Manage account's devices and PCs", () => {
       { server_id: "a".repeat(32), label: "Desk", public_key: null, relay: null, added_at: ago(60 * 24 * 300), last_seen_at: ago(2) },
       { server_id: "b".repeat(32), label: "Dead box", public_key: null, relay: null, added_at: ago(60), last_seen_at: ago(30) },
     ] as Service.DirectoryPc[];
-    for (const key of ["window", "document", "navigator", "getComputedStyle", "matchMedia", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    const events = new EventTarget();
-    const matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
-    class HTMLElement { isConnected = true; focus(): void {} }
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: HTMLElement });
-    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
-    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Test", maxTouchPoints: 0 } });
-    Object.defineProperty(globalThis, "matchMedia", { configurable: true, value: matchMedia });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      location: { href: "https://pc.example/", search: "", origin: "https://pc.example", pathname: "/", protocol: "https:" },
-      history: { state: null, replaceState() {} }, matchMedia, innerWidth: 1440, innerHeight: 900,
-      requestAnimationFrame: () => 1, cancelAnimationFrame() {},
-      addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), dispatchEvent: events.dispatchEvent.bind(events),
-      setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout,
-    } });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: {
-      documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
-      activeElement: new HTMLElement(), body: { nodeType: 1, children: [] },
-      querySelector: () => null, querySelectorAll: () => [],
-      addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events),
-    } });
+    page = openPage("https://pc.example/");
+    for (const key of ["HTMLElement", "Event"] as const) {
+      descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+      Object.defineProperty(globalThis, key, { configurable: true, value: page.window[key] });
+    }
+    Object.defineProperty(page.window, "requestAnimationFrame", { configurable: true, value: () => 1 });
+    page.window.cancelAnimationFrame = () => {};
+    page.window.innerWidth = 1440;
+    page.window.innerHeight = 900;
   });
 
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
+    await page.close();
     console.warn = warn;
     for (const [key, descriptor] of descriptors) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
@@ -129,29 +112,35 @@ describe("Manage account's devices and PCs", () => {
     descriptors.clear();
   });
 
-  const mount = async (props: { watching?: boolean; onLeave?: () => Promise<void> } = {}): Promise<ReactTestInstance> => {
-    await act(async () => {
-      renderer = create(createElement(SettingsProvider, { children: createElement(AccountManageLists, { account: "acct", watching: props.watching ?? false, ...(props.onLeave ? { onLeave: props.onLeave } : {}) }) }), {
-        createNodeMock: () => ({ isConnected: true, focus() {}, contains: () => false, querySelectorAll: () => [], getClientRects: () => [], closest: () => null, addEventListener() {}, removeEventListener() {} }),
-      });
-    });
-    if (!renderer) throw new Error("not mounted");
-    return renderer.root;
+  // The account sheet and confirmation are portals into the page body.
+  const body = () => document.body;
+  const mount = async (props: { watching?: boolean; onLeave?: () => Promise<void> } = {}): Promise<HTMLElement> => {
+    await page.render(createElement(SettingsProvider, { children: createElement(AccountManageLists, { account: "acct", watching: props.watching ?? false, ...(props.onLeave ? { onLeave: props.onLeave } : {}) }) }));
+    return body();
   };
-  const rows = (root: ReactTestInstance, list: string) => root.find((node) => node.props["data-testid"] === list).findAll((node) => node.type === "li").map(textOf);
-  const action = (root: ReactTestInstance, name: string) => root.find((node) => node.type === "button" && node.props["data-action"] === name);
-  const dialog = (root: ReactTestInstance) => root.find((node) => node.props.role === "alertdialog");
-  const press = (root: ReactTestInstance, label: string) => dialog(root).find((node) => node.type === "button" && textOf(node) === label).props.onClick();
+  const one = <E extends Element = HTMLElement,>(root: Element, selector: string): E => {
+    const matches = root.querySelectorAll<E>(selector);
+    if (matches.length !== 1) throw new Error(`Expected 1 element matching ${selector}, found ${matches.length}`);
+    return matches[0]!;
+  };
+  const rows = (root: HTMLElement, list: string) => [...one(root, `[data-testid="${list}"]`).querySelectorAll("li")].map(textOf);
+  const action = (root: HTMLElement, name: string) => one(root, `button[data-action="${name}"]`);
+  const dialog = (root: HTMLElement) => one(root, '[role="alertdialog"]');
+  const press = (root: HTMLElement, label: string) => {
+    const button = [...dialog(root).querySelectorAll("button")].find((node) => textOf(node) === label);
+    if (!button) throw new Error(`Missing confirmation button: ${label}`);
+    button.click();
+  };
 
   it("lists the account's other devices on this PC, one line each, and disconnects one after a single confirm", async () => {
     const root = await mount();
     expect(rows(root, "account-devices")).toEqual(["OfflineLost phoneDisconnect"]);
-    await act(async () => { action(root, "disconnect-device").props.onClick(); });
+    await act(async () => { action(root, "disconnect-device").click(); });
     expect(textOf(dialog(root))).toContain("Disconnect Lost phone?");
     expect(calls).toEqual([]);
-    await act(async () => { await press(root, "Disconnect"); });
+    await act(async () => { press(root, "Disconnect"); });
     expect(calls).toEqual(["disconnect phone-key"]);
-    expect(root.findAll((node) => node.props.role === "alertdialog")).toHaveLength(0);
+    expect([...root.querySelectorAll('[role="alertdialog"]')]).toHaveLength(0);
   });
 
   it("lists a PC a sign-in code listed and no one added, whose card may be closed, and removes that listing after one confirm, forgetting no pairing", async () => {
@@ -160,7 +149,7 @@ describe("Manage account's devices and PCs", () => {
     try {
       const root = await mount();
       expect(rows(root, "account-pcs")).toEqual(["OnlineDesk", "OfflineDead boxRemove", "Stranger · Not added: listed with a sign-in codeRemove"]);
-      await act(async () => { root.find((node) => node.props["data-unconfirmed-pc-row"] !== undefined).find((node) => node.type === "button").props.onClick(); });
+      await act(async () => { one(one(root, "[data-unconfirmed-pc-row]"), "button").click(); });
       expect(textOf(dialog(root))).toContain("Stranger was listed in your account with a sign-in code and never added.");
       await act(async () => { await press(root, "Remove"); });
       expect(calls).toEqual([`remove ${"c".repeat(32)} listing l1`]);
@@ -173,7 +162,7 @@ describe("Manage account's devices and PCs", () => {
       pcs: [{ endpoint: "c".repeat(64), server_id: "c".repeat(32), how: "added", allows: true, name: { label: "Stranger", os: null }, seq: 1, by: null, new_at: null }] } as unknown as AccountListView;
     waiting = [{ server_id: "c".repeat(32), label: "Stranger", public_key: null, relay: null, added_at: ago(60), last_seen_at: null, unconfirmed: true, listing_id: "l1" }] as Service.DirectoryPc[];
     const root = await mount();
-    await act(async () => { root.find((node) => node.props["data-unconfirmed-pc-row"] !== undefined).find((node) => node.type === "button").props.onClick(); });
+    await act(async () => { one(one(root, "[data-unconfirmed-pc-row]"), "button").click(); });
     setPageAccountList({ view: () => view, subscribe: () => () => {}, writer: () => ({ account: "acct", list: LIST, keys: { key: "member-key" }, state: { signers: {}, devices: {}, pcs: {}, invites: {} } }) } as unknown as AccountList);
     try {
       await act(async () => { await press(root, "Remove"); });
@@ -197,9 +186,9 @@ describe("Manage account's devices and PCs", () => {
   it("offers Remove on an offline PC whatever its age, never on one heard from lately, and removes it after one confirm", async () => {
     const root = await mount();
     expect(rows(root, "account-pcs")).toEqual(["OnlineDesk", "OfflineDead boxRemove"]);
-    await act(async () => { action(root, "remove-pc").props.onClick(); });
+    await act(async () => { action(root, "remove-pc").click(); });
     expect(textOf(dialog(root))).toContain("Remove Dead box from your account?");
-    await act(async () => { await press(root, "Remove"); });
+    await act(async () => { press(root, "Remove"); });
     expect(calls).toEqual([`remove ${"b".repeat(32)}`]);
   });
 
@@ -217,10 +206,10 @@ describe("Manage account's devices and PCs", () => {
       // this device may write the list, and Dead box posted no keys for it: it was not added from itself yet, or runs an
       // Ovis from before lists. Desk runs, and the list holds it: it is removable all the same (it comes back only anew)
       expect(rows(root, "account-pcs")).toEqual(["OfflineLaptopRemove", "OnlineDeskRemove", "OfflineDead box · Not in your account's list yet · Add it from that PC (ovis add, or Add this PC to my account there); update an Ovis older than 0.5.10 firstRemove"]);
-      const removes = () => root.findAll((node) => node.type === "button" && node.props["data-action"] === "remove-pc");
-      await act(async () => { removes()[0]!.props.onClick(); });
+      const removes = () => [...root.querySelectorAll<HTMLButtonElement>('button[data-action="remove-pc"]')];
+      await act(async () => { removes()[0]!.click(); });
       expect(textOf(dialog(root))).toContain("Remove Laptop from your account?");
-      await act(async () => { await press(root, "Remove"); });
+      await act(async () => { press(root, "Remove"); });
       // signed into the list, for the account, the list and the member key the row came from, and no pairing of this device's was forgotten
       expect(calls).toEqual([`list-remove ${"c".repeat(64)} for acct ${LIST} member-key`]);
       // another device put Desk out: the rows are drawn again from the list, with no reload
@@ -230,8 +219,8 @@ describe("Manage account's devices and PCs", () => {
       // a PC the account service alone names leaves by the account service; on a device that goes by a list, no
       // pairing made with a PC itself is forgotten for it either
       calls.length = 0;
-      await act(async () => { removes().at(-1)!.props.onClick(); });
-      await act(async () => { await press(root, "Remove"); });
+      await act(async () => { removes().at(-1)!.click(); });
+      await act(async () => { press(root, "Remove"); });
       expect(calls).toEqual([`remove ${"b".repeat(32)}`]);
     } finally { setPageAccountList(null); inShell = false; }
   });
@@ -246,10 +235,10 @@ describe("Manage account's devices and PCs", () => {
       pcs = [{ ...pcs[0]!, public_key: "a".repeat(64), relay: "wss://relay.example" }] as Service.DirectoryPc[];
       const root = await mount();
       expect(rows(root, "account-pcs")).toEqual(["OnlineDeskRemove"]);
-      await act(async () => { action(root, "remove-pc").props.onClick(); });
+      await act(async () => { action(root, "remove-pc").click(); });
       expect(textOf(dialog(root))).toContain("Remove Desk from your account?");
       expect(textOf(dialog(root))).toContain("Desk leaves your account's list on every device, and your account's devices no longer open it; a device paired with Desk itself still does. It comes back to your account only as a new PC, added again on Desk.");
-      await act(async () => { await press(root, "Remove"); });
+      await act(async () => { press(root, "Remove"); });
       expect(calls).toEqual([`list-remove ${"a".repeat(64)} for acct ${LIST} member-key`]);
     } finally { setPageAccountList(null); }
   });
@@ -265,10 +254,10 @@ describe("Manage account's devices and PCs", () => {
       expect(rows(root, "account-pcs")).toEqual(["OnlineDeskRemove"]);
       // the list stops being followed here before the press (its saved copy turned out damaged), and the row is not drawn again yet
       view = { ...view, status: { at: "damaged", why: "sum" } };
-      await act(async () => { action(root, "remove-pc").props.onClick(); });
-      await act(async () => { await press(root, "Remove"); });
+      await act(async () => { action(root, "remove-pc").click(); });
+      await act(async () => { press(root, "Remove"); });
       expect(calls).toEqual([]);
-      expect(textOf(dialog(root).find((node) => node.props.role === "alert"))).toBe("This device cannot use your account's list right now, so the PC was not removed. Try again in a moment.");
+      expect(textOf(one(dialog(root), '[role="alert"]'))).toBe("This device cannot use your account's list right now, so the PC was not removed. Try again in a moment.");
     } finally { setPageAccountList(null); }
   });
 
@@ -283,12 +272,12 @@ describe("Manage account's devices and PCs", () => {
       // the directory still names Laptop, as it does for a while after the list put it out
       pcs = [{ ...pcs[1]!, server_id: "c".repeat(32), label: "Laptop", public_key: "c".repeat(64) }] as Service.DirectoryPc[];
       const root = await mount();
-      await act(async () => { root.findAll((node) => node.type === "button" && node.props["data-action"] === "remove-pc")[0]!.props.onClick(); });
+      await act(async () => { [...root.querySelectorAll<HTMLButtonElement>('button[data-action="remove-pc"]')][0]!.click(); });
       expect(textOf(dialog(root))).toContain("Remove Laptop from your account?");
       // while the question is up, another member's removal of Laptop reaches this page
       view = { ...view, pcs: [] };
       await act(async () => { for (const tell of heard) tell(); });
-      await act(async () => { await press(root, "Remove"); });
+      await act(async () => { press(root, "Remove"); });
       // the removal is the one that was asked for: of that relay key, in that list, which finds it done
       expect(calls).toEqual([`list-remove ${"c".repeat(64)} for acct ${LIST} member-key`]);
     } finally { setPageAccountList(null); inShell = false; }
@@ -307,19 +296,19 @@ describe("Manage account's devices and PCs", () => {
       posted = [{ server_id: "b".repeat(32) }];
       const root = await mount();
       expect(rows(root, "account-pcs")).toEqual(["OnlineDeskRemove", "OfflineDead box · Not in your account's list yetAddRemove", "OnlineOld box · Not in your account's list yet · Add it from that PC (ovis add, or Add this PC to my account there); update an Ovis older than 0.5.10 first"]);
-      await act(async () => { action(root, "add-pc").props.onClick(); });
-      const number = root.find((node) => node.props["data-testid"] === "add-pc-number");
-      expect([number.props["data-post"], number.props["data-name"], number.props["data-account"]]).toEqual(["b".repeat(32), "Dead box", "acct"]);
-      await act(async () => { number.props.onClick(); });
-      expect(root.findAll((node) => node.props["data-testid"] === "add-pc-number")).toEqual([]);
+      await act(async () => { action(root, "add-pc").click(); });
+      const number = one(root, '[data-testid="add-pc-number"]');
+      expect([number.getAttribute("data-post"), number.getAttribute("data-name"), number.getAttribute("data-account")]).toEqual(["b".repeat(32), "Dead box", "acct"]);
+      await act(async () => { number.click(); });
+      expect([...root.querySelectorAll('[data-testid="add-pc-number"]')]).toEqual([]);
       // a watching device adds nothing, and is told nothing it could do about it
-      await act(async () => { renderer?.unmount(); });
+      await page.render(null);
       const watching = await mount({ watching: true });
       expect(rows(watching, "account-pcs")).toEqual(["OnlineDesk", "OfflineDead box · Not in your account's list yet", "OnlineOld box · Not in your account's list yet"]);
       // where the posts could not be read, or this device may not write the list, neither is said
       for (const unread of [() => { posted = new Error("503 from the service"); }, () => { posted = []; writes = false; }]) {
         unread();
-        await act(async () => { renderer?.unmount(); });
+        await page.render(null);
         expect(rows(await mount(), "account-pcs")).toEqual(["OnlineDeskRemove", "OfflineDead box · Not in your account's list yetRemove", "OnlineOld box · Not in your account's list yet"]);
       }
     } finally { setPageAccountList(null); posted = []; }
@@ -344,12 +333,12 @@ describe("Manage account's devices and PCs", () => {
       expect(rows(await mount(), "account-pcs")).toEqual(["OnlineDeskRemove", "OnlineMover · No key of its own in your account's list yet · Run ovis add on that PC to give it one, and compare the number with this deviceRemove", "OnlineHeldRemove"]);
       // ovis add runs on both: Mover is given its keys from here; Held's keys were signed by the tablet, which alone finishes it
       posted = [{ server_id: "e".repeat(32), endpoint: "e".repeat(64), key: "e-key" }, { server_id: "f".repeat(32), endpoint: "f".repeat(64), key: "f-key" }];
-      await act(async () => { renderer?.unmount(); });
+      await page.render(null);
       const root = await mount();
       expect(rows(root, "account-pcs")).toEqual(["OnlineDeskRemove", "OnlineMover · No key of its own in your account's list yetAddRemove", "OnlineHeld · Only Tablet can finish giving it its keys: compare the number on TabletRemove"]);
-      await act(async () => { action(root, "add-pc").props.onClick(); });
-      const number = root.find((node) => node.props["data-testid"] === "add-pc-number");
-      expect([number.props["data-post"], number.props["data-name"], number.props["data-keys"]]).toEqual(["e".repeat(32), "Mover", "yes"]);
+      await act(async () => { action(root, "add-pc").click(); });
+      const number = one(root, '[data-testid="add-pc-number"]');
+      expect([number.getAttribute("data-post"), number.getAttribute("data-name"), number.getAttribute("data-keys")]).toEqual(["e".repeat(32), "Mover", "yes"]);
     } finally { setPageAccountList(null); posted = []; }
   });
 
@@ -366,16 +355,16 @@ describe("Manage account's devices and PCs", () => {
       posted = [{ server_id: "e".repeat(32), endpoint: "e".repeat(64), key: "e-key" }];
       postsReading = () => { state = carried(6); };
       const root = await mount();
-      expect(root.findAll((node) => node.type === "button" && node.props["data-action"] === "add-pc")).toEqual([]);
+      expect([...root.querySelectorAll('button[data-action="add-pc"]')]).toEqual([]);
     } finally { setPageAccountList(null); posted = []; postsReading = () => {}; }
   });
 
   it("keeps the confirm up with a retry line when the removal fails", async () => {
     deleteFails = true;
     const root = await mount();
-    await act(async () => { action(root, "remove-pc").props.onClick(); });
-    await act(async () => { await press(root, "Remove"); });
-    expect(textOf(dialog(root).find((node) => node.props.role === "alert"))).toBe("Dead box could not be removed. Try again.");
+    await act(async () => { action(root, "remove-pc").click(); });
+    await act(async () => { press(root, "Remove"); });
+    expect(textOf(one(dialog(root), '[role="alert"]'))).toBe("Dead box could not be removed. Try again.");
   });
 
 it("PCR-1: a removal that wants a fresh sign-in closes the confirm, and Sign in again removes that PC with the fresh sign-in", async () => {
@@ -385,16 +374,16 @@ it("PCR-1: a removal that wants a fresh sign-in closes the confirm, and Sign in 
       freshSignIn: async (from) => { signInsAgain.push(from.account); return { ...SESSION, sign_in_id: "fresh" } as Store.AccountSession; } });
     try {
       const root = await mount();
-      await act(async () => { action(root, "remove-pc").props.onClick(); });
-      await act(async () => { await press(root, "Remove"); });
-      expect(root.findAll((node) => node.props.role === "alertdialog")).toHaveLength(0);
-      expect(textOf(root.find((node) => node.props["data-pc-removal"] === "b".repeat(32)))).toContain("Sign in again to remove it: your sign-in is more than ten minutes old.");
+      await act(async () => { action(root, "remove-pc").click(); });
+      await act(async () => { press(root, "Remove"); });
+      expect([...root.querySelectorAll('[role="alertdialog"]')]).toHaveLength(0);
+      expect(textOf(one(root, `[data-pc-removal="${"b".repeat(32)}"]`))).toContain("Sign in again to remove it: your sign-in is more than ten minutes old.");
       expect(calls).toEqual([]);
-      const again = root.find((node) => node.type === "button" && textOf(node) === "Sign in again");
-      await act(async () => { again.props.onClick(); });
+      const again = [...root.querySelectorAll("button")].find((node) => textOf(node) === "Sign in again")!;
+      await act(async () => { again.click(); });
       expect(signInsAgain).toEqual(["acct"]);
       expect(calls).toEqual([`remove ${"b".repeat(32)}`]);
-      expect(root.findAll((node) => node.props["data-pc-removal"] !== undefined)).toHaveLength(0);
+      expect(root.querySelectorAll('[data-pc-removal]')).toHaveLength(0);
     } finally {
       keepShellAccount(null);
     }
@@ -409,16 +398,16 @@ it("PCR-1: a removal that wants a fresh sign-in closes the confirm, and Sign in 
 
   it("offers a watching device no PC removal", async () => {
     const root = await mount({ watching: true });
-    expect(root.findAll((node) => node.type === "button" && node.props["data-action"] === "remove-pc")).toHaveLength(0);
+    expect([...root.querySelectorAll<HTMLButtonElement>('button[data-action="remove-pc"]')]).toHaveLength(0);
   });
 
   it("lets this device leave the account from its own row, after a confirm, where the page offers it", async () => {
     let left = 0;
     const root = await mount({ onLeave: async () => { left++; } });
     expect(rows(root, "account-devices")[0]).toBe("This deviceDisconnect");
-    await act(async () => { action(root, "leave-account").props.onClick(); });
+    await act(async () => { action(root, "leave-account").click(); });
     expect(left).toBe(0);
-    await act(async () => { await press(root, "Disconnect"); });
+    await act(async () => { press(root, "Disconnect"); });
     expect(left).toBe(1);
   });
 
@@ -426,30 +415,26 @@ it("PCR-1: a removal that wants a fresh sign-in closes the confirm, and Sign in 
   type Everywhere = (asked?: unknown) => Promise<string | null>;
   const hosted = (leave: Leave, signOutEverywhere: Everywhere = async () => null) => ({ provider: "github" as const, account: "acct", signOut() {}, leave, deleteAccount: async () => null, signOutEverywhere });
   const group = (signIn: ReturnType<typeof hosted> | null) => createElement(SettingsProvider, { children: createElement(HostedAccountGroup, { signIn }) });
-  const openSheet = async (signIn: ReturnType<typeof hosted>): Promise<ReactTestInstance> => {
-    await act(async () => {
-      renderer = create(group(signIn), {
-        createNodeMock: () => ({ isConnected: true, focus() {}, contains: () => false, querySelectorAll: () => [], getClientRects: () => [], closest: () => null, addEventListener() {}, removeEventListener() {} }),
-      });
-    });
-    await act(async () => { action(renderer!.root, "manage-account").props.onClick(); });
-    return renderer!.root;
+  const openSheet = async (signIn: ReturnType<typeof hosted>): Promise<HTMLElement> => {
+    await page.render(group(signIn));
+    await act(async () => { action(body(), "manage-account").click(); });
+    return body();
   };
 
   it("names the account by the start of its ID, as ovis status does, for ovis add --account", async () => {
     const root = await openSheet({ ...hosted(async () => ({ left: true, message: null })), account: "acct_0123456789abcdef" });
-    expect(textOf(root.find((node) => node.type === "div" && node.props["data-account-id"] === true))).toBe("Account IDacct_0123456");
+    expect(textOf(one(root, 'div[data-account-id="true"]'))).toBe("Account IDacct_0123456");
   });
 
   it("signs every device out from Manage account after one short confirm that says PCs stay", async () => {
     let asked = 0;
     const root = await openSheet(hosted(async () => ({ left: true, message: null }), async () => { asked++; return null; }));
     expect(textOf(action(root, "sign-out-everywhere"))).toBe("Sign out every device");
-    await act(async () => { action(root, "sign-out-everywhere").props.onClick(); });
+    await act(async () => { action(root, "sign-out-everywhere").click(); });
     expect(asked).toBe(0);
-    expect(textOf(root.find((node) => node.props["data-testid"] === "sign-out-everywhere-says"))).toBe("Every browser and app is signed out of the account. Devices paired with a PC can still open it, so cut off a lost device with Disconnect.");
-    expect(action(root, "sign-out-everywhere").props["data-confirm"]).toBe("sign-out-everywhere");
-    await act(async () => { action(root, "sign-out-everywhere").props.onClick(); });
+    expect(textOf(one(root, '[data-testid="sign-out-everywhere-says"]'))).toBe("Every browser and app is signed out of the account. Devices paired with a PC can still open it, so cut off a lost device with Disconnect.");
+    expect(action(root, "sign-out-everywhere").getAttribute("data-confirm")).toBe("sign-out-everywhere");
+    await act(async () => { action(root, "sign-out-everywhere").click(); });
     expect(asked).toBe(1);
   });
 
@@ -468,11 +453,11 @@ it("PCR-1: a removal that wants a fresh sign-in closes the confirm, and Sign in 
     try {
       let asked: unknown = null;
       const root = await openSheet(hosted(async () => ({ left: true, message: null }), async (question?: unknown) => { asked = question; return null; }));
-      await act(async () => { action(root, "sign-out-everywhere").props.onClick(); });
+      await act(async () => { action(root, "sign-out-everywhere").click(); });
       // a device comes in after the question was drawn
       shown.set({ ...shown.view(), devices: [...shown.view().devices, shown.device("Newcomer", false)] });
       await act(async () => { for (const tell of shown.heard) tell(); });
-      await act(async () => { action(root, "sign-out-everywhere").props.onClick(); });
+      await act(async () => { action(root, "sign-out-everywhere").click(); });
       expect(asked).toEqual({ confirmed: ["Tablet"], shown: { account: "acct", scope: { account: "acct", list: shown.LIST, member: "member-key" } } });
     } finally { setPageAccountList(null); }
   });
@@ -482,87 +467,74 @@ it("PCR-1: a removal that wants a fresh sign-in closes the confirm, and Sign in 
     try {
       let asked: unknown = null;
       const root = await openSheet(hosted(async (question?: unknown) => { asked = question; return { left: true, message: null }; }));
-      await act(async () => { action(root, "leave-account").props.onClick(); });
-      await act(async () => { await press(root, "Disconnect"); });
+      await act(async () => { action(root, "leave-account").click(); });
+      await act(async () => { press(root, "Disconnect"); });
       expect(asked).toEqual({ account: "acct", scope: { account: "acct", list: shown.LIST, member: "member-key" } });
     } finally { setPageAccountList(null); }
   });
 
   it("keeps the sheet up with the reason when every device could not be signed out", async () => {
     const root = await openSheet(hosted(async () => ({ left: true, message: null }), async () => "Could not sign out every device. Try again."));
-    await act(async () => { action(root, "sign-out-everywhere").props.onClick(); });
-    await act(async () => { action(root, "sign-out-everywhere").props.onClick(); });
+    await act(async () => { action(root, "sign-out-everywhere").click(); });
+    await act(async () => { action(root, "sign-out-everywhere").click(); });
     expect(sheets(root)).toHaveLength(1);
-    expect(root.findAll((node) => node.props.role === "alert").map(textOf)).toContain("Could not sign out every device. Try again.");
+    expect([...root.querySelectorAll('[role="alert"]')].map(textOf)).toContain("Could not sign out every device. Try again.");
     expect(textOf(action(root, "sign-out-everywhere"))).toBe("Sign out every device");
   });
 
-  const leaveFromSheet = async (leave: Leave): Promise<ReactTestInstance> => {
-    await act(async () => {
-      renderer = create(group(hosted(leave)), {
-        createNodeMock: () => ({ isConnected: true, focus() {}, contains: () => false, querySelectorAll: () => [], getClientRects: () => [], closest: () => null, addEventListener() {}, removeEventListener() {} }),
-      });
-    });
-    const root = renderer!.root;
-    await act(async () => { action(root, "manage-account").props.onClick(); });
-    await act(async () => { action(root, "leave-account").props.onClick(); });
-    await act(async () => { await press(root, "Disconnect"); });
+  const leaveFromSheet = async (leave: Leave): Promise<HTMLElement> => {
+    await page.render(group(hosted(leave)));
+    const root = body();
+    await act(async () => { action(root, "manage-account").click(); });
+    await act(async () => { action(root, "leave-account").click(); });
+    await act(async () => { press(root, "Disconnect"); });
     return root;
   };
-  const sheets = (root: ReactTestInstance) => root.findAll((node) => node.type === "div" && node.props["data-testid"] === "manage-account");
+  const sheets = (root: HTMLElement) => [...root.querySelectorAll('div[data-testid="manage-account"]')];
 
   it("keeps the sheet and its confirm up with the error when this device could not leave the account", async () => {
     const root = await leaveFromSheet(async () => ({ left: false, message: "This device could not leave the account. Try again." }));
-    expect(textOf(dialog(root).find((node) => node.props.role === "alert"))).toBe("This device could not leave the account. Try again.");
+    expect(textOf(one(dialog(root), '[role="alert"]'))).toBe("This device could not leave the account. Try again.");
     expect(sheets(root)).toHaveLength(1);
   });
 
   it("names the PCs that kept this device in the sheet after a partial leave whose sign-in went before its outcome came", async () => {
     // as leave.ts does: the stored sign-in is cleared (the hook reads null) while the leave still names the PCs
     const outcome = Promise.withResolvers<{ left: boolean; message: string | null }>();
-    await act(async () => {
-      renderer = create(group(hosted(() => outcome.promise)), {
-        createNodeMock: () => ({ isConnected: true, focus() {}, contains: () => false, querySelectorAll: () => [], getClientRects: () => [], closest: () => null, addEventListener() {}, removeEventListener() {} }),
-      });
-    });
-    const root = renderer!.root;
-    await act(async () => { action(root, "manage-account").props.onClick(); });
-    await act(async () => { action(root, "leave-account").props.onClick(); });
-    let pressed: Promise<void> | undefined;
-    await act(async () => { pressed = press(root, "Disconnect"); });
-    await act(async () => { renderer!.update(group(null)); });
+    await page.render(group(hosted(() => outcome.promise)));
+    const root = body();
+    await act(async () => { action(root, "manage-account").click(); });
+    await act(async () => { action(root, "leave-account").click(); });
+    await act(async () => { press(root, "Disconnect"); });
+    await page.render(group(null));
     expect(sheets(root)).toHaveLength(1);
-    await act(async () => { outcome.resolve({ left: true, message: "These PCs still have it, so revoke it on them: Desk" }); await pressed; });
-    expect(root.findAll((node) => node.props.role === "alertdialog")).toHaveLength(0);
+    await act(async () => { outcome.resolve({ left: true, message: "These PCs still have it, so revoke it on them: Desk" }); });
+    expect([...root.querySelectorAll('[role="alertdialog"]')]).toHaveLength(0);
     expect(sheets(root)).toHaveLength(1);
-    expect(textOf(sheets(root)[0]!.find((node) => node.props.role === "alert"))).toBe("These PCs still have it, so revoke it on them: Desk");
+    expect(textOf(one(sheets(root)[0]!, '[role="alert"]'))).toBe("These PCs still have it, so revoke it on them: Desk");
   });
 
-  const startScreen = async (): Promise<ReactTestInstance> => {
+  const startScreen = async (): Promise<HTMLElement> => {
     const none = () => {};
-    await act(async () => {
-      renderer = create(createElement(SettingsProvider, { children: createElement(RelayShell, {
+    await page.render(createElement(SettingsProvider, { children: createElement(RelayShell, {
         state: { kind: "list", devices: [], account: { kind: "signed-in", provider: "github", error: null, pcs: [] } },
         scoped: false, iosTab: false, onSignIn: none, onPair: none, onRetry: none, onCancel: none, onBack: none, onForget: none, onUpdate: none, onMatch: none, onCodeStart: none, onCodeSubmit: none, onCodeMatch: none,
-      }) }), {
-        createNodeMock: () => ({ isConnected: true, focus() {}, contains: () => false, querySelector: () => null, querySelectorAll: () => [], getClientRects: () => [], getBoundingClientRect: () => ({ top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 }), closest: () => null, addEventListener() {}, removeEventListener() {} }),
-      });
-    });
-    return renderer!.root;
+      }) }));
+    return body();
   };
-  const menuItem = (root: ReactTestInstance, id: string) => root.find((node) => node.type === "button" && node.props["data-item"] === id);
+  const menuItem = (root: HTMLElement, id: string) => one(root, `button[data-item="${id}"]`);
 
   it("keeps the signed-in start screen's account in its ⋮ menu: who is signed in, Manage account and Sign out, and no link under the tabs", async () => {
     let signedOut = 0;
     keepShellAccount({ signOut: () => { signedOut += 1; }, leave: async () => ({ left: true, message: null }), deleteAccount: async () => null, signOutEverywhere: async () => null });
     try {
       const root = await startScreen();
-      expect(root.findAll((node) => node.type === "button" && node.props["data-action"] === "manage-account")).toHaveLength(0);
-      await act(async () => { action(root, "account-menu").props.onClick(); });
-      const menu = root.find((node) => node.props.role === "menu");
+      expect([...root.querySelectorAll('button[data-action="manage-account"]')]).toHaveLength(0);
+      await act(async () => { action(root, "account-menu").click(); });
+      const menu = one(root, '[role="menu"]');
       expect(textOf(menu)).toContain("Signed in with GitHub");
-      expect(menu.findAll((node) => node.type === "button").map((node) => node.props["data-item"])).toEqual(["manage-account", "sign-out"]);
-      await act(async () => { menuItem(root, "sign-out").props.onClick(); });
+      expect([...menu.querySelectorAll("button")].map((node) => node.getAttribute("data-item"))).toEqual(["manage-account", "sign-out"]);
+      await act(async () => { menuItem(root, "sign-out").click(); });
       expect(signedOut).toBe(1);
     } finally {
       keepShellAccount(null);
@@ -574,14 +546,14 @@ it("PCR-1: a removal that wants a fresh sign-in closes the confirm, and Sign in 
     keepShellAccount({ signOut: none, leave: async () => ({ left: true, message: null }), deleteAccount: async () => null, signOutEverywhere: async () => null });
     try {
       const root = await startScreen();
-      await act(async () => { action(root, "account-menu").props.onClick(); });
-      await act(async () => { menuItem(root, "manage-account").props.onClick(); });
+      await act(async () => { action(root, "account-menu").click(); });
+      await act(async () => { menuItem(root, "manage-account").click(); });
       // no PC answers here: the sheet asks none for its devices, and offers this device's own row
       expect(deviceReads).toBe(0);
       expect(rows(root, "account-devices")).toEqual(["This deviceDisconnect"]);
       expect(rows(root, "account-pcs")).toEqual(["OnlineDesk", "OfflineDead boxRemove"]);
-      await act(async () => { action(root, "remove-pc").props.onClick(); });
-      await act(async () => { await press(root, "Remove"); });
+      await act(async () => { action(root, "remove-pc").click(); });
+      await act(async () => { press(root, "Remove"); });
       expect(calls).toEqual([`remove ${"b".repeat(32)}`]);
     } finally {
       keepShellAccount(null);

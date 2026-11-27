@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { act, createElement } from "react";
-import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 import { FakeAccountService, WEB_REDIRECT } from "../../shared/account-service-fake.ts";
 import { accountList, type AccountList } from "../lib/account/accountList.ts";
 import { askingPc, pcComparing, postPcKeys, type AskingPc } from "../lib/account/accountList.test-helpers.ts";
@@ -18,40 +18,34 @@ const ORIGIN = "https://account.ovis.sh";
 const ACCOUNT = "acct_owner";
 
 const globals = new Map<string, PropertyDescriptor | undefined>();
-let renderer: ReactTestRenderer | undefined;
+let page: Page;
 let fake: FakeAccountService;
 let store: AccountStore;
 let changes = 0;
 
-const textOf = (node: ReactTestInstance): string => node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
-const buttons = (): string[] => renderer!.root.findAll((node) => node.type === "button").map((node) => textOf(node).trim());
+const textOf = (node: Element): string => node.textContent ?? "";
+const buttonNodes = () => [...page.container.querySelectorAll("button")];
+const buttons = (): string[] => buttonNodes().map((node) => textOf(node).trim());
 const settle = async (): Promise<void> => { for (let i = 0; i < 20; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
 const press = async (label: string): Promise<void> => {
-  const found = renderer!.root.findAll((node) => node.type === "button" && textOf(node).trim() === label);
+  const found = buttonNodes().filter((node) => textOf(node).trim() === label);
   if (found.length !== 1) throw new Error(`${found.length} buttons say ${label}`);
-  await act(async () => { await found[0]!.props.onClick(); });
+  await act(async () => { found[0]?.click(); });
   await settle();
 };
-const text = (): string => textOf(renderer!.root.find((node) => node.props["data-testid"] === "add-pc-number"));
+const text = (): string => textOf(page.one('[data-testid="add-pc-number"]'));
 /** Settles once `holds`, looking every 10 ms for two seconds at most: a wait for the PC runs on the real clock. */
 const until = async (holds: () => boolean): Promise<void> => {
   for (let looks = 0; looks < 200 && !holds(); looks++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
 };
-const digitsShown = (): string => textOf(renderer!.root.findByProps({ className: "relay-shell-digits" })).replaceAll(" ", "");
+const digitsShown = (): string => textOf(page.one('[class="relay-shell-digits"]')).replaceAll(" ", "");
 
 beforeEach(() => {
-  const events = new EventTarget();
-  events.addEventListener(ACCOUNT_PCS_CHANGED_EVENT, () => { changes++; });
-  for (const [name, value] of Object.entries({
-    window: Object.assign(events, { location: new URL("https://app.ovis.sh/"), history: { state: null, pushState() {}, replaceState() {}, back() {} }, matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) }),
-    IS_REACT_ACT_ENVIRONMENT: true,
-    document: Object.assign(new EventTarget(), { visibilityState: "visible", querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } }),
-    getComputedStyle: () => ({ getPropertyValue: () => "" }),
-    navigator: { languages: ["en"] },
-    localStorage: (() => { const kept = new Map<string, string>(); return { getItem: (name: string) => kept.get(name) ?? null, setItem: (name: string, value: string) => { kept.set(name, value); }, removeItem: (name: string) => { kept.delete(name); } }; })(),
-  })) {
+  page = openPage("https://app.ovis.sh/");
+  page.window.addEventListener(ACCOUNT_PCS_CHANGED_EVENT, () => { changes++; });
+  for (const name of ["localStorage", "Event", "CustomEvent"] as const) {
     globals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
-    Object.defineProperty(globalThis, name, { value, configurable: true });
+    Object.defineProperty(globalThis, name, { configurable: true, value: page.window[name] });
   }
   fake = new FakeAccountService();
   fake.opensAll = true;
@@ -62,8 +56,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  await act(async () => { renderer?.unmount(); });
-  renderer = undefined;
+  await page.close();
   for (const [name, descriptor] of globals) {
     if (descriptor) Object.defineProperty(globalThis, name, descriptor);
     else Reflect.deleteProperty(globalThis, name);
@@ -107,9 +100,7 @@ async function listedPc(): Promise<{ pc: AskingPc; play: ReturnType<typeof pcCom
 
 async function mount(list: AccountList, post: PostedPc, more: { waitMs?: number; now?: () => number } = {}): Promise<{ closed: () => number; added: () => number }> {
   let closed = 0, added = 0;
-  await act(async () => {
-    renderer = create(createElement(SettingsProvider, { children: createElement(AddPcByNumber, { list, account: ACCOUNT, post, name: "Desk", onClose: () => { closed++; }, onAdded: () => { added++; }, ...more }) }));
-  });
+  await page.render(createElement(SettingsProvider, { children: createElement(AddPcByNumber, { list, account: ACCOUNT, post, name: "Desk", onClose: () => { closed++; }, onAdded: () => { added++; }, ...more }) }));
   await settle();
   return { closed: () => closed, added: () => added };
 }
@@ -144,9 +135,7 @@ describe("a PC the account names that its signed list does not hold yet", () => 
     expect(opened()).toBe(1);
     // the PC said yes to that number: it answers no new comparison from now on
     play.answer = async () => false;
-    await act(async () => {
-      renderer!.update(createElement(SettingsProvider, { children: createElement(AddPcByNumber, { list, account: ACCOUNT, post: { ...post }, name: "Desk", onClose: () => {}, onAdded: () => {} }) }));
-    });
+    await page.render(createElement(SettingsProvider, { children: createElement(AddPcByNumber, { list, account: ACCOUNT, post: { ...post }, name: "Desk", onClose: () => {}, onAdded: () => {} }) }));
     await settle();
     expect([opened(), digitsShown()]).toEqual([1, digits]);
     expect(text()).not.toContain("Waiting for the PC");
@@ -159,7 +148,7 @@ describe("a PC the account names that its signed list does not hold yet", () => 
   it("closes at Cancel while the number is shown, and adds nothing", async () => {
     const { list, post, held } = await listedPc();
     const told = await mount(list, post);
-    expect(renderer!.root.findAllByProps({ className: "relay-shell-digits" })).toHaveLength(1);
+    expect([...page.container.querySelectorAll('[class="relay-shell-digits"]')]).toHaveLength(1);
     await press("Cancel");
     expect([told.closed(), told.added(), held().entries.length]).toEqual([1, 0, 1]);
   });
@@ -170,7 +159,7 @@ describe("a PC the account names that its signed list does not hold yet", () => 
     await press("Not the same");
     expect(text()).toContain("The numbers did not match. This PC was not added.");
     expect(buttons()).toEqual(["Close"]);
-    expect(renderer!.root.findAllByProps({ className: "relay-shell-digits" })).toEqual([]);
+    expect([...page.container.querySelectorAll('[class="relay-shell-digits"]')]).toEqual([]);
     await press("Close");
     expect([held().entries.length, told.added(), told.closed()]).toEqual([1, 0, 1]);
     expect(readSeenPcs(ACCOUNT).pcs).toEqual({});
@@ -183,11 +172,11 @@ describe("a PC the account names that its signed list does not hold yet", () => 
     await mount(list, post, { waitMs: 100 });
     await until(() => text().includes("The PC did not answer"));
     expect(text()).toContain("The PC did not answer. Start again on the PC.");
-    expect(renderer!.root.findAllByProps({ className: "relay-shell-digits" })).toEqual([]);
+    expect([...page.container.querySelectorAll('[class="relay-shell-digits"]')]).toEqual([]);
     expect(buttons()).toEqual(["Close", "Try again"]);
     play.answer = answer;
     await press("Try again");
-    await until(() => renderer!.root.findAllByProps({ className: "relay-shell-digits" }).length > 0);
+    await until(() => [...page.container.querySelectorAll('[class="relay-shell-digits"]')].length > 0);
     expect(await play.digits()).toBe(digitsShown());
     expect(held().entries.length).toBe(1);
   });
@@ -195,12 +184,13 @@ describe("a PC the account names that its signed list does not hold yet", () => 
   it("writes the added record before the dialog says it is done: never while another tab holds the record", async () => {
     const { pc, list, post } = await listedPc();
     const locks = Promise.withResolvers<void>();
-    const saved = Object.getOwnPropertyDescriptor(globalThis, "navigator");
-    Object.defineProperty(globalThis, "navigator", { value: { ...navigator, locks: { request: async (_name: string, work: () => Promise<void>) => { await locks.promise; return work(); } } }, configurable: true });
+    const saved = Object.getOwnPropertyDescriptor(page.window.navigator, "locks");
+    Object.defineProperty(page.window.navigator, "locks", { value: { request: async (_name: string, work: () => Promise<void>) => { await locks.promise; return work(); } }, configurable: true });
     try {
       const told = await mount(list, post);
-      const add = renderer!.root.findAll((node) => node.type === "button" && textOf(node).trim() === "Add")[0]!;
-      await act(async () => { void add.props.onClick(); });
+      const add = buttonNodes().find((node) => textOf(node).trim() === "Add");
+      if (!add) throw new Error("No Add button");
+      await act(async () => { add.click(); });
       await settle();
       expect([list.view().pcs.map((row) => row.endpoint), told.added()]).toEqual([[pc.endpoint], 0]);
       locks.resolve();
@@ -208,7 +198,8 @@ describe("a PC the account names that its signed list does not hold yet", () => 
       expect([told.added(), readSeenPcs(ACCOUNT).pcs[pc.endpoint]]).toEqual([1, { how: "added" }]);
     } finally {
       locks.resolve();
-      if (saved) Object.defineProperty(globalThis, "navigator", saved);
+      if (saved) Object.defineProperty(page.window.navigator, "locks", saved);
+      else Reflect.deleteProperty(page.window.navigator, "locks");
     }
   });
 

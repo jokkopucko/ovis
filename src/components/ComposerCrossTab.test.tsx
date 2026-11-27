@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, mock, spyOn } from "bun:test";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 import { Composer, type ComposerProps } from "./Composer.tsx";
 import * as settingsModule from "../lib/settings.ts";
 import * as commandsModule from "../lib/usePaneCommands.ts";
@@ -10,9 +11,9 @@ import { composerDrafts } from "../lib/composerDraft.ts";
 import { paneLifetimes } from "../lib/paneLifetime.ts";
 
 const pane = "cross-tab-pane", draftKey = `ovis:composer-draft:${pane}`, lockName = `ovis-send:${draftKey}`;
-const globals = ["window", "document", "navigator", "requestAnimationFrame", "cancelAnimationFrame", "IS_REACT_ACT_ENVIRONMENT"];
+const globals = ["requestAnimationFrame", "cancelAnimationFrame"];
 const saved = new Map<string, PropertyDescriptor | undefined>();
-let renderer: ReactTestRenderer | undefined;
+let page: Page;
 /** the storage every tab of the origin shares */
 let data: Map<string, string>;
 let refuseLocks = false;
@@ -34,12 +35,8 @@ function locks(): { request(name: string, run: () => unknown): Promise<unknown> 
 }
 
 function setGlobals(lockManager?: ReturnType<typeof locks>): void {
-  const listen = { addEventListener() {}, removeEventListener() {} };
+  Object.defineProperty(page.window.navigator, "locks", { configurable: true, value: lockManager });
   const values: Record<string, unknown> = {
-    IS_REACT_ACT_ENVIRONMENT: true,
-    navigator: { languages: ["en"], userAgent: "test", maxTouchPoints: 0, ...(lockManager ? { locks: lockManager } : {}) },
-    window: { ...listen, location: { href: "https://ovis.test/" }, matchMedia: () => ({ matches: false, ...listen }), setTimeout, clearTimeout },
-    document: { ...listen, querySelector: () => null },
     requestAnimationFrame: () => 1,
     cancelAnimationFrame: () => {},
   };
@@ -47,6 +44,11 @@ function setGlobals(lockManager?: ReturnType<typeof locks>): void {
 }
 
 beforeEach(() => {
+  page = openPage("https://ovis.test/");
+  for (const [key, value] of Object.entries({ ResizeObserver: page.window.ResizeObserver, HTMLElement: page.window.HTMLElement, Event: page.window.Event, CustomEvent: page.window.CustomEvent })) {
+    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { configurable: true, value });
+  }
   for (const key of globals) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
   setGlobals();
   data = new Map<string, string>();
@@ -67,9 +69,8 @@ beforeEach(() => {
   composerDrafts.set(draftKey, "");
 });
 
-afterEach(() => {
-  act(() => { renderer?.unmount(); });
-  renderer = undefined;
+afterEach(async () => {
+  await page.close();
   composerDrafts.set(draftKey, "");
   mock.restore();
   for (const [key, descriptor] of saved) {
@@ -83,18 +84,18 @@ async function tabWith(draft: string, onSend: (message: string) => ReturnType<Co
   const sent: string[] = [];
   composerDrafts.set(draftKey, draft);
   const props: ComposerProps = { paneId: pane, agent: "claude", agentStatus: "idle", connected: true, autoFocus: false, onSend: (message) => { sent.push(message); return onSend(message); }, onAbort() {}, onUploadImage: async () => "" };
-  await act(async () => { renderer = create(<Composer {...props} />); });
+  await page.render(<Composer {...props} />);
   return {
     sent,
-    press: () => act(async () => { renderer!.root.findByProps({ "aria-label": "Send message" }).props.onClick(); }),
-    disconnect: () => act(async () => { renderer!.update(<Composer {...props} connected={false} />); }),
-    reconnect: () => act(async () => { renderer!.update(<Composer {...props} />); }),
+    press: () => act(async () => { page.one('[aria-label="Send message"]').click(); }),
+    disconnect: () => page.render(<Composer {...props} connected={false} />),
+    reconnect: () => page.render(<Composer {...props} />),
     quickReply: async () => {
-      const button = renderer!.root.findAll((node) => node.type === "button" && node.props.className === "composer-quick-reply")[0]!;
-      await act(async () => { button.props.onClick(); });
-      return String(button.props.children);
+      const button = [...page.container.querySelectorAll<HTMLButtonElement>('button[class="composer-quick-reply"]')][0]!;
+      await act(async () => { button.click(); });
+      return button.textContent ?? "";
     },
-    unmount: () => act(async () => { renderer!.unmount(); renderer = undefined; }),
+    unmount: () => page.render(null),
   };
 }
 
@@ -114,13 +115,9 @@ it("does not send a draft another tab sent while it held the pane's send lock", 
 it("leaves Alt+Enter alone when the hold shortcut is off", async () => {
   shortcutOverrides = { "hold-message": null };
   const { sent } = await tabWith("Keep this in the composer");
-  const preventDefault = mock(() => {});
-  await act(async () => {
-    renderer?.root.findByProps({ className: "composer-text" }).props.onKeyDown({
-      key: "Enter", altKey: true, ctrlKey: false, metaKey: false, shiftKey: false, nativeEvent: {}, preventDefault,
-    });
-  });
-  expect(preventDefault).not.toHaveBeenCalled();
+  const keydown = new page.window.KeyboardEvent("keydown", { key: "Enter", altKey: true, ctrlKey: false, metaKey: false, shiftKey: false, bubbles: true, cancelable: true });
+  await act(async () => { page.one('[class="composer-text"]').dispatchEvent(keydown as unknown as Event); });
+  expect(keydown.defaultPrevented).toBe(false);
   expect(sent).toEqual([]);
 });
 
@@ -216,28 +213,28 @@ it("sends a draft no other tab sent, once (control)", async () => {
 it("lets no dictation write into a watch-only composer", async () => {
   const props: ComposerProps = { paneId: pane, agent: "claude", agentStatus: "idle", connected: true, autoFocus: false, active: true, role: "observe", onSend: () => true, onAbort() {}, onUploadImage: async () => "" };
   const dictation = voiceModule.useDictation as unknown as { mock: { calls: [{ active?: boolean }][] } };
-  await act(async () => { renderer = create(<Composer {...props} />); });
+  await page.render(<Composer {...props} />);
   expect(dictation.mock.calls.at(-1)![0].active).toBe(false);
-  await act(async () => { renderer!.update(<Composer {...props} role={undefined} />); });
+  await page.render(<Composer {...props} role={undefined} />);
   expect(dictation.mock.calls.at(-1)![0].active).toBe(true);
 });
 
 it("disables the quick replies in a watch-only view", async () => {
   const props: ComposerProps = { paneId: pane, agent: "claude", agentStatus: "idle", connected: true, autoFocus: false, role: "observe", onSend: () => true, onAbort() {}, onUploadImage: async () => "" };
-  await act(async () => { renderer = create(<Composer {...props} />); });
-  const quick = renderer!.root.findAll((node) => node.type === "button" && node.props.className === "composer-quick-reply");
+  await page.render(<Composer {...props} />);
+  const quick = [...page.container.querySelectorAll<HTMLButtonElement>('button[class="composer-quick-reply"]')];
   expect(quick.length).toBeGreaterThan(0);
-  expect(quick.map((button) => button.props.disabled)).toEqual(quick.map(() => true));
-  await act(async () => { renderer!.update(<Composer {...props} role={undefined} />); });
-  expect(renderer!.root.findAll((node) => node.type === "button" && node.props.className === "composer-quick-reply").map((button) => button.props.disabled)).toEqual(quick.map(() => false));
+  expect(quick.map((button) => button.disabled)).toEqual(quick.map(() => true));
+  await page.render(<Composer {...props} role={undefined} />);
+  expect([...page.container.querySelectorAll<HTMLButtonElement>('button[class="composer-quick-reply"]')].map((button) => button.disabled)).toEqual(quick.map(() => false));
 });
 
 // the composer's own render is the only lock a watch-only view has: nothing outside it disables its controls
 it("locks what writes in a watch-only view, keeps the background tasks chip, and unlocks when the view takes input again", async () => {
   const props: ComposerProps = { paneId: pane, agent: "claude", agentStatus: "working", backgroundTasks: 1, connected: true, autoFocus: false, role: "observe", onSend: () => true, onAbort() {}, onUploadImage: async () => "" };
-  await act(async () => { renderer = create(<Composer {...props} />); });
-  const disabled = (name: string): boolean[] => renderer!.root.findAll((node) => typeof node.type === "string" && String(node.props.className ?? "").split(" ").includes(name)).map((node) => node.props.disabled === true);
+  await page.render(<Composer {...props} />);
+  const disabled = (name: string): boolean[] => [...page.container.querySelectorAll(`.${name}`)].map((node) => node.matches(":disabled"));
   expect({ text: disabled("composer-text"), attach: disabled("composer-attach"), stop: disabled("composer-stop"), chip: disabled("bg-tasks-toggle") }).toEqual({ text: [true], attach: [true], stop: [true], chip: [false] });
-  await act(async () => { renderer!.update(<Composer {...props} role={undefined} />); });
+  await page.render(<Composer {...props} role={undefined} />);
   expect({ text: disabled("composer-text"), attach: disabled("composer-attach"), stop: disabled("composer-stop"), chip: disabled("bg-tasks-toggle") }).toEqual({ text: [false], attach: [false], stop: [false], chip: [false] });
 });
