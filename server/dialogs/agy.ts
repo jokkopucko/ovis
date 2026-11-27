@@ -13,6 +13,7 @@ import {
   navigationKeys,
   own,
   screenWidth,
+  toggleMultiSelectKeys,
   wrapped,
   type ParsedPrompt,
   type PromptDraft,
@@ -240,16 +241,9 @@ export function parseAgyQuestion(screen: string): ParsedPrompt | null {
     rejectWithEscapeIndex: null,
     customSteps: (text: string, picked?: number[]) => {
       const normalized = agyTypedWriteIn(text);
-      const keys: string[] = [];
-      let cursor = selectedIndex;
-      if (multi && picked !== undefined) {
-        const want = new Set(picked);
-        for (const index of choices.keys()) {
-          if (want.has(index) === checked.includes(index)) continue;
-          keys.push(...navigationKeys(index - cursor), KEY.space);
-          cursor = index;
-        }
-      }
+      const { keys, cursor } = multi && picked !== undefined
+        ? toggleMultiSelectKeys(choices.length, selectedIndex, checked, picked)
+        : { keys: [], cursor: selectedIndex };
       keys.push(...navigationKeys(choices.length - cursor), KEY.enter);
       return [
         ...keySteps(keys),
@@ -259,14 +253,7 @@ export function parseAgyQuestion(screen: string): ParsedPrompt | null {
     },
     ...(multi ? {
       multiSteps: (picked: number[]) => {
-        const want = new Set(picked);
-        let cursor = selectedIndex;
-        const keys: string[] = [];
-        for (const index of choices.keys()) {
-          if (want.has(index) === checked.includes(index)) continue;
-          keys.push(...navigationKeys(index - cursor), KEY.space);
-          cursor = index;
-        }
+        const { keys, cursor } = toggleMultiSelectKeys(choices.length, selectedIndex, checked, picked);
         // Enter on Write-in... opens the inline text input instead of submitting the checked choices.
         if (cursor === choices.length) keys.push(KEY.up);
         return keySteps([...keys, KEY.enter]);

@@ -59,8 +59,8 @@ describe("useTerminalRefits under the inbox mode's list", () => {
     const deps: TerminalRefitsDeps = {
       activeRef: ref(false), autoSelected: false, baseFontRef: ref(13), pinchingRef: ref(false), fontSettledRef: ref(fontSettled()),
       chatView, chatViewRef: ref(chatView), coarseRef: ref(false), covered, findOpenRef: ref(false), fitRef: ref(null), fittedRef: ref(() => {}),
-      fixedGridRef: ref(false), follow: false, followCursorRef: ref(() => {}), keyboardHoldsRef: ref(() => false), narrowFont: false,
-      narrowFontFitted: ref(false), observeRef: ref(false), colors: COLORS, paneRef: ref(PANE), peekRef: ref(null),
+      fixedGridRef: ref(false), follow: false, followCursorRef: ref(() => {}), keyboardHoldsRef: ref(() => false),
+      observeRef: ref(false), colors: COLORS, paneRef: ref(PANE), peekRef: ref(null),
       sharedGridRef: ref(null), shown: true, sizesPty: () => true, socketRef: ref(client), termRef, terminalFontFamily: "", terminalFontSize: 13,
     };
     useTerminalRefits(deps);

@@ -1245,7 +1245,7 @@ it.skipIf(process.platform !== "linux")("reuses peer claims across conversation 
   const ownPane = "copilot-own";
   const peerPane = "copilot-peer";
   const calls: string[] = [];
-  const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } });
+  const rpc = spyOn(omo, "processInfo").mockResolvedValue({ process_info: { foreground_processes: [] } });
   const info = spyOn(herdr, "paneProcessInfo").mockImplementation(async (paneId) => {
     calls.push(paneId);
     return { pane_id: paneId, foreground_processes: [{ pid: paneId === ownPane ? own.pid : peer.pid, name: "copilot", argv: ["copilot"] }] };
@@ -1320,7 +1320,7 @@ it.skipIf(process.platform !== "linux")("retries a failed Copilot process lookup
     agents: [],
   } as unknown as SessionSnapshot;
   const snapshots = spyOn(herdr, "sessionSnapshot").mockResolvedValue(snapshot);
-  const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } });
+  const rpc = spyOn(omo, "processInfo").mockResolvedValue({ process_info: { foreground_processes: [] } });
   const environment = spyOn(omo, "processEnviron").mockImplementation((pid) => pid === own.pid ? own.environment : peer.environment);
   let failure: (() => void) | null = null;
   let ownCalls = 0;
@@ -1574,7 +1574,7 @@ it.skipIf(process.platform !== "linux")("does not retain the old history when th
   let failing = false;
   let failed = false;
   let switched = false;
-  const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } });
+  const rpc = spyOn(omo, "processInfo").mockResolvedValue({ process_info: { foreground_processes: [] } });
   const info = spyOn(herdr, "paneProcessInfo").mockImplementation(async (paneId) => {
     if (paneId === "peer") {
       if (failed && !switched) { appendFileSync(log, register(other)); switched = true; }
@@ -1638,7 +1638,7 @@ it.skipIf(process.platform !== "linux").each([false, true])("does not retain the
   let failed = false;
   let ownChecks = 0;
   let switched = false;
-  const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } });
+  const rpc = spyOn(omo, "processInfo").mockResolvedValue({ process_info: { foreground_processes: [] } });
   const info = spyOn(herdr, "paneProcessInfo").mockImplementation(async (paneId) => {
     if (failed && paneId === "own" && ++ownChecks === 2) {
       if (replaced) { peer.child.kill(); await peer.child.exited; active = successor; }

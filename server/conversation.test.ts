@@ -259,11 +259,12 @@ describe("pane process roots", () => {
 
   for (const agent of ["claude", "codex", "omp", "gjc", "pi", "opencode", "devin", "grok", "hermes", "agy", "letta"]) {
     it(`reads ${agent}'s environment from its foreground executable`, async () => {
-      const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({
-        process_info: { foreground_processes: [
-          { pid: 101, argv: ["sh", "-c", agent], cwd: "/shell" },
-          { pid: 102, argv: [`C:\\tools\\${agent}.exe`], cwd: "/agent" },
-        ] },
+      const rpc = spyOn(herdr, "paneProcessInfo").mockResolvedValue({
+        pane_id: "process-fixture",
+        foreground_processes: [
+          { pid: 101, name: "sh", argv: ["sh", "-c", agent], cwd: "/shell" },
+          { pid: 102, name: agent, argv: [`C:\\tools\\${agent}.exe`], cwd: "/agent" },
+        ],
       });
       const identity = spyOn(omo, "omoProcessIdentity").mockReturnValue(null);
       const environ = spyOn(omo, "processEnviron").mockReturnValue(["AGENT_HOME=/fixture"]);
@@ -272,7 +273,7 @@ describe("pane process roots", () => {
           omo: null, environ: ["AGENT_HOME=/fixture"], pid: 102, cwd: "/agent",
         });
         expect(rpc).toHaveBeenCalledTimes(1);
-        expect(rpc).toHaveBeenCalledWith("pane.process_info", { pane_id: "process-fixture" });
+        expect(rpc).toHaveBeenCalledWith("process-fixture");
         expect(environ).toHaveBeenCalledWith(102);
       } finally {
         environ.mockRestore();

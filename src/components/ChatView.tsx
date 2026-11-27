@@ -2371,7 +2371,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   // state, turns with earlier pages, until the loaded turns reach back past the row's time.
   const restoreReach = (saved: ChatPosition): "wait" | "older" | "gone" => {
     const outcome = saved.turn.startsWith("outcome|");
-    if (outcome && pollPrompt && !outcomesRead) return "wait";
+    if (outcome && (pollPrompt || !connected) && !outcomesRead) return "wait";
     const at = outcome ? outcomes.find((item) => `outcome|${item.id}` === saved.turn)?.created_at : saved.turn.split("|")[1];
     if ((outcome && at === undefined) || typeof olderCursor !== "string") return "gone";
     const time = Date.parse(at ?? "");
@@ -2397,13 +2397,13 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       dropPendingListScroll(list);
       pagingAway.current = true; stickToBottom.current = false; setAway(true);
     } else scrollToBottom();
-  }, [visible, loaded, error, state.source, timelineRows, olderCursor, outcomesRead, pollPrompt]);
+  }, [visible, loaded, error, state.source, timelineRows, olderCursor, outcomesRead, pollPrompt, connected]);
   useEffect(() => {
     const saved = restoring.current;
     if (!visible || !loaded || error !== null || state.source !== "conversation" || saved === null || olderState !== "idle" || restoreReach(saved) !== "older") return;
     restorePages.current += 1;
     void loadOlder();
-  }, [visible, loaded, error, state.source, olderState, olderCursor, loadOlder, outcomes, outcomesRead, pollPrompt]);
+  }, [visible, loaded, error, state.source, olderState, olderCursor, loadOlder, outcomes, outcomesRead, pollPrompt, connected]);
   useLayoutEffect(() => {
     const pick = revealing.current;
     const list = timeline.current, node = scroller.current;

@@ -3706,7 +3706,6 @@ button {
   .error-retry,
   .input,
   .select,
-  .find-bar .find-input,
   .conversation-search .search-input,
   .agent-picker .agent-picker-trigger {
     min-height: var(--touch-target);
@@ -3821,7 +3820,6 @@ button {
     background: transparent;
   }
 
-  .pill-version,
   .pill-offline,
   .pill-stale,
   .brand-name,
@@ -3894,7 +3892,6 @@ button {
   [contenteditable],
   .header-more-path,
   .row-sheet-sub,
-  .new-session-cwd-text,
   .worktree-path,
   .machine-state-detail,
   .machine-error,
@@ -3965,10 +3962,6 @@ button {
   outline-offset: var(--ring-offset);
 }
 
-.settings-switch input:checked + .settings-switch-track::after {
-  background: var(--switch-thumb-on);
-}
-
 .status-bar,
 .context-session,
 time {
@@ -3976,7 +3969,6 @@ time {
 }
 
 .sidebar .pane-select[aria-current="true"] .workspace-name,
-.sidebar .agent-row[aria-current="true"] .agent-row-title,
 .sidebar .machine-header.is-current .machine-name,
 .pane-slot.is-active .pane-slot-title,
 .command-palette .palette-filter[aria-checked="true"] {
@@ -3984,10 +3976,6 @@ time {
 }
 
 .chat-turn .chat-time,
-.chat-tool-empty,
-.command-palette .palette-group-heading,
-.command-palette .palette-item-sub,
-.md-docs .md-docs-meta,
 .runtime-move .runtime-move-tag,
 .runtime-move .runtime-move-cwd {
   font-size: var(--fs-meta);

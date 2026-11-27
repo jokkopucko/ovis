@@ -139,7 +139,7 @@ it("does not rewrite /model when the resolved pane agent is OmO", async () => {
   const agentDir = join(dir, ".omo", "agent");
   mkdirSync(agentDir, { recursive: true });
   spyOn(client, "paneGet").mockResolvedValue(target);
-  spyOn(client, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [{ pid: process.pid, argv: ["omo"], cwd: dir }] } } as never);
+  spyOn(client, "paneProcessInfo").mockResolvedValue({ pane_id: target.pane_id, foreground_processes: [{ pid: process.pid, name: "omo", argv: ["omo"], cwd: dir }] });
   spyOn(omo, "omoProcessIdentity").mockReturnValue({ agentDir, heldIds: ["session-1"], custom: true, held: true });
   spyOn(client, "paneRead").mockResolvedValue({ text: "" } as Awaited<ReturnType<typeof client.paneRead>>);
   const deliver = spyOn(client, "agentPrompt").mockResolvedValue();

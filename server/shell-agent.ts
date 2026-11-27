@@ -13,7 +13,7 @@ import { spawn } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
 import { userInfo } from "node:os";
 import { isAbsolute } from "node:path";
-import { herdrRpc } from "./herdr/client.ts";
+import { paneProcessInfo, paneSendKeys, paneSendText } from "./herdr/client.ts";
 import { isDshProcess } from "./dsh.ts";
 import { isGjcProcess } from "./gjc-runtime.ts";
 import { isOmoProcess, omoProcessIdentity } from "./omo.ts";
@@ -423,8 +423,7 @@ export function powershellNativeArgs(program: "powershell" | "pwsh", args: reado
   });
 }
 
-interface ProcessInfo { process_info?: { shell_pid?: number; foreground_processes?: { pid: number; argv?: string[]; cwd?: string }[] } }
-const processInfo = (paneId: string) => herdrRpc<ProcessInfo>("pane.process_info", { pane_id: paneId }).catch(() => null);
+const processInfo = (paneId: string) => paneProcessInfo(paneId).catch(() => null);
 
 /**
  * Types the agent's absolute path and args into the pane's shell and resolves once
@@ -446,20 +445,20 @@ export async function startShellAgent(kind: string, paneId: string, args: string
     }
     // through env(1), as the herdr-core adapter does: the shell's own `NAME=value` syntax differs between shells
     const env = options.env ? [shellCommandLine("posix", "/usr/bin/env", Object.entries(options.env).map(([name, value]) => `${name}=${value}`))] : [];
-    await herdrRpc("pane.send_text", { pane_id: paneId, text: `${[...env, command, ...args.map(quote)].join(" ")}\n` });
+    await paneSendText(paneId, `${[...env, command, ...args.map(quote)].join(" ")}\n`);
   } else {
     const executable = await (options.locator ?? servicePathOnly).executable(kind);
     if (!executable) throw new Error(`${kind} is not on this server's PATH`);
-    const shell = paneShell((await processInfo(paneId))?.process_info?.foreground_processes?.[0]?.argv?.[0] ?? "powershell.exe");
-    await herdrRpc("pane.send_text", { pane_id: paneId, text: shellCommandLine(shell, executable, args) });
-    await herdrRpc("pane.send_keys", { pane_id: paneId, keys: ["Enter"] });
+    const shell = paneShell((await processInfo(paneId))?.foreground_processes?.[0]?.argv?.[0] ?? "powershell.exe");
+    await paneSendText(paneId, shellCommandLine(shell, executable, args));
+    await paneSendKeys(paneId, ["Enter"]);
   }
   const deadline = Date.now() + (options.timeoutMs ?? 60_000);
   while (Date.now() < deadline) {
     const info = await processInfo(paneId);
-    const started = info?.process_info?.foreground_processes?.find((entry) => kind === "omo" ? omoProcessIdentity(entry, "", userHome()) !== null : isProcess(entry.argv ?? []));
+    const started = info?.foreground_processes?.find((entry) => kind === "omo" ? omoProcessIdentity(entry, "", userHome()) !== null : isProcess(entry.argv ?? []));
     if (started) return started.pid;
-    const shellPid = info?.process_info?.shell_pid;
+    const shellPid = info?.shell_pid;
     if (windows && typeof shellPid === "number" && descendantArgv(await windowsProcessTable(Math.max(500, Math.min(10_000, deadline - Date.now()))), shellPid).some(isProcess)) return null;
     await Bun.sleep(250);
   }

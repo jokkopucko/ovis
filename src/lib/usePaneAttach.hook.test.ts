@@ -73,7 +73,7 @@ describe("usePaneAttach with the inbox mode's list over the pane", () => {
     coveredRef.current = covered;
     const shared = { activeRef: ref(false), autoSelected: false, coarseRef: ref(false), findOpenRef: ref(false), fitRef: ref(null), fittedRef: ref(nothing), fixedGridRef: ref(false), followCursorRef: ref(nothing), keyboardHoldsRef: ref(() => false), observeRef: ref(false), sharedGridRef: ref(null), socketRef: ref(client), termRef, chatViewRef: ref(false), fontSettledRef: ref(settled) };
     useTerminalRefits({
-      ...shared, baseFontRef: ref(13), pinchingRef: ref(false), chatView: false, covered, follow: false, narrowFont: false, narrowFontFitted: ref(false),
+      ...shared, baseFontRef: ref(13), pinchingRef: ref(false), chatView: false, covered, follow: false,
       colors: COLORS, paneRef, peekRef: ref(null), shown: true, sizesPty: () => !coveredRef.current, terminalFontFamily: "", terminalFontSize: 13,
     });
     const attach: PaneAttachDeps = {

@@ -2,10 +2,11 @@ import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { readFile, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 
 import type { ConversationMetadata, ConversationPart, ConversationTurn, HerdrPane } from "../shared/protocol.ts";
-import { herdrRpc } from "./herdr/client.ts";
+import { agentGet, paneProcessInfo } from "./herdr/client.ts";
+import { envEntry, psEnvironmentLine, readLinuxEnviron } from "./process-env.ts";
 import { answerVersion, ConversationNotStarted, ConversationUnavailable, type ConversationPage, HistoryChanged, type RecognizedConversation, TRANSCRIPT_WINDOW_BYTES } from "./conversation-shared.ts";
 import type { HermesMessage } from "./dialogs/hermes-record.ts";
 import { readSqliteSnapshot, SnapshotUnavailable } from "./sqlite-snapshot.ts";
@@ -100,15 +101,10 @@ export async function processHermesHome(pid: number, argv: readonly string[] = [
   let home: string | null = null;
   try {
     if (process.platform === "linux") {
-      home = (await readFile(`/proc/${pid}/environ`, "utf8")).split("\0").find((entry) => entry.startsWith("HERMES_HOME="))?.slice(12) || null;
+      const entries = await readLinuxEnviron(pid);
+      home = entries ? envEntry(entries, "HERMES_HOME") : null;
     } else if (process.platform === "darwin") {
-      const child = Bun.spawn(["/bin/ps", "-E", "-ww", "-p", String(pid), "-o", "command="], { stdout: "pipe", stderr: "ignore" });
-      const timer = setTimeout(() => child.kill(), 3000);
-      try {
-        const text = await new Response(child.stdout).text();
-        await child.exited;
-        home = hermesHomeInPsLine(text);
-      } finally { clearTimeout(timer); }
+      home = hermesHomeInPsLine((await psEnvironmentLine(pid)) ?? "");
     }
     if (home === null || !isAbsolute(home) || !(await stat(home)).isDirectory()) home = null;
   } catch { home = null; }
@@ -188,21 +184,16 @@ export async function hermesTranscriptForPane(
     : null;
 
   if (sessionId === null) {
-    const info = await herdrRpc<{ agent: { agent_session?: { value?: unknown } } }>(
-      "agent.get",
-      { target: paneId },
-    ).catch(() => null);
-    if (typeof info?.agent?.agent_session?.value === "string" && info.agent.agent_session.value.length > 0) {
-      sessionId = info.agent.agent_session.value;
+    const agent = await agentGet(paneId).catch(() => null);
+    if (typeof agent?.agent_session?.value === "string" && agent.agent_session.value.length > 0) {
+      sessionId = agent.agent_session.value;
     }
   }
 
-  let hermesProcess: { pid: number; name?: string; argv0?: string; argv?: string[] } | undefined;
+  let hermesProcess: { pid: number; name?: string | null; argv0?: string | null; argv?: string[] | null } | undefined;
   if (configuredHome === undefined || sessionId === null) {
-    const processInfo = await herdrRpc<{
-      process_info?: { foreground_processes?: { pid: number; name?: string; argv0?: string; argv?: string[] }[] };
-    }>("pane.process_info", { pane_id: paneId }).catch(() => null);
-    hermesProcess = (processInfo?.process_info?.foreground_processes ?? []).find(isHermesProcess);
+    const processInfo = await paneProcessInfo(paneId).catch(() => undefined);
+    hermesProcess = (processInfo?.foreground_processes ?? []).find(isHermesProcess);
   }
 
   const processHome = configuredHome === undefined && hermesProcess !== undefined

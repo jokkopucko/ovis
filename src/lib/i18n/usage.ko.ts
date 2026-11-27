@@ -99,4 +99,5 @@ export const USAGE_KO: Record<string, string> = {
   "Recorded by {tool}": "{tool} 기록",
   "Recorded by {tool}, {when}": "{tool} 기록, {when}",
   "It may have changed since.": "그 뒤로 달라졌을 수 있어요.",
+  "Open terminal": "터미널 열기",
 };

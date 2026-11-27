@@ -14,6 +14,7 @@ import { withOwnerGuard } from "./owner-guard.ts";
 import { writePrivateState } from "./private-state.ts";
 import { PtySession } from "./pty/session.ts";
 import { newOwnerRecord, ownerGone, parseBirth, type ProcessBirth } from "./process-owner.ts";
+import { processAlive } from "./process-start.ts";
 import { paneShell, shellCommandLine, type PaneShell } from "./shell-agent.ts";
 import { localSignInPlace, systemUsageContext, USAGE_PROVIDERS, type UsageContext } from "./usage.ts";
 
@@ -140,11 +141,6 @@ class LoginStateUnreadable extends Error {
 }
 
 /** Whether a process still runs (one of another user is still running too). */
-function processAlive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; }
-  catch (error) { return error instanceof Error && "code" in error && error.code === "EPERM"; }
-}
-
 export class UsageLoginService {
   private readonly panes = new Map<string, UsageProviderId>();
   /**

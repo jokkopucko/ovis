@@ -310,18 +310,7 @@ function pageNote(t: Translate, page: SettingsPage): string | null {
 
 const NARROW_QUERY = "(max-width: 640px)";
 
-function useNarrow(): boolean {
-  const [narrow, setNarrow] = useState(() => window.matchMedia?.(NARROW_QUERY).matches === true);
-  useEffect(() => {
-    const media = window.matchMedia?.(NARROW_QUERY);
-    if (!media) return;
-    const refresh = () => setNarrow(media.matches);
-    refresh();
-    media.addEventListener("change", refresh);
-    return () => media.removeEventListener("change", refresh);
-  }, []);
-  return narrow;
-}
+const useNarrow = (): boolean => useMediaQuery(NARROW_QUERY);
 
 function shownBy(entry: SettingsLevel | null): { page: SettingsPage | null; keyBar: boolean } | null {
   if (entry === null) return null;

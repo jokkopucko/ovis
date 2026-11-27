@@ -600,6 +600,19 @@ export function navigationKeys(delta: number): string[] {
   return Array.from({ length: Math.abs(delta) }, () => delta > 0 ? KEY.down : KEY.up);
 }
 
+export function toggleMultiSelectKeys(count: number, selectedIndex: number, checked: readonly number[], picked: readonly number[]): { keys: string[]; cursor: number } {
+  const want = new Set(picked);
+  const have = new Set(checked);
+  let cursor = selectedIndex;
+  const keys: string[] = [];
+  for (let index = 0; index < count; index++) {
+    if (want.has(index) === have.has(index)) continue;
+    keys.push(...navigationKeys(index - cursor), KEY.space);
+    cursor = index;
+  }
+  return { keys, cursor };
+}
+
 export function sliderKeys(delta: number): string[] {
   return Array.from({ length: Math.abs(delta) }, () => delta > 0 ? KEY.right : KEY.left);
 }

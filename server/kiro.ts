@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { open, readdir, readFile, realpath } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import type { ConversationPart, ConversationTurn } from "../shared/protocol.ts";
-import { answerVersion, ConversationUnavailable, HistoryChanged, TRANSCRIPT_WINDOW_BYTES, type ConversationPage, type RecognizedConversation } from "./conversation-shared.ts";
+import { ConversationUnavailable, paginateTurns, TRANSCRIPT_WINDOW_BYTES, type ConversationPage, type RecognizedConversation } from "./conversation-shared.ts";
 import { ompProcessMemory } from "./omp-process.ts";
 import { processStartedAt, processStartUpperBound } from "./process-start.ts";
 import { trimOutput } from "./tool-output.ts";
@@ -282,24 +282,7 @@ export function projectKiro(text: string, identity: string, session: string) {
 export async function kiroConversation(binding: KiroTranscript, page: ConversationPage = {}): Promise<RecognizedConversation> {
   const text = await readKiro(binding);
   const { turns, history } = projectKiro(text, binding.identity, binding.session);
-  const cursor = (index: number) => `${history}:${index}:${digest(JSON.stringify(turns.slice(0, index))).slice(0, 16)}`;
-  const parse = (value: string | undefined, fallback: number) => {
-    if (value === undefined) return fallback;
-    const index = Number(value.split(":")[1]);
-    if (!Number.isSafeInteger(index) || index < 0 || index > turns.length || value !== cursor(index)) throw new HistoryChanged();
-    return index;
-  };
-  const end = parse(page.before, turns.length);
-  const since = parse(page.since, 0);
-  const asked = typeof page.prompts === "number" && Number.isFinite(page.prompts) ? Math.min(50, Math.max(1, Math.floor(page.prompts))) : null;
-  let back = Math.max(since, end - 50);
-  if (asked !== null) {
-    back = since;
-    for (let index = end - 1, users = 0; index >= since; index--) if (turns[index]!.role === "user" && ++users === asked) { back = index; break; }
-  }
-  const from = parse(page.from, back);
-  const start = Math.max(since, Math.min(from, end));
-  return { source: "kiro-transcript", turns: turns.slice(start, end), metadata: { model: null, reasoning_effort: null }, cursor: start > 0 ? cursor(start) : null, history_id: history, version: answerVersion(history, `${digest(text)}\0${start}\0${end}`) };
+  return paginateTurns({ source: "kiro-transcript", turns, history, metadata: { model: null, reasoning_effort: null }, textDigest: digest(text), page, supportsPrompts: true });
 }
 
 export async function kiroToolOutput(binding: KiroTranscript, ref: string): Promise<string | null> {

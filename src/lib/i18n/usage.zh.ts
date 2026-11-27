@@ -99,4 +99,5 @@ export const USAGE_ZH: Record<string, string> = {
   "Recorded by {tool}": "{tool} 的记录",
   "Recorded by {tool}, {when}": "{tool} 的记录，{when}",
   "It may have changed since.": "之后可能已有变化。",
+  "Open terminal": "打开终端",
 };

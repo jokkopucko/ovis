@@ -434,7 +434,6 @@ const BASE: Record<string, string> = {
   "QR code that pairs a phone with code {code}": "코드 {code}로 폰을 페어링하는 QR 코드",
   "Pairing code": "페어링 코드",
   "Needs HTTPS or localhost.": "HTTPS 또는 localhost가 필요합니다.",
-  "{agent} is ready": "{agent} 준비 완료",
 
   "Drag to resize · double-click to reset": "끌어서 크기 조절 · 두 번 클릭하면 초기화",
   "Failed": "실패",
@@ -579,7 +578,6 @@ const BASE: Record<string, string> = {
   "Show plan limits": "요금제 한도 표시",
   "Session": "세션",
   "Weekly": "주간",
-  "Open terminal": "터미널 열기",
   "Sign in to {agent}": "{agent}에 로그인",
   "Approve": "승인",
   "Devices waiting for approval": "승인을 기다리는 기기",

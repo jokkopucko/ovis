@@ -5,7 +5,6 @@ import { isTodoTool, todoSnapshot, type TodoItem } from "./todos.ts";
 import { t } from "./i18n.ts";
 
 export type ToolPart = Extract<ConversationPart, { kind: "tool" }>;
-export type ThinkingPart = Extract<ConversationPart, { kind: "thinking" }>;
 export type TextPart = Extract<ConversationPart, { kind: "text" }>;
 
 export interface SplitTurn {

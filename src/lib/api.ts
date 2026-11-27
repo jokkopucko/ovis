@@ -1214,10 +1214,6 @@ export async function startAgentInstall(agent: string, machineId = "local", alte
   return (await response.json()) as AgentTabStarted;
 }
 
-export async function startAgentSignIn(agent: string, machineId = "local"): Promise<AgentTabStarted> {
-  return (await (await sendJson(machinePath(machineId, "agent-catalog/sign-in"), "POST", { agent })).json()) as AgentTabStarted;
-}
-
 export async function fetchIntegrations(machineId = "local"): Promise<IntegrationsResponse["integrations"]> {
   return (await getJson<IntegrationsResponse>(machinePath(machineId, "integrations"))).integrations;
 }

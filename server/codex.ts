@@ -1,7 +1,7 @@
 /** Native Codex rollouts contain both display events and model context. */
 import { constants as sqliteConstants, Database } from "bun:sqlite";
 import { closeSync, existsSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
-import { open, readFile, stat } from "node:fs/promises";
+import { open, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import nodePath, { isAbsolute, join, type PlatformPath } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -9,6 +9,7 @@ import { parseMarkdown, shownText, type InlineNode } from "../shared/markdown.ts
 import type { ConversationPart, ConversationTurn, HerdrPane } from "../shared/protocol.ts";
 import { patchFiles, patchText } from "../shared/patch.ts";
 import { processStartedAt, processStartLowerBound, processStartUpperBound } from "./process-start.ts";
+import { envEntry, psEnvironmentLine, readLinuxEnviron } from "./process-env.ts";
 import { CODEX_TOOL_IMAGE_REF, codexImageParts, codexOutputPictures } from "./codex-images.ts";
 import { codexReadCall, codexReadSkills, selectedSkill } from "./skill-activity.ts";
 import { trimOutput } from "./tool-output.ts";
@@ -489,7 +490,8 @@ async function readProcessCodexHome(pid: number): Promise<string | null> {
   let home: string | null = null;
   try {
     if (process.platform === "linux") {
-      home = (await readFile(`/proc/${pid}/environ`, "utf8")).split("\0").find((entry) => entry.startsWith("CODEX_HOME="))?.slice(11) || null;
+      const entries = await readLinuxEnviron(pid);
+      home = entries ? envEntry(entries, "CODEX_HOME") : null;
     } else if (process.platform === "darwin") {
       // the environment follows the arguments, space-separated: the last match is the
       // environment's, and its value runs to the next `NAME=` (a path may hold spaces).
@@ -499,16 +501,6 @@ async function readProcessCodexHome(pid: number): Promise<string | null> {
     }
   } catch { home = null; }
   return home !== null && (await isCodexHomeDir(home)) ? home : null;
-}
-
-/** A process's `ps -E` line on macOS: its arguments, then its environment when it is this user's. Null when ps fails. */
-async function psEnvironmentLine(pid: number): Promise<string | null> {
-  const child = Bun.spawn(["/bin/ps", "-E", "-ww", "-p", String(pid), "-o", "command="], { stdout: "pipe", stderr: "ignore" });
-  const timer = setTimeout(() => child.kill(), 3000);
-  try {
-    const text = await new Response(child.stdout).text();
-    return (await child.exited) === 0 ? text : null;
-  } finally { clearTimeout(timer); }
 }
 
 /**
@@ -525,9 +517,10 @@ async function certainProcessCodexHome(pid: number, argv: readonly string[]): Pr
   let home: string | null = null;
   try {
     if (process.platform === "linux") {
-      const environment = (await readFile(`/proc/${pid}/environ`, "utf8")).split("\0");
-      named = environment.find((entry) => entry.startsWith("CODEX_HOME="))?.slice(11) ?? "";
-      home = environment.find((entry) => entry.startsWith("HOME="))?.slice(5) ?? null;
+      const environment = await readLinuxEnviron(pid);
+      if (environment === null) return null;
+      named = envEntry(environment, "CODEX_HOME") ?? "";
+      home = envEntry(environment, "HOME");
     } else if (process.platform === "darwin" && !argv.some((word) => word.includes("HOME="))) {
       // ps draws another user's process without its environment, and then names no HOME either
       const line = await psEnvironmentLine(pid);

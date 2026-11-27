@@ -1,5 +1,5 @@
 import type { DialogReader } from "./registry.ts";
-import { ANSI_RE, onePerPass, type AnswerStep, type CardWords, KEY, type ParsedPrompt, type PromptDraft, editorRowsMatch, englishOf, findLastIndex, finishPrompt, keySteps, navigationKeys, own } from "./shared.ts";
+import { ANSI_RE, onePerPass, type AnswerStep, type CardWords, KEY, type ParsedPrompt, type PromptDraft, editorRowsMatch, englishOf, findLastIndex, finishPrompt, keySteps, navigationKeys, own, toggleMultiSelectKeys } from "./shared.ts";
 import type { NativeSteps } from "./step-navigate.ts";
 
 /**
@@ -143,14 +143,7 @@ function parseHermesClarify(screen: string): ParsedPrompt | null {
     ...(multi ? {} : { customSteps: (text: string) => [...keySteps([...navigationKeys(choices.length - selectedIndex), KEY.enter]), ...typed(text)] }),
     // Space ticks the row under the cursor; Enter then locks the ticked rows
     ...(multi ? { multiSteps: (picked: number[]) => {
-      const want = new Set(picked);
-      let cursor = selectedIndex;
-      const keys: string[] = [];
-      for (const index of choices.keys()) {
-        if (want.has(index) === checked.includes(index)) continue;
-        keys.push(...navigationKeys(index - cursor), KEY.space);
-        cursor = index;
-      }
+      const { keys, cursor } = toggleMultiSelectKeys(choices.length, selectedIndex, checked, picked);
       // Enter on the Other row opens its text line instead of locking the ticks
       if (cursor === choices.length) keys.push(KEY.up);
       return keySteps([...keys, KEY.enter]);

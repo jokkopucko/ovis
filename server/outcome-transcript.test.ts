@@ -36,12 +36,10 @@ it("keeps a claude attach pane on its job's transcript when the poll's process r
   const clock = spyOn(Date, "now").mockReturnValue(at);
   spyOn(client, "sessionSnapshot").mockResolvedValue({ panes: [pane], layouts: [], agents: [], workspaces: [], tabs: [], protocol: 22, version: "fixture" });
   spyOn(client, "paneRead").mockResolvedValue({ ...pane, text: "", source: "detection", format: "text", truncated: false });
-  spyOn(client, "paneProcessInfo").mockRejectedValue(new Error("fixture: the poll's process read failed"));
-  spyOn(client, "herdrRpc").mockImplementation((async (method: string) => {
-    if (method === "agent.get") return { agent: pane };
-    if (method === "pane.process_info") return { process_info: foreground };
-    throw new Error(`fixture: unexpected ${method}`);
-  }) as typeof client.herdrRpc);
+  spyOn(client, "paneProcessInfo")
+    .mockRejectedValueOnce(new Error("fixture: the poll's process read failed"))
+    .mockResolvedValue(foreground);
+  spyOn(client, "agentGet").mockResolvedValue(pane as never);
   spyOn(claudeStore, "processClaudeConfigDir").mockResolvedValue(root);
   try {
     const sent = commandSendFrom(pane, "claude", [], "/context");

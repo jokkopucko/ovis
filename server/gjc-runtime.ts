@@ -5,7 +5,7 @@ import nodePath, { join, type PlatformPath } from "node:path";
 
 import { readGjcNativeBinding, validatedGjcNativeTranscript } from "./gjc-native.ts";
 import { darwinTerminal } from "./darwin-process.ts";
-import { herdrRpc } from "./herdr/client.ts";
+import { paneProcessInfo } from "./herdr/client.ts";
 import { processStartedAt, processStartedAtAsync } from "./process-start.ts";
 import { userHome } from "./user-home.ts";
 import { descendantArgv, forgetWindowsProcessTable, recentWindowsProcessTable, tryWindowsProcessTable, windowsProcessTable, type ProcessRow } from "./windows-processes.ts";
@@ -430,9 +430,7 @@ async function lookupNativeTranscript(
   try {
     if (!nodePath.isAbsolute(cwd) || !nodePath.isAbsolute(home) || token.cancelled) return null;
     const platform = options.platform ?? process.platform;
-    const readProcessInfo = options.processInfo ?? ((id: string) => herdrRpc<GjcPaneProcessInfo>(
-      "pane.process_info", { pane_id: id },
-    ).catch(() => null));
+    const readProcessInfo = options.processInfo ?? ((id: string) => paneProcessInfo(id).then((process_info) => ({ process_info }), () => null));
     const initialInfo = options.known !== undefined ? (options.known === null ? null : { process_info: options.known }) : await readProcessInfo(paneId);
     if (!initialInfo || token.cancelled) return null;
     const initial = await foregroundProcesses(initialInfo, platform, options, false);

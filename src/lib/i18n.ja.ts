@@ -436,7 +436,6 @@ const BASE: Record<string, string> = {
   "QR code that pairs a phone with code {code}": "コード {code} でスマートフォンをペアリングする QR コード",
   "Pairing code": "ペアリングコード",
   "Needs HTTPS or localhost.": "HTTPS または localhost が必要です。",
-  "{agent} is ready": "{agent} の準備ができました",
 
   "Drag to resize · double-click to reset": "ドラッグでサイズ変更 · ダブルクリックでリセット",
   "Failed": "失敗",
@@ -581,7 +580,6 @@ const BASE: Record<string, string> = {
   "Show plan limits": "プランの上限を表示",
   "Session": "セッション",
   "Weekly": "週次",
-  "Open terminal": "ターミナルを開く",
   "Sign in to {agent}": "{agent} にサインイン",
   "Approve": "承認",
   "Devices waiting for approval": "承認待ちのデバイス",

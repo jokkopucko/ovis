@@ -28,8 +28,6 @@ export interface TerminalRefitsDeps {
   follow: boolean;
   followCursorRef: RefObject<() => void>;
   keyboardHoldsRef: RefObject<(force: boolean) => boolean>;
-  narrowFont: boolean;
-  narrowFontFitted: RefObject<boolean>;
   observeRef: RefObject<boolean>;
   colors: TerminalColors;
   paneRef: RefObject<string | null>;
@@ -44,7 +42,7 @@ export interface TerminalRefitsDeps {
 }
 
 export function useTerminalRefits(deps: TerminalRefitsDeps): void {
-  const { activeRef, autoSelected, baseFontRef, pinchingRef, fontSettledRef, chatView, chatViewRef, coarseRef, findOpenRef, fitRef, fittedRef, fixedGridRef, follow, followCursorRef, keyboardHoldsRef, narrowFont, narrowFontFitted, observeRef, colors, covered, paneRef, peekRef, sharedGridRef, shown, sizesPty, socketRef, termRef, terminalFontFamily, terminalFontSize } = deps;
+  const { activeRef, autoSelected, baseFontRef, pinchingRef, fontSettledRef, chatView, chatViewRef, coarseRef, findOpenRef, fitRef, fittedRef, fixedGridRef, follow, followCursorRef, keyboardHoldsRef, observeRef, colors, covered, paneRef, peekRef, sharedGridRef, shown, sizesPty, socketRef, termRef, terminalFontFamily, terminalFontSize } = deps;
   // a fit that sizes no pty (out of use, or not this page's to size: covered, a following split) leaves a kept herdr-core
   // pty drawn in its grid
   const keptUndriven = (): boolean => keepsCoreGrid(socketRef.current, paneRef.current) && !(inUse() && sizesPty());
@@ -93,22 +91,6 @@ export function useTerminalRefits(deps: TerminalRefitsDeps): void {
     });
     return () => { superseded = true; };
   }, [terminalFontSize, fontFamily]);
-
-  // the setting, a zoom or the last sibling closing need not resize the host: the observer may stay silent
-  useEffect(() => {
-    if (narrowFontFitted.current === narrowFont) return;
-    narrowFontFitted.current = narrowFont;
-    const term = termRef.current;
-    if (!term || observeRef.current || fixedGridRef.current || chatViewRef.current || keyboardHoldsRef.current(false) || keptUndriven()) return;
-    try {
-      fitRef.current?.fit();
-      fittedRef.current();
-    } catch {
-      return;
-    }
-    const pane = paneRef.current;
-    if (pane && sizesPty() && inUse()) socketRef.current?.resize(pane, term.cols, term.rows);
-  }, [narrowFont]);
 
   // the grid must re-fit when the lens switches back: the chat lens covered it, and a
   // resize while covered may have been skipped by a zero-size layout

@@ -1,13 +1,4 @@
-.usage-accounts-intro { display: flex; flex-direction: column; gap: var(--space-2); }
-.usage-accounts-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
-.usage-accounts-header .btn { display: inline-flex; align-items: center; gap: var(--space-2); }
 .usage-account-count { color: var(--text-dim); font-size: var(--fs-xs); font-weight: var(--fw-regular); margin-inline-start: var(--space-1); }
-.usage-accounts-caption {
-  margin: 0 var(--space-1);
-  color: var(--text-dim);
-  font-size: var(--fs-xs);
-  font-weight: var(--fw-medium);
-}
 .usage-provider .usage-provider-heading { display: flex; flex-direction: row; align-items: center; gap: var(--space-2); color: var(--text-strong); font-weight: var(--fw-medium); }
 .usage-account-identity { display: flex; flex: 1; flex-direction: column; min-width: 0; gap: var(--space-1); padding-block: var(--space-2); }
 .usage-account-meta { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); color: var(--text-dim); font-size: var(--fs-xs); }

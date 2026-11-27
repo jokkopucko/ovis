@@ -295,12 +295,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   transition: opacity var(--dur-fast) var(--ease-out);
 }
 
-.pane-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
 .pane-item {
   position: relative;
   border-radius: var(--radius-md);
@@ -671,8 +665,7 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   }
 }
 
-.workspace-rename-input,
-.pane-rename-input {
+.workspace-rename-input {
   flex: 1 1 auto;
   min-width: 0;
   height: calc(var(--control-h) - var(--space-2));
@@ -680,8 +673,7 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   padding: 0 var(--space-2) 0 calc(var(--space-1) - var(--hairline));
 }
 
-.workspace-rename-input:focus-visible,
-.pane-rename-input:focus-visible {
+.workspace-rename-input:focus-visible {
   outline-offset: var(--ring-inset-offset);
 }
 

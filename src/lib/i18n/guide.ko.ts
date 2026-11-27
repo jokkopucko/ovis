@@ -99,4 +99,5 @@ export const GUIDE_KO: Record<string, string> = {
   "Set up later": "나중에 설정",
   "Keep SSH or a screen working on this PC: reached only through the relay, one stolen older device could lock you out of it.": "이 PC에 SSH나 화면 접근을 남겨 두세요. 릴레이로만 닿으면, 오래된 기기 하나를 도난당했을 때 이 PC에 못 들어갈 수 있어요.",
   "Run this once on this PC.": "이 PC에서 한 번 실행해요.",
+  "{agent} is ready": "{agent} 준비 완료",
 };

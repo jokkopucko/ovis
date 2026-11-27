@@ -99,4 +99,5 @@ export const USAGE_JA: Record<string, string> = {
   "Recorded by {tool}": "{tool} の記録",
   "Recorded by {tool}, {when}": "{tool} の記録、{when}",
   "It may have changed since.": "その後変わった可能性があります。",
+  "Open terminal": "ターミナルを開く",
 };

@@ -6,6 +6,7 @@
  */
 import { importPublicKey } from "./relay-e2ee.ts";
 import { SERVER_ID_PATTERN } from "./relay-id.ts";
+import { fromBase64Url as decodeBase64UrlBytes, toBase64Url as encodeBase64UrlBytes } from "./relay-pair-sas.ts";
 
 export { SERVER_ID_PATTERN };
 
@@ -73,14 +74,10 @@ export function isWssOrigin(text: string): boolean {
 }
 
 function toBase64Url(text: string): string {
-  const bytes = new TextEncoder().encode(text);
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return encodeBase64UrlBytes(new TextEncoder().encode(text));
 }
 
 function fromBase64Url(text: string): string {
   if (!/^[A-Za-z0-9_-]+$/.test(text) || text.length % 4 === 1) throw new Error("bad base64url");
-  const binary = atob(text.replace(/-/g, "+").replace(/_/g, "/"));
-  return new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)));
+  return new TextDecoder("utf-8", { fatal: true }).decode(decodeBase64UrlBytes(text));
 }

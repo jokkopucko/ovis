@@ -81,14 +81,40 @@ export interface Repository {
   checkouts: Checkout[];
 }
 
-function gitEnvironment(): Record<string, string> {
+const STRIPPED_GIT_VARS = new Set([
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_COMMON_DIR",
+  "GIT_EXTERNAL_DIFF",
+  "GIT_PAGER",
+]);
+
+export interface GitEnvironmentOptions {
+  /** Set `GIT_OPTIONAL_LOCKS=0` for read-only git queries (default: true). */
+  readonly optionalLocks?: boolean;
+  /** Set `GIT_NO_LAZY_FETCH=1` to avoid network fetches on partial clones. */
+  readonly noLazyFetch?: boolean;
+}
+
+/**
+ * Clean environment for spawning `git` in an arbitrary user repository: strips ambient
+ * repository overrides inherited from a hook or test runner and disables interactive prompts.
+ */
+export function gitEnvironment(options: GitEnvironmentOptions = {}): Record<string, string> {
+  const { optionalLocks = true, noLazyFetch = false } = options;
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(process.env)) {
-    // a repository the server itself was started inside is not the one asked about
-    if (value === undefined || name === "GIT_DIR" || name === "GIT_WORK_TREE" || name === "GIT_INDEX_FILE" || name === "GIT_COMMON_DIR") continue;
+    if (value === undefined || STRIPPED_GIT_VARS.has(name)) continue;
     env[name] = value;
   }
-  return { ...env, GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" };
+  return {
+    ...env,
+    GIT_TERMINAL_PROMPT: "0",
+    ...(optionalLocks ? { GIT_OPTIONAL_LOCKS: "0" } : {}),
+    ...(noLazyFetch ? { GIT_NO_LAZY_FETCH: "1" } : {}),
+    LC_ALL: "C",
+  };
 }
 
 /** `git worktree add` or `remove` on a large checkout can take well over a few seconds (herdr's client waits 60 s). */
@@ -97,7 +123,7 @@ const GIT_TIMEOUT_MS = 55_000;
 export async function git(cwd: string, args: string[]): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   let proc: Bun.Subprocess<"ignore", "pipe", "pipe">;
   try {
-    proc = Bun.spawn(["git", "-C", cwd, ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: gitEnvironment() });
+    proc = Bun.spawn(["git", "-C", cwd, ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: gitEnvironment({ optionalLocks: false }) });
   } catch {
     throw new WorktreeError("worktree_list_failed", "git could not be started on this PC");
   }

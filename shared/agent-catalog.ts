@@ -161,9 +161,7 @@ export function catalogRow({ install, no_install, ...entry }: AgentCatalogEntry,
   return { ...entry, install: install[platform], no_install: install[platform] === null ? no_install[platform] ?? null : null, state };
 }
 
-export function agentRuns(state: AgentInstallState): boolean {
-  return state.installed === true && state.version_error !== "failed" && state.version_error !== "timeout";
-}
+export { agentRuns } from "./agent-names.ts";
 
 export function catalogPlatform(platform: string): CatalogPlatform | null {
   return platform === "darwin" ? "macos" : platform === "linux" ? "linux" : platform === "win32" ? "windows" : null;

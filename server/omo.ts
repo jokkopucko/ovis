@@ -3,7 +3,7 @@ import { directoryEntries } from "./directory-entries.ts";
 import { uptime } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { HerdrPane } from "../shared/protocol.ts";
-import { herdrRpc } from "./herdr/client.ts";
+import { paneProcessInfo } from "./herdr/client.ts";
 import { recentProcessTable } from "./gjc-runtime.ts";
 import { processAlive, processStartedAt, processStartedAtAsync } from "./process-start.ts";
 import { descendantProcesses, type ProcessRow } from "./windows-processes.ts";
@@ -172,7 +172,7 @@ export function processEnviron(pid: number): string[] | null {
  * say — a custom identity cannot be verified without it. A pane cwd goes stale the
  * moment a process moves, so it must never override either process-specific source.
  */
-function processCwd(process: { pid: number; cwd?: string }, cwd: string): string {
+function processCwd(process: { pid: number; cwd?: string | null }, cwd: string): string {
   if (typeof process.cwd === "string" && process.cwd) return process.cwd;
   try { return readlinkSync(`/proc/${process.pid}/cwd`); } catch { return cwd; }
 }
@@ -192,7 +192,7 @@ function processCwd(process: { pid: number; cwd?: string }, cwd: string): string
  *   the model it runs.
  */
 export function omoProcessIdentity(
-  process: { pid: number; argv?: string[]; cwd?: string },
+  process: { pid: number; argv?: string[] | null; cwd?: string | null },
   cwd: string,
   home: string,
   environOf: (pid: number) => readonly string[] | null = processEnviron,
@@ -389,7 +389,7 @@ function isLaunchStep(argv: readonly string[]): boolean {
   return script !== undefined && PACKAGE_RUNNER.test(script);
 }
 
-export type ProcessInfo = { process_info?: { shell_pid?: number; foreground_processes?: { pid: number; argv?: string[]; cwd?: string }[] } } | null;
+export type ProcessInfo = { process_info?: { shell_pid?: number | null; foreground_processes?: { pid: number; argv?: string[] | null; cwd?: string | null }[] } } | null;
 
 /**
  * herdr on Windows names only the pane's launcher in foreground_processes, not what the launcher
@@ -398,7 +398,7 @@ export type ProcessInfo = { process_info?: { shell_pid?: number; foreground_proc
  */
 export function withOmoDescendants(info: ProcessInfo, rows: readonly ProcessRow[], alive: (pid: number) => boolean = () => true): ProcessInfo {
   const shell = info?.process_info?.shell_pid;
-  if (shell === undefined) return info;
+  if (shell == null) return info;
   const foreground = info?.process_info?.foreground_processes ?? [];
   const named = new Set(foreground.map((entry) => entry.pid));
   const below = descendantProcesses(rows, shell);
@@ -434,7 +434,7 @@ export function withOmoDescendants(info: ProcessInfo, rows: readonly ProcessRow[
 
 export const processInfo = async (paneId: string): Promise<ProcessInfo> => {
   const [info, rows] = await Promise.all([
-    herdrRpc<NonNullable<ProcessInfo>>("pane.process_info", { pane_id: paneId }).catch(() => null),
+    paneProcessInfo(paneId).then((process_info) => ({ process_info }), () => null),
     process.platform === "win32" ? recentProcessTable() : Promise.resolve([]),
   ]);
   return withOmoDescendants(info, rows, processAlive);
@@ -477,7 +477,7 @@ export async function heldOmoProcess(
   return held ? { pid: held.pid, started: startOf(held.pid) } : null;
 }
 
-type OmoForeground = { pid: number; argv?: string[]; cwd?: string };
+type OmoForeground = { pid: number; argv?: string[] | null; cwd?: string | null };
 
 const paneFallbackCwd = (pane: HerdrPane): string =>
   (typeof pane.foreground_cwd === "string" && pane.foreground_cwd) || pane.cwd || "";

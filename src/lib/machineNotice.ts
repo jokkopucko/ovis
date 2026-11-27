@@ -1,4 +1,5 @@
 import type { Machine } from "../../shared/machines.ts";
+import { readDismissedList, writeDismissedList } from "./dismissedStorage.ts";
 
 const KEY = "ovis:pc-notice-dismissed";
 
@@ -16,15 +17,9 @@ export function keepDismissed(dismissed: readonly string[], machines: Machine[])
 }
 
 export function readDismissed(): string[] {
-  try {
-    const value: unknown = JSON.parse(window.localStorage.getItem(KEY) ?? "[]");
-    return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
-  } catch { return []; }
+  return readDismissedList(KEY);
 }
 
 export function writeDismissed(dismissed: readonly string[]): void {
-  try {
-    if (dismissed.length) window.localStorage.setItem(KEY, JSON.stringify(dismissed));
-    else window.localStorage.removeItem(KEY);
-  } catch {}
+  writeDismissedList(KEY, dismissed);
 }

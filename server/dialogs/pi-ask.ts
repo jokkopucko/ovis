@@ -1,6 +1,6 @@
 import type { DialogReader } from "./registry.ts";
 import { piAskTabs } from "./pi-ask-tabs.ts";
-import { ANSI_RE, KEY, type AnswerStep, type OmoAsk, type ParsedPrompt, cleanLine, findLastIndex, finishPrompt, keySteps, navigationKeys, normalizeText, own } from "./shared.ts";
+import { ANSI_RE, KEY, type AnswerStep, type OmoAsk, type ParsedPrompt, cleanLine, findLastIndex, finishPrompt, keySteps, navigationKeys, normalizeText, own, toggleMultiSelectKeys } from "./shared.ts";
 
 // rpiv-ask-user-question uses ui.custom, not Pi's native select widget. Its numbered
 // rows are cursor positions, NOT numeric shortcuts.
@@ -125,14 +125,7 @@ function question(frame: Frame, expected?: OmoAsk): ParsedPrompt | null {
     ...(!multi ? { customSteps: (text: string): AnswerStep[] => [
       ...keySteps(navigationKeys(custom - selectedIndex)), ...keySteps(["ctrl+u"]), { text }, ...keySteps([KEY.enter]),
     ] } : { multiSteps: (choices: number[]): AnswerStep[] => {
-      const desired = new Set(choices);
-      const keys: string[] = [];
-      let cursor = selectedIndex;
-      for (let index = 0; index < options.length; index += 1) {
-        if (desired.has(index) === checked.includes(index)) continue;
-        keys.push(...navigationKeys(index - cursor), KEY.space);
-        cursor = index;
-      }
+      const { keys, cursor } = toggleMultiSelectKeys(options.length, selectedIndex, checked, choices);
       keys.push(...navigationKeys(rows.length - cursor), KEY.enter);
       return keySteps(keys);
     } }),

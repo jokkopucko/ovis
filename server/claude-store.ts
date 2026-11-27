@@ -22,6 +22,7 @@ import { directoryKey, withoutVerbatimPrefix } from "./codex.ts";
 import { darwinStartTime, sysctlCall } from "./darwin-process.ts";
 import { recentProcessTable } from "./gjc-runtime.ts";
 import { processAlive, processStartUpperBoundAsync } from "./process-start.ts";
+import { psEnvironmentLine } from "./process-env.ts";
 import { jobProcessesBelow, type JobProcess } from "./foreground-job.ts";
 import { descendantProcesses, type ProcessRow } from "./windows-processes.ts";
 import { userHome } from "./user-home.ts";
@@ -336,13 +337,7 @@ async function readClaudeSource(pid: number, home: string, platform: string, tab
     if (platform === "darwin") {
       const environ = darwinProcess.environment(pid);
       const read = environ === null ? unreadable : await environSource(environ);
-      const child = Bun.spawn(["/bin/ps", "-E", "-ww", "-p", String(pid), "-o", "command="], { stdout: "pipe", stderr: "ignore" });
-      const timer = setTimeout(() => child.kill(), 3000);
-      let text: string;
-      try {
-        text = await new Response(child.stdout).text();
-        await child.exited;
-      } finally { clearTimeout(timer); }
+      const text = (await psEnvironmentLine(pid)) ?? "";
       return { ...read, legacy: await namedDirectory(configDirInPsLine(text)) };
     }
     return unreadable;

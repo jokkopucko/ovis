@@ -3,7 +3,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import type { CommandForm, SlashCommand } from "../../shared/protocol.ts";
 import { hermesHome as resolveHermesHome, platformHermesHome } from "../hermes-home.ts";
 import type { AgentCommandContext, AgentCommandSource } from "./index.ts";
-import { environRecord, plainObject, readFrontmatter, readSkillText } from "./walk.ts";
+import { canonicalFile as canonical, environRecord, plainObject, readFrontmatter, readSkillText } from "./walk.ts";
 
 // Hermes 0.21.5 CommandDefs at 354724fb085162678964c116ceb4c40fc57c717c; CLI aliases are included.
 // Gateway-only commands are never CLI rows. Runtime-only plugin commands are not listed.
@@ -206,9 +206,6 @@ function strings(value: unknown): string[] {
 /** Matches slugify_skill_name: underscores and spaces become hyphens; punctuation is removed. */
 function slug(name: string): string {
   return name.toLowerCase().replace(/[ _]/g, "-").replace(/[^\p{L}\p{N}_-]/gu, "").replace(/-{2,}/g, "-").replace(/^-+|-+$/g, "");
-}
-function canonical(path: string): string {
-  try { return realpathSync(path); } catch { return resolve(path); }
 }
 function projectRoot(cwd: string | null | undefined, home: string): string | null {
   if (!cwd) return null;

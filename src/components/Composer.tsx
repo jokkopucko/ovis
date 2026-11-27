@@ -23,6 +23,7 @@ import { useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { composerDraftKey, composerDrafts, underSendLock } from "../lib/composerDraft.ts";
 import { tally, usageCounters, useShownCount } from "../lib/usageCounters.ts";
 import { onQuoted } from "../lib/chatQuote.ts";
+import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { commentsWait, holdsQuoteLine, messageWithComments, replyComments, replyCommentsKey, type ReplyComment } from "../lib/replyComments.ts";
 import { ReplyCommentsChip, useReplyComments } from "./ReplyComments.tsx";
 import { paneStorageId } from "../../shared/machines.ts";
@@ -166,19 +167,6 @@ function ContextRing({ context, focusable }: { context: NonNullable<Conversation
     </svg>
     <span className="visually-hidden">{label} · {detail}</span>
   </span>;
-}
-
-function useMediaQuery(query: string): boolean {
-  const [matches, setMatches] = useState(() => window.matchMedia?.(query).matches === true);
-  useEffect(() => {
-    const media = window.matchMedia?.(query);
-    if (!media) return;
-    const refresh = () => setMatches(media.matches);
-    refresh();
-    media.addEventListener("change", refresh);
-    return () => media.removeEventListener("change", refresh);
-  }, [query]);
-  return matches;
 }
 
 export function Composer({

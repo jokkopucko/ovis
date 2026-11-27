@@ -3,6 +3,7 @@ import { join, relative, sep } from "node:path";
 
 import type { MarkdownDocument, PaneDocuments } from "../shared/files.ts";
 import { fileTask } from "./file-pool.ts";
+import { gitEnvironment } from "./herdr-core/worktrees.ts";
 
 const CACHE_MS = 5_000;
 const MAX_ENTRIES = 5_000;
@@ -30,16 +31,6 @@ export function setGitListOptions(options: Partial<GitListOptions> = {}): void {
 }
 
 /** The same policy as `repo-diff.ts`: only read the repository, run no hook or helper, never prompt. */
-function gitEnvironment(): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const [name, value] of Object.entries(process.env)) {
-    // a repository the server itself was started inside (a hook, a test runner) is not the one asked about
-    if (value === undefined || name === "GIT_DIR" || name === "GIT_WORK_TREE" || name === "GIT_INDEX_FILE" || name === "GIT_COMMON_DIR" || name === "GIT_EXTERNAL_DIFF" || name === "GIT_PAGER") continue;
-    env[name] = value;
-  }
-  return { ...env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C" };
-}
-
 function gitListArgv(cwd: string): string[] {
   // an empty core.fsmonitor turns the hook off in every git: before 2.36, `false` names a program to run
   return [gitList.git, "--no-pager", "--no-optional-locks", "--literal-pathspecs", "-c", "core.fsmonitor=", "-C", cwd, "ls-files", "-z", "-co", "--exclude-standard"];

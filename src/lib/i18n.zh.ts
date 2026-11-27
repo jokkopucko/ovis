@@ -438,7 +438,6 @@ const BASE: Record<string, string> = {
   "QR code that pairs a phone with code {code}": "使用代码 {code} 配对手机的二维码",
   "Pairing code": "配对码",
   "Needs HTTPS or localhost.": "需要 HTTPS 或 localhost。",
-  "{agent} is ready": "{agent} 已就绪",
 
 
   "Drag to resize · double-click to reset": "拖动以调整大小 · 双击重置",
@@ -586,7 +585,6 @@ const BASE: Record<string, string> = {
   "Show plan limits": "显示套餐限额",
   "Session": "会话",
   "Weekly": "每周",
-  "Open terminal": "打开终端",
   "Sign in to {agent}": "登录 {agent}",
   "Approve": "批准",
   "Devices waiting for approval": "等待批准的设备",

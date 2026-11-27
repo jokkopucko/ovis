@@ -38,7 +38,7 @@ import { isKiroChatProcess, resolveKiroTranscript, kiroConversation, kiroToolOut
 import { authorizedTranscript } from "./transcript-store.ts";
 
 import type { ConversationMetadata, ConversationTurn, HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
-import { herdrRpc, herdrSocketPath, paneProcessInfo, paneRead, paneScrollInfo, sessionSnapshot, type ProcessInfo } from "./herdr/client.ts";
+import { agentGet, herdrSocketPath, paneProcessInfo, paneRead, paneScrollInfo, sessionSnapshot, type ProcessInfo } from "./herdr/client.ts";
 import { resolveAgent } from "./pane-context.ts";
 import { followServedThread, servedStatus } from "./approvals/codex.ts";
 import type { ServedThreadSettings } from "./approvals/codex-status.ts";
@@ -1560,15 +1560,12 @@ export async function paneProcessRoots(paneId: string, agent: string | null | un
   cwd: string | null;
   processes?: ProcessInfo;
 }> {
-  const info = await herdrRpc<{ process_info?: { foreground_processes?: { pid?: unknown; argv?: unknown; argv0?: unknown; name?: unknown; cwd?: unknown }[] } }>(
-    "pane.process_info", { pane_id: paneId },
-  ).catch(() => null);
-  const processes = info?.process_info as ProcessInfo | undefined;
+  const processes = await paneProcessInfo(paneId).catch(() => undefined);
   const home = userHome();
   const directory = (path: string | null): string | null => {
     try { return path && statSync(path).isDirectory() ? path : null; } catch { return null; }
   };
-  const foreground = (info?.process_info?.foreground_processes ?? []).map((candidate) => ({
+  const foreground = (processes?.foreground_processes ?? []).map((candidate) => ({
     pid: typeof candidate.pid === "number" ? candidate.pid : -1,
     argv: Array.isArray(candidate.argv) ? candidate.argv.map(String) : [],
     ...(typeof candidate.argv0 === "string" ? { argv0: candidate.argv0 } : {}),
@@ -1683,7 +1680,7 @@ async function claudeProcesses(paneId: string, known?: KnownProcesses, viewed = 
   if (known !== undefined) info = known;
   else {
     try {
-      info = (await herdrRpc<{ process_info?: ProcessInfo }>("pane.process_info", { pane_id: paneId })).process_info ?? null;
+      info = (await paneProcessInfo(paneId)) ?? null;
     } catch { return []; }
   }
   const front = (info?.foreground_processes ?? []).map(({ pid, name, argv0, argv }) => ({
@@ -1712,11 +1709,11 @@ export async function claudePanePid(pane: HerdrPane): Promise<number | null> {
  * finds it, names the session it shows, never the hook's.
  */
 async function claudeTranscriptPath(paneId: string, cwds: readonly (string | null | undefined)[], onProcess?: (pid: number, attach: boolean) => void, known?: KnownProcesses, proofs?: Map<string, string>): Promise<string> {
-  const info = await herdrRpc<{ agent: { agent_session?: { value?: unknown } } }>("agent.get", { target: paneId });
-  let session = info.agent.agent_session?.value;
+  const agent = await agentGet(paneId);
+  let session: string | null | undefined = agent.agent_session?.value;
   const home = userHome();
   const facts: KnownProcesses = known !== undefined ? known
-    : await herdrRpc<{ process_info?: ProcessInfo }>("pane.process_info", { pane_id: paneId }).then((answer) => answer.process_info ?? null, () => null);
+    : await paneProcessInfo(paneId).then((info) => info ?? null, () => null);
   const processes = await claudeProcesses(paneId, facts);
   const only = processes.length === 1 ? processes[0] : undefined;
   let processDir: string | null = null;
@@ -1835,8 +1832,8 @@ function ompBlobIdentity({ path, root, identity }: { path: string; root: string;
  * `identity`: the authorized file's exact dev:ino (authorizedTranscript), so later reads can be held to it.
  */
 export async function ompTranscriptPath(paneId: string, cwd: string, known?: KnownProcesses): Promise<{ path: string; blobs: string | null; identity?: string }> {
-  const info = await herdrRpc<{ agent: { agent_session?: { kind?: unknown; value?: unknown } } }>("agent.get", { target: paneId });
-  const session = info.agent.agent_session;
+  const agent = await agentGet(paneId);
+  const session = agent.agent_session;
   const path = session?.kind === "path" && typeof session.value === "string" ? session.value : null;
   const home = userHome();
   let route = process.platform === "win32" ? null : await ompPaneRoute(paneId, known);
@@ -2061,24 +2058,22 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
   // A pane herdr does label is not asked: the lookup would cost every transcript lookup an RPC (and
   // a process-table read on Windows), and a gjc below another agent would take its chat.
   if (!pane.agent) {
-    const info = known !== undefined ? { process_info: known ?? undefined } : await herdrRpc<{ process_info?: { shell_pid?: number; foreground_processes?: { argv?: unknown }[] } }>(
-      "pane.process_info", { pane_id: paneId },
-    ).catch(() => null);
-    const foreground = info?.process_info?.foreground_processes ?? [];
+    const processInfo = known !== undefined ? known ?? undefined : await paneProcessInfo(paneId).catch(() => undefined);
+    const foreground = processInfo?.foreground_processes ?? [];
     const running = foreground.some((process) =>
       isGjcProcess(Array.isArray(process.argv) ? process.argv.map(String) : []),
     );
-    if (running || await gjcPidUnderShell(info?.process_info?.shell_pid)) agent = "gjc";
+    if (running || await gjcPidUnderShell(processInfo?.shell_pid)) agent = "gjc";
     else if (foreground.some((process) => Array.isArray(process.argv) && isDshProcess(process.argv))) {
       agent = "dsh";
-      if (known === undefined) known = (info?.process_info as KnownProcesses) ?? null;
+      if (known === undefined) known = processInfo ?? null;
     }
     // herdr labels Kiro from its screen: before that shows, its chat TUI in front says the same
     else if (foreground.some((process) => Array.isArray(process.argv) && isKiroChatProcess(process.argv))) {
       agent = "kiro";
-      if (known === undefined) known = (info?.process_info as KnownProcesses) ?? null;
+      if (known === undefined) known = processInfo ?? null;
     }
-    else if (await paneCodexProcess(paneId, (info?.process_info as ProcessInfo | undefined) ?? null) !== null) agent = "codex";
+    else if (await paneCodexProcess(paneId, processInfo ?? null) !== null) agent = "codex";
   }
   if ((agent === "muse" || agent === "letta" || agent === "dsh" || agent === "dsh-tui" || agent === "kiro") && known === undefined) known = (await paneProcessInfo(paneId).catch(() => undefined)) ?? null;
   if (await paneRunsOmo(paneId, known)) {
@@ -2206,11 +2201,9 @@ export async function paneTranscript(paneId: string, codexHome?: string, snapsho
   if (pane.agent === "devin" && !(await paneRunsOmo(paneId, known))) {
     const cwd = pane.foreground_cwd || pane.cwd;
     const storePath = devinDbPath ?? defaultDevinDbPath();
-    const info = known !== undefined ? { process_info: known ?? undefined } : await herdrRpc<{ process_info?: { foreground_processes?: { pid?: number; argv?: unknown }[] } }>(
-      "pane.process_info", { pane_id: paneId },
-    ).catch(() => null);
+    const processInfo = known !== undefined ? known ?? undefined : await paneProcessInfo(paneId).catch(() => undefined);
     if (herdrSocketPath() !== socket) throw new ConversationUnavailable("no_session_id");
-    const processes = (info?.process_info?.foreground_processes ?? []).filter((process) =>
+    const processes = (processInfo?.foreground_processes ?? []).filter((process) =>
       Array.isArray(process.argv) && process.argv.every((arg) => typeof arg === "string") &&
       isDevinProcess(process.argv as string[]) && process.argv[1] !== "acp",
     );

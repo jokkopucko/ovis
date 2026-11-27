@@ -10,6 +10,7 @@ import * as herdrClient from "./herdr/client.ts";
 import { herdrRpc, paneProcessInfo, sessionSnapshot, subscribeEvents, type Subscription, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 import { forgetTranscriptState, paneConversation } from "./conversation.ts";
 import { copilotHandoffSession, copilotProcessSession } from "./copilot-store.ts";
+import * as omo from "./omo.ts";
 import { readCopilotForeground } from "./copilot-foreground.ts";
 import { processEnviron } from "./omo.ts";
 import * as processOwner from "./process-owner.ts";
@@ -405,6 +406,8 @@ it.skipIf(process.platform !== "linux")("reads the live API without a report, fo
     const realProcessInfo = herdrClient.paneProcessInfo;
     const answers: ("read" | "unread")[] = [];
     let unreadLeft = 1;
+    // the OmO check every read makes first is not the Copilot read under test: it keeps herdr's answer as it is
+    const omoRead = spyOn(omo, "processInfo").mockImplementation(async (paneId) => ({ process_info: await realProcessInfo(paneId) }));
     const unread = spyOn(herdrClient, "paneProcessInfo").mockImplementation(async (paneId, socketPath) => {
       const info = await realProcessInfo(paneId, socketPath);
       if (paneId !== current || info === undefined) return info;
@@ -422,7 +425,7 @@ it.skipIf(process.platform !== "linux")("reads the live API without a report, fo
       unreadLeft = 2;
       expect(await read()).toEqual({ source: "scrollback", turns: [] });
       expect(answers).toEqual(["unread", "unread"]);
-    } finally { unread.mockRestore(); }
+    } finally { unread.mockRestore(); omoRead.mockRestore(); }
     expect((await read()).source).toBe("copilot-transcript");
     await herdrRpc("pane.send_text", { pane_id: current, text: `:hold ${first}\n` });
     for (const deadline = Date.now() + 4000;;) {

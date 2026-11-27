@@ -43,6 +43,8 @@ import { omoJobCount, omoJobsAfter, omoJobTasks, type OmoJobs } from "./omo-jobs
 import type { OmoTask } from "../shared/protocol.ts";
 import type { OmoRest } from "./completion.ts";
 import { OMO_RUNNING, omoStateDir, type OmoStateOptions } from "./omo-state-dir.ts";
+import { processAlive } from "./process-start.ts";
+export { processAlive };
 
 const TURN_STARTS = new Set([
   "goal-continuation", "omo-senpi:wake", "senpi-monitor:notification", "senpi-terminal:notification",
@@ -126,10 +128,6 @@ export function omoBackgroundTasks(cwd: string, alive: (pid: number) => boolean 
     } catch { /* being written, or not a record */ }
   }
   return running;
-}
-
-export function processAlive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
 }
 
 export interface OmoPane { path: string | null; startedAt: number | null }

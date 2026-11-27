@@ -53,10 +53,6 @@ const STORAGE_KEY = "ovis:split";
 const SLOT_ID = /^[a-z]$/;
 const FULL: SplitRect = { x: 0, y: 0, w: 1, h: 1 };
 
-export function otherSide(side: SplitSide): SplitSide {
-  return side === "left" ? "right" : "left";
-}
-
 export function sameTarget(a: SplitTarget | null | undefined, b: SplitTarget | null | undefined): boolean {
   return !!a && !!b && a.machineId === b.machineId && a.paneId === b.paneId;
 }
