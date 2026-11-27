@@ -491,6 +491,9 @@ jobs:
           git fetch --no-tags --depth=1 origin refs/tags/v0.5.6:refs/tags/v0.5.6 refs/tags/v0.5.7:refs/tags/v0.5.7
           git cat-file -e 'c482ad601132ebb80c0013f9d9063d474eac96c1^{commit}'
           git cat-file -e 'acab7685663bebc0ce2e93c75b4e3c4048d9f0bb^{commit}'
+      - name: Install tmux for hosted integration tests
+        if: needs.changes.outputs.draft != 'true' && runner.environment != 'self-hosted'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
       - name: Integration tests (updater restart and rollback included)
         if: needs.changes.outputs.draft != 'true'
         env:

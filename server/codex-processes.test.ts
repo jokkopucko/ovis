@@ -10,6 +10,7 @@ import * as conversationModule from "./conversation.ts";
 import * as processStart from "./process-start.ts";
 import { processStartedAt } from "./process-start.ts";
 import * as kiro from "./kiro-terminal.ts";
+import * as tmux from "./tmux-terminal.ts";
 import { paneTranscript } from "./conversation.ts";
 import type { SessionSnapshot } from "../shared/protocol.ts";
 
@@ -148,6 +149,19 @@ it.skipIf(process.platform !== "linux")("reads a project store held by Codex wit
   foreground = [{ pid: child.pid, argv: ["codex", "resume", thread] }];
   agentFolders = { cwd: root };
   expect(await paneTranscript(root, undefined, labelledSnapshot())).toMatchObject({ source: "codex-transcript", path });
+});
+
+it.each([
+  [["codex"], true], [["node", "codex.js"], true], [["node", "--no-warnings", "codex.js"], true],
+  [["node", "--max-old-space-size=16", "codex.js"], true], [["node", "--", "codex.js"], true],
+  [["node", "--unknown=value", "codex.js"], true], [["bun", "--bun", "codex.js"], true],
+  [["node", "--require=hook", "codex.js"], false], [["node", "--import", "codex.js"], false],
+  [["node", "--title", "codex.js"], false], [["node", "-e", "codex.js"], false],
+  [["bash", "-c", "codex.js"], false], [["node", "", "codex.js"], false],
+  [["node", "other.js", "codex.js"], false], [["node", "--unknown", "codex.js"], false],
+] as const)("keeps the existing direct argv rule for %j", async (argv, accepted) => {
+  foreground = [{ pid: 2147483647, argv: [...argv] }];
+  expect((await codexModule.paneCodexProcess(root))?.pid ?? null).toBe(accepted ? 2147483647 : null);
 });
 
 it.skipIf(process.platform !== "linux")("shows no conversation of the store an earlier read's Codex keeps once another Codex runs there", async () => {
@@ -620,19 +634,222 @@ async function runningCodex(resume = false, env = process.env): Promise<ReturnTy
 }
 
 /** As runningCodex, but holding `rollout` open, as a running Codex holds the one it writes. */
-async function codexHolding(rollout: string): Promise<ReturnType<typeof Bun.spawn>> {
+async function codexHolding(...rollouts: string[]): Promise<ReturnType<typeof Bun.spawn>> {
   const node = Bun.which("node");
   if (node === null) throw new Error("node is required for the Codex process fixture");
   const child = Bun.spawn([
-    "/bin/bash", "-c", 'exec -a "$1" "$2" -e \'globalThis.held = require("node:fs").openSync(process.argv[1], "r"); process.stdout.write("READY\\n"); process.stdin.resume()\' "$3"',
-    "fixture", join(root, "codex"), node, rollout,
+    "/bin/bash", "-c", 'exec -a "$1" "$2" -e \'globalThis.held = process.argv.slice(1).map(path => require("node:fs").openSync(path, "r")); process.stdout.write("READY\\n"); process.stdin.resume()\' "${@:3}"',
+    "fixture", join(root, "codex"), node, ...rollouts,
   ], { stdin: "pipe", stdout: "pipe", stderr: "pipe", env: { ...process.env, CODEX_HOME: home } });
   children.push(child);
   expect(await firstLine(child.stdout)).toBe("READY\n");
   return child;
 }
 
-// /proc on Linux, lsof -FnDi on macOS: both name the held file itself
+it.skipIf(process.platform !== "linux")("reads the native rollout behind a verified local tmux attach client", async () => {
+  const child = await codexHolding(path);
+  foreground = [{ pid: 2147483647, argv: ["/usr/bin/tmux", "-S", "/synthetic/tmux.sock", "attach-session", "-t", "work"] }];
+  const nested = spyOn(tmux, "tmuxCodexProcess").mockResolvedValue({ pid: child.pid, argv: ["codex"], identity: `client:1,pane:${child.pid}:1`, argvRead: true, argvState: "local" as const });
+  try {
+    expect(await resolve()).toBe(path);
+    expect(await codexOpenRollout(root, root, home)).toBe(path);
+  } finally { nested.mockRestore(); }
+});
+
+it.skipIf(process.platform !== "linux")("refuses to pick one of two rollouts held by the same tmux TUI", async () => {
+  const id = "01a0c7a1-56d9-7e20-9f08-f7a2d973bc0b";
+  const second = join(home, "sessions", `rollout-${id}.jsonl`);
+  writeFileSync(second, JSON.stringify({ type: "session_meta", payload: { id, cwd: root } }) + "\n");
+  const child = await codexHolding(path, second);
+  foreground = [{ pid: 2147483647, argv: ["tmux", "attach"] }];
+  const proof = spyOn(tmux, "tmuxCodexProcess").mockResolvedValue({ pid: child.pid, argv: ["codex"],
+    argvRead: true, argvState: "local", identity: "stable" });
+  try {
+    expect(await resolve()).toBeNull();
+    expect(await codexOpenRollout(root, root, home)).toBeNull();
+  } finally { proof.mockRestore(); }
+});
+
+it.skipIf(process.platform !== "linux")("refuses a singleton from a truncated tmux descriptor scan", async () => {
+  const child = await codexHolding(path, ...Array<string>(512).fill("/dev/null"));
+  foreground = [{ pid: 2147483647, argv: ["tmux", "attach"] }];
+  const proof = spyOn(tmux, "tmuxCodexProcess").mockResolvedValue({ pid: child.pid, argv: ["codex"],
+    argvRead: true, argvState: "local", identity: "stable" });
+  try { expect(await codexOpenRollout(root, root, home)).toBeNull(); }
+  finally { proof.mockRestore(); }
+});
+
+it.skipIf(process.platform !== "linux")("refuses a held tmux rollout with no file identity in the background reader", async () => {
+  const child = await codexHolding(path);
+  foreground = [{ pid: 2147483647, argv: ["tmux", "attach"] }];
+  const attachment = spyOn(tmux, "tmuxCodexProcess").mockResolvedValue({ pid: child.pid, argv: ["codex"],
+    argvRead: true, argvState: "local", identity: "stable" });
+  const original = fs.statSync;
+  const stat = spyOn(fs, "statSync").mockImplementation(new Proxy(original, {
+    apply(target, receiver, args) {
+      if (String(args[0]).startsWith(`/proc/${child.pid}/fd/`)) throw new Error("fixture identity unavailable");
+      return Reflect.apply(target, receiver, args);
+    },
+  }));
+  try { expect(await codexOpenRollout(root, root, home)).toBeNull(); }
+  finally { stat.mockRestore(); attachment.mockRestore(); }
+});
+
+it.skipIf(process.platform === "win32").each([
+  ["numbered descriptor", "12", 0, false, true],
+  ["truncated lsof output", "12", 1, false, false],
+  ["non-descriptor lsof record", "txt", 0, false, false],
+  ["replaced inode", "12", 0, true, false],
+] as const)("requires a stable, successful numbered lsof descriptor on macOS: %s", async (_name, descriptor, exit, replaced, accepted) => {
+  foreground = [{ pid: 2147483647, argv: ["tmux", "attach"] }];
+  const attachment = spyOn(tmux, "tmuxCodexProcess").mockResolvedValue({ pid: 2147483646, argv: ["codex"],
+    argvRead: true, argvState: "local", identity: "stable" });
+  const original = Bun.spawn;
+  const { dev, ino } = statSync(path, { bigint: true });
+  let listings = 0;
+  const spawned = spyOn(Bun, "spawn").mockImplementation((...args) => {
+    if (Array.isArray(args[0]) && args[0][0] === "/usr/sbin/lsof") {
+      const inode = replaced && ++listings > 1 ? ino + 1n : ino;
+      const listing = `p2147483646\nf${descriptor}\nD${dev}\ni${inode}\nn${path}\n`;
+      return original(["/bin/sh", "-c", 'printf "%s" "$1"; exit "$2"', "fixture", listing, String(exit)], { stdout: "pipe", stderr: "ignore" });
+    }
+    return Reflect.apply(original, Bun, args);
+  });
+  const platform = process.platform;
+  Object.defineProperty(process, "platform", { value: "darwin" });
+  try { expect(await codexOpenRollout(root, root, home)).toBe(accepted ? path : null); }
+  finally {
+    Object.defineProperty(process, "platform", { value: platform });
+    spawned.mockRestore(); attachment.mockRestore();
+  }
+});
+
+it.skipIf(process.platform !== "linux")("does not fall back to a foreground Codex when its tmux attachment is ambiguous", async () => {
+  const child = await codexHolding(path);
+  foreground = [
+    { pid: 2147483647, argv: ["tmux", "-S", join(root, "absent.sock"), "attach"] },
+    { pid: child.pid, argv: ["codex"] },
+  ];
+  // No tmux server maps this synthetic attach PID to an actual pane.
+  expect(await resolve()).toBeNull();
+  expect(await codexOpenRollout(root, root, home)).toBeNull();
+});
+
+it.skipIf(process.platform !== "linux")("refuses a direct held rollout beside an unsupported tmux attach command", async () => {
+  const child = await codexHolding(path);
+  foreground = [
+    { pid: 2147483647, argv: ["tmux", "-f", "/dev/null", "attach"] },
+    { pid: child.pid, argv: ["codex"] },
+  ];
+  expect(await resolve()).toBeNull();
+  expect(await codexOpenRollout(root, root, home)).toBeNull();
+});
+
+it.skipIf(process.platform !== "linux")("reads the exact held tmux rollout despite a zombie foreground peer", async () => {
+  const child = await codexHolding(path);
+  foreground = [{ pid: 2147483647, argv: ["tmux", "attach"] }];
+  const mapping = "2147483647\t/dev/pts/1\t2147483645\t/fixture/tmux.sock\t$2\t@3\t%4\t2147483646\t/dev/pts/2\t0\t0\n";
+  const rows = () => tmux.parseTerminalProcesses(`
+2147483647 1 2147483647 2147483647 pts/1 S tmux: client
+2147483646 2147483645 2147483646 2147483644 pts/2 S /bin/bash
+2147483644 2147483646 2147483644 2147483644 pts/2 S /bin/sh
+${child.pid} 2147483644 2147483644 2147483644 pts/2 R codex
+2147483643 ${child.pid} 2147483644 2147483644 pts/2 Z chrome
+`);
+  const discover = tmux.tmuxCodexProcess;
+  const nested = spyOn(tmux, "tmuxCodexProcess").mockImplementation((info) =>
+    discover(info, "linux", async () => mapping, async () => rows(), (pid) => pid));
+  try {
+    expect(await resolve()).toBe(path);
+    expect(await codexOpenRollout(root, root, home)).toBe(path);
+  } finally { nested.mockRestore(); }
+});
+
+it.skipIf(process.platform !== "linux")("requires outer shell proof for a held rollout and keeps the nested guard when it fails", async () => {
+  const child = await codexHolding(path);
+  shellPid = 2147483646;
+  foreground = [{ pid: shellPid, argv: ["/bin/sh"] }, { pid: 2147483644, argv: ["/bin/sh"] },
+    { pid: 2147483647, argv: ["tmux", "attach"] }];
+  const mapping = "2147483647\t/dev/pts/1\t2147483645\t/fixture/tmux.sock\t$2\t@3\t%4\t2147483642\t/dev/pts/2\t0\t0\n";
+  const rows = () => tmux.parseTerminalProcesses(`
+2147483646 1 2147483646 2147483646 pts/1 S /bin/sh
+2147483644 2147483646 2147483646 2147483646 pts/1 S /bin/sh
+2147483647 2147483644 2147483646 2147483646 pts/1 S tmux: client
+2147483642 2147483645 2147483642 ${child.pid} pts/2 S /bin/bash
+${child.pid} 2147483642 ${child.pid} ${child.pid} pts/2 S codex
+`);
+  const discover = tmux.tmuxCodexProcess;
+  const nested = spyOn(tmux, "tmuxCodexProcess").mockImplementation((info) =>
+    discover(info, "linux", async () => mapping, async () => rows(), (pid) => pid));
+  try {
+    expect(await resolve()).toBe(path);
+    expect(await codexOpenRollout(root, root, home)).toBe(path);
+    shellPid = 2147483641;
+    reportedSession = { source: "fixture", agent: "codex", kind: "native", value: thread };
+    screen = answer;
+    expect(await resolve()).toBeNull();
+    expect(await codexOpenRollout(root, root, home)).toBeNull();
+  } finally { nested.mockRestore(); }
+});
+
+describe.skipIf(process.platform !== "linux")("tmux attachment continuity", () => {
+  it("drops the local tmux rollout replaced during an otherwise unchanged attachment recheck", async () => {
+    const child = await codexHolding(path);
+    foreground = [{ pid: 2147483647, argv: ["tmux", "attach"] }];
+    const attachment = { pid: child.pid, argv: ["codex"], argvRead: true, argvState: "local" as const, identity: "stable" };
+    const proof = spyOn(tmux, "tmuxCodexProcess").mockResolvedValueOnce(attachment).mockImplementation(async () => {
+      const replacement = join(root, "replacement.jsonl");
+      writeFileSync(replacement, fs.readFileSync(path));
+      fs.renameSync(replacement, path);
+      return attachment;
+    });
+    try { expect(await resolve()).toBeNull(); }
+    finally { proof.mockRestore(); }
+  });
+
+  it.each(["chat", "background"])("revalidates interpreter argv after the held FD lookup for %s", async (reader) => {
+    const child = await codexHolding(path);
+    foreground = [{ pid: 2147483647, argv: ["tmux", "attach"] }];
+    const mapping = "2147483647\t/dev/pts/1\t2147483645\t/fixture/tmux.sock\t$2\t@3\t%4\t2147483646\t/dev/pts/2\t0\t0\n";
+    const rows = tmux.parseTerminalProcesses(`
+2147483647 1 2147483647 2147483647 pts/1 S tmux: client
+2147483646 2147483645 2147483646 ${child.pid} pts/2 S /bin/bash
+${child.pid} 2147483646 ${child.pid} ${child.pid} pts/2 S node
+`);
+    const discover = tmux.tmuxCodexProcess;
+    let generation = 0;
+    const nested = spyOn(tmux, "tmuxCodexProcess").mockImplementation((info) => {
+      const argument = String(++generation);
+      return discover(info, "linux", async () => mapping, async () => rows, (pid) => pid,
+        () => ["node", "codex.js", argument]);
+    });
+    try {
+      expect(await (reader === "chat" ? resolve() : codexOpenRollout(root, root, home))).toBeNull();
+      expect(nested).toHaveBeenCalledTimes(2);
+    } finally { nested.mockRestore(); }
+  });
+
+  it.each(["chat", "background"])("refuses a rejected final identity read for %s without rejecting the lookup", async (reader) => {
+    const child = await codexHolding(path);
+    foreground = [{ pid: 2147483647, argv: ["tmux", "attach"] }];
+    const nested = spyOn(tmux, "tmuxCodexProcess").mockResolvedValue({ pid: child.pid, argv: ["codex"], identity: "stable-fixture", argvRead: true, argvState: "local" as const });
+    failedReads.add(reader === "chat" ? 2 : 3);
+    try { await expect(reader === "chat" ? resolve() : codexOpenRollout(root, root, home)).resolves.toBeNull(); }
+    finally { nested.mockRestore(); }
+  });
+
+  it.each(["missing", "switched", "reused"])("refuses a tmux binding that is %s after reading its held rollout", async (change) => {
+    const child = await codexHolding(path);
+    foreground = [{ pid: 2147483647, argv: ["tmux", "attach"] }];
+    const first = { pid: child.pid, argv: ["codex"], identity: "client:1,pane:1", argvRead: true, argvState: "local" as const };
+    const next = change === "missing" ? null : { ...first, ...(change === "switched" ? { pid: 2147483646 } : {}), identity: "client:1,pane:2" };
+    const nested = spyOn(tmux, "tmuxCodexProcess").mockResolvedValueOnce(first).mockResolvedValue(next);
+    try { expect(await resolve()).toBeNull(); }
+    finally { nested.mockRestore(); }
+  });
+});
+
+
 it.skipIf(process.platform === "win32")("records the exact identity of the rollout its Codex holds open, for the file it returns (#3402)", async () => {
   const child = await codexHolding(path);
   // macOS has no /proc to read argv from: herdr's foreground metadata carries it there
@@ -1023,34 +1240,46 @@ async function holding(ids: string[], kind: "readable" | "unreadable"): Promise<
 
 /**
  * A Codex TUI on `--remote unix://<socket>` beside the app server its launcher started (server/approvals/codex.ts):
- * both are children of one launcher. Its command line listens on `listen`, it binds `bound`, has `held` open and
- * write-flocks `locked`.
+ * the listener can be its child or sibling. Its command line names `listen`, it binds `bound`, has `held`
+ * open, and write-flocks `locked`. The fixture is ready only after it accepts the TUI's connection.
  */
-async function besideOwnServer(socket: string, listen: string, held: string[], locked: string[], bound = listen): Promise<void> {
+async function besideOwnServer(socket: string, listen: string, held: string[], locked: string[], options: {
+  readonly bound?: string;
+  readonly child?: boolean;
+} = {}): Promise<number> {
   const bin = mkdtempSync(join(root, "launch-"));
   const child = Bun.spawn(["python3", "-c", [
     "import fcntl, json, os, signal, socket, sys",
-    "codex, listen, held, locked, bound = sys.argv[1], sys.argv[2], json.loads(sys.argv[3]), json.loads(sys.argv[4]), sys.argv[5]",
-    "sleep = 'import time; time.sleep(600)'",
-    "tui = os.fork()",
-    "if tui == 0: os.execv(sys.executable, [codex, '-c', sleep])",
-    // the server tells it runs under its own command line, its files open, through a pipe its parent waits on
-    "up, told = os.pipe()",
-    "server = os.fork()",
-    "if server == 0:",
+    "codex, listen, held, locked, path, child = sys.argv[1], sys.argv[2], json.loads(sys.argv[3]), json.loads(sys.argv[4]), sys.argv[5][len('unix://'):], sys.argv[6] == 'child'",
+    "up, listening = os.pipe()",
+    "ready, accepted = os.pipe()",
+    "def start_server():",
+    "  if os.fork() != 0: return",
     "  for path in held:",
     "    fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT)",
     "    if path in locked: fcntl.flock(fd, fcntl.LOCK_EX)",
     "    os.set_inheritable(fd, True)",
-    "  path = bound[len('unix://'):]",
-    "  os.makedirs(os.path.dirname(path), exist_ok=True)",
+    "  bound = sys.argv[5][len('unix://'):]",
+    "  os.makedirs(os.path.dirname(bound), exist_ok=True)",
     "  server_socket = socket.socket(socket.AF_UNIX)",
-    "  server_socket.bind(path)",
+    "  server_socket.bind(bound)",
     "  server_socket.listen()",
+    "  os.write(listening, b'x')",
+    "  client, _ = server_socket.accept()",
     "  os.set_inheritable(server_socket.fileno(), True)",
-    "  os.set_inheritable(told, True)",
-    "  os.execv(sys.executable, [codex, '-c', f'import os; os.write({told}, b\"x\"); {sleep}', 'app-server', '--listen', listen])",
-    "os.read(up, 1)",
+    "  os.set_inheritable(client.fileno(), True)",
+    "  os.set_inheritable(accepted, True)",
+    "  os.execv(sys.executable, [codex, '-c', f'import os,signal; os.write({accepted}, str(os.getpid()).encode()); signal.pause()', 'app-server', '--listen', listen])",
+    "if not child: start_server()",
+    "tui = os.fork()",
+    "if tui == 0:",
+    "  if child: start_server()",
+    "  os.read(up, 1)",
+    "  connection = socket.socket(socket.AF_UNIX)",
+    "  connection.connect(path)",
+    "  signal.pause()",
+    "  os._exit(0)",
+    "server = int(os.read(ready, 32))",
     "def stop(*_):",
     "  for pid in (tui, server): os.kill(pid, signal.SIGKILL)",
     "  os._exit(0)",
@@ -1058,10 +1287,11 @@ async function besideOwnServer(socket: string, listen: string, held: string[], l
     "print(tui, flush=True)",
     "sys.stdin.read()",
     "stop()",
-  ].join("\n"), join(bin, "codex"), listen, JSON.stringify(held), JSON.stringify(locked), bound], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  ].join("\n"), join(bin, "codex"), listen, JSON.stringify(held), JSON.stringify(locked), options.bound ?? listen, options.child ? "child" : "sibling"], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   children.push(child);
   const tui = Number((await firstLine(child.stdout)).trim());
   foreground = [{ pid: tui, name: "codex", argv: [join(bin, "codex"), "--remote", `unix://${socket}`] }];
+  return tui;
 }
 
 describe("a Codex TUI on the app server its own launcher started (codex --remote)", () => {
@@ -1094,6 +1324,49 @@ describe("a Codex TUI on the app server its own launcher started (codex --remote
     expect(await resolve()).toBe(rollout);
   });
 
+  launchIt("reads a direct Codex pane's connected child app server", async () => {
+    await besideOwnServer(socket, `unix://${socket}`, [rollout, lock(served)], [lock(served)], { child: true });
+    expect(await resolve()).toBe(rollout);
+  });
+
+  launchIt("still proves a direct sibling server when the TUI child listing is unreadable", async () => {
+    const tui = await besideOwnServer(socket, `unix://${socket}`, [rollout, lock(served)], [lock(served)]);
+    const original = fs.readFileSync;
+    const read = spyOn(fs, "readFileSync").mockImplementation(new Proxy(original, {
+      apply(target, receiver, args) {
+        if (args[0] === `/proc/${tui}/task/${tui}/children`) throw new Error("fixture child listing unavailable");
+        return Reflect.apply(target, receiver, args);
+      },
+    }));
+    try { expect(await resolve()).toBe(rollout); }
+    finally { read.mockRestore(); }
+  });
+
+  for (const change of ["lost writer lock", "reused server birth"]) launchIt(`drops a remote tmux rollout after attachment recheck: ${change}`, async () => {
+    const pid = await besideOwnServer(socket, `unix://${socket}`, [rollout, lock(served)], [lock(served)]);
+    const argv = ["codex", "--remote", `unix://${socket}`];
+    foreground = [{ pid: 2147483647, argv: ["tmux", "attach"] }];
+    let rechecked = false;
+    const attachment = { pid, argv, identity: "stable", argvRead: true, argvState: "remote" as const };
+    const nested = spyOn(tmux, "tmuxCodexProcess").mockResolvedValueOnce(attachment).mockImplementation(async () => {
+      rechecked = true;
+      return attachment;
+    });
+    const original = fs.readFileSync;
+    const read = spyOn(fs, "readFileSync").mockImplementation(new Proxy(original, {
+      apply(target, receiver, args) {
+        return rechecked && change === "lost writer lock" && args[0] === "/proc/locks" ? "" : Reflect.apply(target, receiver, args);
+      },
+    }));
+    const start = processStart.processStartIdentity;
+    const birth = spyOn(processStart, "processStartIdentity").mockImplementation((target) => {
+      const actual = start(target);
+      return rechecked && change === "reused server birth" && target !== pid && actual !== null ? actual + 1 : actual;
+    });
+    try { expect(await resolve()).toBeNull(); }
+    finally { nested.mockRestore(); read.mockRestore(); birth.mockRestore(); }
+  });
+
   launchIt("takes none, not even by the screen, while the server holds another thread's lock too: a /new not written yet", async () => {
     screen = `› Say it again\n\n• ${shown}\n\n› Ask Codex to do anything`;
     await besideOwnServer(socket, `unix://${socket}`, [rollout, lock(served), lock(other)], [lock(served), lock(other)]);
@@ -1120,7 +1393,7 @@ describe("a Codex TUI on the app server its own launcher started (codex --remote
     // a file left at the socket's path, which no process listens on
     mkdirSync(join(root, "s"), { recursive: true });
     writeFileSync(socket, "");
-    await besideOwnServer(socket, `unix://${socket}`, [rollout, lock(served)], [lock(served)], `unix://${join(root, "o", "codex.sock")}`);
+    await besideOwnServer(socket, `unix://${socket}`, [rollout, lock(served)], [lock(served)], { bound: `unix://${join(root, "o", "codex.sock")}` });
     expect(await resolve()).toBeNull();
   });
 });
@@ -2141,6 +2414,24 @@ shortIt("leaves out a thread another pane shows a long answer of below its first
   const panes = [fixturePane(root), fixturePane("peer")];
   expect(await codexTranscriptPath(root, root, home, panes)).toBe(path);
   expect(await codexTranscriptPath(root, root, home, panes)).toBe(path);
+});
+
+shortIt("does not keep a screen claim from a tmux peer with no attachment proof", async () => {
+  const created = await shortSession();
+  const peerRollout = peerNewThread(created + 1000);
+  const panes = [fixturePane(root), fixturePane("peer")];
+  foregrounds.set("peer", [{ pid: 2147483647, argv: ["tmux", "attach"] }]);
+  peerScreens.set("peer", peerScreenOf(peerAnswer));
+  const attachment = spyOn(tmux, "tmuxCodexProcess").mockResolvedValue(null);
+  try {
+    expect(await codexTranscriptPath(root, root, home, panes)).toBe(path);
+    peerScreens.set("peer", "");
+    // Only the direct pane now reports the newest thread. Its background lookup has no screen
+    // to match, so a leftover binding to the tmux pane would block reading the report.
+    reportedSession = { source: "fixture", agent: "codex", kind: "path", value: peerRollout };
+    screen = "";
+    expect(await codexOpenRollout(root, root, home)).toBe(peerRollout);
+  } finally { attachment.mockRestore(); }
 });
 
 shortIt("leaves out the rollout herdr reports for another pane", async () => {
@@ -4084,4 +4375,30 @@ describe("a Codex pane keeps its conversation beside a second Codex that only st
     peerScreens.set("peer", `OpenAI Codex (v0.164.0)\n\n› ${shortPrompt}\n\n• ok\n\n› `);
     expect(await codexTranscriptPath(root, root, home, [fixturePane(root), fixturePane("peer")])).toBe(path);
   });
+});
+
+
+it("does not create native history from a tmux greeting alone", async () => {
+  const store = join(root, "unwritten-store");
+  mkdirSync(store);
+  foreground = [{ pid: 2147483647, argv: ["tmux", "attach"] }];
+  const proof = spyOn(tmux, "tmuxCodexProcess").mockResolvedValue({ pid: process.pid, argv: ["codex"],
+    argvRead: true, argvState: "local", identity: "stable" });
+  const started = spyOn(processStart, "processStartLowerBound").mockReturnValue(1000);
+  const greeting = "  >_ OpenAI Codex (v0.167.0)\n\n› Ask Codex to do anything\n\n  GPT-6.1-Sol low · /fixture\n  ? for shortcuts";
+  try {
+    expect(await codexModule.codexFreshSession(root, [root], store, greeting)).toBeNull();
+  } finally { proof.mockRestore(); started.mockRestore(); }
+});
+
+it.skipIf(process.platform !== "linux").each(["remote", "unavailable"] as const)("refuses a held rollout with %s tmux argv", async (state) => {
+  const child = await codexHolding(path);
+  foreground = [{ pid: 2147483647, argv: ["tmux", "attach"] }];
+  const argv = state === "remote" ? ["codex", "--remote=ws://127.0.0.1:4500"] : ["codex"];
+  const proof = spyOn(tmux, "tmuxCodexProcess").mockResolvedValue({ pid: child.pid, argv,
+    argvRead: state === "remote", argvState: state, identity: "stable" });
+  try {
+    expect(await resolve()).toBeNull();
+    expect(await codexOpenRollout(root, root, home)).toBeNull();
+  } finally { proof.mockRestore(); }
 });
