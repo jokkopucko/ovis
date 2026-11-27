@@ -5,6 +5,7 @@ import { act } from "react";
 
 import { FileViewer } from "./FileViewer.tsx";
 import type { FileInfo } from "../../shared/files.ts";
+import { PREVIEW_BUDGET_MS } from "../lib/markdownPreview.ts";
 import { relayResourceUrl } from "../lib/relay/resources.ts";
 import { SAVE_MAX_BYTES, SAVE_PLUGIN } from "../lib/saveImage.ts";
 import { SettingsProvider } from "../lib/settings.ts";
@@ -54,8 +55,14 @@ function androidApp(methods: string[]): { method: string; options: Record<string
 const shown = (): string => page.container.textContent ?? "";
 const drawn = (): string => page.container.innerHTML;
 
+/**
+ * Lets the page come to rest: nothing left to draw, and the viewer done opening. A Markdown preview is parsed
+ * in a worker (lib/markdownPreview.ts) whose answer can land after a quiet turn of the page, so "Opening…" is
+ * waited out too, past the viewer's own budget for that worker (after it, the viewer shows the source).
+ */
 async function settle(): Promise<void> {
-  for (let previous = "", round = 0; previous !== drawn() && round < 50; round++) {
+  const deadline = performance.now() + 2 * PREVIEW_BUDGET_MS;
+  for (let previous = ""; (previous !== drawn() || shown().includes("Opening…")) && performance.now() < deadline;) {
     previous = drawn();
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
   }
