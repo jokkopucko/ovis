@@ -329,6 +329,7 @@ export class FakeAccountService {
   private readonly signIns = new Map<SignInProvider, string>();
   private readonly deviceSignIns = new Map<string, { provider: SignInProvider; userCode: string; account: string | null; denied: boolean; interval: number; nextPoll: number; expires: number; challenge: string | null; page?: boolean; requester?: { label: string | null; os: AccountOs | null } }>();
   private readonly identityList = new Map<string, Map<SignInProvider, { added_at: string }>>();
+  private readonly identityHistory = new Map<string, readonly { kind: "add" | "remove"; provider: SignInProvider; at: string; device_no: null }[]>();
   private readonly linkTokens = new Map<string, { account: string; family: string; provider: SignInProvider; expires: number }>();
   /** by refresh family: when that sign-in was made (a refresh keeps it), for what needs a recent one */
   private readonly signedInAt = new Map<string, number>();
@@ -431,7 +432,7 @@ export class FakeAccountService {
   /** by block id: when the service kept it, for frozenSignIn */
   private readonly blocksKeptAt = new Map<string, number>();
 
-  constructor(private readonly now: () => number = Date.now) {}
+  constructor(private readonly now: () => number = Date.now, private readonly accessTokenTtlS = ACCESS_TOKEN_TTL_S) {}
 
   /** `device`: the token is a device code's sign-in (a PC's), never an app's own */
   issueToken(account: string, { twoStep = null, device = false }: { twoStep?: boolean | null; device?: boolean } = {}): string {
@@ -478,6 +479,11 @@ export class FakeAccountService {
     this.identityList.set(account, methods);
   }
 
+  private recordIdentityChange(account: string, provider: SignInProvider, kind: "add" | "remove"): void {
+    const history = this.identityHistory.get(account) ?? [];
+    this.identityHistory.set(account, [{ kind, provider, at: this.iso(), device_no: null }, ...history.slice(0, 19)]);
+  }
+
   /** An identity token as Sign in with Apple hands an iOS app, for `account`, whose `nonce` claim is the hash the app gave Apple. */
   appleIdToken(account: string, nonceHash: string): string {
     const token = randomHex(32);
@@ -518,9 +524,9 @@ export class FakeAccountService {
     }
     const access = randomHex(32);
     const refresh = randomHex(32);
-    this.tokens.set(access, { account, provider, family, expires: this.now() + ACCESS_TOKEN_TTL_S * 1000 });
+    this.tokens.set(access, { account, provider, family, expires: this.now() + this.accessTokenTtlS * 1000 });
     this.refreshTokens.set(refresh, { account, provider, family, used: false });
-    return json({ access_token: access, refresh_token: refresh, expires_in: ACCESS_TOKEN_TTL_S, account, provider });
+    return json({ access_token: access, refresh_token: refresh, expires_in: this.accessTokenTtlS, account, provider });
   }
 
   private signIn(url: URL, provider: string): Response {
@@ -572,6 +578,7 @@ export class FakeAccountService {
         if (code.account !== code.link.account && this.identityList.get(code.account)?.has(code.provider)) return problem(409, "identity_in_use", "That identity belongs to another account");
         this.signIns.set(code.provider, code.link.account);
         this.addIdentity(code.link.account, code.provider);
+        this.recordIdentityChange(code.link.account, code.provider, "add");
         return this.grant(code.link.account, code.provider);
       }
       case "refresh_token": {
@@ -630,6 +637,7 @@ export class FakeAccountService {
     for (const key of [...this.counters.keys()]) if (key.endsWith(`:${account}`)) this.counters.delete(key);
     for (const list of [this.admissionList, this.quietList]) for (let index = list.length - 1; index >= 0; index--) if (list[index]?.account === account) list.splice(index, 1);
     this.identityList.delete(account);
+    this.identityHistory.delete(account);
     // the account's deletion is the only thing that deletes its list
     const list = this.accountLists.get(account);
     if (list !== undefined) this.lists.delete(list);
@@ -857,7 +865,10 @@ export class FakeAccountService {
       return new Response(null, { status: 204 });
     }
     if (path === "/v1/identities" && request.method === "GET") {
-      return json({ identities: [...this.identityList.get(account) ?? []].map(([provider, { added_at }]) => ({ provider, added_at })) });
+      return json({
+        identities: [...this.identityList.get(account) ?? []].map(([provider, { added_at }]) => ({ provider, added_at })),
+        history: this.identityHistory.get(account) ?? [],
+      });
     }
     if (path === "/v1/account/limits" && request.method === "GET") {
       const limits = this.accountLimits.get(account);
@@ -897,6 +908,7 @@ export class FakeAccountService {
       if (!methods?.has(removed)) return problem(404, "not_found", "The account does not sign in with it");
       if (methods.size === 1) return problem(409, "last_identity", "Add another way to sign in first");
       methods.delete(removed);
+      this.recordIdentityChange(account, removed, "remove");
       this.methodsChanged(account);
       if (this.signIns.get(removed) === account) this.signIns.delete(removed);
       // the sign-ins made with it end

@@ -320,6 +320,19 @@
   list-style: none;
 }
 
+/* why a change was refused sits a row's gap under the chips, not a paragraph's margin away */
+.account-methods > .settings-condition {
+  margin: 0;
+}
+
+/* the sign-in again a change waits for: what it asks, then its button, the same gap apart */
+.account-methods > .account-reauth {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
 /* a finger's 44px around a chip's remove x and the next chip's + stay apart, across a wrap too */
 @media (pointer: coarse) {
   .account-method-list {

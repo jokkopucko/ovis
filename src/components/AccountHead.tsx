@@ -9,6 +9,7 @@ import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
 import { nativeModalOver, useFocusTrap } from "../lib/useFocusTrap.ts";
 import { AccountManageLists } from "./AccountManage.tsx";
+import { HostedAccountMethods } from "./AccountMethods.tsx";
 import { SignOutEverywhereSays } from "./ListDevices.tsx";
 import { otherDevices, shownOf, type EverywhereAsked, type Shown } from "../lib/account/listLeave.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
@@ -84,9 +85,10 @@ export function ManageAccountSheet({ onClose, account, children }: { onClose: ()
 }
 
 /**
- * Manage account for the hosted sign-in: the account's devices and PCs, then Sign out every device and Delete account,
- * each asked twice. Signing every device out signs this one out too, so the sheet then closes with the sign-in. `pcHere`:
- * a PC is open on this page to read the devices from (the start screen has none, so only this device's own row shows).
+ * Manage account for the hosted sign-in: the account's ways to sign in, its devices and PCs, then Sign out every device
+ * and Delete account, each asked twice. Signing every device out signs this one out too, so the sheet then closes with
+ * the sign-in. `pcHere`: a PC is open on this page to read the devices from (the start screen has none, so only this
+ * device's own row shows).
  * A leave that left PCs keeping this device names them here, after the sign-in it left is gone; with neither, it closes.
  * The leave clears the stored sign-in before it has named them, so the sheet waits for its outcome before closing.
  */
@@ -130,6 +132,7 @@ function HostedManageSheet({ signIn, watching, pcHere, onClose }: { signIn: Host
   };
   return (
     <ManageAccountSheet onClose={onClose} account={signIn?.account}>
+      {signIn !== null && <HostedAccountMethods key={`ways ${signIn.account}`} signIn={signIn} />}
       {signIn !== null && <AccountManageLists key={signIn.account} account={signIn.account} watching={watching} pcHere={pcHere} onLeave={(shown) => leave(signIn, shown)} />}
       {leaveNote !== null && <p className="settings-condition" role="alert">{leaveNote}</p>}
       {signIn !== null && <div className="settings-item account-sign-out-everywhere">

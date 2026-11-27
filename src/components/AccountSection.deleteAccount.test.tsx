@@ -27,6 +27,8 @@ let safetyPosts = 0;
 /** the desktop app's providers, and whether the account service refuses to start a link */
 let bridgeProviders: string[] = ["github"];
 let linkFails = false;
+/** the changes to the account's ways in the account service lists, newest first, when a test sets some */
+let methodChanges: unknown[] = [];
 
 describe("deleting the account from Settings", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
@@ -46,6 +48,7 @@ describe("deleting the account from Settings", () => {
     safetyPosts = 0;
     bridgeProviders = ["github"];
     linkFails = false;
+    methodChanges = [];
     fake = new FakeAccountService(() => Date.now() + ahead);
     fake.offerLinkPage(["github", "google"]);
     page = openPage("https://workstation.example.ts.net/");
@@ -84,6 +87,7 @@ describe("deleting the account from Settings", () => {
       if (url.pathname === "/v1/safety-records" && safetyAnswer !== null) return safetyAnswer(String((JSON.parse(String(init?.body)) as { record: { id: unknown } }).record.id));
       if (url.pathname === "/v1/token" && userCode !== null) { fake.approveOnLinkPage(userCode, signsInAs, "github"); fake.approveDevice(userCode, signsInAs); userCode = null; }
       const answer = await fake.fetch(input, init);
+      if (url.pathname === "/v1/identities" && answer.ok && methodChanges.length > 0) return Response.json({ ...await answer.json() as object, history: methodChanges });
       if (url.pathname === "/v1/account" && onDelete !== null) await onDelete();
       if (!url.pathname.startsWith("/v1/signin/") || !answer.ok) return answer;
       const started = await answer.json() as Record<string, unknown>;
@@ -494,6 +498,14 @@ describe("deleting the account from Settings", () => {
     const alerts = [...document.body.querySelectorAll('[role="alert"]')].filter((node) => text(node).includes("The sign-in did not finish"));
     expect(alerts).toHaveLength(1);
     expect(inSheet(alerts[0]!)).toBe(true);
+  });
+
+  it("shows the latest changes to the ways in under the chips in Manage account's sheet", async () => {
+    methodChanges = [{ kind: "add", provider: "google", at: new Date(2026, 10, 27, 12).toISOString(), device_no: 3 }];
+    await signedIn();
+    const changes = (): string[] => [...document.body.querySelectorAll('[data-testid="manage-account"] .account-methods [data-testid="account-method-history"] li')].map(text);
+    await until(() => changes().length > 0);
+    expect(changes()).toEqual(["Nov 27 · Google added · Device 3"]);
   });
 
   it("asks for a sign-in again in Manage account's sheet, then deletes", async () => {

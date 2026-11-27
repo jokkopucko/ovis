@@ -343,7 +343,8 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     // browser's return to the page does
     const finished = signingIn && account.state?.kind === "signed-in";
     signingIn = account.state?.kind === "signing-in";
-    if (finished && !scoped) { keepFrontChosen(false); launching = signedInNow = true; }
+    // a return that changed (or failed to change) the ways to sign in stays here, so its outcome is not lost to a launch
+    if (finished && !scoped && account.methodsChange === undefined) { keepFrontChosen(false); launching = signedInNow = true; }
     const read = account.state?.kind !== "signing-in";
     if (read) accountRead = true;
     if (read && (account.state?.kind !== "signed-in" || account.state.pcs !== null)) unanswered = false;
@@ -417,8 +418,14 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   keepShellAccount(account.enabled ? {
     signOut: account.signOut, leave: account.leave,
     signInAgain: (provider) => account.signIn(provider, undefined, undefined, entry.serverId ?? undefined),
+    signInAgainForMethod: (shown, add) => account.signInAgainForMethod(shown, add, entry.serverId ?? undefined),
     signOutEverywhere: (confirmed) => account.signOutEverywhere(entry.serverId ?? undefined, confirmed),
     freshSignIn: account.freshSignIn,
+    methods: account.methods,
+    offered: account.listed,
+    addMethod: async (provider, shown) => { await account.addMethod(provider, shown, entry.serverId ?? undefined); },
+    removeMethod: account.removeMethod,
+    methodsChange: () => account.methodsChange,
     deleteAccount: async () => {
       await account.deleteAccount();
       const now = account.state;
@@ -1551,7 +1558,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   // the PC whose own page started the sign-in this load returns from: its connecting screen keeps this page from launching
   let returningPc: string | undefined;
   if (left) return;
-  await account.load(account.enabled ? signInReturn(new URL(mount.entryUrl).hash) : null, (kept) => {
+  const addingMethod = await account.load(account.enabled ? signInReturn(new URL(mount.entryUrl).hash) : null, (kept) => {
     if (entries !== loaded) return;
     returning = kept;
     show({ kind: "failed", failure: "sign-in-first", name: kept.offer.name ?? null, detail: null, server_id: kept.offer.server_id, account: account.state });
@@ -1576,11 +1583,12 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     returningPc = serverId;
     show({ kind: "connecting", name: null });
   });
+  if (addingMethod) return;
   if (returningPc !== undefined) {
     if (!left && entries === loaded) await showFront();
     return;
   }
   // a sign-in that came back signed in (not refused or cancelled, whose reason the sign-in screen says)
-  if (returning === undefined && signInReturn(entryHash) !== null && account.state?.kind === "signed-in" && frontUp()) { keepFrontChosen(false); launching = signedInNow = true; await showFront(); signedInNow = false; }
+  if (returning === undefined && account.methodsChange === undefined && signInReturn(entryHash) !== null && account.state?.kind === "signed-in" && frontUp()) { keepFrontChosen(false); launching = signedInNow = true; await showFront(); signedInNow = false; }
   if (returning === undefined) await entrySignIn((provider, wanted) => account.signIn(provider, undefined, wanted));
 }

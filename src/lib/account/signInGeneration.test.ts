@@ -135,7 +135,7 @@ it("keeps a successful link when revoking the replaced sign-in returns 503", asy
 
   expect(linked.provider).toBe("google");
   expect(await store.get("session")).toEqual(linked);
-  expect((await account.identities()).map((identity) => identity.provider)).toContain("google");
+  expect((await account.identities()).identities.map((identity) => identity.provider)).toContain("google");
 });
 
 it("reports a failed revoke of a link discarded after sign-out", async () => {

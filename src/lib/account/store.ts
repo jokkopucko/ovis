@@ -36,6 +36,17 @@ export interface AccountSession {
   readonly signed_in_at?: number;
 }
 
+/** The sign-in a redirect link belongs to, without any credentials. */
+export interface LinkSignIn {
+  readonly account: string;
+  readonly sign_in_id: string;
+}
+
+export interface ResumeAdd {
+  readonly account: string;
+  readonly provider: AccountProvider;
+}
+
 /** A sign-in sent to the provider's pages: what its return must match (OAuth `state`) and prove (PKCE verifier). */
 export interface PendingSignIn {
   readonly service: string;
@@ -45,6 +56,9 @@ export interface PendingSignIn {
   readonly redirect_uri: string;
   readonly started_at: number;
   readonly generation?: string;
+  readonly link?: LinkSignIn;
+  /** The Add which asked for a new sign-in; only a return for this account may continue it. */
+  readonly resume_add?: ResumeAdd;
   /** the marked pairing this sign-in was started for (relay/shell.tsx): it goes with the sign-in, whatever its end */
   readonly pairing?: PendingPairing;
   /**

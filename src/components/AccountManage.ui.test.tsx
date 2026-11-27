@@ -413,7 +413,10 @@ it("PCR-1: a removal that wants a fresh sign-in closes the confirm, and Sign in 
 
   type Leave = (shown?: unknown) => Promise<{ readonly left: boolean; readonly message: string | null }>;
   type Everywhere = (asked?: unknown) => Promise<string | null>;
-  const hosted = (leave: Leave, signOutEverywhere: Everywhere = async () => null) => ({ provider: "github" as const, account: "acct", signOut() {}, leave, deleteAccount: async () => null, signOutEverywhere });
+  const hosted = (leave: Leave, signOutEverywhere: Everywhere = async () => null) => ({
+    provider: "github" as const, account: "acct", signOut() {}, leave, deleteAccount: async () => null, signOutEverywhere,
+    session: { provider: "github" as const, account: "acct", service: "https://account.example", sign_in_id: "s", access_token: "a", refresh_token: "r", expires_at: Date.now() + 3_600_000 },
+  });
   const group = (signIn: ReturnType<typeof hosted> | null) => createElement(SettingsProvider, { children: createElement(HostedAccountGroup, { signIn }) });
   const openSheet = async (signIn: ReturnType<typeof hosted>): Promise<HTMLElement> => {
     await page.render(group(signIn));
@@ -563,5 +566,14 @@ it("PCR-1: a removal that wants a fresh sign-in closes the confirm, and Sign in 
   it("closes the sheet once this device left everywhere", async () => {
     const root = await leaveFromSheet(async () => ({ left: true, message: null }));
     expect(sheets(root)).toHaveLength(0);
+  });
+
+  it("draws the account's ways to sign in first in the hosted sheet, with only its Account ID above them", async () => {
+    const withWays = { ...hosted(async () => ({ left: true, message: null })), methods: async () => ({ identities: [{ provider: "github" as const, added_at: ago(60) }], history: [] }) };
+    const root = await openSheet(withWays);
+    const parts = [...one(root, ".account-manage-body").children];
+    const ways = parts.findIndex((part) => part.classList.contains("account-methods"));
+    expect(parts.slice(0, ways).map((part) => part.hasAttribute("data-account-id"))).toEqual([true]);
+    expect([...parts[ways]?.querySelectorAll("li.account-method") ?? []].map((chip) => chip.getAttribute("data-provider"))).toEqual(["github"]);
   });
 });
