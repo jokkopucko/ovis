@@ -4,9 +4,9 @@ import { join } from "node:path";
 import { appFaces } from "./app-faces.ts";
 import { withDemoBrowser } from "./demo-browser.ts";
 
-await withDemoBrowser({ tempPrefix: "ovis-header-context-", prefix: "/" }, async ({ browser, baseUrl, evidence }) => {
+await withDemoBrowser({ tempPrefix: "ovis-header-context-", prefix: "/" }, async ({ newContext, baseUrl, evidence }) => {
   for (const width of [1440, 390]) for (const theme of ["light", "dark"]) {
-    const context = await browser.newContext({ viewport: { width, height: width === 390 ? 844 : 900 }, isMobile: width === 390, hasTouch: width === 390 });
+    const context = await newContext({ viewport: { width, height: width === 390 ? 844 : 900 }, isMobile: width === 390, hasTouch: width === 390 });
     try {
       await context.addInitScript(({ width, theme }) => {
         localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme }));

@@ -22,10 +22,10 @@ const patch = `<script>(() => {
   Response.prototype.json = async function() { return fix(await json.call(this)); };
 })();</script>`;
 
-await withDemoBrowser({ tempPrefix: "ovis-chat-no-rewind-demo-", beforeTransport: patch }, async ({ browser, baseUrl, evidence }) => {
+await withDemoBrowser({ tempPrefix: "ovis-chat-no-rewind-demo-", beforeTransport: patch }, async ({ newContext, baseUrl, evidence }) => {
   for (const agent of ["claude", "grok", "agy", "codex"]) for (const width of [1280, 390]) {
     const phone = width === 390;
-    const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, isMobile: phone, hasTouch: phone, colorScheme: "dark", locale: "en-US" });
+    const context = await newContext({ viewport: { width, height: phone ? 844 : 900 }, isMobile: phone, hasTouch: phone, colorScheme: "dark" });
     try {
       await context.addInitScript((agent) => {
         window.chatAgent = agent;

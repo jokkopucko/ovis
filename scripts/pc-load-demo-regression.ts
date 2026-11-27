@@ -1,14 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { chromium, type Browser, type Page } from "playwright-core";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
+import type { Browser, Page } from "playwright-core";
+import { appContext, installClock } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 import { openSettingsPage } from "./settings-page.ts";
-import { serveDemo } from "./demo-server.ts";
 
-const app = mkdtempSync(join(tmpdir(), "ovis-pc-load-demo-"));
 const evidence = process.env.UI_EVIDENCE_DIR;
 const patch = `(() => {
   const fetchDemo = window.fetch.bind(window), EventSourceDemo = window.EventSource;
@@ -62,7 +59,7 @@ const total = async (page: Page): Promise<number> => { const n = await asks(page
 
 async function open(browser: Browser, width: number, theme: "dark" | "light" = "dark", sidebarWidth: number | null = null): Promise<{ page: Page; errors: string[]; phone: boolean; close: () => Promise<void> }> {
   const phone = width <= 480;
-  const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, locale: "en-US", hasTouch: phone, isMobile: phone });
+  const context = await appContext(browser, { viewport: { width, height: phone ? 844 : 900 }, hasTouch: phone, isMobile: phone });
   await context.addInitScript(([theme, sidebarWidth]) => {
     if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme }));
     if (sidebarWidth !== null) localStorage.setItem("ovis:sidebar-width", String(sidebarWidth));
@@ -70,7 +67,7 @@ async function open(browser: Browser, width: number, theme: "dark" | "light" = "
   const page = await context.newPage();
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.clock.install();
+  await installClock(page);
   await page.goto(`${origin}/`);
   await page.locator(".conn-live").waitFor({ state: "attached" });
   return { page, errors, phone, close: () => context.close() };
@@ -110,66 +107,54 @@ async function setPcLoad(page: Page, on: boolean): Promise<void> {
   await page.locator(".settings-dialog").waitFor({ state: "detached" });
 }
 
-try {
-  await buildDemoApp(app);
+await withDemoBrowser({ tempPrefix: "ovis-pc-load-demo-", prefix: "/", afterTransport: '<script src="./pc-load.js"></script>' }, async ({ app, browser, origin: served }) => {
   writeFileSync(join(app, "pc-load.js"), patch);
-  const index = join(app, "index.html");
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script><script src="./pc-load.js"></script><script type="module"'));
-  const server = serveDemo(app, { prefix: "/" });
-  origin = `http://127.0.0.1:${server.port}`;
-  try {
-    const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
+  origin = served;
+  for (const width of [390, 1280]) {
+    const { page, errors, phone, close } = await open(browser, width);
     try {
-      if (evidence) mkdirSync(evidence, { recursive: true });
-      for (const width of [390, 1280]) {
-        const { page, errors, phone, close } = await open(browser, width);
-        try {
-          const label = `${width}px`;
-          await showSidebar(page, phone, true);
-          if (!phone) await page.locator(".status-bar .status-bar-load").waitFor();
-          assert.equal(await page.evaluate(() => localStorage.getItem("ovis:pc-load")), null, `${label}: nothing chosen yet`);
+      const label = `${width}px`;
+      await showSidebar(page, phone, true);
+      if (!phone) await page.locator(".status-bar .status-bar-load").waitFor();
+      assert.equal(await page.evaluate(() => localStorage.getItem("ovis:pc-load")), null, `${label}: nothing chosen yet`);
 
-          await setPcLoad(page, false);
-          assert.equal(await page.evaluate(() => localStorage.getItem("ovis:pc-load")), "false");
-          const asked = await total(page);
-          await page.clock.runFor(10_000);
-          await showSidebar(page, phone, true);
-          await noLoadAnywhere(page, `${label} off`);
-          assert.equal(await total(page), asked, `${label}: off, no PC is asked`);
+      await setPcLoad(page, false);
+      assert.equal(await page.evaluate(() => localStorage.getItem("ovis:pc-load")), "false");
+      const asked = await total(page);
+      await page.clock.runFor(10_000);
+      await showSidebar(page, phone, true);
+      await noLoadAnywhere(page, `${label} off`);
+      assert.equal(await total(page), asked, `${label}: off, no PC is asked`);
 
-          await showSidebar(page, phone, true);
-          await setPcLoad(page, true);
-          assert.equal(await page.evaluate(() => localStorage.getItem("ovis:pc-load")), "true");
-          assert.equal(await page.evaluate(() => "pcLoad" in JSON.parse(localStorage.getItem("ovis:settings") ?? "{}")), false, "not in ovis:settings");
-          if (phone) {
-            await page.clock.runFor(10_000);
-            await showSidebar(page, phone, true);
-            await noLoadAnywhere(page, `${label} on`);
-            assert.equal(await page.locator(".status-bar").count(), 0, `${label}: no status bar on a phone`);
-            if (evidence) await page.screenshot({ path: join(evidence, "pc-load-390-on-drawer.png") });
-          } else {
-            const load = page.locator(".status-bar .status-bar-load");
-            await load.waitFor();
-            assert.match(await load.textContent() ?? "", /^CPU \d+%/, `${label}: the status bar names the CPU load`);
-            await page.locator('.agent-item[data-machine="work"]').first().click();
-            await page.waitForFunction(() => document.querySelector(".status-bar .status-bar-load")?.textContent === "CPU 93% · Memory 89% · Disk 93%");
-            if (evidence) { await still(page); await page.screenshot({ path: join(evidence, "pc-load-1280-on-status-bar.png") }); }
-            await noSidebarLoad(page, `${label} on, the load in the status bar`);
-            await page.locator('.agent-item[data-machine="lab"]').first().click();
-            await page.waitForFunction(() => document.querySelector(".status-bar .machine-context-name")?.textContent === "Lab");
-            await page.clock.runFor(10_000);
-            assert.equal(await load.count(), 0, `${label}: a herdr-core machine shows no load`);
-            assert.equal((await asks(page)).lab, 0, `${label}: and is never asked for it`);
-            await page.locator('.agent-item[data-machine="work"]').first().click();
-            await page.waitForFunction(() => document.querySelector(".status-bar .status-bar-load")?.textContent === "CPU 93% · Memory 89% · Disk 93%");
-          }
-
-          assert.deepEqual(errors, []);
-          console.log(`PASS ${label}: on by default; off, none anywhere and no PC asked, kept in its own key; on again, ${phone ? "no load in the drawer and no status bar" : "the selected PC's load in the status bar (none for the herdr-core machine) and none in the sidebar"}`);
-        } finally { await close(); }
+      await showSidebar(page, phone, true);
+      await setPcLoad(page, true);
+      assert.equal(await page.evaluate(() => localStorage.getItem("ovis:pc-load")), "true");
+      assert.equal(await page.evaluate(() => "pcLoad" in JSON.parse(localStorage.getItem("ovis:settings") ?? "{}")), false, "not in ovis:settings");
+      if (phone) {
+        await page.clock.runFor(10_000);
+        await showSidebar(page, phone, true);
+        await noLoadAnywhere(page, `${label} on`);
+        assert.equal(await page.locator(".status-bar").count(), 0, `${label}: no status bar on a phone`);
+        if (evidence) await page.screenshot({ path: join(evidence, "pc-load-390-on-drawer.png") });
+      } else {
+        const load = page.locator(".status-bar .status-bar-load");
+        await load.waitFor();
+        assert.match(await load.textContent() ?? "", /^CPU \d+%/, `${label}: the status bar names the CPU load`);
+        await page.locator('.agent-item[data-machine="work"]').first().click();
+        await page.waitForFunction(() => document.querySelector(".status-bar .status-bar-load")?.textContent === "CPU 93% · Memory 89% · Disk 93%");
+        if (evidence) { await still(page); await page.screenshot({ path: join(evidence, "pc-load-1280-on-status-bar.png") }); }
+        await noSidebarLoad(page, `${label} on, the load in the status bar`);
+        await page.locator('.agent-item[data-machine="lab"]').first().click();
+        await page.waitForFunction(() => document.querySelector(".status-bar .machine-context-name")?.textContent === "Lab");
+        await page.clock.runFor(10_000);
+        assert.equal(await load.count(), 0, `${label}: a herdr-core machine shows no load`);
+        assert.equal((await asks(page)).lab, 0, `${label}: and is never asked for it`);
+        await page.locator('.agent-item[data-machine="work"]').first().click();
+        await page.waitForFunction(() => document.querySelector(".status-bar .status-bar-load")?.textContent === "CPU 93% · Memory 89% · Disk 93%");
       }
-    } finally { await browser.close(); }
-  } finally { await server.stop(true); }
-} finally {
-  rmSync(app, { recursive: true, force: true });
-}
+
+      assert.deepEqual(errors, []);
+      console.log(`PASS ${label}: on by default; off, none anywhere and no PC asked, kept in its own key; on again, ${phone ? "no load in the drawer and no status bar" : "the selected PC's load in the status bar (none for the herdr-core machine) and none in the sidebar"}`);
+    } finally { await close(); }
+  }
+});

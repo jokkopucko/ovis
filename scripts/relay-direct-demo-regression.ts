@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import type { Browser } from "playwright-core";
+import { appContext } from "./app-context.ts";
 import { withDemoBrowser } from "./demo-browser.ts";
 import { openSettingsFolds, openSettingsPage } from "./settings-page.ts";
 
 async function run(browser: Browser, origin: string, width: number, theme: "light" | "dark", evidence: string | null): Promise<void> {
   const phone = width === 390;
   const tag = `${width} ${theme}`;
-  const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, ...(phone ? { deviceScaleFactor: 3, isMobile: true, hasTouch: true } : {}), locale: "en-US" });
+  const context = await appContext(browser, { viewport: { width, height: phone ? 844 : 900 }, ...(phone ? { deviceScaleFactor: 3, isMobile: true, hasTouch: true } : {}) });
   await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify({ language: "en", theme }));
   const page = await context.newPage();
   const errors: string[] = [];
@@ -43,7 +44,7 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
 
 async function notices(browser: Browser, origin: string): Promise<void> {
   for (const [fixture, kind] of [["grace", "sign-in-grace"], ["data-limit", "data-limit"]] as const) {
-    const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
+    const context = await appContext(browser, { viewport: { width: 1280, height: 900 } });
     await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify({ language: "en" }));
     const page = await context.newPage();
     await page.goto(`${origin}?demo_relay_pass=${fixture}`);

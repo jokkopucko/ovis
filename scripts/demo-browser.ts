@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Browser } from "playwright-core";
+import { chromium, type Browser, type BrowserContext, type BrowserContextOptions } from "playwright-core";
+import { appContext } from "./app-context.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { DEMO_PREFIX, serveDemo } from "./demo-server.ts";
@@ -14,13 +15,19 @@ export interface DemoBrowserOptions {
   readonly prefix?: string;
   /** Optional HTML/script snippet injected directly before `./demo-transport.js`. */
   readonly beforeTransport?: string;
+  /** Optional HTML/script snippet injected directly after `./demo-transport.js`, before the app's own module. */
+  readonly afterTransport?: string;
   /** Chromium launch args (default: `["--no-sandbox"]`). */
   readonly args?: string[];
+  /** Playwright's own launch args to leave out, such as `--hide-scrollbars` (default: none). */
+  readonly ignoreDefaultArgs?: string[];
 }
 
 export interface DemoBrowserSession {
   readonly app: string;
   readonly browser: Browser;
+  /** A context from the shared factory (`appContext` in scripts/app-context.ts): no service worker, English; `overrides` win. */
+  readonly newContext: (overrides?: BrowserContextOptions) => Promise<BrowserContext>;
   readonly origin: string;
   readonly baseUrl: string;
   readonly port: number;
@@ -30,13 +37,14 @@ export interface DemoBrowserSession {
 /**
  * Builds the disposable demo app, injects `./demo-transport.js`, serves it over loopback via
  * `serveDemo`, launches headless Chromium with `chromePath()`, and tears everything down in
- * `finally` (browser, server, temp dir). Creates `UI_EVIDENCE_DIR` when non-empty.
+ * `finally` (browser, server, temp dir). Creates `UI_EVIDENCE_DIR` when non-empty. A script opens its
+ * contexts with the session's `newContext`, so every demo script starts from the same one.
  */
 export async function withDemoBrowser<T>(
   options: DemoBrowserOptions,
   run: (session: DemoBrowserSession) => Promise<T>,
 ): Promise<T> {
-  const { tempPrefix, prefix = DEMO_PREFIX, beforeTransport = "", args = ["--no-sandbox"] } = options;
+  const { tempPrefix, prefix = DEMO_PREFIX, beforeTransport = "", afterTransport = "", args = ["--no-sandbox"], ignoreDefaultArgs = [] } = options;
   const app = mkdtempSync(join(tmpdir(), tempPrefix));
   const evidence = process.env["UI_EVIDENCE_DIR"] || null;
   try {
@@ -44,15 +52,15 @@ export async function withDemoBrowser<T>(
     const index = join(app, "index.html");
     const html = readFileSync(index, "utf8");
     assert.match(html, /<script type="module"/);
-    writeFileSync(index, html.replace(/<script type="module"/, () => `${beforeTransport}<script src="./demo-transport.js"></script>\n    <script type="module"`));
+    writeFileSync(index, html.replace(/<script type="module"/, () => `${beforeTransport}<script src="./demo-transport.js"></script>${afterTransport}\n    <script type="module"`));
     const server = serveDemo(app, { prefix });
     try {
       if (evidence !== null) mkdirSync(evidence, { recursive: true });
-      const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args });
+      const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args, ignoreDefaultArgs });
       try {
         const port = server.port!;
         const origin = `http://127.0.0.1:${port}`;
-        return await run({ app, browser, origin, baseUrl: `${origin}${prefix}`, port, evidence });
+        return await run({ app, browser, newContext: (overrides) => appContext(browser, overrides), origin, baseUrl: `${origin}${prefix}`, port, evidence });
       } finally {
         await browser.close();
       }

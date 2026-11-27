@@ -27,8 +27,8 @@ const press = (page: Page, how: "touch" | "mouse" | "legacy-touch" | "keyboard" 
   return event.defaultPrevented;
 }, how);
 
-await withDemoBrowser({ tempPrefix: "herdr-touch-long-press-demo-" }, async ({ browser, baseUrl }) => {
-  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" });
+await withDemoBrowser({ tempPrefix: "herdr-touch-long-press-demo-" }, async ({ newContext, baseUrl }) => {
+  const context = await newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "chat" })));
   const page = await context.newPage();
   const errors: string[] = [];

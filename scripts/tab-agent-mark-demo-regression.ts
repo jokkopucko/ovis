@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import type { Browser } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
+import { appContext } from "./app-context.ts";
 import { appFaces } from "./app-faces.ts";
 import { withDemoBrowser } from "./demo-browser.ts";
 
@@ -19,7 +20,7 @@ const CASES = [
 interface TabMark { name: string; agent: boolean; markOffset: number; boxHeight: number; logoHeight: number }
 
 async function check(browser: Browser, baseUrl: string, evidence: string | null, testCase: (typeof CASES)[number]): Promise<void> {
-  const context = await browser.newContext({ viewport: { width: testCase.width, height: 900 }, hasTouch: testCase.touch, locale: "en-US" });
+  const context = await appContext(browser, { viewport: { width: testCase.width, height: 900 }, hasTouch: testCase.touch });
   try {
     await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", alertsOn: false })));
     const page = await context.newPage();

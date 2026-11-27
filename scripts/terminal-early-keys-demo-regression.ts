@@ -5,13 +5,7 @@
  * it was typed blind, and what the screen shows then may be a password or a y/n prompt.
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { chromium, type Browser } from "playwright-core";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
-import { serveDemo } from "./demo-server.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 
 interface Fixture {
   sent: Array<{ type: string; pane_id?: string; text?: string; keys?: string[] }>;
@@ -42,18 +36,8 @@ function installEarlyKeysFixture(): void {
   window.WebSocket = Recorded as unknown as typeof WebSocket;
 }
 
-const app = mkdtempSync(join(tmpdir(), "ovis-early-keys-demo-"));
-let server: ReturnType<typeof Bun.serve> | null = null;
-let browser: Browser | null = null;
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n<script>(${installEarlyKeysFixture.toString()})()</script>\n<script type="module"`));
-  const prefix = "/herdr-web-ui/demo/app/";
-  server = serveDemo(app, { prefix });
-  const url = `http://127.0.0.1:${server.port}${prefix}`;
-  browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-  const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, colorScheme: "dark" });
+await withDemoBrowser({ tempPrefix: "ovis-early-keys-demo-", afterTransport: `\n<script>(${installEarlyKeysFixture.toString()})()</script>` }, async ({ newContext, baseUrl: url }) => {
+  const context = await newContext({ viewport: { width: 1280, height: 900 }, colorScheme: "dark" });
   try {
     await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", defaultView: "terminal", terminalInputMode: "direct", alertsOn: false })));
     const page = await context.newPage();
@@ -103,8 +87,4 @@ try {
     assert.deepEqual(errors, [], "no browser errors");
     console.log("PASS keys typed before the terminal took input are held or told, and never sent by themselves");
   } finally { await context.close(); }
-} finally {
-  await browser?.close();
-  server?.stop(true);
-  rmSync(app, { recursive: true, force: true });
-}
+});

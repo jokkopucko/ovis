@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, posix, sep } from "node:path";
+import { browserScriptFiles, demoLaunchCounts, demoLaunches, directContextCounts, directContexts } from "./direct-contexts.ts";
 import { fixedSleepCounts, fixedSleeps, markedWaitCounts, markedWaits, sleepFiles, turnWaitCounts, turnWaitFiles, turnWaits } from "./fixed-sleeps.ts";
 import { fail, files, lineOf, read, repo, stripComments } from "./source-scan.ts";
 
@@ -349,6 +350,54 @@ describe("turn waits", () => {
     expect(covered).toContain("server/core/codex-status-hub.test.ts");
     expect(covered).toContain("scripts/ui-regression.ts");
     expect(covered).not.toContain("server/core/status.ts");
+  });
+});
+
+describe("browser contexts", () => {
+  countRatchet({
+    json: "scripts/direct-contexts.json", what: "direct context", counts: directContextCounts, list: directContexts, print: "bun scripts/direct-contexts.ts", covered: browserScriptFiles,
+    instead: "Open a context through the shared factory, not with Playwright's own call: `newContext(overrides)` of withDemoBrowser's session (scripts/demo-browser.ts), taken from the session by name, or `appContext(browser, overrides)` from scripts/app-context.ts, and a page with that context's newPage(), not the browser's. Both start from the same context (no service worker, English); what a script needs different goes in `overrides`.",
+  });
+  const found = (text: string) => directContexts("scripts/x-regression.ts", text).length;
+
+  it("counts a call however it is written, and neither the session's helper nor a mention", () => {
+    expect(found("const context = await browser.newContext({ locale: \"en-US\" });\nconst second = await browser!\n  .newContext();")).toBe(2);
+    expect(found("const a = await browser?.newContext?.();\nconst b = await browser[\"newContext\"]();\nconst c = await (browser.newContext)();")).toBe(3);
+    expect(found("const context = await chromium.launchPersistentContext(profile, { headless: true });")).toBe(1);
+    expect(found("const context = await newContext({ viewport });\nconst other = await appContext(browser, { viewport });")).toBe(0);
+    expect(found("// was browser.newContext()\nconsole.log(\"browser.newContext() is counted\");\nconst named = /browser.newContext()/.test(text);")).toBe(0);
+  });
+
+  it("counts a page made on a browser, which is a context of Playwright's own, and not a context's page", () => {
+    expect(found("const page = await browser.newPage();\nconst other = await (await chromium.launch()).newPage();\nconst third = await this.browser!.newPage();")).toBe(3);
+    expect(found("const page = await context.newPage();\nconst other = await browserContext.newPage();\nconst third = await (await newContext()).newPage();")).toBe(0);
+  });
+
+  it("finds a call after a regular expression or a nested template that holds a backtick", () => {
+    // a scan of the text takes such a backtick for a template's start and reads the code up to the next one as its words
+    expect(found("const fence = /`{3}/;\nconst context = await browser.newContext();\nconst label = `done`;")).toBe(1);
+    expect(found("const note = `${rows.map((row) => `${row}'s`).join(\", \")}'`;\nconst context = await browser.newContext();\nconst label = `done`;")).toBe(1);
+  });
+});
+
+describe("demo launches", () => {
+  countRatchet({
+    json: "scripts/demo-launches.json", what: "demo launch", counts: demoLaunchCounts, list: demoLaunches, print: "bun scripts/direct-contexts.ts --launches", covered: browserScriptFiles,
+    instead: "Run a script that checks the demo inside withDemoBrowser (scripts/demo-browser.ts), which builds the demo app, serves it and launches Chromium the same way for every script, in place of buildDemoApp and chromium.launch of its own. A snippet for the page goes in `beforeTransport` or `afterTransport`.",
+  });
+  const found = (text: string) => demoLaunches("scripts/x-demo-regression.ts", text).length;
+
+  it("counts a launch in a script that imports the demo's build, whatever it calls it", () => {
+    expect(found("import { buildDemoApp } from \"./demo-build.ts\";\nawait buildDemoApp(app);\nconst browser = await chromium.launch({ headless: true });")).toBe(1);
+    expect(found("import { buildDemoApp as build } from \"./demo-build.ts\";\nawait build(app);\nconst browser = await chromium\n  .launch();")).toBe(1);
+    expect(found("import * as demo from \"./demo-build.ts\";\nconst browser = await chromium[\"launch\"]?.();\nconst kept = await chromium.launchPersistentContext(profile);")).toBe(2);
+    expect(found("const { buildDevelopmentDemoApp } = await import(\"./demo-build.ts\");\nconst browser = await chromium.launch();")).toBe(1);
+  });
+
+  it("counts none in a script that builds no demo, or leaves the launch to the harness", () => {
+    expect(found("const server = await createServer();\nconst browser = await chromium.launch({ headless: true });")).toBe(0);
+    expect(found("import { withDemoBrowser } from \"./demo-browser.ts\";\nawait withDemoBrowser({ tempPrefix: \"x-\" }, async ({ newContext }) => { await newContext(); });")).toBe(0);
+    expect(found("import { buildDemoApp } from \"./demo-build.ts\";\nconsole.log(\"chromium.launch()\", /chromium.launch()/);")).toBe(0);
   });
 });
 

@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import type { Browser } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
+import { appContext } from "./app-context.ts";
 import { withDemoBrowser } from "./demo-browser.ts";
 import { openSettingsPage } from "./settings-page.ts";
 
 async function run(browser: Browser, origin: string, width: number, theme: "light" | "dark", evidence: string | null): Promise<void> {
   const phone = width === 390;
   const tag = `${width} ${theme}`;
-  const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, ...(phone ? { deviceScaleFactor: 3, isMobile: true, hasTouch: true } : {}), locale: "en-US", colorScheme: theme });
+  const context = await appContext(browser, { viewport: { width, height: phone ? 844 : 900 }, ...(phone ? { deviceScaleFactor: 3, isMobile: true, hasTouch: true } : {}), colorScheme: theme });
   await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify({ language: "en", theme, agentNamedGroups: true, agentGroupNames: ["Agents", "Tasks"] }));
   // the Claude pane's row is the one moved: its turn stays at work, or on a slow runner the end the
   // demo times 4.5s in changes the row while its menu is open
