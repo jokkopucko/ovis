@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { MAX_PREFERENCES_BYTES, nextTabLabels, normalizeThemeChange, sharedPreferencesBody, type PreferencesChange, type SharedPreferences } from "../shared/preferences.ts";
+import { MAX_PREFERENCES_BYTES, nextTabLabels, normalizeThemeChange, preferencesConflict, preferencesPutBody, sharedPreferencesBody, type PreferencesChange, type SharedPreferences } from "../shared/preferences.ts";
 import { badRequest, isJsonObject, jsonResponse } from "./http.ts";
 import { damagedCopy, readStateDocument, writeStateDocument } from "./state-document.ts";
 import { harnessToolSetting, parseHarnessSetting } from "../shared/harness-tool.ts";
@@ -24,6 +24,8 @@ const byteLength = (text: string): number => new TextEncoder().encode(text).leng
 export class PreferencesTooLarge extends Error {
   constructor() { super(`Shared preferences are at most ${MAX_PREFERENCES_BYTES / 1024} KB`); }
 }
+
+class PreferencesRevisionConflict extends Error {}
 
 /**
  * The muted panes are always in the document, empty while nothing is muted: a server with none
@@ -125,7 +127,7 @@ export class PreferenceStore {
   get(): SharedPreferences { return this.current; }
   get paneRunEpoch(): string | null { return this.agentPolicy.paneRunEpoch; }
 
-  set(change: PreferencesChange): SharedPreferences {
+  set(change: PreferencesChange, expectedRevision?: number): SharedPreferences {
     const changingPolicy = Object.hasOwn(change.settings, "agentHarnessTool");
     const policy = changingPolicy ? parseHarnessSetting(change.settings.agentHarnessTool) : undefined;
     if (policy === null) throw new Error("Invalid agent harness policy.");
@@ -135,6 +137,13 @@ export class PreferenceStore {
       const held = this.readDisk();
       if (held) base = held;
       keepDamaged = held === null;
+    }
+    if (expectedRevision !== undefined && expectedRevision !== base.revision) {
+      if (base.revision !== this.current.revision) {
+        const policy = this.current.settings.agentHarnessTool;
+        this.current = { ...base, settings: { ...base.settings, ...(policy === undefined ? {} : { agentHarnessTool: policy }) } };
+      }
+      throw new PreferencesRevisionConflict();
     }
     let labelsUnreadable = false;
     const wasOff = base.settings.autoTabNames === false;
@@ -259,11 +268,13 @@ export async function handlePreferencesRequest(request: Request, store: Preferen
   if (byteLength(text) > MAX_PREFERENCES_BYTES) return tooLarge();
   let raw: unknown;
   try { raw = JSON.parse(text); } catch { return badRequest("invalid_json", "The body is not JSON"); }
-  const body = sharedPreferencesBody(raw);
-  if (body === null) return badRequest("invalid_body", "Send { settings: object, pins?: string[], muted_panes?: string[], tab_labels?: { [pane|terminal]: string }, tab_labels_removed?: string[] }");
+  const body = preferencesPutBody(raw);
+  if (body === null) return badRequest("invalid_body", "Send { settings: object, pins?: string[], muted_panes?: string[], tab_labels?: { [pane|terminal]: string }, tab_labels_removed?: string[], expected_revision?: non-negative safe integer }");
   if (Object.hasOwn(body.settings, "agentHarnessTool") && !parseHarnessSetting(body.settings.agentHarnessTool)) return badRequest("invalid_policy", "Invalid agent harness policy.");
-  try { return reply(preferencesForClient(store.set(body))); }
+  const { expected_revision: expectedRevision, ...change } = body;
+  try { return reply(preferencesForClient(store.set(change, expectedRevision))); }
   catch (error) {
+    if (error instanceof PreferencesRevisionConflict) return reply(preferencesConflict(preferencesForClient(store.get())), 409);
     if (error instanceof PreferencesTooLarge) return tooLarge();
     return reply({ error: { code: "preferences_unwritable", message: error instanceof Error ? error.message : String(error) } }, 500);
   }

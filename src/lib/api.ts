@@ -1,6 +1,6 @@
 import { apiFetch } from "./api-request-id.ts";
 import { CompactAgentsError, expandMachine, type WireMachine } from "../../shared/compact-agents.ts";
-import type { PreferencesChange, SharedPreferences } from "../../shared/preferences.ts";
+import { parsePreferencesConflict, type PreferencesConflict, type PreferencesPut, type SharedPreferences } from "../../shared/preferences.ts";
 import type { AlertWebhookSave, AlertWebhookView } from "../../shared/alert-webhook.ts";
 import type { SeenFinish, SeenPresentation } from "../../shared/seen.ts";
 import type { MemoryView } from "../../shared/memory.ts";
@@ -476,9 +476,13 @@ export async function fetchPreferences(): Promise<SharedPreferences | null> {
   catch (error) { if (error instanceof ApiError && error.status === 404) return null; throw error; }
 }
 
-export async function savePreferences(body: PreferencesChange, keepalive = false): Promise<SharedPreferences> {
+export async function savePreferences(body: PreferencesPut, keepalive = false): Promise<SharedPreferences> {
   const url = "/api/preferences";
   const response = await apiFetch(url, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body), keepalive });
+  if (response.status === 409) {
+    const conflict = parsePreferencesConflict(await response.clone().json().catch(() => null));
+    if (conflict !== null) throw new PreferencesConflictError(url, conflict);
+  }
   if (!response.ok) throw await errorFrom(url, response);
   return (await response.json()) as SharedPreferences;
 }
@@ -542,6 +546,15 @@ export class ApiError extends Error {
 }
 
 export const routeMissing = (error: unknown): boolean => error instanceof ApiError && error.status === 404 && error.code === "not_found";
+
+export class PreferencesConflictError extends ApiError {
+  readonly current: SharedPreferences;
+
+  constructor(url: string, conflict: PreferencesConflict) {
+    super(url, 409, conflict.error.message, conflict.error.code);
+    this.current = conflict.current;
+  }
+}
 
 const LOCALIZED_ERRORS: Readonly<Record<string, () => string>> = {
   pc_add_source_bound: () => t("This PC is in an account. Add PCs from your account."),

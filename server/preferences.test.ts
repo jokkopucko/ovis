@@ -37,6 +37,30 @@ function block(dir: string, name: string): () => void {
 }
 
 describe("shared preferences", () => {
+  it("rejects a stale whole-list write without saving, but still accepts a legacy PUT (#3261)", async () => {
+    const dir = root();
+    const store = new PreferenceStore(dir);
+    const url = "http://x/api/preferences";
+    const get = async () => (await handlePreferencesRequest(new Request(url), store)).json();
+    store.set({ settings: {}, pins: ["pane-a", "pane-b"] });
+    const [first, second] = await Promise.all([get(), get()]);
+    expect(first.revision).toBe(second.revision);
+
+    expect((await put(store, JSON.stringify({ settings: {}, pins: ["pane-a"], expected_revision: first.revision }))).status).toBe(200);
+    const current = await get();
+    expect(current).toMatchObject({ revision: 2, pins: ["pane-a"] });
+    const stale = { settings: {}, pins: ["pane-a", "pane-b", "pane-c"] };
+    const conflict = await put(store, JSON.stringify({ ...stale, expected_revision: second.revision }));
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toEqual({ error: { code: "revision_conflict", message: expect.any(String) }, current });
+    expect(await get()).toEqual(current);
+    expect(new PreferenceStore(dir).get()).toMatchObject({ revision: 2, pins: ["pane-a"] });
+
+    const legacy = await put(store, JSON.stringify(stale));
+    expect(legacy.status).toBe(200);
+    expect(await get()).toMatchObject({ revision: 3, pins: stale.pins });
+  });
+
   it("keeps explicit Off through a legacy save and refuses a malformed replacement", async () => {
     const dir = root();
     const store = new PreferenceStore(dir);

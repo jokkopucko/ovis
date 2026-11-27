@@ -7,7 +7,7 @@ import { chromium, devices, type Browser, type BrowserContext, type Page } from 
 import panes from "../site/demo/fixtures/panes.json";
 import type { Machine } from "../shared/machines.ts";
 import { paneStorageId } from "../shared/machines.ts";
-import type { SharedPreferences } from "../shared/preferences.ts";
+import { preferencesConflict, type SharedPreferences } from "../shared/preferences.ts";
 import type { ServerMessage } from "../shared/protocol.ts";
 import { handlePreferencesRequest, PreferenceStore } from "../server/preferences.ts";
 import { buildDemoApp } from "./demo-build.ts";
@@ -283,8 +283,13 @@ export async function runPaneMute(): Promise<void> { try {
         fixture.puts.push(JSON.parse(text));
         if (fixture.watch) return Response.json({ error: { code: "read_only", message: "this device can only watch" } }, { status: 403 });
         if (fixture.error) return Response.json({ error: { code: "preferences_unwritable", message: "EACCES: permission denied, open '/state/preferences.json.7.tmp'" } }, { status: 500 });
-        const body = fixture.old ? JSON.stringify(strip({ revision: 0, ...JSON.parse(text) })) : text;
+        let body = text;
+        if (fixture.old) {
+          const { expected_revision: _expected, ...legacy } = JSON.parse(text);
+          body = JSON.stringify(strip({ revision: 0, ...legacy }));
+        }
         const answer = await handlePreferencesRequest(new Request(request.url, { method: "PUT", body }), fixture.store);
+        if (answer.status === 409) return Response.json(preferencesConflict(strip(fixture.store.get())), { status: 409, headers: { "cache-control": "no-store" } });
         return answer.status === 200 ? Response.json(strip(await answer.json() as SharedPreferences), { headers: { "cache-control": "no-store" } }) : answer;
       }
       return Response.json(strip(fixture.store.get()), { headers: { "cache-control": "no-store" } });

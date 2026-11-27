@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { act, createElement, type ReactElement } from "react";
 import { openPage, type Page } from "./page.fixture.ts";
-import { PreferenceStore } from "../../server/preferences.ts";
+import { handlePreferencesRequest, PreferenceStore } from "../../server/preferences.ts";
 const named = <T extends object>(doc: T) => ({ ...doc, state_id: expect.stringMatching(/^[0-9a-f]{32}$/) });
-import { type PreferencesChange, type SharedPreferences } from "../../shared/preferences.ts";
+import type { PreferencesPut, SharedPreferences } from "../../shared/preferences.ts";
 import { DEFAULT_SETTINGS, SettingsProvider, sanitizeSettings, useSettings, type Settings } from "./settings.ts";
 import { currentSidebarPins, setSidebarPins } from "./sidebarPins.ts";
 import { currentPaneMutes, setPaneMutes } from "./paneMutes.ts";
@@ -32,11 +32,12 @@ describe("preferences sync real send path", () => {
   let waits: Map<unknown, number>;
   let syncEnabled: boolean;
   let refusals: number;
-  let bodies: PreferencesChange[];
+  let bodies: PreferencesPut[];
   let answerListeners: Set<() => void>;
+  let beforeConditionalPut: (() => void) | null;
 
   let keepalives: boolean[];
-  let sent: PreferencesChange[];
+  let sent: PreferencesPut[];
   const dropNewKeys = ({ muted_panes: _muted, state_id: _id, ...doc }: SharedPreferences): SharedPreferences => ({
     ...doc, settings: Object.fromEntries(Object.entries(doc.settings).filter(([key]) => key !== "darkTheme" && key !== "lightTheme")),
   });
@@ -90,6 +91,7 @@ describe("preferences sync real send path", () => {
     bodies = [];
     sent = [];
     answerListeners = new Set();
+    beforeConditionalPut = null;
     setPaneMutes(null);
     setSidebarPins([]);
     store.subscribe((doc) => {
@@ -103,6 +105,10 @@ describe("preferences sync real send path", () => {
       }
       bodies.push(JSON.parse(String(init.body)));
       keepalives.push(init.keepalive === true);
+      if (beforeConditionalPut !== null) {
+        beforeConditionalPut();
+        return handlePreferencesRequest(new Request("http://x/api/preferences", init), store);
+      }
       if (refuse !== null || refusing !== null) {
         const answer = refuse;
         refuse = null;
@@ -110,7 +116,7 @@ describe("preferences sync real send path", () => {
         for (const listener of [...answerListeners]) listener();
         return answer ?? refusing!();
       }
-      const body: PreferencesChange = JSON.parse(String(init.body));
+      const body: PreferencesPut = JSON.parse(String(init.body));
       sent.push(body);
       const settings = oldServer ? dropNewKeys({ revision: 0, settings: body.settings }).settings : body.settings;
       const { muted_panes: _dropped, ...older } = body;
@@ -229,6 +235,95 @@ describe("preferences sync real send path", () => {
   }
   const seed = { theme: "dark", palette: "tokyo-night", darkTheme: "tokyo-night", lightTheme: "tokyo-night-day" };
 
+  it.each(["before the PUT", "in the 409 response"] as const)("reapplies only local list edits and scalar choices when another writer is seen %s (#3261)", async (delivery) => {
+    const original = ["local:w1:p1", "local:w1:p2"] satisfies [string, string];
+    const local = [original[0], "local:w1:p3"];
+    const remote = [original[1], "local:w1:p4"];
+    store.set({ settings: { lockedAgents: original, language: "en" }, pins: original, muted_panes: original });
+    const client = await open();
+    const writer = () => store.set({ settings: { lockedAgents: remote, language: "ja", showThinking: false }, pins: remote, muted_panes: remote });
+    beforeConditionalPut = () => undefined;
+    await act(async () => {
+      setSidebarPins(local);
+      setPaneMutes(local);
+      client.update({ lockedAgents: local, language: "ko" });
+    });
+    if (delivery === "before the PUT") await act(async () => { writer(); });
+    else {
+      clients.length = 0; // No event delivery: the conflict response itself must supply the newer lists.
+      beforeConditionalPut = () => {
+        beforeConditionalPut = () => undefined;
+        writer();
+      };
+    }
+
+    await windows(3);
+
+    const merged = ["local:w1:p4", "local:w1:p3"];
+    expect(bodies.map((body) => body.expected_revision)).toEqual(delivery === "before the PUT" ? [2] : [1, 2]);
+    expect(store.get()).toMatchObject({ revision: 3, settings: { lockedAgents: merged, language: "ko", showThinking: false }, pins: merged, muted_panes: merged });
+    expect(currentSidebarPins()).toEqual(merged);
+    expect(currentPaneMutes()).toEqual(merged);
+    expect(client.settings.lockedAgents).toEqual(merged);
+    expect(client.saveError).toBeNull();
+  });
+
+  it.each(["manual", "automatic"] as const)("keeps the edit after repeated revision conflicts for %s retry", async (retry) => {
+    store.set({ settings: {}, pins: ["local:w1:p1"] });
+    const client = await open();
+    beforeConditionalPut = () => { store.set({ settings: { showThinking: false } }); };
+    await act(async () => { setSidebarPins(["local:w1:p1", "local:w1:p2"]); });
+
+    await windows(8);
+
+    expect(client.paused).toBe(true);
+    expect(bodies).toHaveLength(4);
+    expect(store.get().pins).toEqual(["local:w1:p1"]);
+    expect(currentSidebarPins()).toEqual(["local:w1:p1", "local:w1:p2"]);
+    beforeConditionalPut = () => undefined;
+    if (retry === "manual") await act(async () => { client.retry(); });
+    else await act(async () => { jest.advanceTimersByTime(60_000); });
+    await windows();
+    expect(store.get().pins).toEqual(["local:w1:p1", "local:w1:p2"]);
+    expect(client.paused).toBe(false);
+  });
+
+  it("sends an expected revision only for whole-list writes, including keepalive", async () => {
+    store.set({ settings: {}, pins: [] });
+    const client = await open();
+    await act(async () => { client.update({ language: "ko" }); });
+    await send();
+    await act(async () => { client.update({ language: "en" }); });
+    await act(async () => { leavePage("pagehide"); });
+    await act(async () => { client.update({ lockedAgents: ["local:w1:p1"] }); });
+    await send();
+    await act(async () => { setSidebarPins(["local:w1:p1"]); });
+    await act(async () => { leavePage("pagehide"); });
+
+    expect(keepalives).toEqual([false, true, false, true]);
+    expect(bodies.map((body) => body.expected_revision)).toEqual([undefined, undefined, 3, 4]);
+  });
+
+  it("finishes manual Retry through a revision conflict while the event stream is disconnected", async () => {
+    store.set({ settings: {}, pins: [] });
+    const client = await open();
+    refuse = unwritable();
+    await act(async () => { setSidebarPins(["local:w1:p1"]); });
+    await send();
+    expect(client.saveError).not.toBeNull();
+
+    await act(async () => { client.disconnected(); });
+    clients.length = 0;
+    store.set({ settings: {}, pins: ["local:w1:p2"] });
+    beforeConditionalPut = () => undefined;
+    await act(async () => { client.retry(); });
+    await windows(3);
+
+    expect(bodies.map((body) => body.expected_revision)).toEqual([1, 1, 2]);
+    expect(store.get().pins).toEqual(["local:w1:p2", "local:w1:p1"]);
+    expect([client.retrying, client.saveError]).toEqual([false, null]);
+  });
+
   it.each(["dark", "light"] as const)("takes a restarted legacy-only %s palette in a fresh client without corrective PUTs", async (theme) => {
     store.set({ settings: { palette: "catppuccin" } });
     store.set({ settings: { theme } });
@@ -318,18 +413,24 @@ describe("preferences sync real send path", () => {
     expect(bodies).toHaveLength(1);
   });
 
-  it("sends an edit made while a save is on its way when the page goes", async () => {
+  it("saves a list edit when the page goes while another save's answer is pending", async () => {
+    store.set({ settings: {}, pins: [] });
     const gate = Promise.withResolvers<void>();
     releaseAnswer = () => gate.promise;
     const client = await open();
     await act(async () => { client.update({ showUsage: !DEFAULT_SETTINGS.showUsage }); });
     await windows();
+    expect(store.get().revision).toBe(2);
+    beforeConditionalPut = () => undefined;
     await act(async () => { client.update({ showThinking: !DEFAULT_SETTINGS.showThinking }); });
+    await act(async () => { setSidebarPins(["local:w1:p1"]); });
 
     await act(async () => { leavePage("pagehide"); });
 
     expect(keepalives).toEqual([false, true]);
+    expect(bodies[1]).not.toHaveProperty("expected_revision");
     expect(bodies[1]?.settings).toMatchObject({ showUsage: !DEFAULT_SETTINGS.showUsage, showThinking: !DEFAULT_SETTINGS.showThinking });
+    expect(store.get().pins).toEqual(["local:w1:p1"]);
     await act(async () => { gate.resolve(); });
     releaseAnswer = undefined;
   });
@@ -852,7 +953,7 @@ describe("preferences sync real send path", () => {
     expect(answers).toBe(0);
     await act(async () => { client.update({ showThinking: true }); });
     await send();
-    expect(sent).toEqual([{ settings: { showThinking: true }, pins: [] }]);
+    expect(sent).toEqual([{ expected_revision: 0, settings: { showThinking: true }, pins: [] }]);
     expect(currentPaneMutes()).toBeNull();
     oldServer = false;
     await act(async () => { store.set({ settings: { theme: "light" } }); });
@@ -875,7 +976,7 @@ describe("preferences sync real send path", () => {
     expect(answers).toBe(0);
     await act(async () => { client.update({ showThinking: true }); });
     await send();
-    expect(sent).toEqual([{ settings: { showThinking: true }, pins: [] }]);
+    expect(sent).toEqual([{ expected_revision: 2, settings: { showThinking: true }, pins: [] }]);
     expect(currentPaneMutes()).toBeNull();
   });
 
@@ -994,7 +1095,7 @@ describe("preferences sync real send path", () => {
     await act(async () => { setPaneMutes(["w1:p1"]); });
     await send();
     expect(answers).toBe(1);
-    expect(sent).toEqual([{ settings: {}, pins: [], muted_panes: ["w1:p1"] }]);
+    expect(sent).toEqual([{ expected_revision: 0, settings: {}, pins: [], muted_panes: ["w1:p1"] }]);
     expect(store.get().muted_panes).toEqual(["w1:p1"]);
     expect(a.saveError).toBeNull();
     await windows(3);
@@ -1010,7 +1111,7 @@ describe("preferences sync real send path", () => {
     expect(revisions).toEqual([1]);
     await act(async () => { setPaneMutes([]); });
     await send();
-    expect(sent.at(-1)).toEqual({ settings: {}, muted_panes: [] });
+    expect(sent.at(-1)).toEqual({ expected_revision: 1, settings: {}, muted_panes: [] });
     expect(store.get().muted_panes).toEqual([]);
     expect(currentPaneMutes()).toEqual([]);
   });
@@ -1103,7 +1204,7 @@ describe("preferences sync real send path", () => {
     await act(async () => { client.retry(); });
     await send();
     expect(bodies.length).toBe(4);
-    expect(bodies[3]).toEqual({ settings: { darkTheme: "tokyo-night", lightTheme: "catppuccin", palette: "tokyo-night" }, pins: ["local:w1:p1"] });
+    expect(bodies[3]).toEqual({ expected_revision: 0, settings: { darkTheme: "tokyo-night", lightTheme: "catppuccin", palette: "tokyo-night" }, pins: ["local:w1:p1"] });
     expect(store.get()).toMatchObject({ settings: { darkTheme: "tokyo-night", lightTheme: "catppuccin" }, pins: ["local:w1:p1"] });
     expect(client.saveError).toBeNull();
   });
@@ -1340,9 +1441,9 @@ describe("preferences sync real send path", () => {
 
     await act(async () => { store.set({ settings: {}, pins: ["local:w1:p9"], muted_panes: ["w1:p9"] }); });
     await longWait();
-    expect(store.get().pins).toEqual(["local:w1:p1", "local:w1:p2"]);
+    expect(store.get().pins).toEqual(["local:w1:p9", "local:w1:p2"]);
     expect([...store.get().muted_panes!].sort()).toEqual(["w1:p1", "w1:p9"]);
-    expect([currentSidebarPins(), [...currentPaneMutes()!].sort()]).toEqual([["local:w1:p1", "local:w1:p2"], ["w1:p1", "w1:p9"]]);
+    expect([currentSidebarPins(), [...currentPaneMutes()!].sort()]).toEqual([["local:w1:p9", "local:w1:p2"], ["w1:p1", "w1:p9"]]);
   });
 
   it.each([["drawn", true], ["not drawn yet", false]] as const)("a refused pick that gives way to a newer save, %s, leaves no save error over the edit made next", async (_name, drawn) => {

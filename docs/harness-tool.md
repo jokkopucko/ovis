@@ -54,6 +54,18 @@ for example:
 {"settings":{"agentHarnessTool":{"level":"start","depth":1,"harnesses":["opencode"]}}}
 ```
 
+When changing a list read from `GET /api/preferences`, include that document's revision as the
+optional `expected_revision` field (a non-negative safe integer) in the PUT body. If the revision
+has changed, the server saves nothing and returns HTTP `409`:
+
+```json
+{"error":{"code":"revision_conflict","message":"Shared preferences changed since they were read"},"current":{"revision":8,"settings":{"agentHarnessTool":{"level":"off","depth":1,"harnesses":[]}},"muted_panes":[]}}
+```
+
+`current` is the whole document GET would return, including any stored pins, settings, and other
+fields. Apply your own list additions and removals to `current` before retrying with
+`current.revision`. Omitting `expected_revision` keeps the unconditional PUT behavior.
+
 With a valid run token, a parent can still stop a child it started after its start/send grant
 shrinks. Stop cancels pending approvals and questions without choosing any option. Use `off` to revoke
 every existing run token; a new launch is needed after revocation. Changing a grant never kills

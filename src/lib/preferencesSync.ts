@@ -4,8 +4,9 @@
  * browser's own, and opening a page writes nothing.
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { mirrorPalette, SHARED_SETTING_KEYS, type PreferencesChange, type SharedPreferences, type SharedSettingKey } from "../../shared/preferences.ts";
-import { ApiError, fetchPreferences, savePreferences } from "./api.ts";
+import { mirrorPalette, SHARED_SETTING_KEYS, type PreferencesChange, type PreferencesPut, type SharedPreferences, type SharedSettingKey } from "../../shared/preferences.ts";
+import { ApiError, fetchPreferences, PreferencesConflictError, savePreferences } from "./api.ts";
+import { rebasePreferenceList } from "./preferencesList.ts";
 import { DEFAULT_THEME } from "./themes.ts";
 import { sanitizeSettings, sharedSettings, useSettings, type Settings } from "./settings.ts";
 import { currentPaneMutes, setPaneMutes, subscribePaneMutes } from "./paneMutes.ts";
@@ -16,6 +17,7 @@ import { userErrorMessage, type UserError } from "./userError.ts";
 const SEND_AFTER_MS = 600;
 const RETRY_MS = 5_000;
 const PAUSE_AFTER = 3;
+const MAX_CONFLICT_RETRIES = 3;
 const PAUSED_RETRY_MS = 60_000;
 const PAUSED_RETRY_MAX_MS = 5 * 60_000;
 /**
@@ -40,6 +42,12 @@ function carry(carried: Carried): void {
 }
 
 const pausedWait = (failures: number): number => Math.min(PAUSED_RETRY_MS * 2 ** Math.max(0, failures - PAUSE_AFTER), PAUSED_RETRY_MAX_MS);
+
+function withExpectedRevision(change: PreferencesChange, revision: number): PreferencesPut {
+  return change.pins !== undefined || change.muted_panes !== undefined || Object.values(change.settings).some(Array.isArray)
+    ? { ...change, expected_revision: revision }
+    : change;
+}
 
 type Shared = Partial<Record<SharedSettingKey, unknown>>;
 export interface Baseline {
@@ -107,10 +115,16 @@ export function takePreferences(base: Baseline, local: Local, remote: SharedPref
     if (!same(sanitizeSettings({ [key]: value })[key], value)) continue;
     const flown = inFlight !== null && key in inFlight.settings;
     const sent = flown && same(inFlight.settings[key], local.settings[key]);
-    const edited = !same(local.settings[key], flown ? inFlight.settings[key] : base.settings[key]) && !sent;
+    const reference = flown ? inFlight.settings[key] : base.settings[key];
+    const mine = local.settings[key];
+    const edited = !same(mine, reference) && !sent;
     const overtaken = refused !== null && key in refused.settings && same(local.settings[key], refused.settings[key]) && !same(value, base.settings[key]);
     settings[key] = value;
     if (force || !edited || overtaken) patch[key] = value;
+    else if (Array.isArray(reference) && Array.isArray(mine) && Array.isArray(value)) {
+      const merged = rebasePreferenceList(reference, mine, value);
+      if (!same(merged, mine)) patch[key] = merged;
+    }
   }
   // Palette is a derived mirror, not an independent local edit. A legacy document with no
   // sides must not overwrite a device's migrated System pair or provoke a correcting PUT.
@@ -120,24 +134,28 @@ export function takePreferences(base: Baseline, local: Local, remote: SharedPref
     if (base.pins === null && !force) pins = [...remote.pins, ...local.pins.filter((pin) => !remote.pins!.includes(pin))];
     else {
       const sent = inFlight?.pins !== undefined && same(inFlight.pins, local.pins);
-      const edited = !same(local.pins, inFlight?.pins ?? base.pins) && !sent;
+      const reference = inFlight?.pins ?? base.pins;
+      const edited = !same(local.pins, reference) && !sent;
       const overtaken = refused?.pins !== undefined && same(local.pins, refused.pins) && !same(remote.pins, base.pins);
       if (force || !edited || overtaken) pins = [...remote.pins];
+      else if (reference !== null) {
+        const merged = rebasePreferenceList(reference, local.pins, remote.pins);
+        if (!same(merged, local.pins)) pins = merged;
+      }
     }
   }
   let muted: string[] | null | undefined = null;
   if (remote.muted_panes !== undefined) {
     const flown = inFlight?.muted_panes;
-    const sent = flown !== undefined && same(flown, local.muted);
+    const mine = local.muted;
+    const sent = flown !== undefined && same(flown, mine);
     const reference = flown ?? base.muted;
-    const edited = local.muted !== null && reference !== null && !same(local.muted, reference) && !sent;
-    const overtaken = refused?.muted_panes !== undefined && same(local.muted, refused.muted_panes) && !same(remote.muted_panes, base.muted);
+    const edited = mine !== null && reference !== null && !same(mine, reference) && !sent;
+    const overtaken = refused?.muted_panes !== undefined && same(mine, refused.muted_panes) && !same(remote.muted_panes, base.muted);
     if (force || !edited || overtaken) muted = [...remote.muted_panes];
     else {
-      const was = reference!;
-      const now = local.muted!;
-      const merged = [...remote.muted_panes.filter((key) => now.includes(key) || !was.includes(key)), ...now.filter((key) => !was.includes(key) && !remote.muted_panes!.includes(key))];
-      muted = same(merged, now) ? undefined : merged;
+      const merged = rebasePreferenceList(reference, mine, remote.muted_panes);
+      muted = same(merged, mine) ? undefined : merged;
     }
   }
   let tabLabels: Record<string, string> | null = null;
@@ -201,6 +219,7 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [saveError, setSaveError] = useState<UserError | null>(null);
   const failures = useRef(0);
+  const conflicts = useRef(0);
   const [paused, setPaused] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const retryTimer = useRef<number | undefined>(undefined);
@@ -220,6 +239,7 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
 
   const standDown = useCallback(() => {
     failures.current = 0;
+    conflicts.current = 0;
     refused.current = null;
     window.clearTimeout(pauseTimer.current);
     userRetry.current = false;
@@ -253,8 +273,8 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
     return () => { gone.current = true; };
   }, []);
 
-  const absorb = useCallback((remote: SharedPreferences) => {
-    if (off.current || (loadedRef.current && remote.revision <= revision.current)) return;
+  const absorb = useCallback((remote: SharedPreferences, restart = false) => {
+    if (off.current || (!restart && loadedRef.current && remote.revision <= revision.current)) return;
     const local = here();
     const before = carried.current;
     carried.current = null;
@@ -265,7 +285,7 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
         if (same(local.settings[key as SharedSettingKey], value)) delete base.current.settings[key as SharedSettingKey];
       }
     }
-    revision.current = Math.max(revision.current, remote.revision);
+    revision.current = remote.revision;
     const kept = stored.current;
     const startedOver = kept !== null && (remote.revision < kept.revision || (kept.stateId !== undefined && remote.state_id !== undefined && remote.state_id !== kept.stateId));
     if (!loadedRef.current && startedOver) base.current = { ...base.current, pins: null };
@@ -312,6 +332,7 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
   const resume = useCallback(() => {
     if (off.current || readOnly.current) return;
     failures.current = 0;
+    conflicts.current = 0;
     window.clearTimeout(pauseTimer.current);
     setPaused(false);
     setAttempt((count) => count + 1);
@@ -358,8 +379,8 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
     if (!enabled || !loaded || off.current || readOnly.current || paused || pending === null) return;
     // a reload or a closed tab ends the send wait below with the page (#2374), and a phone may kill a hidden
     // one: what is unsent goes now, in a request that outlives the page. While a change is on its way (its
-    // request may not outlive the page), what is unsent, that change's values included, goes beside it,
-    // untracked: the same values, and last write wins.
+    // request may not outlive the page), what is unsent goes beside it without a precondition:
+    // the first write can have advanced the revision while its answer is still on the way.
     let timer: number | undefined;
     const leaving = (event: Event): void => {
       if (event.type === "visibilitychange" && document.visibilityState !== "hidden") return;
@@ -371,7 +392,8 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
         if (outlives.current === going) return;
         outlives.current = going;
         carry({ revision: revision.current, settings: unsent.settings });
-        savePreferences(unsent, true).catch(() => undefined);
+        const body = inFlight.current === null ? withExpectedRevision(unsent, revision.current) : unsent;
+        savePreferences(body, true).catch(() => undefined);
         return;
       }
       window.clearTimeout(timer);
@@ -389,10 +411,11 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
       // what is unsent when it goes, not when this wait began: a document or an edit since then counts, drawn or not
       const body = preferencesChange(base.current, here());
       if (body === null) return;
+      const manual = userRetry.current;
       userRetry.current = false;
       inFlight.current = body;
       outlives.current = keepalive ? JSON.stringify(body) : null;
-      savePreferences(body, keepalive).then((saved) => {
+      savePreferences(withExpectedRevision(body, revision.current), keepalive).then((saved) => {
         refused.current = null;
         // An older server silently drops new names. Acknowledge exactly what was sent, not
         // today's local value: an edit made while the request was in flight still goes next.
@@ -404,6 +427,7 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
         absorb(saved);
         settled();
         failures.current = 0;
+        conflicts.current = 0;
         setRetrying(false);
         if (preferencesChange(base.current, here()) === null) {
           userRetry.current = false;
@@ -411,6 +435,29 @@ export function usePreferencesSync(enabled: boolean): PreferencesSync {
         }
         setAttempt((count) => count + 1);
       }).catch((error: unknown) => {
+        if (error instanceof PreferencesConflictError) {
+          const arrived = held.current;
+          held.current = null;
+          inFlight.current = null;
+          if (!live.current) return;
+          refused.current = null;
+          const restart = error.current.revision < revision.current;
+          // A conflict did not accept our write. Rebase against the old baseline, not the sent list.
+          absorb(!restart && arrived !== null && arrived.revision > error.current.revision ? arrived : error.current, restart);
+          if (rest()) return;
+          if (++conflicts.current <= MAX_CONFLICT_RETRIES) {
+            userRetry.current ||= manual;
+            setAttempt((count) => count + 1);
+          } else {
+            userRetry.current = false;
+            setSaveError(userErrorMessage(error));
+            setRetrying(false);
+            setPaused(true);
+            const pausedFailures = PAUSE_AFTER + conflicts.current - MAX_CONFLICT_RETRIES - 1;
+            pauseTimer.current = window.setTimeout(() => setPaused(false), pausedWait(pausedFailures));
+          }
+          return;
+        }
         const status = error instanceof ApiError ? error.status : null;
         // before a document held behind this save is read: a device that cannot write takes it whole, and a
         // refused value gives way to a newer one saved elsewhere
