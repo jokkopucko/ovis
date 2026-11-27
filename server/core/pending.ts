@@ -17,9 +17,9 @@
  * pane after, so another session or process of the same kind gets none.
  */
 import type { AcpChildren } from "../acp/children.ts";
-import type { CodexServers } from "../approvals/codex.ts";
-import { codexDisagrees } from "../command-data-send.ts";
-import { AGENT_PICKER_MESSAGE, closeBackslash, closeMention, type createSubmitText, freeAgentInput, freeClaudeBox, freeHermesInput, InputDraftError, modelSwitchText, OMP_REPORT_POLL_MS, OMP_STARTUP_MS, ompStartingUntil, pendingFault, pendingIdentity, pendingText, refusedFirstWrite, submitFraming, untilOmpReported } from "./composer.ts";
+import { servedStatus, type CodexServers } from "../approvals/codex.ts";
+import { codexDisagrees, sendCodexTextAsData } from "../command-data-send.ts";
+import { AGENT_PICKER_MESSAGE, closeBackslash, closeMention, codexTakesAsData, type createSubmitText, freeAgentInput, freeClaudeBox, freeHermesInput, InputDraftError, modelSwitchText, OMP_REPORT_POLL_MS, OMP_STARTUP_MS, ompStartingUntil, pendingFault, pendingIdentity, pendingText, refusedFirstWrite, submitFraming, untilOmpReported } from "./composer.ts";
 import { grokEcho, grokQueue, sendGrokQueuedNow } from "./grok-queue.ts";
 import { type Client, connectionOf, send } from "./connections.ts";
 import { ATTACH_HELD_MESSAGE } from "./terminal-process.ts";
@@ -824,6 +824,35 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         pending.observe(paneId, "working", mark);
         throw new HerdrError("pending_wait", "The agent is working again; this message still waits for its next turn");
       }
+      // a Codex on the server Ovis started for it takes plain text at rest as a turn of its thread (sendCodexTextAsData):
+      // nothing joins what is typed in its own box
+      if (context.identity.agent === "codex" && !context.working && context.agentInFront && !context.collapsed && codexTakesAsData(text, sent)) {
+        // the rollout this send's receipt is read from, should Codex not answer (reconcileCodexDeliveries)
+        const anchor = nativeItem ? await prepareCodexReceipt(paneId, context.identity) : null;
+        // the Codex this message was bound to, by its start: one that took its PID meanwhile gets nothing
+        await sameStart(identity);
+        const clientId = crypto.randomUUID(), at = Date.now();
+        let stopped: HerdrError | undefined;
+        const viaData = await sendCodexTextAsData(context.pane, text, () => {
+          authorizePending(owner, paneId, lease);
+          if (row.withdrawn?.()) stopped = new HerdrError("pending_discarded", "This message was discarded before it went; nothing was sent");
+          else if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) stopped = new HerdrError("submit_timeout", "The pending message waited too long; nothing was sent");
+          if (stopped !== undefined) return false;
+          committing(false, false, pending.mark(paneId));
+          wrote = true;
+          return true;
+        }, clientId).catch((error: unknown) => {
+          const threadId = servedStatus(paneId)?.threadId;
+          if (wrote && nativeItem && anchor !== null && anchor.session === threadId) codexTyped.add(paneId, text, anchor, at, { identity: context.identity, item: nativeItem }, clientId);
+          throw error;
+        });
+        if (viaData) {
+          noteSubmitted(paneId, text, undefined, viaData.at);
+          return { ok: true };
+        }
+        // withdrawn or late while the server was asked: it is not typed instead
+        if (stopped !== undefined) throw stopped;
+      }
       // a draft typed in the terminal is the user's: the paste would join it and the Enter send both (#609).
       // The box is the live screen's; only the viewport read tells Claude's grey text from a draft.
       if (context.identity.agent === "claude") await freeClaudeBox(paneId, context.working, () => authorizePending(owner, paneId, lease), arrivedAt + (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS), automatic || queued)
@@ -840,7 +869,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       let prompt: PromptPiece[] = [{ pasted: closeMention(sent) }];
       watch = startOpenCodeWatch(context.pane, command, options.openCodeStateDir);
       if (interruptWorkingCodex && nativeItem && context.working && context.agentInFront && context.identity.agent === "codex"
-        && !context.collapsed && !command && !/(?:^|\s)[!/@$]\S*/u.test(text) && sent === text && closeMention(sent) === text) {
+        && !context.collapsed && !command && codexTakesAsData(text, sent)) {
         const argv = context.processes?.foreground_processes?.find((p) => p.pid === context.identity.processPid)?.argv ?? [];
         const target = options.codexServers?.steerTarget(paneId, argv);
         if (target && !codexDisagrees(context.pane, target.threadId)) {

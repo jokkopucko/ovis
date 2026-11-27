@@ -333,6 +333,8 @@ class Connection {
   /** The turn the pane's own thread runs or ran last. */
   private turnId: string | null = null;
   private toldFailedTurn: string | null = null;
+  /** The last turn of the pane's own thread the server said completed. */
+  private lastCompleted: string | null = null;
   private resumedActive = false;
   private context: PaneContext | null = null;
   private rerouted: { turnId: string; model: string } | null = null;
@@ -425,6 +427,32 @@ class Connection {
     writing();
     const reply = await this.within("turn/steer", { threadId, expectedTurnId: turn, clientUserMessageId: clientId, input: [{ type: "text", text: input, text_elements: [] }] });
     return reply !== "unknown" && reply["error"] === undefined && isObject(reply["result"]) && reply["result"]["turnId"] === turn ? "accepted" : "unknown";
+  }
+
+  /**
+   * A chat message as a new turn of the pane's own thread `threadId` (turn/start), as the TUI's own Enter would start
+   * it: the TUI shows it and its answer, and its input box keeps whatever is typed there. Only while that thread is the
+   * pane's, idle, waits on no question or approval, and is the only one loaded besides subagents (a /resume or /new in
+   * the TUI loads another without telling Ovis which one it shows). `clientId` comes back on the thread's user message.
+   * `unsent` when nothing went (any of that not known, or `mayWrite` saying no right before the request), `unknown`
+   * when it went and no turn came back: no answer in time, or an error, which does not say the input was not taken.
+   */
+  async startTurn(threadId: string, input: string, clientId: string, mayWrite: () => boolean): Promise<"unsent" | "accepted" | "unknown"> {
+    const ready = (): boolean => !this.closed && this.sure && this.thread === threadId && this.idle && this.waitsOnNone() && this.held.size === 0;
+    if (!ready()) return "unsent";
+    const loaded = await this.within("thread/loaded/list", {});
+    const result = loaded !== "unknown" && isObject(loaded["result"]) ? loaded["result"] : null;
+    const alone = result?.["nextCursor"] === null && Array.isArray(result["data"]) && result["data"].includes(threadId)
+      && result["data"].every((id) => id === threadId || (typeof id === "string" && this.subagents.has(id)));
+    // read again after the lookup: a turn may have started meanwhile, which turn/start would steer
+    if (!alone || !ready() || !mayWrite()) return "unsent";
+    const reply = await this.within("turn/start", { threadId, clientUserMessageId: clientId, input: [{ type: "text", text: input, text_elements: [] }] });
+    if (reply === "unknown") return "unknown";
+    const turn = isObject(reply["result"]) ? reply["result"]["turn"] : null;
+    if (!isObject(turn) || typeof turn["id"] !== "string") return "unknown";
+    // the turn runs from now on, though its turn/started may come later: a second send waits for it, unless it is over
+    if (this.lastCompleted !== turn["id"]) this.idle = false;
+    return "accepted";
   }
 
   /**
@@ -722,7 +750,7 @@ class Connection {
           this.turn = turn["status"] === "failed" ? "failed" : "answered";
           if (threadId === this.thread && this.turn === "failed" && id !== null && (this.turnId === null || this.turnId === id)) this.tellFailure(id);
         }
-        if (threadId !== null && threadId === this.thread) this.idle = true;
+        if (threadId !== null && threadId === this.thread) { this.idle = true; this.lastCompleted = id; }
         break;
       }
       case "item/started": {
@@ -902,6 +930,18 @@ export async function servedPlan(paneId: string, threadId: string, mayWrite: () 
   for (const servers of instances) {
     const connection = servers.connection(paneId);
     if (connection) return await connection.plan(threadId, mayWrite);
+  }
+  return "unsent";
+}
+
+/**
+ * Sends `input` as a new turn of thread `threadId` through the Codex server Ovis started in `paneId`
+ * (Connection.startTurn): `unsent` where Ovis has no connection there.
+ */
+export async function servedTurn(paneId: string, threadId: string, input: string, clientId: string, mayWrite: () => boolean): Promise<"unsent" | "accepted" | "unknown"> {
+  for (const servers of instances) {
+    const connection = servers.connection(paneId);
+    if (connection) return await connection.startTurn(threadId, input, clientId, mayWrite);
   }
   return "unsent";
 }

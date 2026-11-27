@@ -15,11 +15,13 @@ const sendOf = (text: string, name: string): CommandSend => ({
   invocations: [{ name, argument: "", form: null }],
 });
 
-function codexPane(send: CommandSend, served: boolean, answer: Awaited<ReturnType<typeof codex.servedPlan>>, shown: string | null = "t1") {
+function codexPane(send: CommandSend | undefined, served: boolean, answer: Awaited<ReturnType<typeof codex.servedPlan>>, shown: string | null = "t1",
+  turn: Awaited<ReturnType<typeof codex.servedTurn>> = "accepted") {
   const typed: string[] = [];
   const noted: unknown[] = [];
   const evidence: string[] = [];
   const asked: string[] = [];
+  const turns: string[] = [];
   const pane = { pane_id: "p", terminal_id: "t", agent: "codex", agent_status: "idle", agent_session: shown === null ? null : { agent: "codex", source: "herdr:codex", kind: "id", value: shown } } as HerdrPane;
   spyOn(herdr, "paneGet").mockImplementation(async () => pane);
   spyOn(herdr, "paneRead").mockImplementation(async () => ({ text: "", revision: 0 }) as Awaited<ReturnType<typeof herdr.paneRead>>);
@@ -31,12 +33,13 @@ function codexPane(send: CommandSend, served: boolean, answer: Awaited<ReturnTyp
   spyOn(codex, "servesCommands").mockReturnValue(served);
   spyOn(codex, "servedStatus").mockReturnValue(served ? { threadId: "t1", context: null, model: null } : null);
   spyOn(codex, "servedPlan").mockImplementation(async (_pane, threadId, mayWrite) => { asked.push(threadId); return mayWrite() ? answer : "unsent"; });
+  spyOn(codex, "servedTurn").mockImplementation(async (_pane, threadId, input, _id, mayWrite) => { turns.push(`${threadId}:${input}`); return mayWrite() ? turn : "unsent"; });
   spyOn(herdr, "agentPrompt").mockImplementation(async (_pane, text) => { typed.push(text); });
   spyOn(herdr, "paneSendText").mockImplementation(async (_pane, data) => { typed.push(data); });
   spyOn(herdr, "paneSendKeys").mockImplementation(async () => {});
   const submit = createSubmitText({ options: { submitDelayMs: 0 }, lastTyped: new Map(), attachments: new Map(), terminalAttach: async () => true,
     SUBMIT_DEADLINE_MS: 45_000, TYPED_SETTLE_MS: 0, DRAFT_CLEAR_WAIT_MS: 0, DRAFT_CLEAR_POLL_MS: 0, SUBMIT_DELAY_MS: 0 });
-  return { typed, noted, evidence, asked, submit: (text: string) => submit("p", text, text, Date.now()) };
+  return { typed, noted, evidence, asked, turns, submit: (text: string) => submit("p", text, text, Date.now()) };
 }
 
 it("sends a bare /plan to the Codex server Ovis started, typing nothing, and takes its answer as the result", async () => {
@@ -74,6 +77,47 @@ it("types /plan where Ovis has no server for the pane, the TUI shows another thr
 it("never types a /plan the server may have taken without answering", async () => {
   const pane = codexPane(sendOf("/plan", "plan"), true, "unknown");
   await expect(pane.submit("/plan")).rejects.toMatchObject({ code: "timeout" });
+  expect(pane.typed).toEqual([]);
+  expect(pane.noted).toEqual([]);
+});
+
+it("sends a plain message to the Codex server Ovis started as a turn of the thread the pane shows, typing nothing", async () => {
+  const pane = codexPane(undefined, true, "unsent");
+  await pane.submit("Summarize the failing test, then fix it");
+  expect(pane.turns).toEqual(["t1:Summarize the failing test, then fix it"]);
+  expect(pane.typed).toEqual([]);
+  expect(pane.noted).toHaveLength(1);
+});
+
+it("types a message the TUI reads itself, and one the server did not take, as before", async () => {
+  for (const text of ["!ls", "/model", "look at @src/app.ts", "use $review", "see /home/user/paste-1.png", "what is in ./shot.png?", "open 'my shot.JPG'"]) {
+    const pane = codexPane(undefined, true, "unsent");
+    await pane.submit(text);
+    expect(pane.turns).toEqual([]);
+    expect(pane.typed).toHaveLength(1);
+    mock.restore();
+  }
+  for (const [served, shown] of [[false, "t1"], [true, "t2"]] as const) {
+    const pane = codexPane(undefined, served, "unsent", shown);
+    await pane.submit("hello");
+    expect(pane.turns).toEqual([]);
+    expect(pane.typed).toHaveLength(1);
+    mock.restore();
+  }
+  const left = codexPane(undefined, true, "unsent", "t1");
+  spyOn(herdr, "paneGet").mockImplementation(async () => ({ pane_id: "p", terminal_id: "t", agent: "bash", agent_status: "idle", agent_session: null }) as unknown as HerdrPane);
+  await left.submit("hello").catch(() => {});
+  expect(left.turns).toEqual([]);
+  mock.restore();
+  const refused = codexPane(undefined, true, "unsent", "t1", "unsent");
+  await refused.submit("hello");
+  expect(refused.turns).toEqual(["t1:hello"]);
+  expect(refused.typed).toHaveLength(1);
+});
+
+it("never types a message the server may have taken without answering", async () => {
+  const pane = codexPane(undefined, true, "unsent", "t1", "unknown");
+  await expect(pane.submit("hello")).rejects.toMatchObject({ code: "submit_changed" });
   expect(pane.typed).toEqual([]);
   expect(pane.noted).toEqual([]);
 });

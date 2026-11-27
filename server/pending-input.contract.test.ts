@@ -16,6 +16,7 @@ import * as agentLaunchModule from "./agent-launch.ts";
 import * as piModule from "./pi.ts";
 import * as codexModule from "./codex.ts";
 import { CodexServers } from "./approvals/codex.ts";
+import * as codexServer from "./approvals/codex.ts";
 import { MachineManager } from "./machines.ts";
 import { DeviceStore } from "./devices.ts";
 import { DEVICE_COOKIE } from "./auth.ts";
@@ -1094,6 +1095,51 @@ describe("connection-owned pending input", () => {
       expect(confirmed.messages.some((message: PendingMessage) => message.id === row.id)).toBe(false);
       expect(f.bytes()).toBe("");
     } finally { steer.mockRestore(); }
+  }, 30_000);
+
+  it("sends a queued Codex message at rest as a turn through the server Ovis started, typing nothing", async () => {
+    const turns: string[] = [];
+    const status = spyOn(codexServer, "servedStatus").mockReturnValue({ threadId: "t1", context: null, model: null });
+    const turn = spyOn(codexServer, "servedTurn").mockImplementation(async (_pane, threadId, input, _id, mayWrite) => {
+      if (!mayWrite()) return "unsent";
+      turns.push(`${threadId}:${input}`);
+      return "accepted";
+    });
+    try {
+      const f = await setup("codex-queued-turn", "codex");
+      const row = await f.queue(1, "follow after work");
+      // the turn's end, by report or as herdr reads the screen itself: the row's own send is what is awaited
+      await herdrRpc("pane.report_agent", { pane_id: f.pane, source: "manual", agent: "codex", state: "idle" });
+      await f.removed(row.id, "sent");
+      expect(turns).toEqual(["t1:follow after work"]);
+      expect(f.bytes()).toBe("");
+    } finally { status.mockRestore(); turn.mockRestore(); }
+  }, 30_000);
+
+  it("types nothing of a queued Codex message discarded while the server Ovis started was asked", async () => {
+    const status = spyOn(codexServer, "servedStatus").mockReturnValue({ threadId: "t1", context: null, model: null });
+    const asked = Promise.withResolvers<void>(), discarded = Promise.withResolvers<void>();
+    const turn = spyOn(codexServer, "servedTurn").mockImplementation(async (_pane, _threadId, _input, _id, mayWrite) => {
+      asked.resolve();
+      await discarded.promise;
+      return mayWrite() ? "accepted" : "unsent";
+    });
+    try {
+      const f = await setup("codex-queued-turn-discard", "codex");
+      const row = await f.queue(1, "discard me");
+      await herdrRpc("pane.report_agent", { pane_id: f.pane, source: "manual", agent: "codex", state: "idle" });
+      await asked.promise;
+      f.socket.send({ type: "pending-action", id: 10, pane_id: f.pane, pending_id: row.id, action: "discard" });
+      // frames of one connection are handled in order: an answer for another pane says the discard was taken in
+      f.socket.send({ type: "pending-action", id: 12, pane_id: "no-such-pane", pending_id: row.id, action: "discard" });
+      await f.socket.action(12);
+      discarded.resolve();
+      expect((await f.socket.action(10)).ok).toBe(true);
+      f.socket.send({ type: "submit", id: 11, pane_id: f.pane, text: "barrier", payload: "barrier", typed: true });
+      expect((await f.socket.result(11)).ok).toBe(true);
+      await f.waitBytes("barrier\r");
+      expect(f.bytes()).toBe("barrier\r");
+    } finally { status.mockRestore(); turn.mockRestore(); }
   }, 30_000);
 
   it("keeps an explicit terminal Send now uncertain without a send-specific acknowledgement", async () => {

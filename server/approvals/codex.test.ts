@@ -6,7 +6,7 @@ import type { Server, ServerWebSocket } from "bun";
 
 import { createHash } from "node:crypto";
 import { chmodSync, symlinkSync } from "node:fs";
-import { codexAnswer, codexCard, codexDecision, CodexServers, launcherScript, onServedStatus, privateChain, privateFolder, serverArgs, servedQuestions, servedStatus, servedTurnEnd, servedPlan, servesCommands, serverSocket, shellScript, supportsCodexServer } from "./codex.ts";
+import { codexAnswer, codexCard, codexDecision, CodexServers, launcherScript, onServedStatus, privateChain, privateFolder, serverArgs, servedQuestions, servedStatus, servedTurnEnd, servedPlan, servedTurn, servesCommands, serverSocket, shellScript, supportsCodexServer } from "./codex.ts";
 import * as rollout from "../codex.ts";
 import { ConversationMonitor } from "../conversation-monitor.ts";
 import { paneConversation } from "../conversation.ts";
@@ -794,6 +794,66 @@ describe("Ovis on the pane's Codex server", () => {
     else codex.send({ id: steer.id, result: { turnId: reply === "matching reply" ? "turn" : "other" } });
     expect(await result).toBe(reply === "matching reply" ? "accepted" : "unknown");
   });
+
+  describe("a chat message as a new turn of the pane's own thread", () => {
+    /**
+     * Codex 0.171.0's turn/start as a second client sent it on the idle thread of a real TUI (codex --remote) whose
+     * input box held a draft, and its answer: the TUI drew the message and its answer and kept the draft, and the
+     * thread's user message carried the client's id. Recorded in an isolated CODEX_HOME.
+     */
+    const TURN = JSON.parse(readFileSync(join(import.meta.dir, "..", "fixtures", "codex-app-server-turn-start-0.171.0.json"), "utf8")) as
+      { request: { threadId: string; clientUserMessageId: string; input: { text: string }[] }; response: Message };
+    const THREAD = TURN.request.threadId;
+
+    async function atRest(loaded: string[] = [THREAD]) {
+      const { codex } = launched("0.171.0", loaded);
+      await running(codex, THREAD);
+      codex.send({ method: "thread/status/changed", params: { threadId: THREAD, status: { type: "idle" } } });
+      await read(codex);
+      return codex;
+    }
+    const send = (mayWrite = () => true) => servedTurn("w1:p1", THREAD, TURN.request.input[0]!.text, TURN.request.clientUserMessageId, mayWrite);
+
+    it("starts it as Codex took it from a second client, and takes the turn it answers as sent", async () => {
+      const codex = await atRest();
+      const sent = send();
+      const start = await request(codex, "turn/start");
+      expect(start["params"]).toEqual(TURN.request);
+      codex.send({ id: start["id"], result: TURN.response });
+      expect(await sent).toBe("accepted");
+    });
+
+    it.each(["a turn runs", "another thread is loaded", "the sender may no longer write"])("sends nothing when %s", async (scenario) => {
+      const codex = await atRest(scenario === "another thread is loaded" ? [THREAD, "other"] : [THREAD]);
+      if (scenario === "a turn runs") {
+        codex.send({ method: "turn/started", params: { threadId: THREAD, turn: { id: "u1" } } });
+        await read(codex);
+      }
+      const sent = send(() => scenario !== "the sender may no longer write");
+      expect(await sent).toBe("unsent");
+      expect(codex.received.some((message) => message["method"] === "turn/start")).toBe(false);
+    });
+
+    it("starts no second turn on an accepted one whose turn/started has not come yet", async () => {
+      const codex = await atRest();
+      const sent = send();
+      const start = await request(codex, "turn/start");
+      codex.send({ id: start["id"], result: TURN.response });
+      expect(await sent).toBe("accepted");
+      expect(await send()).toBe("unsent");
+      expect(codex.received.filter((message) => message["method"] === "turn/start")).toHaveLength(1);
+    });
+
+    it.each(["the connection ends", "Codex answers an error"])("does not know it went when %s before a turn comes back", async (scenario) => {
+      const codex = await atRest();
+      const sent = send();
+      const start = await request(codex, "turn/start");
+      if (scenario === "the connection ends") codex.drop();
+      else codex.send({ id: start["id"], error: { code: -32603, message: "internal error" } });
+      expect(await sent).toBe("unknown");
+    });
+  });
+
 
   describe("the conversation its own server holds for the TUI", () => {
     /**

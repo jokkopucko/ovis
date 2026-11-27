@@ -62,10 +62,11 @@ function forbiddenDeclarations(source: string, fileName?: string): string[] {
 }
 
 /**
- * The Codex approval adapter subscribes to its threads to receive their approvals (`thread/resume` with no overrides)
- * and reads when a turn starts (`turn/started`): those two names only, there; it sends no turn and no command.
+ * The Codex approval adapter subscribes to its threads to receive their approvals (`thread/resume` with no overrides),
+ * reads when a turn starts (`turn/started`), and starts a turn of the pane's own thread for a plain chat message to an
+ * idle Codex (`turn/start`, never a command): those three names only, there.
  */
-const CODEX_APPROVALS = { file: "server/approvals/codex.ts", names: new Set(["thread/resume", "turn/started"]) };
+const CODEX_APPROVALS = { file: "server/approvals/codex.ts", names: new Set(["thread/resume", "turn/started", "turn/start"]) };
 
 /** OpenCode's command route, only where commands sent as data call it (docs/agent-commands.md#commands-sent-as-data). */
 const OPENCODE_COMMAND = { file: "server/opencode-service.ts", text: "/api/session/${}/command" };

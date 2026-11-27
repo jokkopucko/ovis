@@ -8,7 +8,7 @@ import { mirrorInput } from "../mirror-input.ts";
 import { paneAgentOf, resolveAgent, typingRoots } from "../pane-context.ts";
 import { paneProcessRoots } from "../conversation.ts";
 import type { CommandSend } from "../outcome.ts";
-import { commandDataRoute, sendCommandAsData } from "../command-data-send.ts";
+import { commandDataRoute, sendCodexTextAsData, sendCommandAsData } from "../command-data-send.ts";
 import { processStartedAt } from "../process-start.ts";
 import { isOmpProcess, ompLoadsIntegration } from "../omp.ts";
 import { processEnviron } from "../omo.ts";
@@ -63,6 +63,16 @@ export const closeMention = (text: string): string => {
   const body = text.slice(open.length, text.length - close.length);
   return /(?:^|\s)@\S+$/.test(body) ? `${open}${body} ${close}` : text;
 };
+
+/**
+ * Whether a chat message may go to Codex as data (its server's turn/start or turn/steer) rather than typed: sent as it
+ * was written (`sent`, after the agent's own shaping), and nothing the TUI reads itself: a shell command, a slash
+ * command, a mention, a $skill, or a path (a pasted picture, which the TUI attaches), also one named by a picture's
+ * file name alone, quoted or relative.
+ */
+export const codexTakesAsData = (text: string, sent: string): boolean =>
+  sent === text && closeMention(sent) === text && !/(?:^|\s)[!/@$]\S*/u.test(text)
+  && !/\.(?:png|jpe?g|gif|webp|bmp|tiff?|heic|svg)(?![\p{L}\p{N}_])/iu.test(text);
 
 /**
  * The longest line the terminal's input line types raw; a longer one goes to the pane's agent as its prompt.
@@ -733,6 +743,21 @@ export function createSubmitText({ options, lastTyped, attachments, terminalAtta
             if (error instanceof HerdrError && error.code === "submit_changed") throw error;
             throw new HerdrError("submit_partial", "Part of the message was typed into OpenCode's input, but sending was not confirmed. Your chat text stayed here. Check the terminal before sending again.");
           }
+        }
+        // a Codex on the server Ovis started for it takes plain text as a turn of its thread, at rest: nothing joins what
+        // is typed in its own box, and none of its own screens takes it
+        if (pane && agent === "codex" && !command && clearDraft === undefined && !sendAnyway && codexTakesAsData(text, sent)) {
+          const viaData = await sendCodexTextAsData(pane, text, () => {
+            try { inTime(); } catch (error) { refused = error; return false; }
+            return mayType();
+          });
+          if (viaData) {
+            noteSubmitted(paneId, text, recorded(command), viaData.at);
+            return;
+          }
+          if (refused !== undefined) throw refused;
+          writeStarted = false;
+          inTime();
         }
         // the last read before herdr is written to: one of Codex's own screens gets no paste and no Enter
         // and what a person typed into the agent's own box, which the paste would join (Claude's and Hermes' were read

@@ -26,7 +26,9 @@ Everything here rests on three rules. A change that breaks one of them is a bug,
    as well, so a command never runs twice. The other native writes the bridge keeps are answers,
    not commands: a pending OpenCode v2 form, and the approvals of a Codex Ovis started on its own app server
    ([`server/approvals/codex.ts`](../server/approvals/codex.ts)), which subscribes to its threads
-   for them (`thread/resume`, no overrides) and starts no turn.
+   for them (`thread/resume`, no overrides). That Codex's server also takes a plain chat message
+   (never a command) as a turn of the pane's own thread while it is idle (`turn/start`), under the
+   same rule: nothing that may have reached it is typed as well.
 3. **An outcome changes only on evidence tied to that send.** Sending a command records
    `accepted` and nothing more. A later state needs evidence that belongs to this send, listed
    under [Outcome states](#outcome-states-and-their-evidence). A screen that changed, an idle agent

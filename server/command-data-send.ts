@@ -1,10 +1,11 @@
 /**
  * Commands sent through an agent's own API instead of typed into its terminal, where the agent has a route for that
  * command and the pane's own session can be reached (docs/agent-commands.md, "The three contracts"). Everything else
- * is typed as before. Once a request may have reached the agent, the command is never typed as well.
+ * is typed as before. Once a request may have reached the agent, the command is never typed as well. A Codex on the
+ * server Ovis started for it also takes a plain message at rest this way (sendCodexTextAsData).
  */
 import type { HerdrPane, SlashCommand } from "../shared/protocol.ts";
-import { servedPlan, servedStatus, servesCommands } from "./approvals/codex.ts";
+import { servedPlan, servedStatus, servedTurn, servesCommands } from "./approvals/codex.ts";
 import { paneProcessRoots } from "./conversation.ts";
 import { HerdrError, paneGet } from "./herdr/client.ts";
 import { omoControlCall, omoControlSocket } from "./omo-control.ts";
@@ -96,6 +97,25 @@ export async function sendCommandAsData(pane: HerdrPane, route: CommandDataRoute
     throw new HerdrError("command_failed", `OpenCode could not run ${route.kind === "compact" ? "/compact" : `/${route.name}`} (HTTP ${answer.status})`);
   }
   return { at, ran: route.kind === "command" };
+}
+
+/**
+ * A plain chat message for a Codex on the server Ovis started for it, as a new turn of the thread the pane shows
+ * (Connection.startTurn) rather than typed. Null when nothing reached Codex (no such thread, or not at rest alone):
+ * the caller types it. Throws when it went without an answer, so it is not typed again. `clientId` comes back on the
+ * thread's user message (its receipt).
+ */
+export async function sendCodexTextAsData(pane: HerdrPane, text: string, mayWrite: () => boolean, clientId: string = crypto.randomUUID()): Promise<DataSent | null> {
+  const threadId = servedStatus(pane.pane_id)?.threadId;
+  if (threadId === undefined || codexDisagrees(pane, threadId)) return null;
+  // read again right before the request: the pane may have left Codex (its server's connection outlives that)
+  const now = await paneGet(pane.pane_id);
+  if (now.agent !== "codex" || codexDisagrees(now, threadId)) return null;
+  const at = Date.now();
+  const answer = await servedTurn(pane.pane_id, threadId, text, clientId, mayWrite);
+  if (answer === "unsent") return null;
+  if (answer === "unknown") throw new HerdrError("submit_changed", "The message went to Codex's server, which did not confirm it. Check the terminal before sending again.");
+  return { at, ran: false };
 }
 
 /** Whether herdr reports a Codex session in `pane` other than `threadId` (by its id, or by its rollout file's name). */
