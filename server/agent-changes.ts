@@ -69,14 +69,14 @@ export class AgentChanges {
   snapshot(machineId: string, snapshot: SessionSnapshot, live: boolean): SessionSnapshot {
     // a partial roster (an older bridge's) says nothing of its agents: nothing is dated or forgotten
     if (!Array.isArray(snapshot.panes)) return snapshot;
-    const seqs = new Map((snapshot.agents ?? []).map((agent) => [agent.pane_id, agent.state_change_seq] as const));
+    const seqs = live ? new Map((snapshot.agents ?? []).map((agent) => [agent.pane_id, agent.state_change_seq] as const)) : undefined;
     let changed = false;
     let panesChanged = false;
     const panes = snapshot.panes.map((pane) => {
       const key = keyOf(machineId, pane.pane_id);
       const before = this.seen.get(key);
       let at = before?.at;
-      if (live) {
+      if (seqs) {
         const next = this.observe(before, seqs.get(pane.pane_id), pane.agent_status);
         if (!sameSeen(before, next)) { this.seen.set(key, next); changed = true; }
         at = next.at;

@@ -126,6 +126,16 @@ async function fixture(options: { bootId?: string; now?: () => number; serverId?
   return { manager, drive, local, rosters, stopRecording };
 }
 
+it("dates accepted status changes before anyone asks for the roster", async () => {
+  const { manager, local, stopRecording } = await fixture();
+  stopRecording();
+  local.set(snapshot("blocked"));
+  await manager.refreshLocal();
+  local.set(snapshot("working"));
+  await manager.refreshLocal();
+  expect(manager.list()[0]?.snapshot?.panes[0]?.changed_at).toBeGreaterThan(0);
+});
+
 it("keeps internal machine listeners without counting them as roster viewers", async () => {
   const { manager, stopRecording } = await fixture();
   stopRecording();

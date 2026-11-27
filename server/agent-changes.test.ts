@@ -143,6 +143,23 @@ it("starts empty from a file that is not its table, and writes a good one", () =
   expect(JSON.parse(readFileSync(join(dir, "agent-changes.json"), "utf8"))).toEqual({ "win\nw": { seq: 2, status: "done", at: 2_000 } });
 });
 
+it("writes only the newest 2,000 entries even when more panes are tracked", () => {
+  const dir = stateDir();
+  const time = clock();
+  const changes = new AgentChanges(dir, time.now);
+  for (let index = 0; index <= 2_000; index++) {
+    const pane = `p${index}`;
+    changes.status("local", pane, "working");
+    time.at(1_000 + index);
+    changes.status("local", pane, "done");
+  }
+  changes.flush();
+  const disk = JSON.parse(readFileSync(join(dir, "agent-changes.json"), "utf8"));
+  expect(Object.keys(disk)).toHaveLength(2_000);
+  expect(disk["local\np0"]).toBeUndefined();
+  expect(disk["local\np2000"]?.at).toBe(3_000);
+});
+
 it("dates a frame's change once, when snapshots without its counter come between", () => {
   const time = clock();
   const changes = new AgentChanges(null, time.now);
