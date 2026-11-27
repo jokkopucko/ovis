@@ -1653,6 +1653,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             if (!waited) pending.observe(message.pane_id, held && !context.working ? "working" : context.pane.agent_status, mark);
             // hold: kept for the owner's Send now, never sent by the turn's end
             const item = pending.enqueue(client, message.pane_id, message.id, text, lease!, context.identity, message.delivery === "hold", agentOnly, noPiSession);
+            // the lease was last checked before the awaits above (pinPiSession, a send put off): a page that left the pane
+            // meanwhile was held by holdPending before this row existed, so it is held now as that would have held it
+            try { authorizePending(client, message.pane_id, lease!); } catch { pending.hold(client, message.pane_id); }
             if (typedWhileOmpStarted(message.pane_id)) pending.holdQueued(message.pane_id, TYPED_WHILE_WAITING);
             return { ok: true, pending: item.message };
           }).catch((error): SubmitReply => ({ ok: false, ...pendingFault(error, options.herdrFailure) })));

@@ -5,7 +5,7 @@ const pageName = (c: string): string => `page ${c.toUpperCase()}`;
 const names = (set: string[]): string => (set.length ? set.map(pageName).join(" and ") : "nobody");
 const ROW: Record<string, string> = {
   asked: "asked for, not listed yet", queued: "waits for the agent's turn", held: "held for Send now", sending: "being sent",
-  uncertain: "may have been typed", sent: "sent", lost: "may have been typed",
+  uncertain: "may have been typed", review: "may have been typed, kept for review", sent: "sent", lost: "may have been typed",
 };
 
 export const title = "A pending message and the pages attached to its pane";
@@ -49,6 +49,7 @@ export function step(action: string, from: Vars, to: Vars): string | null {
     case "RequestRuns": return `${pageName(to.lane.by)}'s request gets its turn`;
     case "AcceptRefused": return "the message is refused";
     case "AcceptEnqueue": return to.st.Q === "queued" ? "the message is accepted and waits" : "the message is accepted and held";
+    case "AcceptHeld": return "the message is accepted, and held: its page lost the pane meanwhile";
     case "AcceptTypeNow": return "the agent is at rest: the message is typed at once";
     case "SteerRefused": return "Send now is refused";
     case "SteerClaim": return `Send now starts for ${what}`;
@@ -59,12 +60,15 @@ export function step(action: string, from: Vars, to: Vars): string | null {
     case "RefusedForNow": return `the send of ${what} is put off: the agent is busy or waits for an answer`;
     case "TypeNowWaits": return "the agent works again: the message waits";
     case "RefusedForGood": return `the send of ${what} is refused`;
+    case "RefusedHoldPane": return `the send of ${what} is refused, and the pane's messages are held`;
     case "LeaseFailed": return `the send of ${what} stops: its page may no longer type`;
     case "Paste": return `${what} is pasted into the terminal`;
+    case "SubmitAsData": return `${what} is sent as data`;
     case "FailedAfterPaste": return `the send of ${what} fails after it was typed`;
     case "Enter": return `Enter is pressed for ${what}`;
     case "LaterKey": return `a follow-up key is pressed for ${what}`;
     case "Sent": return `${what} is sent`;
+    case "SentUnconfirmed": return `${what} is not confirmed: kept for review`;
     default: return null;
   }
 }

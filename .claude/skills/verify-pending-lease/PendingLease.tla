@@ -98,10 +98,11 @@ LeaseFailRetries(c, l) ==
 
 \* pending-input.ts next(pane), without the agent's status and the turn gate (see SKILL.md)
 Queued == SelectSeq(order, LAMBDA m : st[m] = "queued")
+\* "review": uncertain, kept for review alone (pending-input.ts reviewOnly): it does not stop the queue (blocksQueue)
 NextUp == IF (\E m \in Msgs : fl[m] \/ st[m] = "uncertain") \/ Queued = <<>> THEN "none" ELSE Head(Queued)
 \* pending-input.ts claim(item, automatic)
 CanClaim(m, automatic) ==
-  /\ st[m] \notin Gone /\ ~fl[m] /\ st[m] # "uncertain"
+  /\ st[m] \notin Gone /\ ~fl[m] /\ st[m] \notin {"uncertain", "review"}
   /\ ~\E o \in Msgs : fl[o]
   /\ IF automatic THEN NextUp = m ELSE st[m] \in {"queued", "held"}
 \* pending-input.ts hold(owner, pane) on the messages in `ms`
@@ -315,12 +316,21 @@ AcceptRefused ==
   /\ lane.m # "none" /\ lane.pc \in {"queue", "hold"}
   /\ Free /\ Still /\ UNCHANGED <<st, fl, lease, order, armed>>
 
-\* pending.enqueue right after pendingContext's last authorizePending passed
+\* pending.enqueue, with the authorizePending right after it passing
 AcceptEnqueue ==
   /\ lane.m # "none" /\ lane.pc \in {"queue", "hold"} /\ Authorized(lane.by, laneLease)
   /\ st' = [st EXCEPT !["Q"] = IF lane.pc = "queue" THEN "queued" ELSE "held"]
   /\ lease' = laneLease /\ Accepted
   /\ armed' = (lane.pc = "queue" /\ laneIntact)
+  /\ Free /\ Still /\ UNCHANGED fl
+
+\* pending.enqueue after the lease was lost during the awaits since pendingContext's check (pinPiSession, a send put
+\* off): the authorizePending right after it refuses, and pending.hold holds the row, as holdPending would have
+AcceptHeld ==
+  /\ lane.m # "none" /\ lane.pc \in {"queue", "hold"} /\ ~Authorized(lane.by, laneLease)
+  /\ st' = [st EXCEPT !["Q"] = "held"]
+  /\ lease' = laneLease /\ Accepted
+  /\ armed' = FALSE
   /\ Free /\ Still /\ UNCHANGED fl
 
 \* a queue request that finds the agent ready and nothing waiting is typed at once, with no record
@@ -393,7 +403,7 @@ Settle(outcome) ==
                  /\ (BreakRequeueLostLease \/ ~(m = "Q" /\ st[m] = "uncertain"))
       new == IF lane.direct
                THEN (IF outcome = "sent" THEN "sent" ELSE IF outcome = "uncertain" THEN "lost" ELSE "none")
-               ELSE (IF outcome \in {"sent", "uncertain"} THEN outcome ELSE IF again THEN "queued" ELSE "held")
+               ELSE (IF outcome \in {"sent", "uncertain", "review"} THEN outcome ELSE IF again THEN "queued" ELSE "held")
       s1 == [st EXCEPT ![m] = new]
   IN /\ st' = IF outcome = "uncertain" /\ ~lane.direct THEN Hold(s1, Msgs \ {m}) ELSE s1
      /\ fl' = [fl EXCEPT ![m] = FALSE]
@@ -421,6 +431,15 @@ RefusedForGood ==
   /\ Typing
   /\ Settle("held") /\ Quiet
 
+\* a refusal before anything was typed that holds every message of the pane with it: Codex's own screen (unannounced)
+\* on an automatic send, or Codex's app server reporting changed loaded threads on a Send now
+RefusedHoldPane ==
+  /\ Typing
+  /\ LET s1 == [st EXCEPT ![lane.m] = IF lane.direct THEN "none" ELSE "held"]
+     IN st' = Hold(s1, Msgs \ {lane.m})
+  /\ fl' = [fl EXCEPT ![lane.m] = FALSE]
+  /\ Free /\ Quiet
+
 \* authorizePending threw before the paste, or the paste's guard answered false before the first byte
 LeaseFailed ==
   /\ Typing /\ ~Authorized(lane.by, laneLease)
@@ -440,6 +459,15 @@ Paste ==
   /\ pastes' = [pastes EXCEPT ![lane.m] = Min(@ + 1, 2)]
   /\ lane' = [lane EXCEPT !.pc = "pasted"]
   /\ Write /\ Wrote /\ UNCHANGED enters
+
+\* a prompt sent as data in one step with `authorizePending` right before the socket write: ACP `child.client.submit`
+\* or Codex's app-server `turn/steer` (`writing`)
+SubmitAsData ==
+  /\ Typing /\ Authorized(lane.by, laneLease)
+  /\ pastes' = [pastes EXCEPT ![lane.m] = Min(@ + 1, 2)]
+  /\ enters' = [enters EXCEPT ![lane.m] = Min(@ + 1, 2)]
+  /\ lane' = [lane EXCEPT !.pc = "entered"]
+  /\ Write /\ Wrote
 
 \* anything that fails after the paste (a check, the lease, herdr): submit_changed or pasted_not_sent, never tried again
 FailedAfterPaste ==
@@ -464,6 +492,13 @@ Sent ==
   /\ lane.m # "none" /\ lane.pc = "entered"
   /\ Settle("sent") /\ Quiet
 
+\* a Codex Send now on the terminal whose Enter went, with nothing that proves Codex took this message (codex-steering.ts
+\* "unconfirmed", pending.ts keepTurnGate): settle(…, "preserve-turn") keeps it uncertain for review alone, and holds
+\* nothing else
+SentUnconfirmed ==
+  /\ lane.m # "none" /\ lane.pc = "entered" /\ ~lane.auto /\ ~lane.direct
+  /\ Settle("review") /\ Quiet
+
 \* every connection has closed and nothing runs: the end
 Over ==
   /\ \A c \in Clients : conn[c] = "closed"
@@ -475,10 +510,10 @@ Next ==
   \/ CloseAttachment \/ Took \/ Ended \/ Restart
   \/ \E kind \in {"queue", "hold"} : Submit(kind)
   \/ \E m \in Msgs, c \in Clients : SendNow(m, c)
-  \/ FirstListed \/ RequestRuns \/ AcceptRefused \/ AcceptEnqueue \/ AcceptTypeNow \/ SteerRefused \/ SteerClaim
+  \/ FirstListed \/ RequestRuns \/ AcceptRefused \/ AcceptEnqueue \/ AcceptHeld \/ AcceptTypeNow \/ SteerRefused \/ SteerClaim
   \/ DrainPick \/ DrainSkips \/ DrainClaim \/ DrainClaimNoLease
-  \/ RefusedForNow \/ TypeNowWaits \/ RefusedForGood \/ LeaseFailed
-  \/ Paste \/ FailedAfterPaste \/ Enter \/ LaterKey \/ Sent
+  \/ RefusedForNow \/ TypeNowWaits \/ RefusedForGood \/ RefusedHoldPane \/ LeaseFailed
+  \/ Paste \/ SubmitAsData \/ FailedAfterPaste \/ Enter \/ LaterKey \/ Sent \/ SentUnconfirmed
   \/ Over
 
 Spec == Init /\ [][Next]_vars

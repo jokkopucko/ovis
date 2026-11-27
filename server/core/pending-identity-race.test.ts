@@ -182,7 +182,8 @@ it.each([
 it.each(["blocked", "working", "queue held", "foreground changed", "foreground disappeared", "lease lost", "unchanged", "same-process Pi session changed #4232", "Pi switched during paste #4232",
   "Pi enqueue session unknown", "idle Pi enqueue session unknown", "workspace first message changes Pi session",
    "workspace first message has no Pi session proof", "foreground changes during Pi proof", "Pi backend session evidence disappears",
-   "Pi retry session still unknown", "Pi retry session changes during paste", "Pi owner closed during enqueue proof"] as const)(
+   "Pi retry session still unknown", "Pi retry session changes during paste", "Pi owner closed during enqueue proof",
+   "Pi owner detached during enqueue proof"] as const)(
   "rechecks queued Pi delivery when capture retries and the pane becomes %s", async (change) => {
     const root = mkdtempSync(join(tmpdir(), "ovis-pi-capture-race-"));
     try {
@@ -263,13 +264,23 @@ it.each(["blocked", "working", "queue held", "foreground changed", "foreground d
           return { path, agentDir: null, identity: `${written.dev}:${written.ino}` };
         });
       }
+      // the page detaches from the pane (terminalFrames.detach: holdPending, then the claim goes) while the open
+      // connection's submit waits on the Pi session proof, after its last lease check
+      if (change === "Pi owner detached during enqueue proof") {
+        resolved.mockImplementationOnce(async () => {
+          delivery.holdPending(owner, "p");
+          owner.data.attached.delete("p");
+          facts.member = facts.claimed = facts.sameClaim = false;
+          return { path, agentDir: null, identity: `${written.dev}:${written.ino}` };
+        });
+      }
       if (change === "idle Pi enqueue session unknown") pane.agent_status = "idle";
       if (first) {
         await delivery.queueFirstMessage("p", "FIRST", "pi", owner.data.connectionId, 41001);
       } else {
         await delivery.pendingFrames.submit(owner, { type: "submit", id: 1, pane_id: "p", text: "FOLLOWUP", payload: "FOLLOWUP", delivery: "queue" });
       }
-      if (change === "Pi owner closed during enqueue proof") {
+      if (change === "Pi owner closed during enqueue proof" || change === "Pi owner detached during enqueue proof") {
         expect(delivery.pending.list(owner, "p")).toMatchObject([{ state: "held" }]);
         expect(writes).toEqual([]);
         return;

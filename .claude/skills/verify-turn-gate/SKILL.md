@@ -294,7 +294,7 @@ against it. A squash merge keeps blob ids, so the record stays right on `main`.
 | `native transcript confirms it (confirmRecorded)` | `pending.ts` `reconcileCodexDeliveries`: `pending.confirmRecorded` inside `serialize` |
 | `a saved copy of … is sent again` | `pending.ts` `pendingFrames.submit` with a `resend_id`; `PendingInputs.resend` and its reply handler |
 | `Discard` | `pending-action`, action `discard`: `pending.discard` |
-| `…'s page leaves the pane` | `pending.ts` `holdPending` (also from `terminals.ts` `retireFit`, `fitHeld`, `fitPane` when a native Windows terminal's control moves), `pending.hold` |
+| `…'s page leaves the pane` | `pending.ts` `holdPending` (also from `terminals.ts` `retireFit`, `fitHeld`, `fitPane` when a native Windows terminal's control moves), `pending.hold`, and the `pending.hold` in `pendingFrames.submit` right after `pending.enqueue` when the lease no longer authorizes (the page left during the submit's awaits) |
 | `the pane's terminal restarts under its pages` | `pending.ts` `holdPendingPane`, `pending.holdPane` (including `server-core.ts` when an ACP child's status turns `unknown`) |
 | `the pane ends` | `status.ts` `paneGone`: `holdPendingPane`, then `pending.forget` |
 | `herdr moves the pane under a new id` | `pending.ts` `movePendingPane`: `holdPendingPane`, then `pending.move` |

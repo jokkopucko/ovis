@@ -44,7 +44,7 @@ installs TLC and Java itself when `mise` is on the PATH. On this PC give it a `T
 `~/.cache/ovis-tmp/`, as AGENTS.md says of `/tmp`.
 
 A run that is back where it should be says that the five rules above and `NoDeadlock` hold, over
-1,182,451 states, in about 80 seconds. The model has more states than `/statechart` draws, so a
+1,608,175 states, in about 30 seconds on 8 workers. The model has more states than `/statechart` draws, so a
 passing run has no chart. A rule that breaks comes with its shortest path, in plain words, and a
 chart of that path.
 
@@ -94,9 +94,12 @@ and every `broken-*` config again.
 2. Run `PendingLease.cfg`. A break here is your change, or your edit of the model: see above.
 3. Run the six `broken-*` configs. Each must break its rule. A new rule gets a `Break…` constant
    and a config of its own.
-4. Update the coverage record, then run `covered.sh --record` and commit `covered.blobs` with your
-   change: that moves the sync commit. Do it only after you have read the covered functions as
-   they are now and confirmed that the model describes them, never to make `covered.sh` quiet.
+4. Update the coverage record, then run `.claude/skills/verify-pending-lease/covered.sh --record`
+   and `bun scripts/verify-pending-lease.ts --record`, and commit `covered.blobs` and `pins.json`
+   with your change: that moves the sync commit and updates the targeted AST pin checked by
+   `scripts/verify-pending-lease.test.ts` in `bun run check fast`. Do it only after you have read
+   the covered functions as they are now and confirmed that the model describes them, never to make
+   `covered.sh` or `verify-pending-lease.test.ts` quiet.
 
 Never weaken a rule or delete an event to make a run pass. When the product should behave
 differently, say so to the maintainer first.
@@ -149,12 +152,14 @@ tests (`server/core/pending-left-lease.test.ts`, and one at the create route in
   turn gate, `PendingInputs.apply`). Which agent, process or session a message is typed into. A
   pane that ends or moves, beyond its attachment closing (`holdPendingPane`, `movePendingPane`).
   Discard. A chat message sent at once to a pane that was not ready as its frame came, and is then
-  queued behind a starting omp: it takes its first lease in the lane. A message sent at once and a
+  queued behind a starting omp (`way = askFirstMessage(client.data.connectionId)` notes a leave
+  meanwhile via `way.left`, then takes its first lease in the lane). A message sent at once and a
   held copy's resend (`resend_id`): both are a present
   user's own send, typed under `authorizeSocket` alone with no lease, by design; the resend also
   ends the record with that id as sent. A page that
   switches to watching and back while the server still reads its create request's body: the
-  request counts from when the route has read it. Pi receipts.
+  request counts from when the route has read it. Pi receipts and Codex transcript reconciliation
+  (`reconcileCodexDeliveries` / `confirmRecorded`, which only consumes an already-uncertain row).
   Several panes, several queued messages of one connection, a remote PC's relay connection. What
   herdr or the agent do with the bytes. Whether the model matches code that changed since the sync
   commit.
@@ -167,20 +172,20 @@ against it. A squash merge keeps blob ids, so the record stays right on `main`.
 
 | Model | Code |
 | --- | --- |
-| `Init`, `FirstListed`, `askLeft`, `askFault` | `server/workspace-routes.ts`, the create routes (`firstMessages.ask` before the pane is made, `at`, `queue`, `end`); `server/core/pending.ts` `askFirstMessage`, `queueFirstMessage` |
+| `Init`, `FirstListed`, `askLeft`, `askFault` | `server/workspace-routes.ts`, the create routes (`/api/workspace/create`, `/api/tab/create`: `firstMessages.ask` before the pane is made, `at`, `queue`, `end`); `server/core/pending.ts` `askFirstMessage`, `queueFirstMessage` (`ended()` after the last `await`, including `pinPiSession`) |
 | `Authorized`, `CanLease`, `FactsNow` | `pending.ts` `authorizePending`, `pendingLease`; `server/input-guard.ts` `typingGuards.pendingLease`, `sightingFacts`; `server/core/terminals.ts` `sight`; `server/core/connections.ts` `authorizeSocket` |
-| `HoldPending`, `Age`, `Unauthorize` | `pending.ts` `holdPending`, `holdRequested`; `server/pending-input.ts` `hold`, `holdItem` |
+| `HoldPending`, `Age`, `Unauthorize` | `pending.ts` `holdPending`, `holdRequested` (also called by `terminals.ts` `retireFit`, `fitHeld` and `fitPane` when a native Windows terminal's control passes to another viewer or is retired); `server/pending-input.ts` `hold`, `holdItem` |
 | `Attach` | `terminals.ts` `terminalFrames.attach`; `server/core/terminal-process.ts` `spawnAttachment` |
-| `Detach`, `Leave` | `terminals.ts` `terminalFrames.detach`, `detach` |
-| `CloseAttachment` | `terminals.ts` `closeAttachment` and its callers |
-| `Took`, `Ended`, `Restart` | `terminal-process.ts` `took`, `ended`, `again`, `relookup`; `pending.ts` `holdPendingPane`; `pending-input.ts` `holdPane` |
+| `Detach`, `Leave` | `terminals.ts` `terminalFrames.detach`, `detach` (including `drainingAttachments` on a graceful leave, after `holdPending` and `attachments.delete`) |
+| `CloseAttachment` | `terminals.ts` `closeAttachment`, `closeAttachments` and their callers |
+| `Took`, `Ended`, `Restart` | `terminal-process.ts` `took`, `ended`, `again`, `relookup`; `pending.ts` `holdPendingPane` (and `server-core.ts` when an ACP child's status turns `unknown`); `pending-input.ts` `holdPane` |
 | `Observe`, `Interact` | `server/core/socket.ts` `role` |
-| `Close`, `Revoke` | `socket.ts` `close`; `connections.ts` `end`; `pending.ts` `closeConnection`; `pending-input.ts` `close`; `terminals.ts` `detachClaimed`, `dropClaims` |
-| `Submit`, `RequestRuns`, `AcceptRefused`, `AcceptEnqueue`, `AcceptTypeNow`, `TypeNowWaits` | `pending.ts` `pendingFrames.submit`, its `waits` branch; `pending-input.ts` `enqueue` |
+| `Close`, `Revoke` | `socket.ts` `close`; `connections.ts` `end` (including `untilLock`); `pending.ts` `closeConnection`; `pending-input.ts` `close`; `terminals.ts` `detachClaimed`, `dropClaims` |
+| `Submit`, `RequestRuns`, `AcceptRefused`, `AcceptEnqueue`, `AcceptHeld`, `AcceptTypeNow`, `TypeNowWaits` | `pending.ts` `pendingFrames.submit`, its `waits` (and ACP child) branch, with the `authorizePending` right after `pending.enqueue` and the `pending.hold` when it refuses; `pending-input.ts` `enqueue` |
 | `SendNow`, `SteerRefused`, `SteerClaim` | `pending.ts` `pendingFrames["pending-action"]`, action `steer` |
 | `DrainPick`, `DrainSkips`, `DrainClaim`, `DrainClaimNoLease`, `Typist`, `NextUp`, `CanClaim` | `pending.ts` `drainPending`, `typists`, `dispatchPending`; `pending-input.ts` `next`, `claim` |
-| `RefusedForNow`, `RefusedForGood`, `LeaseFailed`, `FailedAfterPaste` | `pending.ts` `pendingContext`, `dispatchPendingText` and its `catch` |
-| `Paste`, `Enter`, `LaterKey` | `dispatchPendingText`: `paneSendText` and `paneSendKeys` with the guard `allowed`; the guarded writes of `server/core/composer.ts` `freeClaudeBox` and `server/opencode-skill-attach.ts` `typeWithSkills`; `server/herdr/client.ts` `herdrRpc` `writeRequest` |
-| `Settle`, `Unattended`, `LeaseFailRetries`, `Sent` | `pending.ts` `dispatchPending`, `FIRST_MESSAGE_RETRY_CODES`; `pending-input.ts` `settle` |
+| `RefusedForNow`, `RefusedForGood`, `RefusedHoldPane`, `LeaseFailed`, `FailedAfterPaste` | `pending.ts` `pendingContext`, `dispatchPendingText` (including `refusedFirstWrite`, Codex `unannounced` own-screen `holdPane`, and Codex app-server `"changed"` `holdPane`) and its `catch` |
+| `Paste`, `SubmitAsData`, `Enter`, `LaterKey` | `dispatchPendingText`: `paneSendText` and `paneSendKeys` with the guard `allowed`, ACP `child.client.submit`, Codex `steerTarget.send` `writing` and `sendCodexTextAsData` `mayWrite` (turn/start for a Codex at rest) after `authorizePending`; the guarded writes of `server/core/composer.ts` `freeClaudeBox` and `server/opencode-skill-attach.ts` `typeWithSkills`; `server/herdr/client.ts` `herdrRpc` `writeRequest` |
+| `Settle`, `Unattended`, `LeaseFailRetries`, `Sent`, `SentUnconfirmed` | `pending.ts` `dispatchPending`, `FIRST_MESSAGE_RETRY_CODES`, `keepTurnGate` (a Codex Send now on the terminal that `interruptCodexSteering` calls `"unconfirmed"`); `pending-input.ts` `settle` (with `"preserve-turn"`: the state `review`, `reviewOnly`, which `blocksQueue` lets the queue pass) |
 | the lane (`lane`, `req`) | `server/core/input.ts` `serialize` |
 | who calls what | `server/core/server-core.ts`, where `createTerminalRegistry`, `createPendingDelivery` and `createConnections` are given each other's functions |
