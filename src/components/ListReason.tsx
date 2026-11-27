@@ -9,7 +9,8 @@ const LIST_REASON_POLL_MS = 15_000;
 /**
  * Why this PC lets no device of its account in by the account's signed list, or no new one, as the PC says it
  * (docs/account.md: a pinned PC's `reason`, and a PC that cannot read its own account state): a row of its own in
- * Devices and PCs while there is something to say, and nothing otherwise. Read while the page shows.
+ * Devices and PCs while there is something to say, and nothing otherwise. Read while the page shows, and at once when it
+ * shows again.
  */
 export function ListReason() {
   const t = useT();
@@ -30,7 +31,8 @@ export function ListReason() {
     };
     read();
     const timer = setInterval(read, LIST_REASON_POLL_MS);
-    return () => { live = false; clearInterval(timer); };
+    document.addEventListener("visibilitychange", read);
+    return () => { live = false; clearInterval(timer); document.removeEventListener("visibilitychange", read); };
   }, []);
   if (reason === null) return null;
   return (

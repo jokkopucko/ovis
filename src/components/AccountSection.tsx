@@ -680,7 +680,8 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
     if (settling === null) return;
     let live = true;
     let asking = false;
-    const timer = setInterval(() => {
+    // also at once when the page shows again: an enrollment that ended while it was hidden is said without a tick's wait
+    const ask = (): void => {
       if (pageHidden() || asking) return;
       asking = true;
       within(ANSWER_MS, thisPcMembership()).then(({ account, enrolling, needsKeys }) => {
@@ -689,8 +690,10 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         if (account !== settling) setState(account === null ? { kind: "offer" } : { kind: "hidden" });
         else if (!enrolling) setState(needsKeys ? { kind: "keys", account, run: null, note: null } : { kind: "done", account, enrolling: false });
       }, warned("Ovis: this PC's account could not be read")).finally(() => { asking = false; });
-    }, ADDED_POLL_MS);
-    return () => { live = false; clearInterval(timer); };
+    };
+    const timer = setInterval(ask, ADDED_POLL_MS);
+    document.addEventListener("visibilitychange", ask);
+    return () => { live = false; clearInterval(timer); document.removeEventListener("visibilitychange", ask); };
   }, [settling]);
   const attempt = useRef(0);
   /**
@@ -737,7 +740,8 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
     if (keysRun === null || keysAccount === null) return;
     let live = true;
     let asking = false;
-    const timer = setInterval(() => {
+    // also at once when the page shows again
+    const ask = (): void => {
       if (pageHidden() || asking) return;
       asking = true;
       within(ANSWER_MS, fetchListAdd(keysRun)).then(async (now) => {
@@ -753,8 +757,10 @@ export function AddThisPc({ relayAbove = true, gateNote = true, relayOn, service
         }
         if (now.state === "none" || now.state === "replaced") setState({ kind: "keys", account: keysAccount, run: null, note: null });
       }, warned("Ovis: this PC's add by the account's list could not be read")).finally(() => { asking = false; });
-    }, ADDED_POLL_MS);
-    return () => { live = false; clearInterval(timer); };
+    };
+    const timer = setInterval(ask, ADDED_POLL_MS);
+    document.addEventListener("visibilitychange", ask);
+    return () => { live = false; clearInterval(timer); document.removeEventListener("visibilitychange", ask); };
   }, [keysRun, keysAccount, joinedAs]);
   const stopKeys = (account: string, run: string): void => {
     attempt.current++;
@@ -1363,7 +1369,7 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
   // with its relay on (the sign-in never turns it on), to a browser that drives it (a watching one lists nothing).
   // What the button says at the press is what the sign-in does (`signIn`), so words read a moment ago never add
   // the PC behind a plain "Sign in"; they follow the relay, which its switch in the same fold turns on and off:
-  // read again every few seconds while the page shows, and when Settings asks (`recheck`).
+  // read again every few seconds while the page shows, at once when it shows again, and when Settings asks (`recheck`).
   const signedOut = view.kind === "signed-out";
   const [addsPc, setAddsPc] = useState(false);
   useEffect(() => {
@@ -1389,7 +1395,8 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
     };
     read();
     const timer = setInterval(read, ADDED_POLL_MS);
-    return () => { live = false; clearInterval(timer); };
+    document.addEventListener("visibilitychange", read);
+    return () => { live = false; clearInterval(timer); document.removeEventListener("visibilitychange", read); };
   }, [linkPage, ownRedirect, signedOut, recheck]);
 
   if (!offered) return null;

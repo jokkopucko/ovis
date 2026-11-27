@@ -94,6 +94,32 @@ test("gives up a read that never answers at its deadline and asks again", async 
   expect(fetch).toHaveBeenCalledTimes(2);
 });
 
+test("finds topics asked while the page was hidden at once when it shows again, without a second read while one is on its way", async () => {
+  let topics: OmpBtwTopic[] = [];
+  const fetch = jest.spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => Response.json({ topics }), globalThis.fetch));
+  await page.render(pane());
+  await act(async () => { await Promise.resolve(); });
+  expect(fetch).toHaveBeenCalledTimes(1);
+  Object.defineProperty(page.window.document, "visibilityState", { configurable: true, value: "hidden" });
+  await act(async () => { jest.runOnlyPendingTimers(); });
+  expect(fetch).toHaveBeenCalledTimes(1);
+  topics = [TOPIC];
+  Object.defineProperty(page.window.document, "visibilityState", { configurable: true, value: "visible" });
+  await act(async () => { page.window.document.dispatchEvent(new page.window.Event("visibilitychange")); });
+  expect(fetch).toHaveBeenCalledTimes(2);
+  expect(buttons()).toHaveLength(1);
+  expect(jest.getTimerCount()).toBe(1);
+
+  let answer: (response: Response) => void = () => {};
+  fetch.mockImplementation(Object.assign(() => new Promise<Response>((resolve) => { answer = resolve; }), globalThis.fetch));
+  await act(async () => { jest.runOnlyPendingTimers(); });
+  expect(fetch).toHaveBeenCalledTimes(3);
+  await act(async () => { page.window.document.dispatchEvent(new page.window.Event("visibilitychange")); });
+  expect(fetch).toHaveBeenCalledTimes(3);
+  await act(async () => { answer(Response.json({ topics })); });
+  expect(jest.getTimerCount()).toBe(1);
+});
+
 test("finds topics asked after an empty first look, and stops asking once unmounted", async () => {
   let topics: OmpBtwTopic[] = [];
   const fetch = jest.spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => Response.json({ topics }), globalThis.fetch));

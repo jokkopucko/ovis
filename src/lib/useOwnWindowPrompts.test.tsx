@@ -7,6 +7,7 @@ import { TAILNET_NODE_ROUTES } from "../../shared/tailnet-nodes.ts";
 import type { PromptPairing } from "../components/RelayPairingPrompt.tsx";
 import { nativeTransport, setTransport } from "./transport.ts";
 import { holdListNumber } from "./account/addThisPc.ts";
+import type { MachineSessionRegistry } from "./machineSession.ts";
 import { useOwnWindowPrompts } from "./useOwnWindowPrompts.ts";
 
 const JOINS = [{ id: "join-1", label: "Phone", digits: "123456", left_ms: 60_000 }, { id: "join-2", label: "Galaxy", left_ms: 60_000 }];
@@ -17,16 +18,21 @@ let joinReads = 0;
 /** What GET /api/account/list/add answers: a PC that follows no list (404) unless a test says otherwise. */
 let listAdd: Response | (() => Response | Promise<Response>) = () => Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
 let addReads = 0;
+/** What GET of the Tailscale devices answers: TAILNET unless a test says otherwise. */
+let tailnet: () => Response | Promise<Response> = () => Response.json(TAILNET);
+let tailnetReads = 0;
 beforeEach(() => {
   joinReads = 0;
   addReads = 0;
+  tailnetReads = 0;
+  tailnet = () => Response.json(TAILNET);
   listAdd = () => Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
   page = openPage();
   Object.defineProperty(page.window.document, "hidden", { configurable: true, value: false });
   setTransport({ ...nativeTransport, fetch: (async (input: string | URL | Request) => {
     const path = new URL(String(input), "http://127.0.0.1:7317").pathname;
     if (path === "/api/relay/joins") { joinReads++; return Response.json({ joins: JOINS }); }
-    if (path === TAILNET_NODE_ROUTES.list) return Response.json(TAILNET);
+    if (path === TAILNET_NODE_ROUTES.list) { tailnetReads++; return tailnet(); }
     if (path === "/api/account/list/add") { addReads++; return typeof listAdd === "function" ? listAdd() : listAdd; }
     return Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
   }) as typeof nativeTransport.fetch });
@@ -36,10 +42,19 @@ const settle = (): Promise<void> => act(async () => { for (let turn = 0; turn < 
 let page: Page;
 let prompts: readonly PromptPairing[] = [];
 let joins: readonly { id: string }[] = [];
-function Probe({ pairings, ownWindow = true, unlocked = true }: { pairings: readonly RelayPairingRequest[]; ownWindow?: boolean; unlocked?: boolean }) {
-  ({ prompts, joins } = useOwnWindowPrompts(pairings, [], { ownWindow, unlocked }));
+function Probe({ pairings, ownWindow = true, unlocked = true, machineSessions }: { pairings: readonly RelayPairingRequest[]; ownWindow?: boolean; unlocked?: boolean; machineSessions?: MachineSessionRegistry }) {
+  ({ prompts, joins } = useOwnWindowPrompts(pairings, [], { ownWindow, unlocked, machineSessions }));
   return null;
 }
+
+/** The local link's "opened again" signal (WsClient.onBeforeReplay), told by the test. */
+const replays = new Set<() => void>();
+const sessionIds: string[] = [];
+const sessions = { get: (id: string) => (sessionIds.push(id), { socket: { onBeforeReplay: (handler: () => void) => { replays.add(handler); return () => { replays.delete(handler); }; } } }) } as unknown as MachineSessionRegistry;
+const NUMBER = { state: "number", run: "0123456789abcdef", account: "acct_1", list: "ab".repeat(32), digits: "482913", until: "2026-11-21T00:02:00.000Z" };
+const reads = (): readonly number[] => [joinReads, addReads, tailnetReads];
+const show = (): Promise<void> => act(async () => { page.window.document.dispatchEvent(new page.window.Event("visibilitychange")); });
+const addShown = (): readonly string[] => prompts.filter((prompt) => prompt.own_window === "add").map((prompt) => prompt.digits);
 
 afterEach(async () => {
   jest.useRealTimers();
@@ -118,6 +133,105 @@ it("leaves the number of an add to the wait that shows it in a dialog, so one pl
   await settle();
   expect(prompts.filter((prompt) => prompt.own_window === "add").map((prompt) => prompt.digits)).toEqual(["482913"]);
   other();
+});
+
+it("reads the joins, the add and the removed Tailscale device skipped while hidden at once when the page shows again", async () => {
+  listAdd = () => Response.json(NUMBER);
+  jest.useFakeTimers();
+  await page.render(createElement(Probe, { pairings: [] }));
+  await settle();
+  expect(reads()).toEqual([1, 1, 1]);
+  Object.defineProperty(page.window.document, "hidden", { configurable: true, value: true });
+  await act(async () => { jest.advanceTimersByTime(3_000); });
+  await settle();
+  expect(reads()).toEqual([1, 1, 1]);
+  Object.defineProperty(page.window.document, "hidden", { configurable: true, value: false });
+  await act(async () => { page.window.document.dispatchEvent(new page.window.Event("visibilitychange")); });
+  await settle();
+  expect(reads()).toEqual([2, 2, 2]);
+});
+
+it("reads the joins, the add and the removed Tailscale device again when this PC's local link opens again", async () => {
+  listAdd = () => Response.json(NUMBER);
+  jest.useFakeTimers();
+  sessionIds.length = 0;
+  await page.render(createElement(Probe, { pairings: [], machineSessions: sessions }));
+  await settle();
+  expect(reads()).toEqual([1, 1, 1]);
+  await act(async () => { for (const replay of replays) replay(); });
+  await settle();
+  expect(reads()).toEqual([2, 2, 2]);
+  expect(new Set(sessionIds)).toEqual(new Set(["local"]));
+  await page.render(null);
+  expect(replays.size).toBe(0);
+});
+
+it("listens to the local link a lock replaced, once the window is unlocked again", async () => {
+  listAdd = () => Response.json(NUMBER);
+  jest.useFakeTimers();
+  await page.render(createElement(Probe, { pairings: [], machineSessions: sessions }));
+  await settle();
+  expect(replays.size).toBe(3);
+  // a lock closes every socket (useCloseSessionsWhenLocked): nothing listens to the closed one
+  await page.render(createElement(Probe, { pairings: [], unlocked: false, machineSessions: sessions }));
+  await settle();
+  expect(replays.size).toBe(0);
+  await page.render(createElement(Probe, { pairings: [], machineSessions: sessions }));
+  await settle();
+  expect(replays.size).toBe(3);
+  const before = reads();
+  await act(async () => { for (const replay of replays) replay(); });
+  await settle();
+  expect(reads()).toEqual(before.map((count) => count + 1));
+  await page.render(null);
+});
+
+it("never brings back the number of an add with an older answer once a newer read was refused, nor reads the add again", async () => {
+  const late = Promise.withResolvers<Response>();
+  listAdd = () => addReads === 1 ? late.promise : Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
+  jest.useFakeTimers();
+  await page.render(createElement(Probe, { pairings: [] }));
+  await settle();
+  await show();
+  await settle();
+  expect(addReads).toBe(2);
+  await act(async () => { late.resolve(Response.json(NUMBER)); });
+  await settle();
+  expect(addShown()).toEqual([]);
+  await show();
+  await settle();
+  expect(addReads).toBe(2);
+});
+
+it("keeps the number a newer read brought when an older read is refused after it, and goes on reading", async () => {
+  const late = Promise.withResolvers<Response>();
+  listAdd = () => addReads === 1 ? late.promise : Response.json(NUMBER);
+  jest.useFakeTimers();
+  await page.render(createElement(Probe, { pairings: [] }));
+  await settle();
+  await show();
+  await settle();
+  expect(addShown()).toEqual(["482913"]);
+  await act(async () => { late.resolve(Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 })); });
+  await settle();
+  expect(addShown()).toEqual(["482913"]);
+  await show();
+  await settle();
+  expect(addReads).toBe(3);
+});
+
+it("never brings back a removed Tailscale device with an older answer once a newer read found it decided", async () => {
+  const late = Promise.withResolvers<Response>();
+  tailnet = () => tailnetReads === 1 ? late.promise : Response.json({ pending: null, nodes: [] });
+  jest.useFakeTimers();
+  await page.render(createElement(Probe, { pairings: [] }));
+  await settle();
+  await show();
+  await settle();
+  expect(tailnetReads).toBe(2);
+  await act(async () => { late.resolve(Response.json(TAILNET)); });
+  await settle();
+  expect(prompts.filter((prompt) => prompt.own_window === "tailnet")).toEqual([]);
 });
 
 it("keeps the newest read of the add when an older one answers after it", async () => {

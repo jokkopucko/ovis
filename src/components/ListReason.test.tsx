@@ -51,6 +51,23 @@ describe("why this PC lets nobody of its account's list in, in Settings", () => 
     expect(await shown()).toBeNull();
   });
 
+  it("reads at once when the page shows again after skipping its reads while hidden", async () => {
+    let reads = 0;
+    answer = () => { reads++; return Response.json({ account: "acct_1" }); };
+    jest.useFakeTimers();
+    expect(await shown()).toBeNull();
+    expect(reads).toBe(1);
+    Object.defineProperty(page.window.document, "hidden", { configurable: true, value: true });
+    await act(async () => { jest.advanceTimersByTime(15_000); });
+    expect(reads).toBe(1);
+    answer = () => { reads++; return Response.json({ account: "acct_1", list: { pinned_list: "ab".repeat(32), standing: "in", reason: "A device waits behind an entry this PC signed earlier." } }); };
+    Object.defineProperty(page.window.document, "hidden", { configurable: true, value: false });
+    await act(async () => { page.window.document.dispatchEvent(new page.window.Event("visibilitychange")); });
+    await act(async () => { for (let turn = 0; turn < 10; turn++) await Promise.resolve(); });
+    expect(reads).toBe(2);
+    expect(page.container.querySelector('[data-testid="list-reason"]')?.textContent).toContain("waits behind an entry");
+  });
+
   it("keeps the newest read when an older one answers after it", async () => {
     let release: (response: Response) => void = () => {};
     const late = new Promise<Response>((resolve) => { release = resolve; });

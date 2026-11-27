@@ -50,10 +50,12 @@ function OmpBtwChip({ paneId }: { paneId: string }) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let reading: AbortController | undefined;
     // a read that stalls is given up at its deadline and asked again, so the list never stops refreshing;
-    // a hidden page asks nothing and looks again on the next tick
+    // a hidden page asks nothing and looks again on the next tick, or at once when it shows again
+    let busy = false;
     const load = (): void => {
-      const later = (): void => { if (alive) timer = setTimeout(load, open ? OPEN_POLL_MS : CLOSED_POLL_MS); };
+      const later = (): void => { busy = false; if (alive) timer = setTimeout(load, open ? OPEN_POLL_MS : CLOSED_POLL_MS); };
       if (document.visibilityState === "hidden") { later(); return; }
+      busy = true;
       const controller = reading = new AbortController();
       const deadline = setTimeout(() => controller.abort(), READ_DEADLINE_MS);
       fetchPaneBtw(paneId, controller.signal).then(
@@ -61,8 +63,11 @@ function OmpBtwChip({ paneId }: { paneId: string }) {
         () => { clearTimeout(deadline); if (alive) setFailed(true); later(); },
       );
     };
+    // a read on its way goes on, and its answer sets the next tick
+    const shown = (): void => { if (document.visibilityState === "hidden" || busy) return; clearTimeout(timer); load(); };
     load();
-    return () => { alive = false; clearTimeout(timer); reading?.abort(); };
+    document.addEventListener("visibilitychange", shown);
+    return () => { alive = false; clearTimeout(timer); reading?.abort(); document.removeEventListener("visibilitychange", shown); };
   }, [fetchPaneBtw, paneId, open]);
   useEffect(() => {
     if (!open) return;

@@ -139,6 +139,17 @@ test("takes no card picture while the app is hidden", async () => {
   expect(pictures).toBe(0);
 });
 
+test("takes a card's picture at once when the app shows again", async () => {
+  pictures = 0;
+  install(stub(async () => view));
+  Object.defineProperty(page.window.document, "visibilityState", { configurable: true, value: "hidden" });
+  await render();
+  expect(pictures).toBe(0);
+  Object.defineProperty(page.window.document, "visibilityState", { configurable: true, value: "visible" });
+  await act(async () => { page.window.document.dispatchEvent(new page.window.Event("visibilitychange")); });
+  expect(pictures).toBe(1);
+});
+
 test("asks a Claude pane for its pages once per status, never again while the answer is empty", async () => {
   const fetch = jest.spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => Response.json({ artifacts: [] }), globalThis.fetch));
   install(stub(async () => view));

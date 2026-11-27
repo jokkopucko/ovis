@@ -308,6 +308,18 @@ describe("popstate listeners", () => {
   });
 });
 
+describe("polls that pause while the page is hidden", () => {
+  // A poll that skips its reads while the page is hidden shows what it read before it was hidden
+  // until its next turn after the page shows again, which can be after a join or a code timed out.
+  it("read again at once when the page shows", () => {
+    const offenders = scan("src/**/*.{ts,tsx}").filter((name) => !/\.test\./.test(name)).filter((file) => {
+      const code = stripComments(read(file));
+      return /\bsetInterval\(/.test(code) && /\bdocument\.hidden\b|\bvisibilityState\b/.test(code) && !/\baddEventListener\(\s*["'\x60]visibilitychange["'\x60]|\busePageVisible\(/.test(code);
+    });
+    fail(offenders, "A file that polls with setInterval and skips its reads while the page is hidden also reads at once when the page shows again: listen for visibilitychange beside the poll, or depend on usePageVisible() (src/lib/visibility.ts). A read from this PC also listens to its local socket's onBeforeReplay, as useOwnJoins does.");
+  });
+});
+
 const SURFACE = /(?<![[\w-])aria-modal=|<dialog\b|(?<![[\w-])role="(?:dialog|alertdialog|menu|listbox)"/;
 const TAKES_PART = /\b(?:usePhoneSheetBack|useSheetHistory|recordSettings)\(/;
 

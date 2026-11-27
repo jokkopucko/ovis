@@ -5,6 +5,7 @@ import { Check, Pencil, Trash2, X } from "lucide-react";
 import "./DevicesPanel.css";
 
 import { ApiError, blockTailnetNodes, fetchDevices, renameDevice, revokeAllDevices, revokeDevice } from "../lib/api.ts";
+import { useMachineSessions } from "../lib/machineSessionContext.tsx";
 import { useTailnetNodes } from "../lib/useTailnetNodes.ts";
 import { ownWindowHere } from "../lib/account/addThisPc.ts";
 import { methodName } from "../lib/portalAuth.ts";
@@ -63,7 +64,7 @@ export function DevicesPanel({ onDevicePaired, auth, onPaired, onRevokedAll, kin
   const [pairingSelf, setPairingSelf] = useState(false);
   // the Tailscale devices a removal keeps out, read and blocked from this PC's own window only (server/tailnet-nodes.ts)
   const [tailnetAgain, setTailnetAgain] = useState(0);
-  const tailnet = useTailnetNodes(ownWindowHere(auth) && auth?.role !== "watch", tailnetAgain);
+  const tailnet = useTailnetNodes(ownWindowHere(auth) && auth?.role !== "watch", tailnetAgain, useMachineSessions() ?? undefined);
   const [removing, setRemoving] = useState<{ id: string | null; label: string } | null>(null);
   const [alsoBlock, setAlsoBlock] = useState<ReadonlySet<string>>(new Set());
   const offered = (tailnet?.nodes ?? []).filter((node) => !node.blocked && (node.rows.length > 0 || (node.seen_at !== null && Date.now() - Date.parse(node.seen_at) < TAILNET_RECENT_MS)));
