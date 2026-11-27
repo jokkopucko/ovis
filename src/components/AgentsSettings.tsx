@@ -448,9 +448,13 @@ export function AgentsSettings({ watching, agentCalls = false, onLocalLogin, onO
       </section>
 
       <SettingsBare.Provider value="rows">
-        {ownGroups.map((id) => <SettingsGroup key={id} title={OWN_NAMES[id]!} section={`agent-${id}`}>
-          <AgentOwnRows agentId={id} />
-        </SettingsGroup>)}
+        {ownGroups.map((id) => {
+          const notInstalled = !checking && catalogError === null && catalog?.pathProblem === null && agents?.find((agent) => agent.id === id)?.state.installed === false;
+          return <SettingsGroup key={id} title={OWN_NAMES[id]!} section={`agent-${id}`} keepNote
+            note={notInstalled ? t("Not installed on this PC. These settings apply once it is installed here.") : undefined}>
+            <AgentOwnRows agentId={id} />
+          </SettingsGroup>;
+        })}
       </SettingsBare.Provider>
 
       {otherIntegrations.length > 0 && <details className="settings-section agents-more" data-section="integrations" tabIndex={-1} open={searching || undefined}>

@@ -8,6 +8,7 @@ export const SETUP_ZH: Record<string, string> = {
   "No other agents to install here.": "这里没有其他可安装的代理。",
   "An agent your shell's startup file (.zshrc) puts on PATH may be missing here: Ovis could not read that PATH. Check again reads it once more.": "由 shell 启动文件（.zshrc）加入 PATH 的智能体可能未在此显示：Ovis 无法读取该 PATH。点“重新检查”会再读一次。",
   "None on this PC yet.": "这台电脑上还没有。",
+  "Not installed on this PC. These settings apply once it is installed here.": "这台电脑未安装此代理。在这台电脑上安装后，这些设置才会生效。",
   "Ovis cannot tell which agents this PC has. Install them from a terminal on it.": "Ovis 无法得知这台电脑上有哪些智能体。请在这台电脑的终端里安装。",
   "Ovis needs {version} or later.": "Ovis 需要 {version} 或更高版本。",
   "This PC's Ovis cannot install agents yet. Update it, then try again.": "这台电脑上的 Ovis 还不能安装代理。请先更新，然后重试。",
