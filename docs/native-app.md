@@ -675,9 +675,10 @@ one more browser's and is unchanged.
   plugin the app lacks would never settle.
 - Turning alerts on asks for notifications (the phone's own prompt), then subscribes, and the PC
   sends its confirmation push, as in a browser. The app shows an alert that arrives while it is
-  open too. On Android, tapping a pane's alert opens the PC that sent it on that pane's chat, as a
+  open too. Tapping a pane's alert opens the PC that sent it on that pane's chat, as a
   browser's does: the PC names the endpoint it pushed to and its relay ID inside the encrypted alert
-  (`shared/push.ts`), and the app finds the saved PC by them (`PCStore.alertLink`). A tap for the
+  (`shared/push.ts`), and the app finds the saved PC by them (`PCStore.alertLink` on Android,
+  `Alert.link` in `app/ios/OvisHomeCore` on iOS). A tap for the
   PC already open selects the pane in its page without reloading the page (over a reader or a file
   page, or before that page is up, the alert's address opens instead). An alert for another
   saved PC opens that PC, as switching PC does, without asking: unsent text the open page kept in
@@ -686,7 +687,16 @@ one more browser's and is unchanged.
   ID is sent without them, and its tap just opens the app, as does an alert from an older PC or
   from one the phone no longer keeps. A tap for the open PC only brings the app forward when that
   PC's page is from an Ovis older than this hand-over and is served over plain http, where a page
-  has no service worker. On iOS a tap still only opens the app.
+  has no service worker.
+- On iOS the tap is read from the PC's encrypted alert again, with the phone's keys
+  (`OvisPushPlugin.tapped`), never from what the notification shows, so a tap still works where
+  the extension ran out of time. Only an endpoint the app still knows can open a PC. A tap that
+  launched the app opens the alert's PC as the first screen, at its pane. A relay PC's page in
+  the hosted app the person kept as the PC is that relay
+  PC's own: its alert selects the pane there too. While a sheet is over the page (an SSH setup, the
+  scanner) a tap only brings the app forward, leaving the sheet as it was. An alert whose endpoint
+  the app kept under the hosted origin before the shell moved inside the app (`PCStore.settleShell`)
+  is not the current pairing's, and its tap just opens the app.
 - The plugin is `app/ios/App/App/OvisPushPlugin.swift` on iOS and
   [`app/android/ovis-push`](../app/android/ovis-push/README.md) on Android, with the same calls:
   `checkPermissions()` and `requestPermissions()` (`{ notifications }`, Capacitor's permission

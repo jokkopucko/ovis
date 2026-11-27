@@ -1,4 +1,5 @@
 import UIKit
+import UserNotifications
 import Capacitor
 
 class SceneDelegate: UIResponder, UIWindowSceneDelegate {
@@ -10,6 +11,8 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         window = UIWindow(windowScene: windowScene)
         // before anything opens: the saved PCs as this build can open them
         PCStore.settleShell()
+        // an alert's tap that launched the app: its PC is the one the first screen opens, at its pane
+        if let response = connectionOptions.notificationResponse { OvisPushPlugin.tapped(response) }
         window?.rootViewController = HerdrBridgeViewController.first()
         window?.makeKeyAndVisible()
 
