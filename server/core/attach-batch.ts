@@ -1,27 +1,24 @@
-/** hc writes an attach's history replay in 16 KiB frames under 5 ms apart: a gap this long ends it */
-export const ATTACH_BATCH_QUIET_MS = 15;
-/** the longest an attach's first output is held: a program that prints all along never leaves a gap */
+/** the longest an attach's first output is held when hc never marks its first paint's end (a core before 0.1.11) */
 export const ATTACH_BATCH_MAX_MS = 150;
 // Even 6x JSON escaping is only 240 KiB: below the 256 KiB watermark and 1 MiB legacy relay limit,
 // and one ACK can arrive in 7.5 s at 32 KiB/s, before the shared pane's 10 s pause limit.
 const ATTACH_FRAME_BYTES = 40 * 1024;
 
 /**
- * Holds a herdr-core attach's first output (the cleared screen and the history hc replays) until hc goes quiet,
- * and passes it on as one frame. Sent frame by frame, a viewer draws the history between them: the pane is seen
- * scrolling down through it on every switch, instead of opening at its newest rows. Output past the first gap
- * goes on as it comes. Long replays are split into bounded frames.
+ * Holds a herdr-core attach's first output (the cleared screen and the history hc replays) until hc's first paint
+ * ends (CoreAttachSession sees its mark and calls `end`), and passes it on as one frame. Sent frame by frame, a viewer
+ * draws the history between them: the pane is seen scrolling down through it on every switch, instead of opening at
+ * its newest rows. Output past the paint goes on as it comes. Long replays are split into bounded frames.
  */
 export class AttachBatch {
   private held: string[] = [];
   private bytes = 0;
   private state: "holding" | "streaming" | "closed" = "holding";
-  private quiet: ReturnType<typeof setTimeout> | undefined;
   private deadline: ReturnType<typeof setTimeout> | undefined;
 
   constructor(private readonly forward: (data: string) => void) {}
 
-  push(data: string, fromCore = true): void {
+  push(data: string): void {
     if (this.state === "closed") return;
     const size = Buffer.byteLength(data);
     if (this.state === "streaming" && size <= ATTACH_FRAME_BYTES) {
@@ -50,33 +47,22 @@ export class AttachBatch {
       this.bytes += bytes.length - start;
     }
     if (this.bytes === ATTACH_FRAME_BYTES) this.flush();
-    if (this.state === "holding") {
-      this.deadline ??= setTimeout(() => this.end(), ATTACH_BATCH_MAX_MS);
-      if (fromCore) {
-        clearTimeout(this.quiet);
-        this.quiet = setTimeout(() => this.end(), ATTACH_BATCH_QUIET_MS);
-      }
-    }
+    if (this.state === "holding") this.deadline ??= setTimeout(() => this.end(), ATTACH_BATCH_MAX_MS);
   }
 
-  /** passes on what is held, and everything after it as it comes (the attach ended, or hc went quiet) */
+  /** passes on what is held, and everything after it as it comes (hc's first paint ended, or the attach did) */
   end(): void {
     if (this.state === "closed") return;
     this.state = "streaming";
-    this.clearTimers();
+    clearTimeout(this.deadline);
     this.flush();
   }
 
   cancel(): void {
     this.state = "closed";
-    this.clearTimers();
+    clearTimeout(this.deadline);
     this.held = [];
     this.bytes = 0;
-  }
-
-  private clearTimers(): void {
-    clearTimeout(this.quiet);
-    clearTimeout(this.deadline);
   }
 
   flush(): void {

@@ -699,7 +699,7 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
               held = null;
               took();
             }
-            history.push(data, fromCore);
+            history.push(data);
             // A display query does not replace the old screen. Publish the actual replacement
             // bytes before its ready transition, both to current viewers and to the replay tail.
             if (recovering && fromCore) {
@@ -707,6 +707,9 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
               held = null;
               took();
             }
+          },
+          onPaintEnd: () => {
+            if (attachments.get(paneId) === attachment) history.end();
           },
         })
         : new PtySession(options);

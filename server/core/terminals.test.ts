@@ -4,7 +4,7 @@ import { connectionData, send } from "./connections.ts";
 import { createInputLane } from "./input.ts";
 import type { PaneAttachment } from "./terminal-process.ts";
 import * as terminalProcess from "./terminal-process.ts";
-import { ATTACH_BATCH_MAX_MS, ATTACH_BATCH_QUIET_MS } from "./attach-batch.ts";
+import { ATTACH_BATCH_MAX_MS } from "./attach-batch.ts";
 import * as pty from "../pty/session.ts";
 import * as coreAttach from "../herdr-core/attach-session.ts";
 import type { CoreAttachOptions } from "../herdr-core/attach-session.ts";
@@ -526,7 +526,7 @@ for (const onCore of [true, false]) {
       const setup = "\x1b[?1049h";
       pane.attach.onData(query + setup);
       if (onCore) {
-        jest.advanceTimersByTime(ATTACH_BATCH_QUIET_MS);
+        jest.advanceTimersByTime(ATTACH_BATCH_MAX_MS);
         expect(pane.painted()).toBe(query + setup);
         expect(pane.ready()).toBe(true);
         expect(pane.writes).toEqual([]);
@@ -550,17 +550,17 @@ for (const onCore of [true, false]) {
   });
 }
 
-it("sends a herdr-core attach's history replay as one frame, so a viewer opens it at its newest rows, then output as it comes", async () => {
+it("sends a herdr-core attach's history replay as one frame once hc's paint ends, so a viewer opens it at its newest rows, then output as it comes", async () => {
   serveRuntime(HERDR_CORE);
   try {
     using pane = await resizableAttach();
     for (const chunk of ["\x1b[3Jhistory 1\r\n", "history 2\r\n", "screen"]) {
       pane.attach.onData(chunk);
-      jest.advanceTimersByTime(ATTACH_BATCH_QUIET_MS - 1);
+      jest.advanceTimersByTime(20);
     }
     expect(pane.ready()).toBe(true);
     expect(pane.sent()).toEqual([]);
-    jest.advanceTimersByTime(1);
+    pane.core!.onPaintEnd();
     expect(pane.sent()).toEqual(["\x1b[3Jhistory 1\r\nhistory 2\r\nscreen"]);
     pane.attach.onData("live");
     expect(pane.sent().at(-1)).toBe("live");
@@ -655,7 +655,7 @@ it("replays pre-join core bytes only to the joining viewer and delivers post-joi
   const peer = pane.viewer();
   await pane.join(peer);
   pane.data("after join");
-  jest.advanceTimersByTime(ATTACH_BATCH_QUIET_MS);
+  jest.advanceTimersByTime(ATTACH_BATCH_MAX_MS);
 
   const [before, after, ...rest] = coreOutput(peer.frames);
   expect(before).toMatchObject({ replay: true });
@@ -674,7 +674,7 @@ it("delivers held core output before changing the viewer's grid", async () => {
   peer.frames.length = 0;
   pane.data("old grid");
   await pane.registry.terminalFrames.resize(pane.client, { type: "resize", pane_id: "p", cols: 40, rows: 24 });
-  jest.advanceTimersByTime(ATTACH_BATCH_QUIET_MS);
+  jest.advanceTimersByTime(ATTACH_BATCH_MAX_MS);
 
   expect(peer.frames.map((frame) => frame.type)).toEqual(["pty-data", "pane-geometry"]);
   expect(coreOutput(peer.frames)[0]?.data).toEndWith("old grid");
@@ -684,7 +684,7 @@ it("publishes replacement core output before input-ready and includes it in a jo
   using pane = corePane();
   await pane.join();
   pane.data("old screen");
-  jest.advanceTimersByTime(ATTACH_BATCH_QUIET_MS);
+  jest.advanceTimersByTime(ATTACH_BATCH_MAX_MS);
   await pane.replace();
   pane.client.frames.length = 0;
   pane.data("replacement screen");
@@ -696,18 +696,20 @@ it("publishes replacement core output before input-ready and includes it in a jo
   expect(coreOutput(peer.frames)[0]?.data).toEndWith("replacement screen");
 });
 
-it("keeps batching the first core history after a display query has been quiet for 15 ms", async () => {
+it("holds hc's first paint through pauses until its 9001 mark, though a frame splits the mark, then passes output on as it comes", async () => {
   using pane = corePane();
   await pane.join();
-  jest.advanceTimersByTime(16);
-  pane.data("history one");
-  jest.advanceTimersByTime(1);
-  pane.data("history two");
-  pane.data("screen");
+  jest.advanceTimersByTime(20);
+  pane.data("\x18history one\r\n");
+  jest.advanceTimersByTime(20);
+  pane.data("history two\r\nscreen\x1b[0m\x1b[?90");
+  jest.advanceTimersByTime(20);
   const historyFrames = () => coreOutput(pane.client.frames).filter(({ data }) => data.includes("history") || data.includes("screen"));
   expect(historyFrames()).toEqual([]);
-  jest.advanceTimersByTime(ATTACH_BATCH_QUIET_MS);
-  expect(historyFrames().map(({ data }) => data.slice(data.indexOf("history")))).toEqual(["history onehistory twoscreen"]);
+  pane.data("01lprompt");
+  expect(historyFrames().map(({ data }) => data.slice(data.indexOf("\x18")))).toEqual(["\x18history one\r\nhistory two\r\nscreen\x1b[0m\x1b[?9001lprompt"]);
+  pane.data("live");
+  expect(coreOutput(pane.client.frames).at(-1)?.data).toBe("live");
 });
 
 it("splits control-heavy core batches below the legacy relay limit without losing a UTF-8 character", async () => {
@@ -717,7 +719,7 @@ it("splits control-heavy core batches below the legacy relay limit without losin
   const beforeEmoji = 40 * 1024 - Buffer.byteLength(coreAttach.CLEAR_HISTORY) - 1;
   const history = Buffer.from("\x1b".repeat(beforeEmoji) + "🍏" + "\0".repeat(OUTPUT_HIGH_BYTES));
   for (let at = 0; at < history.length; at += 16 * 1024) pane.data(history.subarray(at, at + 16 * 1024));
-  jest.advanceTimersByTime(ATTACH_BATCH_QUIET_MS);
+  jest.advanceTimersByTime(ATTACH_BATCH_MAX_MS);
   const frames = coreOutput(pane.client.frames);
 
   expect(Math.max(...frames.map((frame) => Buffer.byteLength(JSON.stringify(frame))))).toBeLessThan(LIMITS_V1.max_ws_message_bytes);
@@ -731,7 +733,7 @@ it("lets a healthy shared viewer drain an ANSI-heavy core batch before the pause
   const line = "\x1b[31m" + "text".repeat(2) + "\r\n";
   const history = Buffer.from(line.repeat(Math.ceil(OUTPUT_HIGH_BYTES / line.length)).slice(0, OUTPUT_HIGH_BYTES));
   for (let at = 0; at < history.length; at += 16 * 1024) pane.data(history.subarray(at, at + 16 * 1024));
-  jest.advanceTimersByTime(ATTACH_BATCH_QUIET_MS);
+  jest.advanceTimersByTime(ATTACH_BATCH_MAX_MS);
   const window = new OutputWindow();
   const acks = coreOutput(pane.client.frames).map(({ data }) => ({
     offset: window.write(Buffer.byteLength(data), wireBytes(data)), wire: wireBytes(data),
@@ -756,7 +758,7 @@ for (const action of ["detach", "disconnect"] as const) {
     using pane = corePane();
     await pane.join();
     pane.data("held");
-    expect(jest.getTimerCount()).toBe(2);
+    expect(jest.getTimerCount()).toBe(1);
 
     if (action === "detach") pane.registry.terminalFrames.detach(pane.client, { type: "detach", pane_id: "p" });
     else pane.registry.detachClaimed(pane.client);
@@ -765,11 +767,11 @@ for (const action of ["detach", "disconnect"] as const) {
   });
 }
 
-it("passes on a herdr-core attach's first output at its deadline though the program never goes quiet", async () => {
+it("passes on a herdr-core attach's first output at its deadline when hc never marks the paint's end", async () => {
   using pane = corePane();
   await pane.join();
   pane.client.frames.length = 0;
-  const interval = ATTACH_BATCH_QUIET_MS - 1;
+  const interval = 10;
   for (let at = 0; at < ATTACH_BATCH_MAX_MS; at += interval) {
     pane.data("line\r\n");
     jest.advanceTimersByTime(Math.min(interval, ATTACH_BATCH_MAX_MS - 1 - at));

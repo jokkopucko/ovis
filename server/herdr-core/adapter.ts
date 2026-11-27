@@ -9,6 +9,7 @@ import { makeLineReader } from "../herdr/line-reader.ts";
 import { cmdQuote, powershellNativeArgs, SHELL_AGENTS, shellCommandLine } from "../shell-agent.ts";
 import { descendantProcesses, type ProcessRow, windowsProcessTable } from "../windows-processes.ts";
 import { jobProcessesBelow } from "../foreground-job.ts";
+import { PAINT_END } from "./attach-session.ts";
 import { type HcConnection, HcError } from "./connection.ts";
 import { foreignLayout, OVIS_LAYOUT_DOC, type PaneDirection } from "./layout-doc.ts";
 import { isHermesInstalledLauncher, paneSession } from "../agent-identity.ts";
@@ -370,8 +371,6 @@ function startLine(shell: StartShell, command: string, args: readonly string[]):
 /** How long a typed agent start may take to show in front of its shell. */
 const AGENT_START_MS = 10_000;
 
-/** What hc sends right after the screen in a first paint: the win32-input-mode state (herdr-core viewers.rs `first_paint`). */
-const PAINT_END = "\u001b[?9001";
 /** How a first paint begins: hc's CAN, then the soft reset of ghostty-vt `paint`. */
 const PAINT_START = "\u0018\u001b[!p";
 /** How long a watch-only attach may take to bring its first paint: within the 1.5s a prompt poll gives its colored read. */
