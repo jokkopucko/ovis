@@ -71,6 +71,10 @@
   }
 }
 
+:root[data-mac-title-bar] .mermaid-lightbox-bar {
+  top: calc(var(--space-3) + var(--mac-title-bar-h, 0px));
+}
+
 .mermaid-lightbox-canvas img {
   object-fit: contain;
 }

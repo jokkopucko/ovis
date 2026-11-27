@@ -3004,6 +3004,15 @@ button {
   }
 }
 
+/* Ovis for Mac's window folds its title bar away too (app/mac/Resources/title-bar.js), and marks the
+   traffic lights' corner as an iPad window's (the rules below): the wide header takes the bar's height,
+   which the app hands in with the lights' right edge. The narrow one keeps its own, which its 44px
+   buttons need. The app moves the window from the top bars itself. */
+:root[data-mac-title-bar] {
+  --header-h-wide: var(--mac-title-bar-h);
+  --window-controls-w: calc(var(--mac-title-bar-inset) + var(--space-3));
+}
+
 /* an iPad home-screen app in a window (iPadOS 26) has the window's controls over its top-left corner
    (lib/viewport.ts marks it and sizes --window-controls-w from the page zoom), so the header's first
    button moves clear of them */

@@ -17,8 +17,9 @@ function mediaBody(query: string, source = css, file = "styles.css"): string {
 }
 
 function rule(block: string, selector: string): string {
+  const clean = block.replace(/\/\*[\s\S]*?\*\//g, "");
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?:^|[},])\\s*${escaped}\\s*\\{([^}]*)\\}`).exec(block)?.[1] ?? "";
+  return new RegExp(`(?:^|[},])\\s*${escaped}\\s*\\{([^}]*)\\}`).exec(clean)?.[1] ?? "";
 }
 
 describe("window-controls-overlay styles", () => {
@@ -42,11 +43,14 @@ describe("window-controls-overlay styles", () => {
   for (const name of ["image", "mermaid"]) {
     it(`keeps the ${name} preview's bar out of the title bar area`, async () => {
       const file = `${name === "image" ? "Image" : "Mermaid"}Lightbox.css`;
-      const block = mediaBody("(display-mode: window-controls-overlay)", await read(`./components/${file}`), file);
+      const source = await read(`./components/${file}`);
+      const block = mediaBody("(display-mode: window-controls-overlay)", source, file);
       expect(rule(block, `.${name}-lightbox-scrim`)).toContain("app-region: no-drag;");
       const top = /(?:^|;)\s*top:([^;]*);/.exec(rule(block, `.${name}-lightbox-bar`))?.[1] ?? "";
       expect(top).toContain("env(titlebar-area-y, 0px)");
       expect(top).toContain("env(titlebar-area-height, 0px)");
+      const macTop = /(?:^|;)\s*top:([^;]*);/.exec(rule(source, `:root[data-mac-title-bar] .${name}-lightbox-bar`))?.[1] ?? "";
+      expect(macTop).toContain("var(--mac-title-bar-h, 0px)");
     });
   }
 });

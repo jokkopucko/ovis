@@ -14,6 +14,14 @@ The window is a WKWebView on the server's own address (`http://127.0.0.1:<port>`
 `scripts/plugin.ts status`). The server lets a loopback request in without pairing, and the page's
 cookies and drafts stay in the app's own WebKit store, apart from any browser's.
 
+- While it shows Ovis the window draws no title bar: the page's header takes its place, as in the
+  Codex and Claude apps, at the height of a compact toolbar's bar, which centres the traffic lights on
+  it (`Sources/OvisMac/TitleBar.swift`, `Resources/title-bar.js`), and every screen keeps clear of the
+  lights as an iPad window's does. A drag on a top bar's bare surface (the header, the inbox's), or
+  anywhere off a control within the bar's height of the window's top, moves the window, and a double
+  click there does what System Settings › Desktop & Dock says of a title bar. The View menu has no
+  toolbar items. The setup, and a window the page opens, keep a title bar of their own; in full
+  screen the bar hides with the menu bar.
 - **Ovis → Phone Setup…** opens the setup and the phone's QR code in a window of their own. After
   an Install from the app it opens by itself. **File → Open in Browser** opens the page as it is in
   the default browser, and **View → Reload** (Cmd+R) loads it again. No menu item takes a Cmd+Shift

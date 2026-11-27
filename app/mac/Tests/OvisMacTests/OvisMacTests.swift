@@ -217,3 +217,15 @@ final class LinkBrowsersTests: XCTestCase {
         XCTAssertNil(LinkBrowsers.agentBrowserProgram(path: "", home: "/Users/u", isProgram: at([])))
     }
 }
+
+final class TitleBarTests: XCTestCase {
+    func testAcceptsFirstMouseOnlyInsideTheFoldedTitleBarBandWhenWindowed() {
+        XCTAssertTrue(TitleBar.inBarBand(y: 0, height: 38, fullScreen: false))
+        XCTAssertTrue(TitleBar.inBarBand(y: 19, height: 38, fullScreen: false))
+        XCTAssertTrue(TitleBar.inBarBand(y: 38, height: 38, fullScreen: false))
+        XCTAssertFalse(TitleBar.inBarBand(y: 38.5, height: 38, fullScreen: false))
+        XCTAssertFalse(TitleBar.inBarBand(y: -1, height: 38, fullScreen: false))
+        XCTAssertFalse(TitleBar.inBarBand(y: 19, height: 0, fullScreen: false))
+        XCTAssertFalse(TitleBar.inBarBand(y: 19, height: 38, fullScreen: true))
+    }
+}

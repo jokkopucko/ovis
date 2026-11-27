@@ -61,7 +61,9 @@ struct OvisCommands: Commands {
     var body: some Commands {
         CommandGroup(after: .appInfo) { PhoneSetupItem() }
         CommandGroup(replacing: .newItem) { OpenInBrowserItem(model: model) }
-        CommandGroup(before: .toolbar) { ReloadItem(model: model) }
+        // in Show Toolbar's place: the main window's toolbar only sizes its folded bar (TitleBar.swift), and
+        // hiding it would shorten the bar under the page's header
+        CommandGroup(replacing: .toolbar) { ReloadItem(model: model) }
     }
 }
 

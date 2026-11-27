@@ -163,3 +163,13 @@
     max-height: calc(100% - 2 * (var(--control-h) + 2 * var(--space-3) + env(titlebar-area-y, 0px) + env(titlebar-area-height, 0px)));
   }
 }
+
+/* Ovis for Mac folds its title bar into the page too (app/mac/Resources/title-bar.js): keep the
+   lightbox bar and fitted picture below the folded bar's height, as under window-controls-overlay. */
+:root[data-mac-title-bar] .image-lightbox-bar {
+  top: calc(var(--space-3) + var(--mac-title-bar-h, 0px));
+}
+
+:root[data-mac-title-bar] .image-lightbox-canvas img {
+  max-height: calc(100% - 2 * (var(--control-h) + 2 * var(--space-3) + var(--mac-title-bar-h, 0px)));
+}
