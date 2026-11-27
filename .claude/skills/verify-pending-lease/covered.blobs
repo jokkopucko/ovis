@@ -1,5 +1,5 @@
-f2bc57e976830741335ec5f7faab1ba3bc8a925f server/core/pending.ts
-3ea7cb90c871b8878a13fe9d66129ab897cfeed9 server/pending-input.ts
+39a2d603b97d5b6f6460253bc032591ee6063659 server/core/pending.ts
+963445dfd92153df3152f6779e6c05fb8b36bdb2 server/pending-input.ts
 1edcf70294e64eaaebe7bacde4833aa937058302 server/input-guard.ts
 f63d541191ff8099a526def1a388bda49c33cae8 server/core/terminals.ts
 37b98ea94e7988deedae1ada7dfd7bd02022ada9 server/core/terminal-process.ts
@@ -7,7 +7,7 @@ f63d541191ff8099a526def1a388bda49c33cae8 server/core/terminals.ts
 acf8e6ff490e3c64d25b678c1718a9bc905aa75e server/core/socket.ts
 f92f3e90fad57aa333f6f6c398e03f5adabd1ee9 server/core/server-core.ts
 a7ec7d7e68d95ec6fedb47ecd5acfff0ba74f505 server/core/input.ts
-0e942c5fc159659802b306475ff252e94ea8b84e server/core/composer.ts
+cabff8458560da27d14ef5f2018c251f40eca54d server/core/composer.ts
 be2220ce2bd7b07d0e6da288a4a324656d50fdbd server/opencode-skill-attach.ts
 790d262d12fa16a77723839857f1bee743bf9add server/workspace-routes.ts
 342e5338fece0f14a60fe8c5c220770659e277a9 server/herdr/client.ts

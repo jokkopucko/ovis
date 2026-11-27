@@ -28,7 +28,7 @@ function senderLeavesWhileConnecting(during: "text" | "enter") {
   return { authorize, written };
 }
 
-const failure = (sent: Promise<void>) => sent.then(() => null, (error: unknown) => error as client.HerdrError);
+const failure = (sent: Promise<unknown>) => sent.then(() => null, (error: unknown) => error as client.HerdrError);
 
 it("types an input line and its Enter with a guard asked right before each write", async () => {
   const typed = spyOn(client, "paneSendText").mockResolvedValue();

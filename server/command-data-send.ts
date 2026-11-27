@@ -114,12 +114,19 @@ export async function omoPaneSocket(pane: HerdrPane): Promise<string | null> {
 }
 
 /**
- * A plain chat message for a Codex on the server Ovis started for it, as a new turn of the thread the pane shows
- * (Connection.startTurn) rather than typed. Null when nothing reached Codex (no such thread, or not at rest alone):
- * the caller types it. Throws when it went without an answer, so it is not typed again. `clientId` comes back on the
- * thread's user message (its receipt).
+ * What became of a plain chat message at Codex's own server: taken as a turn of the pane's thread (`at`: when it went),
+ * or not sent, as that thread runs a turn. `over`: that turn's end, as the server tells it (ServedTurn).
  */
-export async function sendCodexTextAsData(pane: HerdrPane, text: string, mayWrite: () => boolean, clientId: string = crypto.randomUUID()): Promise<DataSent | null> {
+export type CodexTextSent = { readonly turn: "started"; readonly at: number; readonly over: Promise<boolean> }
+  | { readonly turn: "running"; readonly over: Promise<boolean> };
+
+/**
+ * A plain chat message for a Codex on the server Ovis started for it, as a new turn of the thread the pane shows
+ * (Connection.startTurn) rather than typed. Null when nothing reached Codex and its server names no turn in the way
+ * (no such thread, a question waiting, another thread loaded): the caller types it. Throws when it went without an
+ * answer, so it is not typed again. `clientId` comes back on the thread's user message.
+ */
+export async function sendCodexTextAsData(pane: HerdrPane, text: string, mayWrite: () => boolean, clientId: string = crypto.randomUUID()): Promise<CodexTextSent | null> {
   const threadId = servedStatus(pane.pane_id)?.threadId;
   if (threadId === undefined || codexDisagrees(pane, threadId)) return null;
   // read again right before the request: the pane may have left Codex (its server's connection outlives that)
@@ -129,7 +136,7 @@ export async function sendCodexTextAsData(pane: HerdrPane, text: string, mayWrit
   const answer = await servedTurn(pane.pane_id, threadId, text, clientId, mayWrite);
   if (answer === "unsent") return null;
   if (answer === "unknown") throw new HerdrError("submit_changed", "The message went to Codex's server, which did not confirm it. Check the terminal before sending again.");
-  return { at, ran: false };
+  return answer.turn === "started" ? { turn: "started", at, over: answer.over } : { turn: "running", over: answer.over };
 }
 
 /** Whether herdr reports a Codex session in `pane` other than `threadId` (by its id, or by its rollout file's name). */

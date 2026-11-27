@@ -1103,7 +1103,7 @@ describe("connection-owned pending input", () => {
     const turn = spyOn(codexServer, "servedTurn").mockImplementation(async (_pane, threadId, input, _id, mayWrite) => {
       if (!mayWrite()) return "unsent";
       turns.push(`${threadId}:${input}`);
-      return "accepted";
+      return { turn: "started", over: Promise.resolve(true) };
     });
     try {
       const f = await setup("codex-queued-turn", "codex");
@@ -1122,7 +1122,7 @@ describe("connection-owned pending input", () => {
     const turn = spyOn(codexServer, "servedTurn").mockImplementation(async (_pane, _threadId, _input, _id, mayWrite) => {
       asked.resolve();
       await discarded.promise;
-      return mayWrite() ? "accepted" : "unsent";
+      return mayWrite() ? { turn: "started", over: Promise.resolve(true) } : "unsent";
     });
     try {
       const f = await setup("codex-queued-turn-discard", "codex");

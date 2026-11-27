@@ -62,7 +62,7 @@ const submitter = () => createSubmitText({
 const START = "\u001b[200~";
 const END = "\u001b[201~";
 const writes = () => calls.filter((call) => call.method === "pane.send_text" || call.method === "pane.send_keys" || call.method === "agent.prompt");
-const refusal = async (send: Promise<void>): Promise<string> => {
+const refusal = async (send: Promise<unknown>): Promise<string> => {
   const error = await send.then(() => null, (error: unknown) => error);
   expect(error).toBeInstanceOf(HerdrError);
   return (error as HerdrError).code;

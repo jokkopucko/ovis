@@ -15,6 +15,8 @@ export const PENDING_LEASE_PINS_PATH = ".claude/skills/verify-pending-lease/pins
 
 const PENDING_INPUT_LEASE_MEMBERS = new Set([
   "finish", "enqueue", "next", "claim", "settle", "discard", "hold", "holdItem", "rehold", "holdPane", "move", "close",
+  // the wait for a turn's end the agent itself tells (the model's turnWait), and what a queue request asks before it is typed at once
+  "awaitTurn", "turnOver", "waiting",
 ]);
 
 const PENDING_INPUT_INTERFACES = new Set(["FirstMessageAsk", "PendingRecord"]);
@@ -43,8 +45,10 @@ export const CALLER_PATTERNS: ReadonlyArray<{ file: string; pattern: RegExp; who
       "holdPendingPane", "holdRequested", "closeConnection", "askFirstMessage", "queueFirstMessage",
       // the typing guard dispatchPendingText hands herdr, and the refusal that holds the pane (RefusedHoldPane)
       "allowed", "unannounced",
+      // the queue going behind a turn Codex's own server tells the end of (SentAsTurn, DataBusy, TurnOver)
+      "behindCodexTurn",
     ]),
-    pattern: /\b(?:pendingAuthorities|pendingLease|authorizePending|authorizeSocket|holdPending|holdPendingPane|holdRequested|closeConnection|askFirstMessage|queueFirstMessage|typists|paneSendText|paneSendKeys|typeWithSkills|freeClaudeBox|refusedFirstWrite|child\.client\.submit|target\.send|pending\.(?:enqueue|next|claim|settle|discard|hold|holdItem|rehold|holdPane|move|close)|item\.lease|way\.(?:at|left)|arrived)\b/,
+    pattern: /\b(?:pendingAuthorities|pendingLease|authorizePending|authorizeSocket|holdPending|holdPendingPane|holdRequested|closeConnection|askFirstMessage|queueFirstMessage|typists|paneSendText|paneSendKeys|typeWithSkills|freeClaudeBox|refusedFirstWrite|behindCodexTurn|child\.client\.submit|target\.send|pending\.(?:enqueue|next|claim|settle|discard|hold|holdItem|rehold|holdPane|move|close|awaitTurn|turnOver|waiting)|item\.lease|way\.(?:at|left)|arrived)\b/,
   },
   {
     file: "server/core/terminals.ts",

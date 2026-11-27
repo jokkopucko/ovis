@@ -21,7 +21,7 @@ few of those orders. This check covers every order within its bounds.
 
 | Rule | What it says | What a break does |
 | --- | --- | --- |
-| `QueueWaitsForTurnEvidence` | From the `committing` of an Enter on, the queue is offered no message of that pane until readings of the agent made after that commit have shown the turn to start and then to finish: ready after work for an Enter that joined a turn at work, and ready, work, ready after the Escape of a Codex Send now. A reading is a status event, a snapshot's status that no event overtook, or the last read of a later send. One made before the commit, or before a reading already counted, says nothing of the turn. The wait may end without that only where no message of the pane is left queued, in the step that ends it: the start timeout, the pane ending or moving. | The queue takes up the next message on the strength of a status that says nothing about the turn before it. |
+| `QueueWaitsForTurnEvidence` | From the `committing` of an Enter on, the queue is offered no message of that pane until readings of the agent made after that commit have shown the turn to start and then to finish: ready after work for an Enter that joined a turn at work, and ready, work, ready after the Escape of a Codex Send now. A reading is a status event, a snapshot's status that no event overtook, or the last read of a later send. One made before the commit, or before a reading already counted, says nothing of the turn. The wait may end without that only where no message of the pane is left queued, in the step that ends it: the start timeout, the pane ending or moving. Where the agent itself tells a turn's end (a Codex on the server Ovis started for it: the turn `turn/start` answered with, or one that server says its thread runs), the queue is offered nothing until that end is told or can no longer be told. Told, it ends the wait of the Enter that turn was taken as, and of every Enter before it, as the server ran no turn when it took the message. No longer told, the turn's wait is by the readings again, also for a turn the queue did not start. A start timeout that passes while that end is awaited is judged once the wait is over. | The queue takes up the next message on the strength of a status that says nothing about the turn before it. |
 | `NoAutomaticEnterIntoQueuedTurn` | The queue's own Enter never reaches the agent while the agent is on, or has yet to begin, the turn of a message this queue sent before it. | The message lands in that turn: steered into it, queued behind it by the agent, or merged with it. |
 
 The first rule is about the class and its callers, and is also asked with no description of the
@@ -53,10 +53,12 @@ every line starts with `ok` and it exits 0:
 | Runs | What they ask | Must say |
 | --- | --- | --- |
 | `gate`, `gate-two-pages` | `QueueWaitsForTurnEvidence`, with any status applied at any time and any read saying anything | holds |
+| `gate-served` | the same, with a Codex on the server Ovis started for it, which answers anything at any time | holds |
 | `turns-claude`, `turns-codex`, `turns-moved` | both rules, with the agent and herdr [as described](#what-the-check-assumes) | holds |
+| `turns-served` | both rules, with a Codex on the server Ovis started for it [as described](#what-the-check-assumes) | holds |
 | `turns-ahead` | `NoAutomaticEnterIntoQueuedTurn`, with a snapshot ahead of status events put back | holds |
 | `turns-other-turn` | `NoAutomaticEnterIntoQueuedTurn`, with a turn something else starts | holds |
-| `broken-*` (eight) | one rule each, on a copy of the class with one edit (`VARIANTS` in `explore.ts`) | that rule breaks |
+| `broken-*` (eleven) | one rule each, on a copy of the class with one edit (`VARIANTS` in `explore.ts`) | that rule breaks |
 | `finding-*` (one) | one rule, with one thing the real system does put back | that rule breaks: [what it has found](#what-it-has-found) |
 | `limit-*` (two) | `NoAutomaticEnterIntoQueuedTurn`, with one thing status evidence cannot tell put back | it breaks: [known limits](#what-the-check-assumes) |
 
@@ -186,6 +188,14 @@ gate, so it is queued behind it). Their replays are `server/core/pending-turn-ga
   subscription started, and the queue held under CI load (#4158). The class keeps no reading ahead
   of the events now, and B waits for an order herdr's events carry.
 
+The `served` runs found two orders while the queue learned to wait for a turn's end Codex's own
+server tells, both closed in that change. A queued message that server said waits behind a running
+turn went by herdr's status alone once the server could no longer tell that turn's end: a turn the
+queue did not start has a wait of its own now (`awaitTurn`), judged by the readings from then on.
+And a Send now's start timeout that passed while such an end was awaited held nothing, as nothing
+was queued yet, so a message queued behind it afterwards was typed into that Send now's turn: the
+timeout is judged once the awaited end is told or lost (`expire`), and holds what was queued since.
+
 A baseline asked before the Enter whose turn is awaited is no turn evidence: the gate still waits
 for that turn's own start and end, and its start timeout holds what is queued if none comes, never a
 key typed into a turn and never a wait with no end.
@@ -217,6 +227,13 @@ key typed into a turn and never a wait with no end.
   at any later time, missing states in between, and sends a status event per change, naming the
   pane's id at the time, applied in order at any later time. A snapshot says herdr's reading, or
   the status of an event applied during the read.
+- **A Codex on the server Ovis started for it, in the `served` runs.** A send asks that server before it
+  types. The server knows what its thread does with no delay: it takes a message as a turn only while
+  the agent is at rest, with no status event still on its way at that commit, and its answer comes
+  in a later step, or never. On a turn it takes nothing and says so. It tells the end of the turn the
+  queue waits behind only once the agent has ended that turn, and its connection can end at any
+  time before. Where it answers neither, the message is typed as in every other run, so these runs
+  ask the rules with both ways of sending. They ask with two messages and no stop to ask.
 - **Asked in the main runs since #4118.** A Send now's Enter that arrives after the turn it read at
   work has ended; a Send now pressed while an earlier one's Codex restart has not been seen to
   start; a reconcile's baseline; a message typed at once behind an open wait counted as the
@@ -242,6 +259,8 @@ key typed into a turn and never a wait with no end.
 
 ## Not covered
 
+- Whether Codex's server tells the end of the right turn (`Connection` in `server/approvals/codex.ts`,
+  by the pane's own thread and the turn's id: its tests). The check takes a told end as that turn's.
 - Whether the status the queue is told is right: herdr's detection, `CompletionTracker`,
   `restingClaude`, `queueStatus` and `queueHeld` (a Claude that rests on a background subagent or
   resumed a turn by itself), OmO, GJC and Letta. The check takes the status given to
@@ -280,14 +299,15 @@ against it. A squash merge keeps blob ids, so the record stays right on `main`.
 
 | Step in `explore.ts` | Code |
 | --- | --- |
-| every call on `inst` | `server/pending-input.ts` `PendingInputs`: `enqueue`, `next`, `claim`, `committing` (with the read's mark), `typedAtOnce`, `settle`, `confirmRecorded`, `discard`, `mark`, `current`, `status`, `observe`, `baseline`, `waiting`, `forget`, `hold`, `holdPane`, `move`, `expire`, `resend`, and the private `apply`, `read`, `finish` and `blocksQueue` (an uncertain row kept for review alone, `reviewOnly`, does not stop the queue) they reach |
+| every call on `inst` | `server/pending-input.ts` `PendingInputs`: `enqueue`, `next`, `claim`, `committing` (with the read's mark), `typedAtOnce`, `awaitTurn`, `turnOver`, `settle`, `confirmRecorded`, `discard`, `mark`, `current`, `status`, `observe`, `baseline`, `waiting`, `forget`, `hold`, `holdPane`, `move`, `expire`, `resend`, and the private `apply`, `read`, `finish`, `finished` and `blocksQueue` (an uncertain row kept for review alone, `reviewOnly`, does not stop the queue) they reach |
 | `status event applied` | `server/core/status.ts`: `pending.status(paneId, …)` and the `drainPending` after it, in `reportStatus`, `omoChanged`, `gjcChanged` |
 | `a reconcile reads the pane`, `the reconcile's reading is told to the queue as its baseline` | `server/collector.ts` `reconcile` (`await deps.snapshot()`, then `handlers.onBaseline` with the panes that had an event since it was asked for; `created` is for web push alone); `status.ts` `onBaseline`, `pending.baseline` for the others |
 | `… reads the pane`, `… has read the pane` | `server/core/pending.ts` `pendingContext`, `currentIdentity`; `status.ts` `deliverySnapshot` (handed to `createPendingDelivery` in `server-core.ts` as `clientSnapshot`); `server/completion.ts` `readSnapshot` (an event applied during the read wins) |
 | `sends … to queue / hold`, `accepted to … (observe, enqueue)`, `Codex's questions are collapsed`, `typed at once` | `pending.ts` `pendingFrames.submit`, the `waits` branch: `pending.mark`, `pendingContext`, `pending.observe`, `pending.enqueue`, and its `dispatchPendingText(…, queued)` whose `committing` is `pending.typedAtOnce` |
 | `the queue takes up`, `claimed by the queue` | `pending.ts` `drainPending`: `pending.next`, `pending.claim(item, true)` |
 | `the queue reads the pane (mark taken)`, `put off (observe …)`, `put off with no status told`, `refused before the paste`, `a screen of Codex's own has the input`, `pasted` | `pending.ts` `dispatchPendingText` up to its paste: `pending.mark`, `pendingContext`, `pending.observe(paneId, "working" / "blocked", mark)`; `dispatchPending`: `retry`, `left`, `pending.settle`, and `pending.holdPane` for an `unannounced` refusal |
-| `reads the pane before its Enter`, `committing (…)`, `its Enter lands`, `refused after the paste: uncertain`, `sent` | `dispatchPendingText` from its paste on: `enterMark`, `beforeEnter`, `steering`, `committing(steering, false, enterMark)`, `paneSendKeys`, the `catch` that makes every failure after `wrote` a `submit_changed`; for a Codex at rest on the server Ovis started, `sendCodexTextAsData`'s `mayWrite`, whose `committing(false, false, pending.mark(paneId))` comes right before turn/start stands for the Enter (its mark is taken later than `enterMark`, so fewer readings count); `dispatchPending`'s `pending.settle` |
+| `reads the pane before its Enter`, `committing (…)`, `its Enter lands`, `refused after the paste: uncertain`, `sent` | `dispatchPendingText` from its paste on: `enterMark`, `beforeEnter`, `steering`, `committing(steering, false, enterMark)`, `paneSendKeys`, the `catch` that makes every failure after `wrote` a `submit_changed`; for a Codex at rest on the server Ovis started, in the runs without `served`, `sendCodexTextAsData`'s `mayWrite`, whose `committing(false, false, pending.mark(paneId))` comes right before turn/start stands for the Enter (its mark is taken later than `enterMark`, so fewer readings count); `dispatchPending`'s `pending.settle` |
+| `committing (a turn to start); the request reaches Codex's server, at rest`, `typed at once as a turn, the request reaches Codex's server`, `Codex's server answers with the turn: sent, the queue waits for that turn's own end`, `Codex's server's answer is lost`, `Codex's server says its thread runs a turn: put off / queued behind that turn's end`, `Codex's server tells / can no longer tell the awaited turn's end` | `pending.ts` `dispatchPendingText`, the branch for a Codex on the server Ovis started (`sendCodexTextAsData`): `mayWrite`'s `committing(false, false, pending.mark(paneId))` or `pending.typedAtOnce` right before turn/start, then the awaited answer; `behindCodexTurn` (`pending.awaitTurn`, and `pending.turnOver` then `drainPending` when the turn's `over` settles) for a `started` turn and, for an automatic send or one sent to the queue, a `running` one with its `pending_wait`; the `submit_changed` of an answer that never came. `server/approvals/codex.ts` `Connection.startTurn`, whose last look at its thread and whose request are one stretch |
 | `Send now on`, `Send now refused before it began`, `claimed by Send now` | `pending.ts` `pendingFrames["pending-action"]`, action `steer`: `pending.claim(item, false)`, and the claim and settle of a send refused before its claim |
 | `Send now reads the pane for Codex's app server`, `Send now checks Codex's loaded threads`, `refused before Codex's steer`, `Codex's loaded threads changed`, `Codex's app server leaves the send to the terminal`, `committing (steering via Codex's app server)`, `Codex's app server confirms the steer`, `Codex's app server reply is lost` | `pending.ts` `dispatchPendingText` `steerTarget.send` (`server/approvals/codex.ts` `Connection.steer`): `steerMark` before `pendingContext`, `thread/loaded/list`, `pending.holdPane` on `"changed"`, fallback to terminal path without `nativeItem` on `"unsent"`, `committing(true, false, steerMark)` before `turn/steer`, then `"accepted"` vs `"unknown"` |
 | `Send now reads the pane for Codex's steering panel`, `the panel shows it: committing (restarting the turn)`, `Escape lands`, `Codex is no longer at work`, `the restart is not confirmed`, `Codex reads at rest / at work after the Enter` | `server/codex-steering.ts` `interruptCodexSteering` (its `"unconfirmed"` answer, and the read after an Enter typed while Codex was at rest), `codexSteeringPending`, `SEND_NOW`; `pending.ts` its `read`, `restarting` and `press`, with the guard on `pending.current`, and `keepTurnGate`, which `dispatchPending` settles as `settle(…, "preserve-turn")` |

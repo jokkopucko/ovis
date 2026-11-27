@@ -45,7 +45,7 @@ function grok(options: { status?: string; herdr?: string; queued?: string[]; out
 type GrokState = { status: string; session: string; output: string[]; card: boolean; minimal: boolean; prompt: string; queue: string[]; sent: string[] };
 
 const sendNow = (text = "hello from chat") => submitter()("w:p1", text, text, Date.now(), false, undefined, undefined, undefined, false, false, true);
-const failure = (sent: Promise<void>) => sent.then(() => null, (error: unknown) => error as client.HerdrError);
+const failure = (sent: Promise<unknown>) => sent.then(() => null, (error: unknown) => error as client.HerdrError);
 
 it("keeps a plain chat Send to a working Grok to the one Enter that queues it", async () => {
   const { state, prompt, typed, keys } = grok();

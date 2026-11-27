@@ -17,7 +17,7 @@ const PENDING_INPUT_MEMBERS = new Set([
   "resend", "expireResends", "holdQueued", "finish", "enqueue", "next", "claim", "committing",
   "typedAtOnce", "settle", "confirmRecorded", "discard", "mark", "current", "status", "baseline",
   "observe", "read", "waiting", "forget", "apply", "hold", "holdItem", "rehold", "holdPane",
-  "move", "close", "expire", "blocksQueue",
+  "move", "close", "expire", "blocksQueue", "awaitTurn", "turnOver", "finished",
 ]);
 
 const PENDING_INPUT_VARS = new Set(["ready", "PENDING_START_TIMEOUT_MS"]);
@@ -37,7 +37,7 @@ const CALLER_FILES = [
   "server/collector.ts",
 ] as const;
 
-const GATE_CALL_PATTERN = /\bpending\.(?:status|observe|baseline|mark|current|waiting|next|claim|committing|typedAtOnce|settle|confirmRecorded|discard|enqueue|hold|holdQueued|holdItem|rehold|holdPane|move|forget|expire|resend|close)\b|\b(?:committing|interruptCodexSteering|pendingContext|holdPending|holdPendingPane|movePendingPane|drainPending|deliverySnapshot|clientSnapshot|reconcileCodexDeliveries|steerMark|enterMark)\b|\bhandlers\.onBaseline\b|\bonBaseline\b|\bdeps\.snapshot\b/;
+const GATE_CALL_PATTERN = /\bpending\.(?:status|observe|baseline|mark|current|waiting|next|claim|committing|typedAtOnce|settle|confirmRecorded|discard|enqueue|hold|holdQueued|holdItem|rehold|holdPane|move|forget|expire|resend|close|awaitTurn|turnOver)\b|\b(?:committing|behindCodexTurn|interruptCodexSteering|pendingContext|holdPending|holdPendingPane|movePendingPane|drainPending|deliverySnapshot|clientSnapshot|reconcileCodexDeliveries|steerMark|enterMark)\b|\bhandlers\.onBaseline\b|\bonBaseline\b|\bdeps\.snapshot\b/;
 
 const printer = ts.createPrinter({ removeComments: true, newLine: ts.NewLineKind.LineFeed });
 

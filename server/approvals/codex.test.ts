@@ -804,15 +804,41 @@ describe("Ovis on the pane's Codex server", () => {
     const TURN = JSON.parse(readFileSync(join(import.meta.dir, "..", "fixtures", "codex-app-server-turn-start-0.171.0.json"), "utf8")) as
       { request: { threadId: string; clientUserMessageId: string; input: { text: string }[] }; response: Message };
     const THREAD = TURN.request.threadId;
+    const TURN_ID = String((TURN.response["turn"] as Message)["id"]);
 
+    /**
+     * What Codex 0.171.0's server told the client that started a turn, up to that turn's end: one interrupted, one whose
+     * model request was refused. Recorded from `codex app-server` in an isolated CODEX_HOME with no model behind it.
+     */
+    const ENDS = JSON.parse(readFileSync(join(import.meta.dir, "..", "fixtures", "codex-app-server-turn-ends-0.171.0.json"), "utf8")) as
+      Record<"interrupted" | "failed", { threadId: string; response: Message; told: Message[] }>;
+
+    /** The first of `loaded` is the pane's own thread, at rest. */
     async function atRest(loaded: string[] = [THREAD]) {
       const { codex } = launched("0.171.0", loaded);
-      await running(codex, THREAD);
-      codex.send({ method: "thread/status/changed", params: { threadId: THREAD, status: { type: "idle" } } });
+      await running(codex, loaded[0]);
+      codex.send({ method: "thread/status/changed", params: { threadId: loaded[0], status: { type: "idle" } } });
       await read(codex);
       return codex;
     }
     const send = (mayWrite = () => true) => servedTurn("w1:p1", THREAD, TURN.request.input[0]!.text, TURN.request.clientUserMessageId, mayWrite);
+    /** `send()` as Codex took it: the turn its recorded answer names. */
+    async function taken(codex: ReturnType<typeof codexServer>) {
+      const sent = send();
+      const start = await request(codex, "turn/start");
+      codex.send({ id: start["id"], result: TURN.response });
+      const turn = await sent;
+      if (typeof turn === "string" || turn.turn !== "started") throw new Error(`turn/start was not taken: ${JSON.stringify(turn)}`);
+      return turn;
+    }
+    /** What `over` has settled as by now, once everything sent before was read. */
+    async function soFar(codex: ReturnType<typeof codexServer>, over: Promise<boolean>): Promise<boolean | "pending"> {
+      let settled: boolean | "pending" = "pending";
+      void over.then((told) => { settled = told; });
+      await read(codex);
+      return settled;
+    }
+    const ends = (turn: string, status = "completed", threadId = THREAD) => ({ method: "turn/completed", params: { threadId, turn: { id: turn, status, error: null } } });
 
     it("starts it as Codex took it from a second client, and takes the turn it answers as sent", async () => {
       const codex = await atRest();
@@ -820,28 +846,158 @@ describe("Ovis on the pane's Codex server", () => {
       const start = await request(codex, "turn/start");
       expect(start["params"]).toEqual(TURN.request);
       codex.send({ id: start["id"], result: TURN.response });
-      expect(await sent).toBe("accepted");
+      expect(await sent).toMatchObject({ turn: "started" });
     });
 
-    it.each(["a turn runs", "another thread is loaded", "the sender may no longer write"])("sends nothing when %s", async (scenario) => {
+    it.each(["another thread is loaded", "the sender may no longer write"])("sends nothing when %s", async (scenario) => {
       const codex = await atRest(scenario === "another thread is loaded" ? [THREAD, "other"] : [THREAD]);
-      if (scenario === "a turn runs") {
-        codex.send({ method: "turn/started", params: { threadId: THREAD, turn: { id: "u1" } } });
-        await read(codex);
-      }
       const sent = send(() => scenario !== "the sender may no longer write");
       expect(await sent).toBe("unsent");
       expect(codex.received.some((message) => message["method"] === "turn/start")).toBe(false);
     });
 
-    it("starts no second turn on an accepted one whose turn/started has not come yet", async () => {
+    it("starts no second turn on one it took whose turn/started has not come yet, and names that turn as the one that runs", async () => {
+      const codex = await atRest();
+      const first = await taken(codex);
+      // nor once the end of the turn before is told, behind the answer that named this one
+      codex.send(ends("u0"));
+      await read(codex);
+      const second = await send();
+      expect(second).toMatchObject({ turn: "running" });
+      expect(codex.received.filter((message) => message["method"] === "turn/start")).toHaveLength(1);
+      codex.send(ends(TURN_ID));
+      expect(await Promise.all([first.over, typeof second === "string" ? null : second.over])).toEqual([true, true]);
+    });
+
+    it("tells the end of the turn it started by that turn's own turn/completed, not by a subagent's or an earlier turn's, nor by the thread reading idle", async () => {
+      const codex = await atRest();
+      const turn = await taken(codex);
+      codex.send({ method: "turn/started", params: { threadId: THREAD, turn: { id: TURN_ID, rootTurnId: TURN_ID } } });
+      // a subagent's turn names the parent's as its root and ends on its own thread (codex-app-server-status-0.171.0.jsonl)
+      codex.send({ method: "turn/started", params: { threadId: "sub", turn: { id: "v1", rootTurnId: TURN_ID } } });
+      codex.send(ends("v1", "completed", "sub"));
+      // nor is the end of the turn before, told late
+      codex.send(ends("u0"));
+      // and the thread reads idle before its turn/completed comes, as recorded there
+      codex.send({ method: "thread/status/changed", params: { threadId: THREAD, status: { type: "idle" } } });
+      expect(await soFar(codex, turn.over)).toBe("pending");
+      codex.send(ends(TURN_ID));
+      expect(await turn.over).toBe(true);
+    });
+
+    it.each(["interrupted", "failed"] as const)("takes a turn that ended %s as ended by its own turn/completed, as Codex told it", async (how) => {
+      const { threadId, response, told } = ENDS[how];
+      const codex = await atRest([threadId]);
+      const sent = servedTurn("w1:p1", threadId, "first", crypto.randomUUID(), () => true);
+      const start = await request(codex, "turn/start");
+      codex.send({ id: start["id"], result: response });
+      const turn = await sent;
+      if (typeof turn === "string") throw new Error(`turn/start was not taken: ${turn}`);
+      // the thread stops running the turn first: it reads idle, or systemError for a turn that failed
+      for (const message of told.slice(0, -1)) codex.send(message);
+      expect(await soFar(codex, turn.over)).toBe("pending");
+      codex.send(told.at(-1)!);
+      expect(await turn.over).toBe(true);
+    });
+
+    it("takes a turn whose end came before its answer as ended", async () => {
       const codex = await atRest();
       const sent = send();
       const start = await request(codex, "turn/start");
+      codex.send(ends(TURN_ID));
       codex.send({ id: start["id"], result: TURN.response });
-      expect(await sent).toBe("accepted");
+      const turn = await sent;
+      expect(turn).toMatchObject({ turn: "started" });
+      expect(typeof turn === "string" ? null : await turn.over).toBe(true);
+    });
+
+    const begins = (turn: string) => ({ method: "turn/started", params: { threadId: THREAD, turn: { id: turn, rootTurnId: turn } } });
+
+    it("takes no turn/completed that names no turn for the end of the turn it waits for: that end can no longer be told", async () => {
+      const codex = await atRest();
+      const turn = await taken(codex);
+      codex.send({ method: "turn/completed", params: { threadId: THREAD, turn: { status: "completed", error: null } } });
+      expect(await soFar(codex, turn.over)).toBe(false);
+    });
+
+    it("takes a turn as over when its answer comes after its end and a later turn's", async () => {
+      const codex = await atRest();
+      const sent = send();
+      const start = await request(codex, "turn/start");
+      for (const message of [ends(TURN_ID), begins("u9"), ends("u9")]) codex.send(message);
+      codex.send({ id: start["id"], result: TURN.response });
+      const turn = await sent;
+      if (typeof turn === "string") throw new Error(`turn/start was not taken: ${turn}`);
+      expect(await soFar(codex, turn.over)).toBe(true);
+    });
+
+    it("takes a turn as over once a later turn of the thread starts, its own end never told", async () => {
+      const codex = await atRest();
+      const turn = await taken(codex);
+      codex.send(begins("u9"));
+      expect(await soFar(codex, turn.over)).toBe(true);
+    });
+
+    it("waits for the end of a turn the TUI started first, which Codex steered with the message and answered with", async () => {
+      const codex = await atRest();
+      const sent = send();
+      const start = await request(codex, "turn/start");
+      codex.send(begins("uB"));
+      codex.send({ id: start["id"], result: { turn: { id: "uB", rootTurnId: "uB", status: "inProgress" } } });
+      const turn = await sent;
+      if (typeof turn === "string") throw new Error(`turn/start was not taken: ${turn}`);
+      expect(turn.turn).toBe("started");
+      expect(await soFar(codex, turn.over)).toBe("pending");
+      codex.send(ends("uB"));
+      expect(await turn.over).toBe(true);
+    });
+
+    it("names no running turn of a thread the TUI may have left for another one it loaded", async () => {
+      const codex = await atRest([THREAD, "other"]);
+      codex.send(begins("u1"));
+      await read(codex);
       expect(await send()).toBe("unsent");
-      expect(codex.received.filter((message) => message["method"] === "turn/start")).toHaveLength(1);
+    });
+
+    it.each(["the connection ends", "the pane runs another thread"])("can no longer tell a turn's end once %s", async (scenario) => {
+      const codex = await atRest();
+      const turn = await taken(codex);
+      if (scenario === "the connection ends") codex.drop();
+      else codex.send({ method: "thread/started", params: { thread: { id: "t2", parentThreadId: null, ephemeral: false } } });
+      expect(await turn.over).toBe(false);
+    });
+
+    it("sends nothing into a turn the TUI started, and tells that turn's end, a subagent's turn under it aside", async () => {
+      const { codex } = launched("0.171.0", [MAIN]);
+      await codex.next((message) => message["method"] === "thread/loaded/list");
+      const completed = (own: boolean, from: number) => STATUS.findIndex((message, at) => at >= from && message["method"] === "turn/completed" && ((message["params"] as Message)["threadId"] === MAIN) === own);
+      const subagentEnds = completed(false, STATUS.findIndex((message) => message["method"] === "turn/started"));
+      const mainEnds = completed(true, subagentEnds);
+      // as recorded: the pane's thread runs a turn, and a subagent's turn under it has started
+      for (const message of STATUS.slice(0, subagentEnds)) codex.send(message);
+      await read(codex);
+      const sent = await servedTurn("w1:p1", MAIN, "next", crypto.randomUUID(), () => true);
+      if (typeof sent === "string") throw new Error(`the server named no turn: ${sent}`);
+      expect(sent.turn).toBe("running");
+      expect(codex.received.some((message) => message["method"] === "turn/start")).toBe(false);
+      // the subagent's turn ends, then the pane's thread reads idle: neither is the end of the pane's own turn
+      for (const message of STATUS.slice(subagentEnds, mainEnds)) codex.send(message);
+      expect(await soFar(codex, sent.over)).toBe("pending");
+      codex.send(STATUS[mainEnds]!);
+      expect(await sent.over).toBe(true);
+    });
+
+    it("tells the end of a turn it was not told the start of by the thread reading idle", async () => {
+      const { codex } = launched("0.171.0", [THREAD]);
+      // as for a thread's first turn: Ovis is subscribed once it runs, after its turn/started went out
+      await running(codex, THREAD);
+      await read(codex);
+      const sent = await send();
+      if (typeof sent === "string") throw new Error(`the server named no turn: ${sent}`);
+      expect(sent.turn).toBe("running");
+      expect(await soFar(codex, sent.over)).toBe("pending");
+      codex.send({ method: "thread/status/changed", params: { threadId: THREAD, status: { type: "idle" } } });
+      expect(await sent.over).toBe(true);
     });
 
     it.each(["the connection ends", "Codex answers an error"])("does not know it went when %s before a turn comes back", async (scenario) => {

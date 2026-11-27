@@ -219,6 +219,14 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       return path === null ? null : captureCodexDelivery(path);
     } catch { return null; }
   };
+  /**
+   * The pane's queue goes behind a turn Codex's own server tells the end of (PendingInputs.awaitTurn), and on again once
+   * that end is told or can no longer be.
+   */
+  const behindCodexTurn = (paneId: string, over: Promise<boolean>): void => {
+    const wait = pending.awaitTurn(paneId);
+    void over.then((told) => { pending.turnOver(paneId, wait, told); drainPending(paneId); });
+  };
   async function reconcileCodexDeliveries(paneId: string): Promise<void> {
     if (codexTyped.values(paneId).length === 0) return;
     await serialize(paneId, async () => {
@@ -825,7 +833,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         throw new HerdrError("pending_wait", "The agent is working again; this message still waits for its next turn");
       }
       // a Codex on the server Ovis started for it takes plain text at rest as a turn of its thread (sendCodexTextAsData):
-      // nothing joins what is typed in its own box
+      // nothing joins what is typed in its own box, and the pane's next message waits for that turn's own end
       if (context.identity.agent === "codex" && !context.working && context.agentInFront && !context.collapsed && codexTakesAsData(text, sent)) {
         // the rollout this send's receipt is read from, should Codex not answer (reconcileCodexDeliveries)
         const anchor = nativeItem ? await prepareCodexReceipt(paneId, context.identity) : null;
@@ -846,12 +854,19 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           if (wrote && nativeItem && anchor !== null && anchor.session === threadId) codexTyped.add(paneId, text, anchor, at, { identity: context.identity, item: nativeItem }, clientId);
           throw error;
         });
-        if (viaData) {
+        if (viaData?.turn === "started") {
+          behindCodexTurn(paneId, viaData.over);
           noteSubmitted(paneId, text, undefined, viaData.at);
           return { ok: true };
         }
         // withdrawn or late while the server was asked: it is not typed instead
         if (stopped !== undefined) throw stopped;
+        // nor does the queue type into a turn the server says the thread runs, whatever herdr reads of the pane: the
+        // message waits for that turn's end. A Send now is the user's own, and is typed as before
+        if (viaData && (automatic || queued)) {
+          behindCodexTurn(paneId, viaData.over);
+          throw new HerdrError("pending_wait", "The agent is working again; this message still waits for its next turn");
+        }
       }
       // a draft typed in the terminal is the user's: the paste would join it and the Enter send both (#609).
       // The box is the live screen's; only the viewport read tells Claude's grey text from a draft.
@@ -1724,8 +1739,10 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             const receiptText = identity === null ? undefined : piReceiptText(identity, framed.text);
             const piAnchor = identity === null ? null : await preparePiReceipt(message.pane_id, identity).catch(() => null);
             sendingAt = new Date().toISOString();
-            await submitText(message.pane_id, framed.text, framed.payload, arrivedAt, message.typed === true, () => authorizeSocket(client), message.clear_draft,
+            const turn = await submitText(message.pane_id, framed.text, framed.payload, arrivedAt, message.typed === true, () => authorizeSocket(client), message.clear_draft,
               draftConfirmations.get(client)?.get(message.pane_id), message.send_anyway === true, agentOnly, message.resend_id !== undefined, afterWriteFailure);
+            // sent at once as a turn of Codex's thread: what is queued from here on waits for that turn's own end
+            if (turn) behindCodexTurn(message.pane_id, turn.over);
             if (identity !== null && receiptText !== undefined) {
               try { recordPiTyped(client, message.pane_id, message.id, receiptText, identity, piAnchor, reservation, current !== null && piListsTemplate(current.pane, framed.text)); } catch { /* The send succeeded; receipt tracking cannot make it retryable. */ }
             }

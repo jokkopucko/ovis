@@ -28,7 +28,12 @@ Everything here rests on three rules. A change that breaks one of them is a bug,
    ([`server/approvals/codex.ts`](../server/approvals/codex.ts)), which subscribes to its threads
    for them (`thread/resume`, no overrides). That Codex's server also takes a plain chat message
    (never a command) as a turn of the pane's own thread while it is idle (`turn/start`), under the
-   same rule: nothing that may have reached it is typed as well.
+   same rule: nothing that may have reached it is typed as well. Its answer names the turn the
+   message became, and the pane's next queued message goes when the server says that turn ended
+   (`turn/completed` for its id, on the pane's own thread), not when herdr reads the pane at rest;
+   the queue types nothing into a turn the server says that thread runs. Once the server can no
+   longer tell (its connection ended, or the pane runs another thread), the queue goes by the
+   pane's status again, as for every other agent.
 3. **An outcome changes only on evidence tied to that send.** Sending a command records
    `accepted` and nothing more. A later state needs evidence that belongs to this send, listed
    under [Outcome states](#outcome-states-and-their-evidence). A screen that changed, an idle agent

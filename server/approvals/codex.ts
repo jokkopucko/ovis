@@ -14,9 +14,9 @@
  * releases the card's held request, and a later answer is ignored (measured on 0.169.0 and 0.171.0). The held request
  * goes through the approval hub (hub.ts `hold`): its card is the dialog the screen reader finds (dialogs/codex.ts),
  * with the command as Codex runs it, its `/bin/bash -lc` taken off, where the screen may have cut or wrapped it.
- * A turn's end comes from `turn/completed` (servedTurnEnd), a subagent's aside. What the server says of the pane's own
- * thread as it runs, its context, a model it moved a turn to and the questions it waits on, is kept read only
- * (codex-status.ts, servedStatus).
+ * A turn's end comes from `turn/completed` (servedTurnEnd; ServedTurn for the chat queue), a subagent's aside. What the
+ * server says of the pane's own thread as it runs, its context, a model it moved a turn to and the questions it waits
+ * on, is kept read only (codex-status.ts, servedStatus).
  *
  * Whatever is not sure goes the old way, the plain TUI and the screen reader: a Codex version not measured, arguments
  * the launcher does not know, a server that does not come up (the launcher then starts plain `codex`), a connection
@@ -46,6 +46,8 @@ const CONNECT_MS = 30_000;
 const COMMAND_MS = 5_000;
 /** How often a socket that is there but not yet up is looked at again. */
 const SOCKET_LOOK_MS = 50;
+/** How many ended turns of a pane's own thread are remembered, for a turn/start answered after its turn was over. */
+const COMPLETED_KEPT = 32;
 const SOCKET_NAME = "codex.sock";
 const LAUNCH_PREFIX = "ovis-codex-";
 /** A path a `unix://` address and a `ws+unix://` URL both take as it is, and under the shortest limit on one. */
@@ -307,6 +309,20 @@ type TurnEnd = "running" | "answered" | "failed";
 
 interface ThreadBinding { readonly threadId: string }
 
+/**
+ * A turn of the pane's own thread a chat message met (Connection.startTurn). `started`: Codex took the message as this
+ * turn. `running`: nothing went, as the thread runs this turn. `over`: true once the server said the turn ended, however
+ * it ended; false once the server can no longer tell (the connection ended, or the pane runs another thread).
+ */
+export interface ServedTurn { readonly turn: "started" | "running"; readonly over: Promise<boolean> }
+
+/**
+ * Whether a thread runs a turn, as its status says: null for one that says neither. A turn that failed leaves
+ * `systemError` until its own turn/completed (measured on 0.171.0, codex-app-server-turn-ends-0.171.0.json).
+ */
+const runsTurn = (status: unknown): boolean | null =>
+  !isObject(status) ? null : status["type"] === "active" ? true : status["type"] === "idle" ? false : null;
+
 
 /** Ovis's connection to one pane's Codex server. */
 class Connection {
@@ -333,16 +349,20 @@ class Connection {
   /** The turn the pane's own thread runs or ran last. */
   private turnId: string | null = null;
   private toldFailedTurn: string | null = null;
-  /** The last turn of the pane's own thread the server said completed. */
-  private lastCompleted: string | null = null;
+  /** The turns of the pane's own thread the server said completed, oldest first (at most COMPLETED_KEPT). */
+  private readonly completed: string[] = [];
   private resumedActive = false;
   private context: PaneContext | null = null;
   private rerouted: { turnId: string; model: string } | null = null;
   /** The model the pane's own thread runs, as the server said on resume or in its settings. */
   private model: string | null = null;
   private settings: ServedThreadSettings | undefined;
-  /** Whether the pane's own thread is known to run no turn: what the server said of it last, never assumed. */
-  private idle = false;
+  /** Whether the pane's own thread runs a turn: what the server said of it last, never assumed (null: not said). */
+  private runs: boolean | null = null;
+  /** The turn it runs, where the server named it (its turn/started, or the answer to Ovis's own turn/start). */
+  private runningTurn: string | null = null;
+  /** Who waits for a turn of the pane's own thread to end: by that turn's id, or with none where its start was not told. */
+  private readonly turnEnds: { id: string | null; over: Promise<boolean>; tell: (told: boolean) => void }[] = [];
   closed = false;
 
   /**
@@ -374,7 +394,7 @@ class Connection {
    * `mayWrite` saying no right before the request), `unknown` when it went and no answer came in time.
    */
   async plan(threadId: string, mayWrite: () => boolean): Promise<"unsent" | "applied" | "unknown"> {
-    const ready = (): boolean => !this.closed && this.thread === threadId && this.idle && this.model !== null;
+    const ready = (): boolean => !this.closed && this.thread === threadId && this.runs === false && this.model !== null;
     if (!ready()) return "unsent";
     const [modes, config] = await Promise.all([this.within("collaborationMode/list", {}), this.within("config/read", {})]);
     const plan = modes !== "unknown" && isObject(modes["result"]) && Array.isArray(modes["result"]["data"])
@@ -415,7 +435,7 @@ class Connection {
   async steer(threadId: string, input: string, clientId: string, checkPane: () => Promise<void>, writing: () => void): Promise<"accepted" | "unsent" | "changed" | "unknown"> {
     const turn = this.turnId;
     const ready = () => !this.closed && this.sure && this.thread === threadId && turn !== null && turn === this.turnId
-      && this.turn === "running" && !this.idle && this.waitsOnNone() && this.held.size === 0;
+      && this.turn === "running" && this.runs !== false && this.waitsOnNone() && this.held.size === 0;
     if (!ready()) return "unsent";
     await checkPane();
     const loaded = await this.within("thread/loaded/list", {});
@@ -434,25 +454,74 @@ class Connection {
    * it: the TUI shows it and its answer, and its input box keeps whatever is typed there. Only while that thread is the
    * pane's, idle, waits on no question or approval, and is the only one loaded besides subagents (a /resume or /new in
    * the TUI loads another without telling Ovis which one it shows). `clientId` comes back on the thread's user message.
-   * `unsent` when nothing went (any of that not known, or `mayWrite` saying no right before the request), `unknown`
-   * when it went and no turn came back: no answer in time, or an error, which does not say the input was not taken.
+   * The turn it became (ServedTurn `started`), or with nothing sent: the turn that thread runs instead (`running`), which
+   * turn/start would steer, answering with that turn (0.171.0); `unsent` where the server names none (any of the above
+   * not known, or `mayWrite` saying no right before the request). `unknown` when it went and no turn came back: no
+   * answer in time, or an error, which does not say the input was not taken.
    */
-  async startTurn(threadId: string, input: string, clientId: string, mayWrite: () => boolean): Promise<"unsent" | "accepted" | "unknown"> {
-    const ready = (): boolean => !this.closed && this.sure && this.thread === threadId && this.idle && this.waitsOnNone() && this.held.size === 0;
-    if (!ready()) return "unsent";
+  async startTurn(threadId: string, input: string, clientId: string, mayWrite: () => boolean): Promise<"unsent" | "unknown" | ServedTurn> {
+    const own = (): boolean => !this.closed && this.sure && this.thread === threadId;
+    const ready = (): boolean => own() && this.runs === false && this.waitsOnNone() && this.held.size === 0;
+    const taken = (): ServedTurn | "unsent" => (own() ? this.running() : null) ?? "unsent";
+    // which threads are loaded comes first: after a /resume or /new the TUI may show another, and a turn this one
+    // runs is then no turn of the pane's to wait behind
+    if (!own()) return "unsent";
     const loaded = await this.within("thread/loaded/list", {});
     const result = loaded !== "unknown" && isObject(loaded["result"]) ? loaded["result"] : null;
     const alone = result?.["nextCursor"] === null && Array.isArray(result["data"]) && result["data"].includes(threadId)
       && result["data"].every((id) => id === threadId || (typeof id === "string" && this.subagents.has(id)));
-    // read again after the lookup: a turn may have started meanwhile, which turn/start would steer
-    if (!alone || !ready() || !mayWrite()) return "unsent";
+    if (!alone) return "unsent";
+    // read again after the lookup: a turn may have started meanwhile
+    if (!ready()) return taken();
+    if (!mayWrite()) return "unsent";
     const reply = await this.within("turn/start", { threadId, clientUserMessageId: clientId, input: [{ type: "text", text: input, text_elements: [] }] });
     if (reply === "unknown") return "unknown";
     const turn = isObject(reply["result"]) ? reply["result"]["turn"] : null;
     if (!isObject(turn) || typeof turn["id"] !== "string") return "unknown";
-    // the turn runs from now on, though its turn/started may come later: a second send waits for it, unless it is over
-    if (this.lastCompleted !== turn["id"]) this.idle = false;
-    return "accepted";
+    // the connection ended, or the pane came to run another thread, while Codex answered: no end is told here any more
+    if (this.closed || this.thread !== threadId) return { turn: "started", over: Promise.resolve(false) };
+    // its end was told before its answer came, or another turn of the thread has started since the request went (the
+    // thread ran none then): a thread's turns come one after another, so this one is over
+    if (this.completed.includes(turn["id"]) || (this.runningTurn !== null && this.runningTurn !== turn["id"])) return { turn: "started", over: Promise.resolve(true) };
+    // the turn runs from now on, though its turn/started may come later: a second send waits for it
+    this.runs = true;
+    this.runningTurn = turn["id"];
+    return { turn: "started", over: this.turnEnd(turn["id"]) };
+  }
+
+  /**
+   * The turn the pane's own thread runs, where the server said it runs one. Its end is that turn's own turn/completed
+   * where the server named the turn; else whatever next says the thread no longer runs one.
+   */
+  private running(): ServedTurn | null {
+    return this.runs === true ? { turn: "running", over: this.turnEnd(this.runningTurn) } : null;
+  }
+
+  private turnEnd(id: string | null): Promise<boolean> {
+    const waiting = this.turnEnds.find((wait) => wait.id === id);
+    if (waiting) return waiting.over;
+    const { promise: over, resolve: tell } = Promise.withResolvers<boolean>();
+    this.turnEnds.push({ id, over, tell });
+    return over;
+  }
+
+  /** Tells `told` to who waits for a turn's end (ServedTurn `over`): everyone, or those whose turn's id `of` takes. */
+  private tellTurnEnds(told: boolean, of: (id: string | null) => boolean = () => true): void {
+    for (const wait of this.turnEnds.splice(0)) {
+      if (of(wait.id)) wait.tell(told);
+      else this.turnEnds.push(wait);
+    }
+  }
+
+  /**
+   * What the server says the pane's own thread does now. Once it no longer says the thread runs a turn, a turn whose
+   * start was not told has ended; one known by its id ends with its own turn/completed, which comes after.
+   */
+  private threadRuns(runs: boolean | null): void {
+    this.runs = runs;
+    if (runs === true) return;
+    this.runningTurn = null;
+    this.tellTurnEnds(true, (id) => id === null);
   }
 
   /**
@@ -540,8 +609,8 @@ class Connection {
     if (following !== undefined && this.following !== following && this.thread !== threadId) return;
     this.started(thread, following !== undefined);
     if (this.thread === threadId) {
-      this.idle = isObject(thread["status"]) && thread["status"]["type"] === "idle";
-      this.resumedActive = isObject(thread["status"]) && thread["status"]["type"] === "active";
+      this.threadRuns(runsTurn(thread["status"]));
+      this.resumedActive = this.runs === true;
       // The reply seeds the snapshot; don't replace a live notification received in the meantime.
       if (this.settings === before || this.settings === undefined || this.settings.initial) this.tellSettings(result, "resume");
     }
@@ -575,7 +644,7 @@ class Connection {
     const plan = kind === "plan" ? true : kind === "default" ? false : null;
     const initial = source === "start" ? true as const : undefined;
     // A completed turn's reroute cannot name the model selected from the menu for the next turn.
-    if (source === "update" && this.idle && model !== this.model) this.rerouted = null;
+    if (source === "update" && this.runs === false && model !== this.model) this.rerouted = null;
     this.model = model;
     if (model === (this.settings?.model ?? null) && effort === (this.settings?.effort ?? null)
       && plan === (this.settings?.plan ?? null) && initial === this.settings?.initial) return;
@@ -610,7 +679,9 @@ class Connection {
     this.rerouted = null;
     this.model = null;
     this.settings = undefined;
-    this.idle = false;
+    this.runs = null;
+    this.runningTurn = null;
+    this.tellTurnEnds(false);
     changed(this.paneId);
   }
 
@@ -685,7 +756,7 @@ class Connection {
       }
       case "thread/status/changed": {
         const status = isObject(params["status"]) ? params["status"] : {};
-        if (threadId !== null && threadId === this.thread) this.idle = status["type"] === "idle";
+        if (threadId !== null && threadId === this.thread) this.threadRuns(runsTurn(status));
         if (threadId === null || status["type"] !== "active") break;
         if (this.ownTurn(threadId) && this.turn !== "running") this.turn = "running";
         void this.subscribe(threadId);
@@ -699,8 +770,12 @@ class Connection {
         this.own(threadId, true);
         const before = this.turnId;
         this.turn = "running";
-        this.idle = false;
+        this.runs = true;
         this.turnId = typeof turn["id"] === "string" ? turn["id"] : null;
+        this.runningTurn = this.turnId;
+        // a thread's turns come one after another: one that starts is the end of every other one waited for, also
+        // where that one's own turn/completed never came
+        if (this.runningTurn !== null) this.tellTurnEnds(true, (wanted) => wanted !== this.runningTurn);
         // A new turn drops the previous failure from display and dedupe, even without a new herdr title.
         if (this.turnId === null || (this.turnId !== before && this.turnId !== this.toldFailedTurn)) {
           this.toldFailedTurn = null;
@@ -750,7 +825,17 @@ class Connection {
           this.turn = turn["status"] === "failed" ? "failed" : "answered";
           if (threadId === this.thread && this.turn === "failed" && id !== null && (this.turnId === null || this.turnId === id)) this.tellFailure(id);
         }
-        if (threadId !== null && threadId === this.thread) { this.idle = true; this.lastCompleted = id; }
+        if (threadId !== null && threadId === this.thread) {
+          // the end of a turn before the one the server named last is not the end of that one
+          if (id === null || this.runningTurn === null || this.runningTurn === id) this.threadRuns(false);
+          // one that names no turn is no named turn's end: which turn ended can no longer be told
+          if (id === null) this.tellTurnEnds(false);
+          else {
+            this.completed.push(id);
+            this.completed.splice(0, this.completed.length - COMPLETED_KEPT);
+            this.tellTurnEnds(true, (wanted) => wanted === id);
+          }
+        }
         break;
       }
       case "item/started": {
@@ -816,6 +901,7 @@ class Connection {
     for (const release of this.held.values()) release();
     this.held.clear();
     this.asks.clear();
+    this.tellTurnEnds(false);
     if (this.thread !== null) changed(this.paneId);
     for (const resolve of this.calls.values()) resolve({ error: { message: "closed" }, closed: true });
     this.calls.clear();
@@ -938,7 +1024,7 @@ export async function servedPlan(paneId: string, threadId: string, mayWrite: () 
  * Sends `input` as a new turn of thread `threadId` through the Codex server Ovis started in `paneId`
  * (Connection.startTurn): `unsent` where Ovis has no connection there.
  */
-export async function servedTurn(paneId: string, threadId: string, input: string, clientId: string, mayWrite: () => boolean): Promise<"unsent" | "accepted" | "unknown"> {
+export async function servedTurn(paneId: string, threadId: string, input: string, clientId: string, mayWrite: () => boolean): Promise<"unsent" | "unknown" | ServedTurn> {
   for (const servers of instances) {
     const connection = servers.connection(paneId);
     if (connection) return await connection.startTurn(threadId, input, clientId, mayWrite);

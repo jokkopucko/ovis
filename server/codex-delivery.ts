@@ -73,7 +73,9 @@ function nativeUserMessage(payload: UserEvent | null | undefined, session: strin
 }
 
 /**
- * Only turn/steer supplies our clientUserMessageId; a TUI Enter has no such receipt.
+ * Sends whose answer never came, each kept until the thread's own record shows its user message by the
+ * clientUserMessageId Ovis gave it: turn/steer (a Send now) and turn/start (a message to a Codex at rest) carry one.
+ * A TUI Enter has no such receipt.
  */
 export class CodexDeliveries<T> {
   private attempts = new Set<Attempt<T>>();

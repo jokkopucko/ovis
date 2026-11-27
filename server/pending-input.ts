@@ -78,6 +78,11 @@ export class PendingInputs<Owner, Lease> {
   private readonly statuses = new Map<string, AgentStatus>();
   private readonly events = new Map<string, number>();
   private readonly gates = new Map<string, TurnGate>();
+  /**
+   * The panes whose queue waits for a turn's end the agent itself tells (awaitTurn), each with that turn's wait: nothing
+   * herdr reads of the pane ends it.
+   */
+  private readonly turns = new Map<string, { gate: TurnGate }>();
   /** when a status of the pane was last taken, from an event or a read */
   private readonly readAt = new Map<string, number>();
   /**
@@ -257,7 +262,7 @@ export class PendingInputs<Owner, Lease> {
   }
 
   next(paneId: string): PendingRecord<Owner, Lease> | null {
-    if (!ready(this.statuses.get(paneId)) || this.gates.has(paneId)
+    if (!ready(this.statuses.get(paneId)) || this.gates.has(paneId) || this.turns.has(paneId)
       || [...this.records.values()].some((item) => item.paneId === paneId && (item.inFlight || this.blocksQueue(item)))) return null;
     return [...this.records.values()].find((item) => item.paneId === paneId && item.message.state === "queued") ?? null;
   }
@@ -305,6 +310,42 @@ export class PendingInputs<Owner, Lease> {
     this.gates.set(paneId, steeringWorkingTurn
       ? { by: "", committed: true, sawWorking: true, completed: false, deadline: null, joined: now + this.startTimeoutMs, since: now }
       : { by: "", committed: true, sawWorking: false, completed: false, deadline: now + this.startTimeoutMs, since: now });
+  }
+
+  /**
+   * The agent itself tells the end of the turn the pane runs (a Codex on the server Ovis started for it: that turn's
+   * turn/completed). Until `turnOver` takes the wait this gives, the queue gives out no message of the pane, whatever
+   * herdr reads of it, and no start timeout decides anything for it (expire). The turn's wait is that of the Enter
+   * committed for it, or one made here for a turn the queue did not start: herdr may have read that one at work already,
+   * and its next ready reading is then that turn's end.
+   */
+  awaitTurn(paneId: string): object {
+    const committed = this.gates.get(paneId);
+    const gate: TurnGate = committed?.committed ? committed : { by: "", committed: true, sawWorking: this.statuses.get(paneId) === "working", completed: false, deadline: null, since: this.now() };
+    this.gates.set(paneId, gate);
+    const turn = { gate };
+    this.turns.set(paneId, turn);
+    return turn;
+  }
+
+  /**
+   * The turn `wait` (awaitTurn) was for ended, as the agent `told`, or its end can no longer be told. Told, the turn's
+   * wait is over. Not told, it is as any committed Enter's again: by the statuses that came since, with a start timeout
+   * from now for a turn none of them showed to start. An Enter committed since has a wait of its own, which stays.
+   */
+  turnOver(paneId: string, wait: object, told: boolean): void {
+    const turn = this.turns.get(paneId);
+    if (turn !== wait) return;
+    this.turns.delete(paneId);
+    if (this.gates.get(paneId) !== turn.gate) return;
+    if (told) this.finished(paneId, turn.gate);
+    else if (!turn.gate.sawWorking) turn.gate.deadline = this.now() + this.startTimeoutMs;
+  }
+
+  /** The turn `gate` waits for was seen or told to finish: the wait ends once no send of the pane is on its way. */
+  private finished(paneId: string, gate: TurnGate): void {
+    gate.completed = true;
+    if (![...this.records.values()].some((item) => item.paneId === paneId && item.inFlight)) this.gates.delete(paneId);
   }
 
   settle(item: PendingRecord<Owner, Lease>, fault?: Fault, uncertain: boolean | "preserve-turn" = false, retryWhenReady = false): void {
@@ -400,13 +441,13 @@ export class PendingInputs<Owner, Lease> {
     this.apply(paneId, status, at);
   }
 
-  /** A message of the pane waits, or an Enter's turn has not been seen to start and finish: one sent now goes behind it. */
+  /** A message of the pane waits, or a turn has not been seen or told to finish: one sent now goes behind it. */
   waiting(paneId: string): boolean {
-    return this.gates.get(paneId)?.committed === true
+    return this.gates.get(paneId)?.committed === true || this.turns.has(paneId)
       || [...this.records.values()].some((item) => item.paneId === paneId && (item.inFlight || item.message.state === "queued" || this.blocksQueue(item)));
   }
 
-  forget(paneId: string): void { this.statuses.delete(paneId); this.events.delete(paneId); this.gates.delete(paneId); this.waits.delete(paneId); this.readAt.delete(paneId); this.readBy.delete(paneId); }
+  forget(paneId: string): void { this.statuses.delete(paneId); this.events.delete(paneId); this.gates.delete(paneId); this.turns.delete(paneId); this.waits.delete(paneId); this.readAt.delete(paneId); this.readBy.delete(paneId); }
 
   /** `at`: when the status was read; a Send now's `joined` window is judged by it, not by when it reached the queue */
   private apply(paneId: string, status: AgentStatus, at = this.now()): void {
@@ -430,8 +471,7 @@ export class PendingInputs<Owner, Lease> {
         Object.assign(gate, { sawWorking: false, deadline: this.now() + this.startTimeoutMs, lenient: true });
         return;
       }
-      gate.completed = true;
-      if (![...this.records.values()].some((item) => item.paneId === paneId && item.inFlight)) this.gates.delete(paneId);
+      this.finished(paneId, gate);
     }
   }
 
@@ -500,7 +540,10 @@ export class PendingInputs<Owner, Lease> {
     this.expireResends();
     const released: string[] = [];
     for (const [paneId, gate] of this.gates) {
-      if (gate.deadline !== null && this.now() >= gate.deadline && ![...this.records.values()].some((item) => item.paneId === paneId && item.inFlight)) {
+      // while the agent itself is to tell a turn's end, the queue is held by that turn: an Enter's start timeout that
+      // passed meanwhile is judged once that wait is over, so what was queued behind it since is held with the rest
+      if (gate.deadline !== null && this.now() >= gate.deadline && !this.turns.has(paneId)
+        && ![...this.records.values()].some((item) => item.paneId === paneId && item.inFlight)) {
         // a Send now still waiting for review may not have started its turn yet: its pane's queue waits for the user
         const reviewing = [...this.records.values()].some((item) => item.paneId === paneId && this.reviewOnly.has(item) && item.message.state === "uncertain");
         if (gate.lenient && !reviewing) released.push(paneId);

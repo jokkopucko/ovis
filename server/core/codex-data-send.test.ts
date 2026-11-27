@@ -15,8 +15,12 @@ const sendOf = (text: string, name: string): CommandSend => ({
   invocations: [{ name, argument: "", form: null }],
 });
 
+type TurnAnswer = Awaited<ReturnType<typeof codex.servedTurn>>;
+/** A turn of the pane's thread as Codex's server names it, its end not told. */
+const turnOf = (turn: "started" | "running"): TurnAnswer => ({ turn, over: new Promise<boolean>(() => {}) });
+
 function codexPane(send: CommandSend | undefined, served: boolean, answer: Awaited<ReturnType<typeof codex.servedPlan>>, shown: string | null = "t1",
-  turn: Awaited<ReturnType<typeof codex.servedTurn>> = "accepted") {
+  turn: TurnAnswer = turnOf("started")) {
   const typed: string[] = [];
   const noted: unknown[] = [];
   const evidence: string[] = [];
@@ -109,10 +113,14 @@ it("types a message the TUI reads itself, and one the server did not take, as be
   await left.submit("hello").catch(() => {});
   expect(left.turns).toEqual([]);
   mock.restore();
-  const refused = codexPane(undefined, true, "unsent", "t1", "unsent");
-  await refused.submit("hello");
-  expect(refused.turns).toEqual(["t1:hello"]);
-  expect(refused.typed).toHaveLength(1);
+  // sent at once, it is the user's own send: typed also into a turn the server says the thread runs
+  for (const answer of ["unsent", turnOf("running")] as const) {
+    const refused = codexPane(undefined, true, "unsent", "t1", answer);
+    await refused.submit("hello");
+    expect(refused.turns).toEqual(["t1:hello"]);
+    expect(refused.typed).toHaveLength(1);
+    mock.restore();
+  }
 });
 
 it("never types a message the server may have taken without answering", async () => {
@@ -120,6 +128,14 @@ it("never types a message the server may have taken without answering", async ()
   await expect(pane.submit("hello")).rejects.toMatchObject({ code: "submit_changed" });
   expect(pane.typed).toEqual([]);
   expect(pane.noted).toEqual([]);
+});
+
+it("answers with the end of the turn Codex's server took a message sent at once as, for the queue to wait for", async () => {
+  const over = Promise.resolve(true);
+  const d = codexPane(undefined, true, "unsent", "t1", { turn: "started", over });
+  const answer = await d.submit("hello");
+  expect(answer && answer.over).toBe(over);
+  expect(d.typed).toEqual([]);
 });
 
 it("routes only Codex's bare /plan and /compact", () => {

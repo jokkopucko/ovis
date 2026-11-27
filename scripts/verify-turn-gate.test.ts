@@ -32,6 +32,9 @@ describe("verify-turn-gate enforcement", () => {
       .not.toBe(extractPendingInputGateSlice(pendingInput));
     expect(extractPendingInputGateSlice(pendingInput.replace("PENDING_START_TIMEOUT_MS = 10_000", "PENDING_START_TIMEOUT_MS = 1_000")))
       .not.toBe(extractPendingInputGateSlice(pendingInput));
+    // the Enter's wait ending when the turn's end can no longer be told, with no status that showed it
+    expect(extractPendingInputGateSlice(pendingInput.replace("else if (!turn.gate.sawWorking) turn.gate.deadline = this.now() + this.startTimeoutMs;", "else this.gates.delete(paneId);")))
+      .not.toBe(extractPendingInputGateSlice(pendingInput));
 
     const steering = read("server/codex-steering.ts");
     expect(extractCodexSteeringSlice(steering.replace("Ask Codex to do anything", "Ask Codex anything")))
@@ -62,6 +65,11 @@ describe("verify-turn-gate enforcement", () => {
       .not.toBe(extractCallerGateSlice("server/core/pending.ts", caller));
     expect(extractCallerGateSlice("server/core/pending.ts", caller.replace("if (!pending.claim(item, true)) return;", "if (false) return;")))
       .not.toBe(extractCallerGateSlice("server/core/pending.ts", caller));
+    // the queue no longer drained when Codex's own server tells the turn's end, or no longer going behind that turn
+    expect(extractCallerGateSlice("server/core/pending.ts", caller.replace("pending.turnOver(paneId, wait, told); drainPending(paneId);", "pending.turnOver(paneId, wait, told);")))
+      .not.toBe(extractCallerGateSlice("server/core/pending.ts", caller));
+    expect(extractCallerGateSlice("server/core/pending.ts", caller.replace("          behindCodexTurn(paneId, viaData.over);\n          noteSubmitted(", "          noteSubmitted(")))
+      .not.toBe(extractCallerGateSlice("server/core/pending.ts", caller));
 
     const statusCode = read("server/core/status.ts");
     expect(extractCallerGateSlice("server/core/status.ts", statusCode.replace("pending.status(paneId,", "if (false) pending.status(paneId,")))
@@ -91,6 +99,7 @@ describe("verify-turn-gate enforcement", () => {
       baseline: true,
       atOnce: true,
       slowEnter: false,
+      served: false,
       others: 0,
       blocks: 0,
       gone: true,
