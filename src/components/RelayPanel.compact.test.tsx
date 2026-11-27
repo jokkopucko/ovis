@@ -1,69 +1,60 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { act, createElement } from "react";
-import { create, type ReactTestRenderer } from "react-test-renderer";
 
 import { exportPublicKey, generateKeyPair } from "../../shared/relay-e2ee.ts";
 import { encodeOffer } from "../../shared/relay-offer.ts";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 import { SettingsProvider } from "../lib/settings.ts";
-import { KeyId } from "./KeyId.tsx";
 import { CompactRelay, RelayPairing } from "./RelayPanel.tsx";
 
 const SERVER_ID = "c".repeat(32);
 const OFFER_ID = "a".repeat(32);
 
 describe("the compact pairing window", () => {
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
   let fetch: ReturnType<typeof spyOn> | undefined;
+  const events = new Map<string, PropertyDescriptor | undefined>();
 
   beforeEach(() => {
-    for (const key of ["window", "document", "navigator", "localStorage", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    const stored = new Map<string, string>();
-    const storage = { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => { stored.set(key, value); }, removeItem: (key: string) => { stored.delete(key); } };
-    const events = new EventTarget();
-    const media = { matches: false, addEventListener() {}, removeEventListener() {} };
-    const define = (key: string, value: unknown) => Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
-    define("IS_REACT_ACT_ENVIRONMENT", true);
-    define("localStorage", storage);
-    define("navigator", { languages: ["en-US"], platform: "Linux" });
-    define("window", { localStorage: storage, matchMedia: () => media, addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), dispatchEvent: events.dispatchEvent.bind(events), setTimeout, clearTimeout, setInterval, clearInterval });
-    define("document", { visibilityState: "visible", querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events) });
-    define("getComputedStyle", () => ({ getPropertyValue: () => "" }));
+    page = openPage();
+    // the pairing window announces codes with window.dispatchEvent(new CustomEvent(...)): the page's own event classes
+    for (const [key, value] of Object.entries({ Event: page.window.Event, CustomEvent: page.window.CustomEvent })) {
+      events.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+      Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+    }
+    Object.defineProperty(page.window.navigator, "platform", { configurable: true, value: "Linux" });
     fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => Response.json({ code: "AB3DE7FGH", expires_at: new Date(Date.now() + 600_000).toISOString(), server_id: SERVER_ID }), { preconnect: globalThis.fetch.preconnect }));
   });
 
   afterEach(async () => {
-    await act(async () => renderer?.unmount());
-    renderer = undefined;
     fetch?.mockRestore();
-    for (const [key, descriptor] of descriptors) {
+    await page.close();
+    for (const [key, descriptor] of events) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
       else Reflect.deleteProperty(globalThis, key);
     }
+    events.clear();
   });
 
-  it("shows this PC's ID under the code, for the phone's comparison", async () => {
-    await act(async () => {
-      renderer = create(createElement(SettingsProvider, null, createElement(CompactRelay, { qr: null, qrExpires: null, failure: null, reset: 0, onMinted: () => {} })));
-    });
+  const keyIds = () => [...page.container.querySelectorAll('span.key-id[role="group"]')]
+    .map((node) => [[...node.querySelectorAll(".key-id-group")].map((group) => group.textContent).join(""), node.getAttribute("aria-label")]);
 
-    expect(renderer!.root.findAllByType(KeyId).map((node) => [node.props.id, node.props.label])).toEqual([[SERVER_ID, "This PC's ID"]]);
-    const window = renderer!.root.findByProps({ className: "relay-pairing-compact" });
-    const codeAndId = window.findAll((node) =>
-      (node.type === "p" && node.props.className === "compact-pair-code") ||
-      (node.type === "span" && node.props.className === "key-id-group"));
-    expect(codeAndId.flatMap((node) => node.children)).toEqual(["AB3DE7FGH", ...Array<string>(8).fill("cccc")]);
-    expect(renderer!.root.findByProps({ className: "relay-pairing-id" }).findByType("p").children).toEqual(["This PC's ID"]);
+  it("shows this PC's ID under the code, for the phone's comparison", async () => {
+    await page.render(createElement(SettingsProvider, null, createElement(CompactRelay, { qr: null, qrExpires: null, failure: null, reset: 0, onMinted: () => {} })));
+
+    expect(keyIds()).toEqual([[SERVER_ID, "This PC's ID"]]);
+    const window = page.one('[class="relay-pairing-compact"]');
+    const codeAndId = [...window.querySelectorAll('p[class="compact-pair-code"], span[class="key-id-group"]')];
+    expect(codeAndId.map((node) => node.textContent)).toEqual(["AB3DE7FGH", ...Array<string>(8).fill("cccc")]);
+    expect(page.one('[class="relay-pairing-id"]').querySelector("p")!.textContent).toBe("This PC's ID");
   });
 
   it("shows the QR offer's ID while no code could be had", async () => {
     fetch?.mockImplementation(Object.assign(async () => new Response(null, { status: 500 }), { preconnect: globalThis.fetch.preconnect }));
     const qr = encodeOffer({ v: 1, server_id: OFFER_ID, server_public_key: exportPublicKey(generateKeyPair().publicKey), relay: "wss://relay.ovis.example", code: "482913", name: "Workstation" }, "https://app.ovis.example");
-    await act(async () => {
-      renderer = create(createElement(SettingsProvider, null, createElement(CompactRelay, { qr, qrExpires: null, failure: null, reset: 0, onMinted: () => {} })));
-    });
+    await page.render(createElement(SettingsProvider, null, createElement(CompactRelay, { qr, qrExpires: null, failure: null, reset: 0, onMinted: () => {} })));
 
-    expect(renderer!.root.findAllByType(KeyId).map((node) => node.props.id)).toEqual([OFFER_ID]);
+    expect(keyIds().map(([id]) => id)).toEqual([OFFER_ID]);
   });
 
   it("shows the refreshed typed code's ID while the replacement QR offer is pending", async () => {
@@ -82,20 +73,16 @@ describe("the compact pairing window", () => {
         expires_at,
       });
     }, { preconnect: globalThis.fetch.preconnect }));
-    await act(async () => {
-      renderer = create(createElement(SettingsProvider, null, createElement(RelayPairing, { compact: true })));
-    });
-    if (renderer === undefined) throw new Error("Pairing window did not render");
-    const root = renderer.root;
-    const displayedId = () => root.findAllByType(KeyId).map((node) => node.props.id);
+    await page.render(createElement(SettingsProvider, null, createElement(RelayPairing, { compact: true })));
+    const displayedId = () => keyIds().map(([id]) => id);
     expect(displayedId()).toEqual([OFFER_ID]);
-    const refresh = root.findAllByType("button").find((button) => button.children.includes("Refresh"));
+    const refresh = [...page.container.querySelectorAll("button")].find((button) => button.textContent?.includes("Refresh"));
     if (refresh === undefined) throw new Error("Refresh button did not render");
 
     resetIdentity = true;
     try {
-      await act(async () => { refresh.props.onClick(); });
-      expect(root.findByProps({ className: "compact-pair-code" }).children).toEqual(["JK4MN8PQR"]);
+      await act(async () => { refresh.click(); });
+      expect([...page.container.querySelectorAll('[class="compact-pair-code"]')].map((node) => node.textContent)).toEqual(["JK4MN8PQR"]);
       expect(displayedId()).toEqual([SERVER_ID]);
     } finally {
       await act(async () => { replacement.resolve(offer(SERVER_ID)); });

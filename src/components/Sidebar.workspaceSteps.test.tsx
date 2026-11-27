@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { act, createElement } from "react";
-import { create, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import type { SessionSnapshot, WorkspaceInfo } from "../../shared/protocol.ts";
 import type { AppActions } from "../lib/actions.ts";
@@ -8,7 +8,6 @@ import { adjacentWorkspacePane, drawnWorkspaceRows } from "../lib/adjacentTarget
 import { SettingsProvider } from "../lib/settings.ts";
 import { inactiveSidebarFilter, sidebarFilter } from "../lib/sidebarFilter.ts";
 import { SidebarFilterProvider } from "../lib/sidebarFilterContext.ts";
-import { currentSidebarPins, setSidebarPins } from "../lib/sidebarPins.ts";
 import { Sidebar } from "./Sidebar.tsx";
 
 const worktree = (linked: boolean) => ({ is_linked_worktree: linked, repo_key: "r", repo_name: "r", checkout_path: "/test-project" }) as WorkspaceInfo["worktree"];
@@ -22,51 +21,35 @@ const roster = (workspaces: WorkspaceInfo[]): SessionSnapshot => ({
 const actions = new Proxy({}, { get: () => () => {} }) as AppActions;
 
 describe("the workspace steps follow the sidebar's drawn rows", () => {
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  const stored = new Map<string, string>();
   let failWrites = false;
-  let renderer: ReactTestRenderer | undefined;
-  let pinsBefore: string[];
+  let page: Page;
+  const savedStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
 
   beforeEach(() => {
-    for (const key of ["window", "document", "navigator", "getComputedStyle", "localStorage", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    stored.clear();
+    page = openPage();
     failWrites = false;
-    const storage = {
-      getItem: (key: string) => stored.get(key) ?? null,
-      setItem: (key: string, value: string) => { if (failWrites) throw new Error("quota"); stored.set(key, value); },
-      removeItem: (key: string) => { if (failWrites) throw new Error("quota"); stored.delete(key); },
-    };
-    const events = new EventTarget();
-    const media = { matches: false, addEventListener() {}, removeEventListener() {} };
-    const define = (key: string, value: unknown) => Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
-    define("IS_REACT_ACT_ENVIRONMENT", true);
-    define("localStorage", storage);
-    define("navigator", { languages: ["en-US"], platform: "Linux" });
-    define("window", { localStorage: storage, matchMedia: () => media, addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), requestAnimationFrame: () => 1, cancelAnimationFrame() {}, setTimeout, clearTimeout });
-    define("document", { visibilityState: "visible", activeElement: null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, querySelector: () => null, addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events) });
-    define("getComputedStyle", () => ({ getPropertyValue: () => "" }));
-    pinsBefore = currentSidebarPins();
-    setSidebarPins([]);
+    const storage = page.window.localStorage;
+    for (const method of ["setItem", "removeItem"] as const) {
+      const write = storage[method].bind(storage);
+      Object.defineProperty(storage, method, { configurable: true, value: (key: string, value: string) => {
+        if (failWrites) throw new Error("quota");
+        write(key, value);
+      } });
+    }
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage });
   });
 
   afterEach(async () => {
-    await act(async () => renderer?.unmount());
-    renderer = undefined;
-    setSidebarPins(pinsBefore);
-    for (const [key, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
+    await page.close();
+    if (savedStorage) Object.defineProperty(globalThis, "localStorage", savedStorage);
+    else Reflect.deleteProperty(globalThis, "localStorage");
   });
 
   async function draw(snapshot: SessionSnapshot, selected: string, filter = inactiveSidebarFilter()): Promise<void> {
-    await act(async () => {
-      renderer = create(createElement(SettingsProvider, null, createElement(SidebarFilterProvider, { value: { filter, reportBranches: () => {} } },
+    await page.render(createElement(SettingsProvider, null, createElement(SidebarFilterProvider, { value: { filter, reportBranches: () => {} } },
         createElement(Sidebar, { snapshot, online: false, selectedPaneId: selected, actions }))));
-    });
   }
-  const shownRows = () => renderer!.root.findAll((node) => typeof node.type === "string" && typeof node.props["data-workspace"] === "string").map((node) => node.props["data-workspace"] as string);
+  const shownRows = () => [...page.container.querySelectorAll('[data-workspace]')].map((node) => node.getAttribute('data-workspace'));
   const next = (snapshot: SessionSnapshot, selected: string) => adjacentWorkspacePane(snapshot, drawnWorkspaceRows("local") ?? [], selected, 1, () => undefined);
 
   it("never lands on a row a filter leaves out", async () => {
@@ -78,7 +61,7 @@ describe("the workspace steps follow the sidebar's drawn rows", () => {
 
   it("lands on a folded worktree a filter shows", async () => {
     const snapshot = roster([workspace("root", worktree(false)), workspace("child", worktree(true)), workspace("tail")]);
-    stored.set("ovis:worktree-group-collapsed:local:r", "1");
+    page.window.localStorage.setItem("ovis:worktree-group-collapsed:local:r", "1");
     await draw(snapshot, "root:p", sidebarFilter("child", [{ id: "local", name: "Host", snapshot }], { machineId: "local", paneId: "root:p" }, (text) => text));
     expect(shownRows()).toEqual(["root", "child"]);
     expect(next(snapshot, "root:p")).toBe("child:p");
@@ -89,7 +72,7 @@ describe("the workspace steps follow the sidebar's drawn rows", () => {
     await draw(snapshot, "root:p");
     expect(shownRows()).toEqual(["root", "child", "tail"]);
     failWrites = true;
-    await act(async () => renderer!.root.findByProps({ className: "sidebar-row-action workspace-toggle" }).props.onClick());
+    await act(async () => page.one<HTMLButtonElement>('button[class="sidebar-row-action workspace-toggle"]').click());
     expect(shownRows()).toEqual(["root", "tail"]);
     expect(next(snapshot, "root:p")).toBe("tail:p");
   });
@@ -97,8 +80,7 @@ describe("the workspace steps follow the sidebar's drawn rows", () => {
   it("takes its rows back when the sidebar goes", async () => {
     await draw(roster([workspace("a"), workspace("b")]), "a:p");
     expect(drawnWorkspaceRows("local")).toEqual(["a", "b"]);
-    await act(async () => renderer!.unmount());
-    renderer = undefined;
+    await page.render(null);
     expect(drawnWorkspaceRows("local")).toBeNull();
   });
 });

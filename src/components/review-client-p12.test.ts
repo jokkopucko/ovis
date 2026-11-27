@@ -9,7 +9,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { act, createElement } from "react";
-import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 import { FakeAccountService, WEB_REDIRECT } from "../../shared/account-service-fake.ts";
 import { listView, signCard } from "../../shared/account-list.ts";
 import { readJoinLine } from "../../shared/account-list-join.ts";
@@ -45,14 +45,15 @@ const ACCOUNT = "acct_owner";
 const noWait = { wait: async () => {} };
 type World = ReturnType<typeof listWorld>;
 
-const globals = new Map<string, PropertyDescriptor | undefined>();
-let renderer: ReactTestRenderer | undefined;
+let page: Page;
+const browserGlobals = ["Event", "CustomEvent", "HTMLElement", "Element", "Node", "localStorage", "sessionStorage"] as const;
+const savedBrowserGlobals = new Map(browserGlobals.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
 let now = Date.now();
 let fake: FakeAccountService;
 let store: AccountStore;
 let service: AccountService;
 
-const textOf = (node: ReactTestInstance): string => node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
+const textOf = (node: Element): string => node.textContent ?? "";
 const settle = async (): Promise<void> => { for (let i = 0; i < 20; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
 /** settles until `done` holds: a press's work (signing, the list's write) takes as many turns as the machine's load makes it */
 const until = async (done: () => boolean, what: string): Promise<void> => {
@@ -60,18 +61,18 @@ const until = async (done: () => boolean, what: string): Promise<void> => {
   for (await settle(); !done(); await settle()) if (Date.now() > deadline) throw new Error(`still not so after 10 s: ${what}`);
 };
 /** a card's buttons are disabled while a press of it is at work */
-const cardsIdle = (): boolean => renderer!.root.findAll((card) => card.props["data-unconfirmed-pc"] !== undefined)
-  .every((card) => card.findAll((node) => node.type === "button" && node.props.disabled === true).length === 0);
-const pressWhere = async (find: (node: ReactTestInstance) => boolean): Promise<void> => {
-  const found = renderer!.root.findAll((node) => node.type === "button" && find(node));
+const cardsIdle = (): boolean => [...page.container.querySelectorAll("[data-unconfirmed-pc]")]
+  .every((card) => card.querySelectorAll("button:disabled").length === 0);
+const pressWhere = async (find: (node: HTMLButtonElement) => boolean): Promise<void> => {
+  const found = [...page.container.querySelectorAll("button")].filter(find);
   if (found.length !== 1) throw new Error(`${found.length} buttons match`);
-  await act(async () => { await found[0]!.props.onClick(); });
+  await act(async () => { found[0]!.click(); });
   await until(cardsIdle, "the card's press is done");
 };
 const press = (label: string): Promise<void> => pressWhere((node) => textOf(node).trim() === label);
-const text = (): string => renderer === undefined ? "" : renderer.root.findAll((node) => node.type === "div").map(textOf).join(" ");
-const cardsFor = (serverId: string): number => renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] === serverId).length;
-const focus = async (): Promise<void> => { await act(async () => { window.dispatchEvent(new Event("focus")); }); await settle(); };
+const text = (): string => page.container.textContent ?? "";
+const cardsFor = (serverId: string): number => page.container.querySelectorAll(`[data-unconfirmed-pc="${serverId}"]`).length;
+const focus = async (): Promise<void> => { await act(async () => { page.window.dispatchEvent(new page.window.Event("focus")); }); await settle(); };
 const admitsOf = (pc: AskingPc): number => fake.requests.filter((line) => line === `POST /v1/pcs/${pc.server_id}/admit`).length;
 
 async function signIn(): Promise<void> {
@@ -88,31 +89,19 @@ async function registerKey(): Promise<void> {
   await store.set("signin_key", { account: ACCOUNT, sign_in_id: session.sign_in_id!, key: made, no });
 }
 async function mountCard(): Promise<void> {
-  if (renderer !== undefined) await act(async () => { renderer!.unmount(); });
-  await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(UnconfirmedPcNotices, { service, now: () => now }) })); });
+  await page.render(null);
+  await page.render(createElement(SettingsProvider, { children: createElement(UnconfirmedPcNotices, { service, now: () => now }) }));
   await settle();
 }
 const pageList = (listStore: ListStore, svc: AccountService = service): AccountList => accountList({
   service: svc, accountStore: store, listStore, lock: memoryListLock(), now: () => now, genesis: () => "always", durable: async () => true, names: () => ({ label: "Phone", os: "ios" }),
 });
 
-beforeEach(async () => {
-  const events = new EventTarget();
-  const local = new Map<string, string>();
-  const session = new Map<string, string>();
-  const storage = (map: Map<string, string>) => ({ getItem: (k: string) => map.get(k) ?? null, setItem: (k: string, v: string) => { map.set(k, v); }, removeItem: (k: string) => { map.delete(k); } });
-  for (const [name, value] of Object.entries({
-    window: Object.assign(events, { location: new URL("https://app.ovis.sh/"), history: { state: null, pushState() {}, replaceState() {}, back() {} }, localStorage: storage(local), sessionStorage: storage(session), matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }) }),
-    IS_REACT_ACT_ENVIRONMENT: true,
-    document: Object.assign(new EventTarget(), { visibilityState: "visible", querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } }),
-    getComputedStyle: () => ({ getPropertyValue: () => "" }),
-    navigator: { languages: ["en"], clipboard: { writeText: async () => {} } },
-    localStorage: storage(local),
-    sessionStorage: storage(session),
-  })) {
-    globals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
-    Object.defineProperty(globalThis, name, { value, configurable: true });
-  }
+beforeEach(() => {
+  page = openPage("https://app.ovis.sh/");
+  for (const key of browserGlobals) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value: page.window[key] });
+  Object.defineProperty(page.window.document, "visibilityState", { configurable: true, value: "visible" });
+  Object.defineProperty(page.window.navigator, "clipboard", { configurable: true, value: { writeText: async () => {} } });
   now = Date.now();
   fake = new FakeAccountService(() => now);
   fake.opensAll = true;
@@ -123,14 +112,12 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await act(async () => { renderer?.unmount(); });
-  renderer = undefined;
+  await page.close();
   setPageAccountList(null);
-  for (const [name, descriptor] of globals) {
-    if (descriptor === undefined) Reflect.deleteProperty(globalThis, name);
-    else Object.defineProperty(globalThis, name, descriptor);
+  for (const [key, descriptor] of savedBrowserGlobals) {
+    if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+    else Reflect.deleteProperty(globalThis, key);
   }
-  globals.clear();
 });
 
 /**
@@ -283,20 +270,21 @@ describe("RED findings", () => {
   it("RED P12-F9: the number Add writes its `added` record before the card goes, as the invited Add does", async () => {
     const { pc, list } = await listAccount();
     const locks = Promise.withResolvers<void>();
-    const saved = Object.getOwnPropertyDescriptor(globalThis, "navigator");
-    Object.defineProperty(globalThis, "navigator", { value: { ...navigator, locks: { request: async (_name: string, work: () => Promise<void>) => { await locks.promise; return work(); } } }, configurable: true });
+    const saved = Object.getOwnPropertyDescriptor(page.window.navigator, "locks");
+    Object.defineProperty(page.window.navigator, "locks", { value: { request: async (_name: string, work: () => Promise<void>) => { await locks.promise; return work(); } }, configurable: true });
     try {
       await mountCard();
       await press("Add");
-      const add = renderer!.root.findAll((node) => node.type === "button" && textOf(node).trim() === "Add")[0]!;
-      await act(async () => { void add.props.onClick(); });
+      const add = [...page.container.querySelectorAll("button")].find((node) => textOf(node).trim() === "Add")!;
+      await act(async () => { add.click(); });
       await until(() => list.view().pcs.length > 0, "the PC is in the list");
       // another tab holds the record's lock: the PC is in the list; on 1cb5f8afa the card is gone while the record waits
       expect(list.view().pcs.map((row) => row.endpoint)).toEqual([pc.endpoint]);
       expect(cardsFor(pc.server_id)).toBe(1);
     } finally {
       locks.resolve();
-      if (saved) Object.defineProperty(globalThis, "navigator", saved);
+      if (saved) Object.defineProperty(page.window.navigator, "locks", saved);
+      else Reflect.deleteProperty(page.window.navigator, "locks");
     }
   });
 
@@ -365,18 +353,18 @@ describe("RED findings", () => {
       return !reads && request.method === "GET" && path.startsWith(`/v2/lists/${id}`) ? Response.json({ error: { code: "unavailable", message: "" } }, { status: 503 }) : null;
     };
     const mountPanel = async (): Promise<void> => {
-      if (renderer !== undefined) await act(async () => { renderer!.unmount(); });
-      await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(InvitePc, { list: first.list, now: () => w.clock.now }) })); });
+      await page.render(null);
+      await page.render(createElement(SettingsProvider, { children: createElement(InvitePc, { list: first.list, now: () => w.clock.now }) }));
       await settle();
     };
     await mountPanel();
-    await pressWhere((node) => node.props["data-action"] === "make-invite");
-    expect(renderer!.root.findAll((node) => node.props["data-testid"] === "invite-pc").map(textOf).join(" ")).toContain("It is not known yet whether the invite was made.");
+    await pressWhere((node) => node.getAttribute("data-action") === "make-invite");
+    expect([...page.container.querySelectorAll('[data-testid="invite-pc"]')].map(textOf).join(" ")).toContain("It is not known yet whether the invite was made.");
     // the person goes to another tab of Add PC and comes back: the panel is drawn anew
     reads = true;
     await mountPanel();
-    await pressWhere((node) => node.props["data-action"] === "make-invite");
-    const shownLine = renderer!.root.findAll((node) => node.props["data-invite-line"] === "").map(textOf)[0];
+    await pressWhere((node) => node.getAttribute("data-action") === "make-invite");
+    const shownLine = [...page.container.querySelectorAll('[data-invite-line=""]')].map(textOf)[0];
     const key = (await readJoinLine(shownLine!, { service: w.origin, followsLists: true })).key;
     // on 1cb5f8afa: the first invite is in the list with a line nobody holds any more, and a second one is made
     expect(listView(w.held().state).invites.map((row) => row.key)).toEqual([key]);
@@ -616,10 +604,10 @@ describe("PIN guards", () => {
     const swapped = swappedKey(list, swap, stranger);
     const [post] = await postedPcs(swapped);
     if (post === undefined) throw new Error("no post");
-    await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(AddPcByNumber, { list: swapped, account: ACCOUNT, post, name: "PC", now: () => now, onClose: () => {}, onAdded: () => {} }) })); });
-    for (let looks = 0; looks < 200 && renderer!.root.findAllByProps({ className: "relay-shell-digits" }).length === 0; looks++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+    await page.render(createElement(SettingsProvider, { children: createElement(AddPcByNumber, { list: swapped, account: ACCOUNT, post, name: "PC", now: () => now, onClose: () => {}, onAdded: () => {} }) }));
+    for (let looks = 0; looks < 200 && page.container.querySelectorAll('[class="relay-shell-digits"]').length === 0; looks++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
     swap.on = false;
-    await pressWhere((node) => textOf(node).trim() === "Add" && node.props.className === "btn btn-primary");
+    await pressWhere((node) => textOf(node).trim() === "Add" && node.className === "btn btn-primary");
     expect(held().entries.length).toBe(1);
     expect(list.view().pcs.map((row) => row.endpoint)).not.toContain(pc.endpoint);
   });
@@ -635,7 +623,7 @@ describe("PIN guards", () => {
     carried.value = { invite: made.invite.key, invite_proof: await line.signLineProof({ server_id: pc.server_id, card: pc }) };
     now = made.invite.exp * 1000 - 10;
     await mountCard();
-    const title = (): string => textOf(renderer!.root.find((node) => node.props["data-unconfirmed-pc"] !== undefined).findAll((node) => node.type === "span")[1]!);
+    const title = (): string => textOf(page.one("[data-unconfirmed-pc]").querySelectorAll("span")[1]!);
     expect(title()).toBe("Add this PC to your account? (joined with your invite)");
     now = (made.invite.exp + 5) * 1000;
     // the card's own timer, armed for the invite's end and a second after it: waited for by the title, within a deadline
@@ -673,7 +661,10 @@ describe("PIN guards", () => {
 
 describe("PIN the QR naming is only for a code made for the account", () => {
   it("PIN (kills M101) a fresh pairing with a code that carries no account mark names no list to the PC and signs no entry", async () => {
-    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Mozilla/5.0 (X11; Linux x86_64)", maxTouchPoints: 0 } });
+    Object.defineProperties(page.window.navigator, {
+      userAgent: { configurable: true, value: "Mozilla/5.0 (X11; Linux x86_64)" },
+      maxTouchPoints: { configurable: true, value: 0 },
+    });
     const identity = generateKeyPair();
     const offer: RelayOffer = { v: 1, server_id: deriveServerId(identity.publicKey), server_public_key: exportPublicKey(identity.publicKey), relay: "wss://relay.invalid" };
     const accountStore = memoryAccountStore();

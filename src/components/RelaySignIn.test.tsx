@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
-import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { act } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import type { RelayStatus } from "../../shared/protocol.ts";
@@ -17,9 +18,48 @@ const relay: RelayState = { status: ONLINE, unsupported: false, readFailed: fals
 
 interface FakeTab { opener: unknown; closed: boolean; location: { href: string }; close(): void }
 
+let page: Page;
+const descriptors = new Map<string, PropertyDescriptor | undefined>();
+
+function openSignInPage(url: string, userAgent: string, advertiseService: boolean): Page {
+  const view = openPage(url);
+  Object.defineProperty(view.window.navigator, "userAgent", { configurable: true, value: userAgent });
+  Object.defineProperty(view.window, "isSecureContext", { configurable: true, value: true });
+  if (advertiseService) {
+    const meta = view.window.document.createElement("meta");
+    meta.name = "ovis-pc-account-service";
+    meta.content = SERVICE;
+    view.window.document.head.append(meta);
+  }
+  for (const [key, value] of Object.entries({ indexedDB: fakeIndexedDB().factory, Event: view.window.Event })) {
+    descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { configurable: true, value });
+  }
+  return view;
+}
+
+afterEach(async () => {
+  await page.close();
+  mock.restore();
+  for (const [key, descriptor] of descriptors) {
+    if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+    else Reflect.deleteProperty(globalThis, key);
+  }
+  descriptors.clear();
+});
+
+const text = (node: { readonly textContent: string | null }): string => node.textContent ?? "";
+const buttonNodes = () => [...page.container.querySelectorAll("button")];
+const links = () => [...page.container.querySelectorAll("a")];
+const alerts = () => page.container.querySelectorAll('[role="alert"]');
+const buttons = () => buttonNodes().map((node) => text(node).trim());
+const press = async (label: string) => {
+  const button = buttonNodes().find((node) => text(node).trim() === label);
+  if (!button) throw new Error(`No button says ${label}`);
+  await act(async () => button.click());
+};
+
 describe("the relay tab's Sign in", () => {
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
   let fake: FakeAccountService;
   /** what window.open answers: a tab, or null for a blocked popup */
   let popupBlocked: boolean;
@@ -31,7 +71,6 @@ describe("the relay tab's Sign in", () => {
   let polls: AbortSignal[];
   let firstPoll: Promise<void>;
   let settings: string[];
-  let focusTargets: string[];
   let startGate: Promise<void>;
   let failStart: boolean;
   let linkPageAvailable: boolean;
@@ -51,7 +90,6 @@ describe("the relay tab's Sign in", () => {
     userCode = null;
     polls = [];
     settings = [];
-    focusTargets = [];
     startGate = Promise.resolve();
     failStart = false;
     linkPageAvailable = true;
@@ -60,33 +98,16 @@ describe("the relay tab's Sign in", () => {
     navigated = sent.promise;
     const polled = Promise.withResolvers<void>();
     firstPoll = polled.promise;
-    for (const key of ["window", "document", "navigator", "indexedDB", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
-    Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: fakeIndexedDB().factory });
-    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36", maxTouchPoints: 0 } });
-    const events = new EventTarget();
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      isSecureContext: true,
-      location: { href: "https://workstation.example.ts.net/" },
-      open: (url: string) => {
-        opened.push(url);
-        if (popupBlocked) return null;
-        let href = url;
-        tab = {
-          opener: "ovis", closed: false, close() { this.closed = true; },
-          location: { get href() { return href; }, set href(next: string) { href = next; sent.resolve(next); } },
-        };
-        return tab;
-      },
-      addEventListener: events.addEventListener.bind(events),
-      removeEventListener: events.removeEventListener.bind(events),
-      dispatchEvent: events.dispatchEvent.bind(events),
-      setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval, setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout,
-    } });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: {
-      documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
-      querySelector: (selector: string) => selector === 'meta[name="ovis-pc-account-service"]' ? { getAttribute: () => SERVICE } : null,
+    page = openSignInPage("https://workstation.example.ts.net/", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36", true);
+    Object.defineProperty(page.window, "open", { configurable: true, value: (url: string) => {
+      opened.push(url);
+      if (popupBlocked) return null;
+      let href = url;
+      tab = {
+        opener: "ovis", closed: false, close() { this.closed = true; },
+        location: { get href() { return href; }, set href(next: string) { href = next; sent.resolve(next); } },
+      };
+      return tab;
     } });
     const fetch = async (input: string | URL | Request, init?: RequestInit) => {
       if (String(input).startsWith("/api/account/status")) return Response.json({ account: pcAccountId, unlinked: [] });
@@ -112,32 +133,14 @@ describe("the relay tab's Sign in", () => {
     spyOn(globalThis, "fetch").mockImplementation(Object.assign(fetch, { preconnect: globalThis.fetch.preconnect }));
   });
 
-  afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
-    mock.restore();
-    for (const [key, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    descriptors.clear();
-  });
-
-  const text = (node: ReactTestInstance): string => node.children.map((child) => typeof child === "string" ? child : text(child)).join("");
   const mount = async (onSignedIn: (home: boolean) => void = () => undefined) => {
     const account = { service: SERVICE, onOpen: () => { settings.push("account"); }, onSignedIn };
-    await act(async () => {
-      renderer = create(<SettingsProvider><RelayTab relay={relay} closesGate={false} signedIn={false} joinBySignIn={false} account={account} phone={false} /></SettingsProvider>, {
-        createNodeMock: ({ props }) => ({ closest: () => null, querySelector: () => null, focus() {
-          if (typeof props === "object" && props !== null && "children" in props && typeof props.children === "string") focusTargets.push(props.children);
-        } }),
-      });
-    });
+    await page.render(<SettingsProvider><RelayTab relay={relay} closesGate={false} signedIn={false} joinBySignIn={false} account={account} phone={false} /></SettingsProvider>);
   };
   const signIn = async () => {
-    const found = renderer!.root.findAll((node) => node.type === "button" && text(node).trim() === "Sign in to Ovis");
+    const found = buttonNodes().filter((node) => text(node).trim() === "Sign in to Ovis");
     expect(found).toHaveLength(1);
-    await act(async () => { found[0]!.props.onClick(); });
+    await act(async () => { found[0]!.click(); });
   };
 
   it.each(["starting", "waiting", "cancel", "failure"])("keeps keyboard focus usable after %s", async (phase) => {
@@ -147,25 +150,25 @@ describe("the relay tab's Sign in", () => {
     await mount();
     await signIn();
     if (phase === "starting") {
-      const starting = renderer?.root.findByProps({ className: "btn btn-primary connect-signin-button" });
-      expect(starting?.props.disabled).not.toBe(true);
-      expect(starting?.props["aria-disabled"]).toBe(true);
-      await act(async () => { starting?.props.onClick(); });
+      const starting = page.one<HTMLButtonElement>('button[class="btn btn-primary connect-signin-button"]');
+      expect(starting.disabled).not.toBe(true);
+      expect(starting.getAttribute("aria-disabled")).toBe("true");
+      await act(async () => { starting.click(); });
       expect(opened).toEqual(["about:blank"]);
     }
     await act(async () => { gate.resolve(); });
     if (phase === "starting") return;
     if (phase === "failure") {
-      expect(renderer?.root.findByProps({ role: "alert" })).toBeDefined();
-      expect(focusTargets.at(-1)).toBe("Sign in to Ovis");
+      expect(page.one('[role="alert"]')).toBeDefined();
+      expect(page.window.document.activeElement?.textContent).toBe("Sign in to Ovis");
       expect(tab?.closed).toBe(true);
       return;
     }
     await act(async () => { await firstPoll; });
     if (phase === "cancel") {
-      await act(async () => { renderer?.root.findAllByType("button").find((node) => text(node) === "Cancel")?.props.onClick(); });
+      await act(async () => { buttonNodes().find((node) => text(node) === "Cancel")?.click(); });
     }
-    expect(focusTargets.at(-1)).toBe(phase === "waiting" ? "Open the sign-in page" : "Sign in to Ovis");
+    expect(page.window.document.activeElement?.textContent).toBe(phase === "waiting" ? "Open the sign-in page" : "Sign in to Ovis");
   });
 
   it.each([
@@ -176,15 +179,15 @@ describe("the relay tab's Sign in", () => {
     const gate = Promise.withResolvers<void>();
     if (phase === "starting") startGate = gate.promise;
     function SignInHarness() { actions = useLinkPageSignIn(SERVICE, () => undefined); return null; }
-    await act(async () => { renderer = create(<SignInHarness />); });
+    await page.render(<SignInHarness />);
     await act(async () => { actions?.start(); });
     if (phase === "waiting") await act(async () => { await firstPoll; });
     const abandoned = tab;
-    await act(async () => {
+    if (action === "unmount") await page.render(null);
+    else await act(async () => {
       switch (action) {
         case "cancel": actions?.cancel(); break;
         case "restart": actions?.start(); break;
-        case "unmount": renderer?.unmount(); renderer = undefined; break;
         default: action satisfies never;
       }
     });
@@ -198,14 +201,14 @@ describe("the relay tab's Sign in", () => {
     approveOnPoll = true;
     const finished = Promise.withResolvers<void>();
     await mount(() => finished.resolve());
-    const before = renderer?.root.findAllByProps({ "aria-live": "polite" });
+    const before = [...page.container.querySelectorAll('[aria-live="polite"]')];
     await signIn();
     await act(async () => { await finished.promise; });
     const account = { service: SERVICE, onOpen() {}, onSignedIn() {} };
-    await act(async () => { renderer?.update(<SettingsProvider><RelayTab relay={relay} closesGate={false} signedIn joinBySignIn={false} account={account} phone={false} /></SettingsProvider>); });
-    const after = renderer?.root.findAllByProps({ "aria-live": "polite" }) ?? [];
+    await page.render(<SettingsProvider><RelayTab relay={relay} closesGate={false} signedIn joinBySignIn={false} account={account} phone={false} /></SettingsProvider>);
+    const after = [...page.container.querySelectorAll('[aria-live="polite"]')];
     expect(after.map(text)).toContain("Signed in with GitHub");
-    expect(after[0]).toBe(before?.[0]);
+    expect(after[0]).toBe(before[0]);
   });
 
   // the owner's sign-out and sign-in on a PC already in the account: nothing is left to add, so the sheet closes (closedBySignIn)
@@ -227,25 +230,25 @@ describe("the relay tab's Sign in", () => {
     const finished = Promise.withResolvers<boolean>();
     const account = { service: SERVICE, onOpen() {}, onSignedIn: (home: boolean) => finished.resolve(home) };
     const tab = (signedIn: boolean) => <SettingsProvider><RelayTab relay={off} closesGate={false} signedIn={signedIn} accountId={signedIn ? "acct_one" : null} joinBySignIn={false} account={account} phone={false} /></SettingsProvider>;
-    await act(async () => { renderer = create(tab(false), { createNodeMock: () => ({ closest: () => null, querySelector: () => null, focus() {} }) }); });
+    await page.render(tab(false));
     await signIn();
     expect(await finished.promise).toBe(false);
-    await act(async () => { renderer!.update(tab(true)); });
-    expect(renderer!.root.findAll((node) => node.props.role === "switch" || (node.type === "input" && node.props.type === "checkbox")).length).toBeGreaterThan(0);
-    expect(text(renderer!.root)).toContain("Let this PC be reached from anywhere");
+    await page.render(tab(true));
+    expect(page.container.querySelectorAll('[role="switch"], input[type="checkbox"]').length).toBeGreaterThan(0);
+    expect(text(page.container)).toContain("Let this PC be reached from anywhere");
   });
 
   it("offers each provider's device page as its own button where the service has no link page", async () => {
     fake.offerSignIns(["google"], ["google"]);
     linkPageAvailable = false;
     await mount();
-    expect(renderer!.root.findAll((node) => node.type === "button" && text(node).trim() === "Sign in to Ovis")).toHaveLength(0);
-    const google = renderer!.root.findAll((node) => node.type === "button" && text(node).trim() === "Continue with Google");
+    expect(buttonNodes().filter((node) => text(node).trim() === "Sign in to Ovis")).toHaveLength(0);
+    const google = buttonNodes().filter((node) => text(node).trim() === "Continue with Google");
     expect(google).toHaveLength(1);
-    await act(async () => { google[0]!.props.onClick(); });
+    await act(async () => { google[0]!.click(); });
     await act(async () => { await firstPoll; });
     expect(tab?.location.href).toBe("https://www.google.com/device");
-    expect(renderer?.root.findAllByType("a").map(text)).toEqual(["Open Google"]);
+    expect(links().map(text)).toEqual(["Open Google"]);
   });
 
   it("starts one device sign-in when a provider's button is pressed twice while it starts", async () => {
@@ -254,10 +257,10 @@ describe("the relay tab's Sign in", () => {
     const gate = Promise.withResolvers<void>();
     startGate = gate.promise;
     await mount();
-    const google = () => renderer!.root.findAll((node) => node.type === "button" && text(node).trim() === "Continue with Google")[0]!;
-    await act(async () => { google().props.onClick(); });
+    const google = () => buttonNodes().filter((node) => text(node).trim() === "Continue with Google")[0]!;
+    await act(async () => { google().click(); });
     // the second press, as a double click lands, before the first one's answer
-    await act(async () => { google().props.onClick(); });
+    await act(async () => { google().click(); });
     expect(opened).toEqual(["about:blank"]);
     await act(async () => { gate.resolve(); });
     await act(async () => { await firstPoll; });
@@ -271,15 +274,14 @@ describe("the relay tab's Sign in", () => {
     await signIn();
     // the tab opens in the click itself, so no popup blocker takes it
     expect(opened).toEqual(["about:blank"]);
-    const page = await navigated;
-    expect(page).toBe(`${SERVICE}/link?code=${userCode}`);
+    const address = await navigated;
+    expect(address).toBe(`${SERVICE}/link?code=${userCode}`);
     expect(tab!.opener).toBeNull();
     expect(settings).toEqual([]);
     await act(async () => { await signedIn.promise; });
     expect((await indexedAccountStore.get("session"))?.account).toBe("acct_one");
-    expect(text(renderer!.root)).toContain("Signed in with GitHub");
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
+    expect(text(page.container)).toContain("Signed in with GitHub");
+    await page.render(null);
     expect(tab?.closed).toBe(false);
   });
 
@@ -288,9 +290,9 @@ describe("the relay tab's Sign in", () => {
     await mount();
     await signIn();
     await act(async () => { await firstPoll; });
-    const links = renderer!.root.findAll((node) => node.type === "a" && node.props.href === `${SERVICE}/link?code=${userCode}`);
-    expect(links.map((link) => text(link))).toEqual(["Open the sign-in page"]);
-    expect(text(renderer!.root)).toContain(userCode!);
+    const matching = links().filter((node) => node.getAttribute("href") === `${SERVICE}/link?code=${userCode}`);
+    expect(matching.map((link) => text(link))).toEqual(["Open the sign-in page"]);
+    expect(text(page.container)).toContain(userCode!);
     expect(settings).toEqual([]);
   });
 
@@ -300,8 +302,7 @@ describe("the relay tab's Sign in", () => {
     await act(async () => { await firstPoll; });
     expect(polls.length).toBeGreaterThan(0);
     expect(polls.every((signal) => !signal.aborted)).toBe(true);
-    await act(async () => { renderer!.unmount(); });
-    renderer = undefined;
+    await page.render(null);
     expect(polls.every((signal) => signal.aborted)).toBe(true);
     fake.approveOnLinkPage(userCode!, "acct_one", "github");
     expect(await indexedAccountStore.get("session")).toBeUndefined();
@@ -309,8 +310,6 @@ describe("the relay tab's Sign in", () => {
 });
 
 describe("the relay tab's Sign in on the PC's own window", () => {
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
   let fake: FakeAccountService;
   let tab: { opener: unknown; closed: boolean; location: { href: string }; close(): void } | null;
   let sent: ReturnType<typeof Promise.withResolvers<string>>;
@@ -324,27 +323,12 @@ describe("the relay tab's Sign in on the PC's own window", () => {
     tab = null;
     popupBlocked = false;
     sent = Promise.withResolvers<string>();
-    for (const key of ["window", "document", "navigator", "indexedDB", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
-    Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: fakeIndexedDB().factory });
-    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent, maxTouchPoints: 0 } });
-    const events = new EventTarget();
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      isSecureContext: true,
-      location: { href: "http://127.0.0.1:7317/", protocol: "http:", hostname: "127.0.0.1", port: "7317" },
-      open: () => {
-        if (popupBlocked) return null;
-        let href = "about:blank";
-        tab = { opener: "ovis", closed: false, close() { this.closed = true; }, location: { get href() { return href; }, set href(next: string) { href = next; sent.resolve(next); } } };
-        return tab;
-      },
-      addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), dispatchEvent: events.dispatchEvent.bind(events),
-      setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval, setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout,
-    } });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: {
-      documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
-      querySelector: (selector: string) => selector === 'meta[name="ovis-pc-account-service"]' ? { getAttribute: () => SERVICE } : null,
+    page = openSignInPage("http://127.0.0.1:7317/", userAgent, true);
+    Object.defineProperty(page.window, "open", { configurable: true, value: () => {
+      if (popupBlocked) return null;
+      let href = "about:blank";
+      tab = { opener: "ovis", closed: false, close() { this.closed = true; }, location: { get href() { return href; }, set href(next: string) { href = next; sent.resolve(next); } } };
+      return tab;
     } });
     const fetch = async (input: string | URL | Request, init?: RequestInit) => {
       if (String(input).startsWith("/api/health")) return Response.json({ ok: true, auth: { required: false, authenticated: true }, bridge_protocol: 1, own_window: { port: 7317 } });
@@ -356,29 +340,9 @@ describe("the relay tab's Sign in on the PC's own window", () => {
     spyOn(globalThis, "fetch").mockImplementation(Object.assign(fetch, { preconnect: globalThis.fetch.preconnect }));
   };
 
-  afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
-    mock.restore();
-    for (const [key, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    descriptors.clear();
-  });
-
-  const text = (node: ReactTestInstance): string => node.children.map((child) => typeof child === "string" ? child : text(child)).join("");
-  const buttons = () => renderer!.root.findAll((node) => node.type === "button").map((node) => text(node).trim());
   const mount = async (onSignedIn: () => void = () => undefined) => {
     const account = { service: SERVICE, onOpen: () => undefined, onSignedIn };
-    await act(async () => {
-      renderer = create(<SettingsProvider><RelayTab relay={relay} closesGate={false} signedIn={false} joinBySignIn={false} account={account} phone={false} /></SettingsProvider>,
-        { createNodeMock: () => ({ closest: () => null, querySelector: () => null, focus() {} }) });
-    });
-  };
-  const press = async (label: string) => {
-    const button = renderer!.root.findAll((node) => node.type === "button" && text(node).trim() === label)[0]!;
-    await act(async () => { button.props.onClick(); });
+    await page.render(<SettingsProvider><RelayTab relay={relay} closesGate={false} signedIn={false} joinBySignIn={false} account={account} phone={false} /></SettingsProvider>);
   };
 
   it("signs in at the provider and back, with the return handed over by the callback tab", async () => {
@@ -403,8 +367,8 @@ describe("the relay tab's Sign in on the PC's own window", () => {
     await mount();
     popupBlocked = true;
     await press("Continue with Google");
-    const link = renderer!.root.findAll((node) => node.type === "a" && text(node) === "Open the sign-in page")[0]!;
-    const back = new URL((await fake.fetch(String(link.props.href))).headers.get("location") ?? "");
+    const link = links().filter((node) => text(node) === "Open the sign-in page")[0]!;
+    const back = new URL((await fake.fetch(link.href)).headers.get("location") ?? "");
     const stop = handOverReturn(back.search, () => undefined);
     await act(async () => { await exchange!.asked.promise; });
     await press("Cancel");
@@ -439,19 +403,20 @@ describe("the relay tab's Sign in on the PC's own window", () => {
     setUp("Mozilla/5.0 (X11; Linux x86_64) Chrome/130.0");
     const update = indexedAccountStore.update.bind(indexedAccountStore);
     spyOn(indexedAccountStore, "update").mockImplementation(((name: string, change: never) => name === "session" ? Promise.reject(new Error("disk full")) : update(name as never, change)) as never);
-    spyOn(console, "warn").mockImplementation(() => {});
+    const failed = Promise.withResolvers<void>();
+    spyOn(console, "warn").mockImplementation((message) => {
+      if (message === "Ovis: the sign-in did not finish") failed.resolve();
+    });
     await mount();
     await press("Continue with Google");
     const start = await sent.promise;
     const stop = handOverReturn(new URL((await fake.fetch(start)).headers.get("location") ?? "").search, () => undefined);
-    const deadline = Date.now() + 5_000;
-    while (renderer!.root.findAll((node) => node.props.role === "alert").length === 0) {
-      if (Date.now() > deadline) throw new Error("no failure was shown");
-      await Bun.sleep(5);
-      await act(async () => {});
+    try {
+      await act(async () => { await failed.promise; });
+    } finally {
+      stop();
     }
-    stop();
-    expect(renderer!.root.findAll((node) => node.props.role === "alert")).toHaveLength(1);
+    expect(alerts()).toHaveLength(1);
     expect(buttons()).toContain("Continue with Google");
   });
 
@@ -464,8 +429,6 @@ describe("the relay tab's Sign in on the PC's own window", () => {
 });
 
 describe("the relay tab's Sign in in the desktop app", () => {
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
   let fake: FakeAccountService;
   let opened: ReturnType<typeof Promise.withResolvers<string>>;
   let answer: ReturnType<typeof Promise.withResolvers<string>>;
@@ -478,24 +441,12 @@ describe("the relay tab's Sign in in the desktop app", () => {
     fake.offerLinkPage(["google"]);
     opened = Promise.withResolvers<string>();
     answer = Promise.withResolvers<string>();
-    for (const key of ["window", "document", "navigator", "indexedDB", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
-    Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: fakeIndexedDB().factory });
-    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Mozilla/5.0 (X11; Linux x86_64) Electron/33.0 Chrome/130.0", maxTouchPoints: 0 } });
-    const events = new EventTarget();
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      isSecureContext: true,
-      location: { href: "http://127.0.0.1:7317/", protocol: "http:", hostname: "127.0.0.1", port: "7317" },
-      open: () => null,
-      // the desktop app's bridge (app/electron/src/accountSignIn.ts): its loopback server brings the provider's return back
-      ovisAccount: { service: SERVICE, providers: ["google"], start: async () => "http://127.0.0.1:53117/callback", open: (url: string) => { opened.resolve(url); return answer.promise; } },
-      addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), dispatchEvent: events.dispatchEvent.bind(events),
-      setInterval: globalThis.setInterval, clearInterval: globalThis.clearInterval, setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout,
-    } });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: {
-      documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
-      querySelector: () => null,
+    page = openSignInPage("http://127.0.0.1:7317/", "Mozilla/5.0 (X11; Linux x86_64) Electron/33.0 Chrome/130.0", false);
+    Object.defineProperty(page.window, "open", { configurable: true, value: () => null });
+    // the desktop app's bridge (app/electron/src/accountSignIn.ts): its loopback server brings the provider's return back
+    Object.defineProperty(page.window, "ovisAccount", { configurable: true, value: {
+      service: SERVICE, providers: ["google"], start: async () => "http://127.0.0.1:53117/callback",
+      open: (url: string) => { opened.resolve(url); return answer.promise; },
     } });
     const fetch = async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(String(input instanceof Request ? input.url : input), "http://127.0.0.1:7317");
@@ -506,29 +457,9 @@ describe("the relay tab's Sign in in the desktop app", () => {
     spyOn(globalThis, "fetch").mockImplementation(Object.assign(fetch, { preconnect: globalThis.fetch.preconnect }));
   });
 
-  afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
-    mock.restore();
-    for (const [key, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    descriptors.clear();
-  });
-
-  const text = (node: ReactTestInstance): string => node.children.map((child) => typeof child === "string" ? child : text(child)).join("");
-  const buttons = () => renderer!.root.findAll((node) => node.type === "button").map((node) => text(node).trim());
-  const press = async (label: string) => {
-    const button = renderer!.root.findAll((node) => node.type === "button" && text(node).trim() === label)[0]!;
-    await act(async () => { button.props.onClick(); });
-  };
   const mount = async (onSignedIn: (home: boolean) => void = () => undefined) => {
     const account = { service: SERVICE, onOpen: () => undefined, onSignedIn };
-    await act(async () => {
-      renderer = create(<SettingsProvider><RelayTab relay={relay} closesGate={false} signedIn={false} joinBySignIn={false} account={account} phone={false} /></SettingsProvider>,
-        { createNodeMock: () => ({ closest: () => null, querySelector: () => null, focus() {} }) });
-    });
+    await page.render(<SettingsProvider><RelayTab relay={relay} closesGate={false} signedIn={false} joinBySignIn={false} account={account} phone={false} /></SettingsProvider>);
   };
   const returned = async (url: string): Promise<string> => new URL((await fake.fetch(url)).headers.get("location") ?? "").search;
 
@@ -563,18 +494,18 @@ describe("the relay tab's Sign in in the desktop app", () => {
     const home = Promise.withResolvers<boolean>();
     const account = { service: SERVICE, onOpen: () => undefined, onSignedIn: (goesHome: boolean) => home.resolve(goesHome) };
     const tab = (signedIn: boolean) => <SettingsProvider><RelayTab relay={relay} closesGate={false} signedIn={signedIn} accountId={signedIn ? "acct_new" : null} joinBySignIn={false} account={account} phone={false} machines={[{ id: "local", kind: "local", name: "Mac", server_id: "srv_mac" } as never]} pcAddFromAccount onConnectMachine={() => {}} /></SettingsProvider>;
-    await act(async () => { renderer = create(tab(false), { createNodeMock: () => ({ closest: () => null, querySelector: () => null, focus() {} }) }); });
+    await page.render(tab(false));
     await act(async () => { for (let turn = 0; turn < 20; turn++) await Promise.resolve(); });
     await press("Continue with Google");
     answer.resolve(await returned(await opened.promise));
     expect(await home.promise).toBe(false);
-    await act(async () => { renderer!.update(tab(true)); });
+    await page.render(tab(true));
     await act(async () => { for (let turn = 0; turn < 20; turn++) await Promise.resolve(); });
     expect(buttons()).toContain("Continue with Google");
     expect(buttons()).not.toContain("Add from account");
-    expect(text(renderer!.root)).not.toContain("Sign in to this PC's account.");
-    expect(text(renderer!.root)).not.toContain("If that account is not yours");
-    expect(text(renderer!.root)).not.toContain("This PC is in an account.");
+    expect(text(page.container)).not.toContain("Sign in to this PC's account.");
+    expect(text(page.container)).not.toContain("If that account is not yours");
+    expect(text(page.container)).not.toContain("This PC is in an account.");
   });
 
   it("keeps no sign-in that comes back after Cancel", async () => {

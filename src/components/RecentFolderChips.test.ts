@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { act, createElement } from "react";
-import { create, type ReactTestRenderer } from "react-test-renderer";
 
+import { openPage, type Page } from "../lib/page.fixture.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { chipsThatFit, RecentFolderChips } from "./RecentFolderChips.tsx";
 
@@ -22,64 +22,55 @@ it("keeps room for the +N chip while more folders wait to be shown, even when ev
 
 describe("the swipe row's keyboard focus", () => {
   const folders = Array.from({ length: 23 }, (_, index) => `/folder-${index + 1}`);
-  const saved = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
-  let active: string;
+  let page: Page;
+  let keyboard: boolean;
   let visible: string;
-  const row = () => renderer?.root.findByProps({ role: "group" });
-  const buttons = () => row()?.findAllByType("button") ?? [];
-  const nameOf = (button: ReturnType<typeof buttons>[number]) => button.props.title ?? "more";
-  const focus = (name: string, keyboard: boolean): void => {
-    active = name;
-    row()?.props.onFocus?.({ target: {
-      matches: (selector: string) => keyboard && selector === ":focus-visible",
-      scrollIntoView: () => { visible = name; },
-    } });
+  const row = () => page.one('[role="group"]');
+  const buttons = () => [...row().querySelectorAll("button")];
+  const nameOf = (button: Element) => button.getAttribute("title") ?? "more";
+  /** the folder holding focus, or "body" when nothing in the row has it */
+  const active = (): string => {
+    const focused = buttons().find((button) => button === (page.window.document.activeElement as unknown));
+    return focused ? nameOf(focused) : "body";
+  };
+  /** focuses a chip; `keyboard` says whether the browser would match it as :focus-visible */
+  const focus = (name: string, viaKeyboard: boolean): void => {
+    keyboard = viaKeyboard;
+    act(() => { buttons().find((button) => nameOf(button) === name)!.focus(); });
   };
 
   beforeEach(async () => {
-    active = "body";
+    page = openPage();
+    keyboard = false;
     visible = "/folder-1";
-    const globals = {
-      IS_REACT_ACT_ENVIRONMENT: true,
-      window: {
-        matchMedia: (query: string) => ({ matches: query.includes("max-width: 640px"), addEventListener() {}, removeEventListener() {} }),
-        addEventListener() {}, removeEventListener() {},
-      },
-      document: { documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, querySelector: () => null },
-      navigator: { languages: ["en-US"] },
-      getComputedStyle: () => ({ getPropertyValue: () => "" }),
-    };
-    for (const [key, value] of Object.entries(globals)) {
-      saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-      Object.defineProperty(globalThis, key, { configurable: true, value });
-    }
-    await act(async () => {
-      renderer = create(createElement(SettingsProvider, null, createElement(RecentFolderChips, {
-        folders, disabled: false, labelledBy: "recent", basename: (path) => path.slice(1), onPick() {},
-      })), {
-        createNodeMock: () => ({
-          querySelectorAll: () => buttons().map((button) => ({ focus: () => focus(nameOf(button), false) })),
-        }),
-      });
+    const { HTMLElement } = page.window;
+    const matches = HTMLElement.prototype.matches;
+    Object.defineProperty(page.window, "matchMedia", {
+      configurable: true,
+      value: (query: string) => ({ matches: query.includes("max-width: 640px"), addEventListener() {}, removeEventListener() {} }),
     });
+    Object.defineProperty(HTMLElement.prototype, "matches", {
+      configurable: true,
+      value(this: Element, selector: string) { return selector === ":focus-visible" ? keyboard : matches.call(this, selector); },
+    });
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value(this: Element) { visible = nameOf(this); },
+    });
+    await page.render(createElement(SettingsProvider, null, createElement(RecentFolderChips, {
+      folders, disabled: false, labelledBy: "recent", basename: (path) => path.slice(1), onPick() {},
+    })));
   });
 
   afterEach(async () => {
-    await act(async () => renderer?.unmount());
-    renderer = undefined;
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    saved.clear();
+    await page.close();
   });
 
+  /** presses "more": `detail` 0 is a keyboard activation, 1 a tap or click */
   const expand = async (detail: number): Promise<void> => {
     const more = buttons().find((button) => nameOf(button) === "more");
     if (!more) throw new Error("No more folders button");
-    await act(async () => more.props.onClick({ detail }));
-    if (!buttons().some((button) => nameOf(button) === active)) active = "body";
+    await act(async () => { more.dispatchEvent(new page.window.MouseEvent("click", { bubbles: true, detail }) as unknown as Event); });
   };
 
   it.each([["first", 0, "/folder-11"], ["last", 1, "/folder-21"]] as const)(
@@ -88,7 +79,7 @@ describe("the swipe row's keyboard focus", () => {
       if (priorExpansions > 0) await expand(1);
       focus("more", true);
       await expand(0);
-      expect(active).toBe(firstAdded);
+      expect(active()).toBe(firstAdded);
       expect(visible).toBe(firstAdded);
     },
   );
@@ -102,7 +93,7 @@ describe("the swipe row's keyboard focus", () => {
     focus("more", false);
     await expand(1);
     expect(buttons().map(nameOf)).toContain("/folder-11");
-    expect(active).toBe("more");
+    expect(active()).toBe("more");
     expect(visible).toBe("/folder-1");
   });
 });

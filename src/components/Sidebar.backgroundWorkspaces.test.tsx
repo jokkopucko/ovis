@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { act, createElement } from "react";
-import { create, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import type { SessionSnapshot, WorkspaceInfo } from "../../shared/protocol.ts";
 import type { AppActions } from "../lib/actions.ts";
@@ -25,58 +25,48 @@ const roster = (workspaces: WorkspaceInfo[], blocked: string[] = []): SessionSna
     agent: "claude", agent_status: blocked.includes(w.workspace_id) ? "blocked" : "idle" })),
 });
 const actions = new Proxy({}, { get: () => () => {} }) as AppActions;
-const keyPress = (key: string, altKey: boolean) => ({ key, altKey, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } });
 const FOLD_KEY = "ovis:workspaces-background-collapsed:local";
 
 describe("background workspaces in the sidebar", () => {
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  const stored = new Map<string, string>();
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
+  const browserGlobals = ["HTMLElement", "Element", "Node", "Event", "CustomEvent", "localStorage"] as const;
+  const savedBrowserGlobals = new Map(browserGlobals.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   let pinsBefore: string[];
   let fetch: ReturnType<typeof spyOn> | undefined;
 
   beforeEach(() => {
-    for (const key of ["window", "document", "navigator", "getComputedStyle", "localStorage", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    stored.clear();
-    const storage = { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => { stored.set(key, value); }, removeItem: (key: string) => { stored.delete(key); } };
-    const events = new EventTarget();
-    const media = { matches: false, addEventListener() {}, removeEventListener() {} };
-    const define = (key: string, value: unknown) => Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
-    define("IS_REACT_ACT_ENVIRONMENT", true);
-    define("localStorage", storage);
-    define("navigator", { languages: ["en-US"], platform: "Linux" });
-    define("window", { localStorage: storage, matchMedia: () => media, addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), requestAnimationFrame: () => 1, cancelAnimationFrame() {}, setTimeout, clearTimeout });
-    define("document", { visibilityState: "visible", activeElement: null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, querySelector: () => null, addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events) });
-    define("getComputedStyle", () => ({ getPropertyValue: () => "" }));
+    page = openPage();
+    for (const key of browserGlobals) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value: page.window[key] });
+    Object.defineProperty(page.window.navigator, "platform", { configurable: true, value: "Linux" });
+    Object.defineProperty(page.window.document, "visibilityState", { configurable: true, value: "visible" });
     fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => Response.json({ error: "not_found" }, { status: 404 }), { preconnect: globalThis.fetch.preconnect }));
     pinsBefore = currentSidebarPins();
     setSidebarPins([]);
   });
 
   afterEach(async () => {
-    await act(async () => renderer?.unmount());
-    renderer = undefined;
+    await page.render(null);
     fetch?.mockRestore();
     setSidebarPins(pinsBefore);
-    for (const [key, descriptor] of descriptors) {
+    await page.close();
+    for (const [key, descriptor] of savedBrowserGlobals) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
       else Reflect.deleteProperty(globalThis, key);
     }
   });
 
-  const turnOn = () => stored.set("ovis:settings", JSON.stringify({ sidebarBackgroundWorkspaces: true }));
+  const turnOn = () => page.window.localStorage.setItem("ovis:settings", JSON.stringify({ sidebarBackgroundWorkspaces: true }));
   async function draw(snapshot: SessionSnapshot, selected: string, filter: SidebarFilter = inactiveSidebarFilter()): Promise<ReorderCoordinator> {
     const coordinator = new ReorderCoordinator();
-    await act(async () => {
-      renderer = create(createElement(SettingsProvider, null, createElement(SidebarFilterProvider, { value: { filter, reportBranches: () => {} } },
+    await page.render(createElement(SettingsProvider, null, createElement(SidebarFilterProvider, { value: { filter, reportBranches: () => {} } },
         createElement(AppLayoutContext.Provider, { value: TUI }, createElement(ReorderContext.Provider, { value: coordinator },
           createElement(Sidebar, { snapshot, online: true, selectedPaneId: selected, actions }))))));
-    });
     return coordinator;
   }
-  const shownRows = () => renderer!.root.findAll((node) => typeof node.type === "string" && typeof node.props["data-workspace"] === "string").map((node) => node.props["data-workspace"] as string);
-  const heading = () => renderer!.root.findAll((node) => node.type === "button" && node.props.className === "workspace-background-toggle");
-  const row = (id: string) => renderer!.root.findByProps({ "data-pane": `${id}:p` });
+  const shownRows = () => [...page.container.querySelectorAll("[data-workspace]")].map((node) => node.getAttribute("data-workspace"));
+  const heading = () => [...page.container.querySelectorAll<HTMLButtonElement>('button[class="workspace-background-toggle"]')];
+  const row = (id: string) => page.one(`[data-pane="${id}:p"]`);
+  const keyPress = (key: string, altKey: boolean) => new window.KeyboardEvent("keydown", { key, altKey, bubbles: true, cancelable: true });
 
   it("keeps a tagged workspace where herdr puts it while the setting is off", async () => {
     await draw(roster([tagged("bg1"), workspace("a"), tagged("bg2")]), "a:p");
@@ -89,8 +79,8 @@ describe("background workspaces in the sidebar", () => {
     await draw(roster([tagged("bg1"), workspace("a"), tagged("bg2"), tagged("bg3"), workspace("b")], ["bg1"]), "bg3:p");
     expect(shownRows()).toEqual(["a", "b", "bg1", "bg3"]);
     expect(heading()).toHaveLength(1);
-    expect(heading()[0]!.props["aria-expanded"]).toBe(false);
-    expect(heading()[0]!.findByProps({ className: "workspace-background-count" }).props.children).toBe(3);
+    expect(heading()[0]!.getAttribute("aria-expanded")).toBe("false");
+    expect(heading()[0]!.querySelector('[class="workspace-background-count"]')?.textContent).toBe("3");
     expect(drawnWorkspaceRows("local")).toEqual(["a", "b", "bg1", "bg3"]);
   });
 
@@ -99,10 +89,10 @@ describe("background workspaces in the sidebar", () => {
     const snapshot = roster([tagged("bg1"), workspace("a"), tagged("bg2")]);
     await draw(snapshot, "a:p");
     expect(shownRows()).toEqual(["a"]);
-    await act(async () => heading()[0]!.props.onClick());
+    await act(async () => heading()[0]!.click());
     expect(shownRows()).toEqual(["a", "bg1", "bg2"]);
-    expect(stored.get(FOLD_KEY)).toBe("0");
-    await act(async () => renderer!.unmount());
+    expect(page.window.localStorage.getItem(FOLD_KEY)).toBe("0");
+    await page.render(null);
     await draw(snapshot, "a:p");
     expect(shownRows()).toEqual(["a", "bg1", "bg2"]);
   });
@@ -112,20 +102,20 @@ describe("background workspaces in the sidebar", () => {
     const snapshot = roster([tagged("bg1"), workspace("a"), tagged("bg2")]);
     await draw(snapshot, "a:p", sidebarFilter("bg2", [{ id: "local", name: "Host", snapshot }], { machineId: "local", paneId: "a:p" }, (text) => text));
     expect(shownRows()).toEqual(["a", "bg2"]);
-    expect(heading()[0]!.props["aria-expanded"]).toBe(true);
+    expect(heading()[0]!.getAttribute("aria-expanded")).toBe("true");
   });
 
   it("moves a row with Alt+arrows only among the rows of its own part", async () => {
     turnOn();
-    stored.set(FOLD_KEY, "0");
+    page.window.localStorage.setItem(FOLD_KEY, "0");
     const coordinator = await draw(roster([tagged("bg1"), workspace("a"), tagged("bg2"), workspace("b")]), "a:p");
     const reorder = spyOn(coordinator, "reorder").mockImplementation(async () => undefined);
     expect(shownRows()).toEqual(["a", "b", "bg1", "bg2"]);
-    await act(async () => row("b").props.onKeyDown(keyPress("ArrowDown", true)));
-    await act(async () => row("bg1").props.onKeyDown(keyPress("ArrowUp", true)));
+    await act(async () => row("b").dispatchEvent(keyPress("ArrowDown", true)));
+    await act(async () => row("bg1").dispatchEvent(keyPress("ArrowUp", true)));
     expect(reorder).not.toHaveBeenCalled();
-    await act(async () => row("a").props.onKeyDown(keyPress("ArrowDown", true)));
-    await act(async () => row("bg1").props.onKeyDown(keyPress("ArrowDown", true)));
+    await act(async () => row("a").dispatchEvent(keyPress("ArrowDown", true)));
+    await act(async () => row("bg1").dispatchEvent(keyPress("ArrowDown", true)));
     expect(reorder.mock.calls.map((call) => call[2])).toEqual([["bg1", "bg2", "b", "a"], ["a", "bg2", "bg1", "b"]]);
   });
 
@@ -143,9 +133,9 @@ describe("background workspaces in the sidebar", () => {
     const coordinator = await draw(roster([tagged("bg1"), tagged("bg2"), tagged("bg3"), workspace("a")], ["bg1", "bg3"]), "a:p");
     const reorder = spyOn(coordinator, "reorder").mockImplementation(async () => undefined);
     expect(shownRows()).toEqual(["a", "bg1", "bg3"]);
-    expect(row("bg1").props["aria-keyshortcuts"]).toBeUndefined();
-    expect(row("bg1").props.draggable).toBe(false);
-    await act(async () => row("bg1").props.onKeyDown(keyPress("ArrowDown", true)));
+    expect(row("bg1").getAttribute("aria-keyshortcuts")).toBeNull();
+    expect(row("bg1").getAttribute("draggable")).toBe("false");
+    await act(async () => row("bg1").dispatchEvent(keyPress("ArrowDown", true)));
     expect(reorder).not.toHaveBeenCalled();
   });
 });

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { act, createElement } from "react";
-import { create, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { generateKeyPair } from "../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
@@ -10,24 +10,20 @@ import { memoryAccountStore, memoryLock } from "../lib/account/store.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { AccountJoinRequests } from "./AccountJoinRequests.tsx";
 
-const originals = new Map<string, PropertyDescriptor | undefined>();
-let renderer: ReactTestRenderer | undefined;
+let page: Page;
+const browserGlobals = ["Event", "CustomEvent"] as const;
+const savedBrowserGlobals = new Map(browserGlobals.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
 beforeEach(() => {
-  const storage = { getItem: () => null, setItem() {}, removeItem() {} };
-  for (const [name, value] of Object.entries({
-    window: Object.assign(new EventTarget(), { location: new URL("https://app.ovis.sh/"), localStorage: storage, sessionStorage: storage }),
-    document: Object.assign(new EventTarget(), { visibilityState: "visible", querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } }),
-    IS_REACT_ACT_ENVIRONMENT: true, getComputedStyle: () => ({ getPropertyValue: () => "" }), navigator: { languages: ["en"] }, localStorage: storage, sessionStorage: storage,
-  })) {
-    originals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
-    Object.defineProperty(globalThis, name, { value, configurable: true });
-  }
+  page = openPage("https://app.ovis.sh/");
+  for (const key of browserGlobals) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value: page.window[key] });
+  Object.defineProperty(page.window.document, "visibilityState", { configurable: true, value: "visible" });
 });
 afterEach(async () => {
-  if (renderer) await act(async () => renderer!.unmount());
-  renderer = undefined;
-  for (const [name, old] of originals) { if (old) Object.defineProperty(globalThis, name, old); else Reflect.deleteProperty(globalThis, name); }
-  originals.clear();
+  await page.close();
+  for (const [key, descriptor] of savedBrowserGlobals) {
+    if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+    else Reflect.deleteProperty(globalThis, key);
+  }
 });
 
 async function setup() {
@@ -42,10 +38,10 @@ async function setup() {
   const serverId = deriveServerId(publicKey);
   const list = () => service.putPc(serverId, { label: "Desk", relay: "wss://relay.ovis.sh", public_key: bytesToHex(publicKey) });
   await list();
-  await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(AccountJoinRequests, { service, devices: async () => [] }) })); });
-  const cards = () => renderer!.root.findAll((node) => node.props["data-join-request"] === serverId).length;
+  await page.render(createElement(SettingsProvider, { children: createElement(AccountJoinRequests, { service, devices: async () => [] }) }));
+  const cards = () => page.container.querySelectorAll(`[data-join-request="${serverId}"]`).length;
   expect(cards()).toBe(1);
-  const decline = async () => { await act(async () => { renderer!.root.findAllByType("button").find((node) => node.children.includes("Decline"))!.props.onClick(); }); };
+  const decline = async () => { await act(async () => { [...page.container.querySelectorAll("button")].find((node) => node.textContent?.trim() === "Decline")!.click(); }); };
   return { service, list, serverId, decline, cards };
 }
 
@@ -55,7 +51,7 @@ test("an already open approving page shows an explicit new request after declini
   expect(await service.listPcs()).toHaveLength(0);
   expect(cards()).toBe(0);
   await list();
-  await act(async () => { window.dispatchEvent(new Event("focus")); });
+  await act(async () => { page.window.dispatchEvent(new page.window.Event("focus")); });
   expect(await service.listPcs()).toHaveLength(1);
   expect(cards(), "cards for the new request after refocus").toBe(1);
 });

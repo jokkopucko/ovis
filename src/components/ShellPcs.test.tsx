@@ -1,49 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { createElement } from "react";
-import { act, create, type ReactTestInstance } from "react-test-renderer";
+import { act, createElement } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import { SettingsProvider } from "../lib/settings.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
 import type { Machine } from "../../shared/machines.ts";
 import { shellPcRows, ShellPcs, unlistedShellPcs, useShellPcs, type ShellPcsDeps } from "./ShellPcs.tsx";
 
-const textOf = (node: ReactTestInstance): string => node.children.map((child) => typeof child === "string" ? child : textOf(child)).join("");
-
 describe("the hosted app's other PCs in the sidebar", () => {
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  beforeEach(() => {
-    for (const key of ["window", "document", "navigator", "localStorage", "getComputedStyle", "matchMedia", "IS_REACT_ACT_ENVIRONMENT"]) {
-      descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    }
-    const events = new EventTarget();
-    const store = new Map<string, string>();
-    const storage = { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value); }, removeItem: (key: string) => { store.delete(key); }, key: () => null, length: 0, clear: () => store.clear() };
-    const matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
-    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Mozilla/5.0", maxTouchPoints: 0 } });
-    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage });
-    Object.defineProperty(globalThis, "matchMedia", { configurable: true, value: matchMedia });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      localStorage: storage, matchMedia,
-      addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), dispatchEvent: events.dispatchEvent.bind(events),
-      requestAnimationFrame: () => 1, cancelAnimationFrame() {},
-      setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout,
-    } });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: {
-      documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
-      querySelector: () => null,
-      querySelectorAll: () => [],
-      addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events),
-    } });
-  });
-  afterEach(() => {
-    for (const [key, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    descriptors.clear();
-  });
+  let page: Page;
+  beforeEach(() => { page = openPage(); });
+  afterEach(async () => { await page.close(); });
+
+  const inRow = <K extends keyof HTMLElementTagNameMap>(row: HTMLLIElement, tag: K): HTMLElementTagNameMap[K] => {
+    const found = row.querySelectorAll(tag);
+    if (found.length !== 1) throw new Error(`Expected one ${tag} in the PC row, found ${found.length}`);
+    return found[0]!;
+  };
 
   it("opens each on its own page; one that does not answer reads Off with Check again, which checks that PC alone", async () => {
     const checked: string[] = [];
@@ -55,27 +28,26 @@ describe("the hosted app's other PCs in the sidebar", () => {
       ["d".repeat(32), { kind: "checking" }],
       ["e".repeat(32), { kind: "offline", reason: "refused" }],
     ]);
-    let root: ReturnType<typeof create> | undefined;
-    await act(async () => { root = create(createElement(SettingsProvider, { children: createElement(ShellPcs, { pcs, status, recheck: (id: string) => { checked.push(id); } }) })); });
-    const rows = root!.root.findAll((node) => node.type === "li");
-    expect(rows.map((row) => row.props["data-pc-state"])).toEqual(["on", "off", "checking", "unknown", "unknown"]);
-    expect(rows.map((row) => row.find((node) => node.type === "a").props.href)).toEqual([`/s/${"b".repeat(32)}/`, `/s/${"c".repeat(32)}/`, `/s/${"d".repeat(32)}/`, `/s/${"e".repeat(32)}/`, `/s/${"f".repeat(32)}/`]);
-    expect(textOf(rows[1]!)).toBe("HostHatchOff·Check again");
-    expect(rows[1]!.find((node) => node.type === "button").props["aria-busy"]).toBe(true);
-    expect(textOf(rows[2]!)).toBe("Unnamed PC");
-    expect(textOf(rows[3]!)).toBe("LaptopCheck again");
-    expect(rows[2]!.findAll((node) => node.type === "button")).toHaveLength(0);
+    await page.render(createElement(SettingsProvider, { children: createElement(ShellPcs, { pcs, status, recheck: (id: string) => { checked.push(id); } }) }));
+    const rows = [...page.container.querySelectorAll("li")];
+    expect(rows.map((row) => row.getAttribute("data-pc-state"))).toEqual(["on", "off", "checking", "unknown", "unknown"]);
+    expect(rows.map((row) => inRow(row, "a").getAttribute("href"))).toEqual([`/s/${"b".repeat(32)}/`, `/s/${"c".repeat(32)}/`, `/s/${"d".repeat(32)}/`, `/s/${"e".repeat(32)}/`, `/s/${"f".repeat(32)}/`]);
+    expect(rows[1]?.textContent).toBe("HostHatchOff·Check again");
+    const checkAgain = inRow(rows[1]!, "button");
+    expect(checkAgain.getAttribute("aria-busy")).toBe("true");
+    expect(rows[2]?.textContent).toBe("Unnamed PC");
+    expect(rows[3]?.textContent).toBe("LaptopCheck again");
+    expect(rows[2]?.querySelectorAll("button")).toHaveLength(0);
     // a PC no check has settled yet (the sweep keeps no finding after a first relay failure) still offers Check again
-    expect(textOf(rows[4]!)).toBe("NASCheck again");
-    expect(rows[0]!.findAll((node) => node.type === "button")).toHaveLength(0);
-    await act(async () => { rows[1]!.find((node) => node.type === "button").props.onClick(); });
+    expect(rows[4]?.textContent).toBe("NASCheck again");
+    expect(rows[0]?.querySelectorAll("button")).toHaveLength(0);
+    await act(async () => { checkAgain.click(); });
     expect(checked).toEqual(["c".repeat(32)]);
   });
 
   it("draws nothing without another PC", async () => {
-    let root: ReturnType<typeof create> | undefined;
-    await act(async () => { root = create(createElement(SettingsProvider, { children: createElement(ShellPcs, { pcs: [], status: new Map(), recheck: () => {} }) })); });
-    expect(root!.toJSON()).toBeNull();
+    await page.render(createElement(SettingsProvider, { children: createElement(ShellPcs, { pcs: [], status: new Map(), recheck: () => {} }) }));
+    expect(page.container.childNodes).toHaveLength(0);
   });
 });
 
@@ -90,16 +62,9 @@ describe("which PCs the hosted app's sidebar lists", () => {
 });
 
 describe("the sidebar's list as the page uses it", () => {
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  beforeEach(() => {
-    for (const key of ["window", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { pathname: `/s/${"a".repeat(32)}/` } } });
-  });
-  afterEach(() => {
-    for (const [key, descriptor] of descriptors) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); }
-    descriptors.clear();
-  });
+  let page: Page;
+  beforeEach(() => { page = openPage(`http://localhost/s/${"a".repeat(32)}/`); });
+  afterEach(async () => { await page.close(); });
 
   const fixture = () => {
     const rows = ["a", "b", "c"].map((letter) => ({ server_id: letter.repeat(32), device_id: "d", server_public_key: `key-${letter.repeat(32)}`, name: letter.toUpperCase() }));
@@ -124,19 +89,20 @@ describe("the sidebar's list as the page uses it", () => {
 
   it("lists the other PCs, checks them only while in sight, and stops its sweep when the sidebar goes", async () => {
     const { calls, load } = fixture();
-    let root: ReturnType<typeof create> | undefined;
-    await act(async () => { root = create(createElement(Probe, { shown: false, load })); await settle(); });
+    await page.render(createElement(Probe, { shown: false, load })); await settle();
     expect(seen!.pcs.map((pc) => pc.name)).toEqual(["B", "C"]);
     expect(calls).toEqual(["sweep pause=true"]);
-    await act(async () => { root!.update(createElement(Probe, { shown: true, load })); await settle(); });
+    await page.render(createElement(Probe, { shown: true, load }));
+    await act(settle);
     expect(calls).toEqual(["sweep pause=true", "check"]);
-    await act(async () => { root!.unmount(); });
+    await page.render(null);
     expect(calls.at(-1)).toBe("stop");
   });
 
   it("drops a PC forgotten in another tab on Check again, and checks one still saved", async () => {
     const { saved, calls, load } = fixture();
-    await act(async () => { create(createElement(Probe, { shown: true, load })); await settle(); });
+    await page.render(createElement(Probe, { shown: true, load }));
+    await act(settle);
     saved.delete("b".repeat(32));
     await act(async () => { seen!.recheck("b".repeat(32)); await settle(); });
     expect(seen!.pcs.map((pc) => pc.name)).toEqual(["C"]);

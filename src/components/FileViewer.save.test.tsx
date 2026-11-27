@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { createElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, type Page } from "../lib/page.fixture.ts";
+import { act } from "react";
 
 import { FileViewer } from "./FileViewer.tsx";
 import type { FileInfo } from "../../shared/files.ts";
@@ -12,26 +13,18 @@ import { nativeTransport, setTransport, type Transport } from "../lib/transport.
 // Download in the file viewer inside the Android app, whose WebView drops a download link without a
 // word: the viewer reads the file through the transport and hands it to the app, which saves it to
 // Downloads (app/android/.../SaveImagePlugin.java saveFile).
-const globals = ["IS_REACT_ACT_ENVIRONMENT", "window", "document", "getComputedStyle", "navigator", "Capacitor", "isSecureContext"];
+const globals = ["Capacitor", "isSecureContext"];
 const saved = new Map(globals.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
-let renderer: ReactTestRenderer | undefined;
+let page: Page;
 
 beforeEach(() => {
-  const listen = { addEventListener() {}, removeEventListener() {} };
-  const style = { setProperty() {}, removeProperty() {}, getPropertyValue: () => "", backgroundColor: "" };
-  Object.assign(globalThis, {
-    IS_REACT_ACT_ENVIRONMENT: true,
-    isSecureContext: true,
-    window: { ...listen, location: { pathname: "/" }, requestAnimationFrame: () => 0, cancelAnimationFrame() {}, localStorage: { getItem: () => null, setItem() {} }, matchMedia: () => ({ ...listen, matches: false }) },
-    document: { ...listen, activeElement: null, documentElement: { lang: "", dataset: {}, style }, querySelector: () => null },
-    getComputedStyle: () => style,
-    navigator: { languages: ["en"] },
-  });
+  page = openPage();
+  Object.defineProperty(globalThis, "isSecureContext", { configurable: true, writable: true, value: true });
+  Object.defineProperty(page.window, "isSecureContext", { configurable: true, value: true });
 });
 
 afterEach(async () => {
-  await act(async () => renderer?.unmount());
-  renderer = undefined;
+  await page.close();
   setTransport(nativeTransport);
   for (const [name, descriptor] of saved) {
     if (descriptor) Object.defineProperty(globalThis, name, descriptor);
@@ -58,13 +51,19 @@ function androidApp(methods: string[]): { method: string; options: Record<string
   return calls;
 }
 
-const shown = (): string => JSON.stringify(renderer?.toJSON());
+const shown = (): string => page.container.textContent ?? "";
+const drawn = (): string => page.container.innerHTML;
 
 async function settle(): Promise<void> {
-  for (let previous = "", round = 0; previous !== shown() && round < 50; round++) {
-    previous = shown();
+  for (let previous = "", round = 0; previous !== drawn() && round < 50; round++) {
+    previous = drawn();
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
   }
+}
+
+/** A home-screen web app: the page's navigator says standalone and offers the share sheet. */
+function homeScreen(share: (data: { files: File[] }) => Promise<void>): void {
+  for (const [key, value] of Object.entries({ standalone: true, canShare: () => true, share })) Object.defineProperty(page.window.navigator, key, { configurable: true, value });
 }
 
 /** Opens `info` on a PC whose file route answers TEXT; the file reads it asked for land in `reads`. */
@@ -85,17 +84,15 @@ async function open(
     resourceUrl: async (path) => path,
     ...transport,
   });
-  await act(async () => {
-    renderer = create(createElement(SettingsProvider, { children: createElement(FileViewer, { path: info.path, paneId: null, onClose() {}, page: true }) }));
-  });
+  await page.render(createElement(SettingsProvider, { children: createElement(FileViewer, { path: info.path, paneId: null, onClose() {}, page: true }) }));
   await settle();
   return reads;
 }
 
 async function download(): Promise<void> {
-  const button = renderer!.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Download")[0];
+  const button = page.container.querySelectorAll<HTMLButtonElement>('button[aria-label="Download"]')[0];
   expect(button).toBeDefined();
-  await act(async () => { button!.props.onClick(); });
+  await act(async () => { button!.click(); });
   await settle();
 }
 
@@ -133,14 +130,14 @@ test("in the Android app, a file past what the app takes says to download it on 
 
 test("in a browser tab, Download stays a download link", async () => {
   await open(NOTES);
-  expect(renderer!.root.findAll((node) => node.type === "a" && node.props["aria-label"] === "Download")).toHaveLength(1);
-  expect(renderer!.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Download")).toHaveLength(0);
+  expect(page.container.querySelectorAll('a[aria-label="Download"]')).toHaveLength(1);
+  expect(page.container.querySelectorAll('button[aria-label="Download"]')).toHaveLength(0);
 });
 
 test("in a home-screen app, Download hands the file, read before the tap, to the share sheet", async () => {
   // Given a home-screen web app, where a download link would load the file over the app
   const shared: File[] = [];
-  Object.assign(globalThis, { navigator: { languages: ["en"], standalone: true, canShare: () => true, share: async ({ files }: { files: File[] }) => { shared.push(...files); } } });
+  homeScreen(async ({ files }) => { shared.push(...files); });
   const reads = await open(NOTES);
   // the file was read as soon as it was known: the sheet opens only within the tap
   expect(reads).toContainEqual(expect.not.stringContaining("download=1"));
@@ -154,7 +151,7 @@ test("in a home-screen app, Download shares the text shown when two reads return
   const current = "# new version\n";
   const stale = "# old version\n";
   const shared: File[] = [];
-  Object.assign(globalThis, { navigator: { languages: ["en"], standalone: true, canShare: () => true, share: async ({ files }: { files: File[] }) => { shared.push(...files); } } });
+  homeScreen(async ({ files }) => { shared.push(...files); });
   let firstRead = true;
   await open({ ...NOTES, size: current.length }, {}, () => {
     const response = new Response(firstRead ? current : stale);
@@ -167,7 +164,7 @@ test("in a home-screen app, Download shares the text shown when two reads return
 });
 
 test("a home-screen relay download does not read the same file as a download-link blob", async () => {
-  Object.assign(globalThis, { navigator: { languages: ["en"], standalone: true, canShare: () => true, share: async () => {} } });
+  homeScreen(async () => {});
   const reads = await open(NOTES, { kind: "relay", resourceUrl(this: Transport, path, signal) {
     return relayResourceUrl(this, "0123456789abcdef0123456789abcdef", path, signal);
   } });
@@ -177,7 +174,7 @@ test("a home-screen relay download does not read the same file as a download-lin
 
 test("a home-screen share can recover from a failed prefetch without reopening the viewer", async () => {
   const shared: File[] = [];
-  Object.assign(globalThis, { navigator: { languages: ["en"], standalone: true, canShare: () => true, share: async ({ files }: { files: File[] }) => { shared.push(...files); } } });
+  homeScreen(async ({ files }) => { shared.push(...files); });
   let offline = true;
   await open(NOTES, {}, (init) =>
     new Headers(init?.headers).get("range") === `bytes=0-${SAVE_MAX_BYTES}` && offline

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { act, createElement } from "react";
-import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 import { FakeAccountService, PC_NEW_MS, WEB_REDIRECT } from "../../shared/account-service-fake.ts";
 import { generateKeyPair } from "../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
@@ -32,21 +32,22 @@ const PC = deriveServerId(key);
 const MINUTE = 60_000;
 
 const globals = new Map<string, PropertyDescriptor | undefined>();
-let renderer: ReactTestRenderer | undefined;
+let page: Page;
 let now = Date.now();
 let fake: FakeAccountService;
 let store: AccountStore;
 let service: AccountService;
 let signInsAgain: AccountProvider[] = [];
 
-const textOf = (node: ReactTestInstance): string => node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
+const textOf = (node: Element): string => node.textContent ?? "";
+const buttonElements = () => [...page.container.querySelectorAll<HTMLButtonElement>('button:not([aria-label="Close"])')];
 /** the card's worded buttons; its close (X) is `closes` */
-const buttons = (): string[] => renderer!.root.findAll((node) => node.type === "button" && node.props["aria-label"] !== "Close").map((node) => textOf(node).trim());
-const closes = (): ReactTestInstance[] => renderer!.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Close");
+const buttons = (): string[] => buttonElements().map((node) => textOf(node).trim());
+const closes = () => [...page.container.querySelectorAll<HTMLButtonElement>('button[aria-label="Close"]')];
 const press = async (label: string): Promise<void> => {
-  const found = renderer!.root.findAll((node) => node.type === "button" && textOf(node).trim() === label);
+  const found = buttonElements().filter((node) => textOf(node).trim() === label);
   if (found.length !== 1) throw new Error(`${found.length} buttons say ${label}`);
-  await act(async () => { await found[0]!.props.onClick(); });
+  await act(async () => found[0]!.click());
   await until(cardsIdle, "the card's press is done");
 };
 const settle = async (): Promise<void> => { for (let i = 0; i < 20; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
@@ -56,9 +57,9 @@ const until = async (done: () => boolean, what: string): Promise<void> => {
   for (await settle(); !done(); await settle()) if (Date.now() > deadline) throw new Error(`still not so after 10 s: ${what}`);
 };
 /** a card's buttons are disabled while a press of it is at work */
-const cardsIdle = (): boolean => renderer!.root.findAll((card) => card.props["data-unconfirmed-pc"] !== undefined)
-  .every((card) => card.findAll((node) => node.type === "button" && node.props.disabled === true).length === 0);
-const text = (): string => renderer === undefined ? "" : renderer.root.findAll((node) => node.type === "div").map(textOf).join(" ");
+const cardsIdle = (): boolean => page.container.querySelector('[data-unconfirmed-pc] button:disabled') === null;
+const cardsFor = (id: string) => [...page.container.querySelectorAll(`[data-unconfirmed-pc="${id}"]`)];
+const text = (): string => [...page.container.querySelectorAll("div")].map(textOf).join(" ");
 /** the one-press admissions this device asked the account service for, for the PC on the card */
 const admits = (): number => fake.requests.filter((line) => line === `POST /v1/pcs/${PC}/admit`).length;
 
@@ -102,29 +103,16 @@ async function listedByItsOwnSignIn(): Promise<void> {
 }
 
 async function mount(more: { numberWaitMs?: number } = {}): Promise<void> {
-  if (renderer !== undefined) await act(async () => { renderer!.unmount(); });
-  await act(async () => {
-    renderer = create(createElement(SettingsProvider, { children: createElement(UnconfirmedPcNotices, { service, now: () => now, onSignInAgain: (provider: AccountProvider) => { signInsAgain.push(provider); }, ...more }) }));
-  });
+  await page.render(null);
+  await page.render(createElement(SettingsProvider, { children: createElement(UnconfirmedPcNotices, { service, now: () => now, onSignInAgain: (provider: AccountProvider) => { signInsAgain.push(provider); }, ...more }) }));
   await settle();
 }
 
 beforeEach(async () => {
-  const events = new EventTarget();
-  const local = new Map<string, string>();
-  const session = new Map<string, string>();
-  const storage = (map: Map<string, string>) => ({ getItem: (k: string) => map.get(k) ?? null, setItem: (k: string, v: string) => { map.set(k, v); }, removeItem: (k: string) => { map.delete(k); } });
-  for (const [name, value] of Object.entries({
-    window: Object.assign(events, { location: new URL("https://app.ovis.sh/"), localStorage: storage(local), sessionStorage: storage(session) }),
-    IS_REACT_ACT_ENVIRONMENT: true,
-    document: Object.assign(new EventTarget(), { visibilityState: "visible", querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } }),
-    getComputedStyle: () => ({ getPropertyValue: () => "" }),
-    navigator: { languages: ["en"] },
-    localStorage: storage(local),
-    sessionStorage: storage(session),
-  })) {
+  page = openPage("https://app.ovis.sh/");
+  for (const name of ["localStorage", "sessionStorage", "Event"] as const) {
     globals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
-    Object.defineProperty(globalThis, name, { value, configurable: true });
+    Object.defineProperty(globalThis, name, { value: page.window[name], configurable: true });
   }
   now = Date.now();
   fake = new FakeAccountService(() => now);
@@ -136,8 +124,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await act(async () => { renderer?.unmount(); });
-  renderer = undefined;
+  await page.close();
   for (const [name, descriptor] of globals) {
     if (descriptor === undefined) Reflect.deleteProperty(globalThis, name);
     else Object.defineProperty(globalThis, name, descriptor);
@@ -146,7 +133,7 @@ afterEach(async () => {
 });
 
 describe("closing the card of a PC the account lists unconfirmed", () => {
-  const cards = (): string[] => renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] !== undefined && node.type === "div").map((node) => node.props["data-unconfirmed-pc"] as string);
+  const cards = () => [...page.container.querySelectorAll("div[data-unconfirmed-pc]")].map((node) => node.getAttribute("data-unconfirmed-pc"));
 
   it("hides it on this device for good, while the PC stays in the account unconfirmed", async () => {
     await signIn();
@@ -154,10 +141,10 @@ describe("closing the card of a PC the account lists unconfirmed", () => {
     await mount();
     expect(cards()).toEqual([PC]);
     expect(closes()).toHaveLength(1);
-    await act(async () => { closes()[0]!.props.onClick(); });
+    await act(async () => { closes()[0]!.click(); });
     expect(cards()).toEqual([]);
     // read again (focus) and drawn anew (a reload): still closed
-    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await act(async () => { page.window.dispatchEvent(new page.window.Event("focus")); });
     await mount();
     expect(cards()).toEqual([]);
     // nothing was asked of the account service: the PC is listed as before, and removable from Manage account
@@ -169,7 +156,7 @@ describe("closing the card of a PC the account lists unconfirmed", () => {
     await signIn();
     await listedByDeviceCode();
     await mount();
-    await act(async () => { closes()[0]!.props.onClick(); });
+    await act(async () => { closes()[0]!.click(); });
     expect(cards()).toEqual([]);
     // another PC types a sign-in code into the account
     const otherKey = generateKeyPair().publicKey;
@@ -466,9 +453,9 @@ it("PCR-1: with an account service from before, a removal from a sign-in older t
     } });
     await mount();
     await press("Add");
-    const close = renderer!.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Close");
+    const close = closes();
     expect(close).toHaveLength(1);
-    await act(async () => { close[0]!.props.onClick(); });
+    await act(async () => { close[0]!.click(); });
     // the directory's own row names the same admission, so the card closed here is closed for it too
     const [row] = await service.forSignIn((await service.session())!).listPcs();
     expect(row?.admitted_at).toBe(new Date(now - 1_000).toISOString());
@@ -728,7 +715,7 @@ describe("a PC that asks to be added to an account with a signed list", () => {
     const pcAdmits = (): number => fake.requests.filter((line) => line === `POST /v1/pcs/${pc.server_id}/admit`).length;
     return { pc, play, list, held, pcAdmits, postNow, opened: () => opened.length };
   }
-  const digitsShown = (): string => textOf(renderer!.root.findByProps({ className: "relay-shell-digits" })).replaceAll(" ", "");
+  const digitsShown = (): string => textOf(page.one('[class="relay-shell-digits"]')).replaceAll(" ", "");
 
   it("shows the number both screens have before anything is added, and signs the PC into the list at the second Add", async () => {
     const { pc, play, list, held, pcAdmits } = await listAccount();
@@ -747,7 +734,7 @@ describe("a PC that asks to be added to an account with a signed list", () => {
       await settle();
       expect(readSeenPcs(ACCOUNT).pcs[pc.endpoint]).toEqual({ how: "added" });
       // the card is gone
-      expect(renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] === pc.server_id)).toEqual([]);
+      expect(cardsFor(pc.server_id)).toEqual([]);
     } finally { setPageAccountList(null); }
   });
 
@@ -760,7 +747,7 @@ describe("a PC that asks to be added to an account with a signed list", () => {
       expect(text()).toContain("The numbers did not match. This PC was not added.");
       expect([pcAdmits(), held().entries.length]).toEqual([0, 1]);
       expect(readSeenPcs(ACCOUNT).pcs).toEqual({});
-      expect(renderer!.root.findAllByProps({ className: "relay-shell-digits" })).toEqual([]);
+      expect([...page.container.querySelectorAll(".relay-shell-digits")]).toEqual([]);
     } finally { setPageAccountList(null); }
   });
 
@@ -776,7 +763,7 @@ describe("a PC that asks to be added to an account with a signed list", () => {
       expect(text()).toContain("Add this PC to your account? (joined with your invite)");
       const before = held().entries.length;
       await press("Add");
-      expect(renderer!.root.findAllByProps({ className: "relay-shell-digits" })).toEqual([]);
+      expect([...page.container.querySelectorAll(".relay-shell-digits")]).toEqual([]);
       expect([pcAdmits(), held().entries.length - before]).toEqual([1, 2]);
       expect(list.view().pcs.map((row) => row.endpoint)).toEqual([pc.endpoint]);
       expect(listView(held().state).invites.map((row) => row.refusal)).toEqual(["invite_revoked"]);
@@ -802,8 +789,8 @@ describe("a PC that asks to be added to an account with a signed list", () => {
     carried = { invite: made.invite.key, invite_proof: await line.signLineProof({ server_id: pc.server_id, card: pc }) };
     return { invite: made.invite, line };
   }
-  const title = (): string => textOf(renderer!.root.find((node) => node.props["data-unconfirmed-pc"] !== undefined).findAll((node) => node.type === "span")[1]!);
-  const focus = async (): Promise<void> => { await act(async () => { window.dispatchEvent(new Event("focus")); }); await settle(); };
+  const title = (): string => textOf(page.one("[data-unconfirmed-pc]").querySelectorAll("span")[1]!);
+  const focus = async (): Promise<void> => { await act(async () => { page.window.dispatchEvent(new page.window.Event("focus")); }); await settle(); };
 
   it("is drawn again when the line's proof comes after the card, and when the invite is over: it says so only while it holds", async () => {
     const { pc, list } = await listAccount();
@@ -841,23 +828,23 @@ describe("a PC that asks to be added to an account with a signed list", () => {
   it("writes the invited record before the card goes: a card is never dismissed while the record waits for another tab", async () => {
     const { pc, list } = await listAccount();
     const locks = Promise.withResolvers<void>();
-    const saved = Object.getOwnPropertyDescriptor(globalThis, "navigator");
-    Object.defineProperty(globalThis, "navigator", { value: { ...navigator, locks: { request: async (_name: string, work: () => Promise<void>) => { await locks.promise; return work(); } } }, configurable: true });
+    const saved = Object.getOwnPropertyDescriptor(page.window.navigator, "locks");
+    Object.defineProperty(page.window.navigator, "locks", { value: { request: async (_name: string, work: () => Promise<void>) => { await locks.promise; return work(); } }, configurable: true });
     try {
       await invitedBy(list, pc);
       await mount();
-      const add = renderer!.root.findAll((node) => node.type === "button" && textOf(node).trim() === "Add")[0]!;
-      await act(async () => { void add.props.onClick(); });
+      const add = buttonElements().filter((node) => textOf(node).trim() === "Add")[0]!;
+      await act(async () => { void add.click(); });
       await until(() => list.view().pcs.length > 0, "the PC is in the list");
       // another tab holds the record's lock: the PC is in the list, and the card stays until its record is written
       expect(list.view().pcs.map((row) => row.endpoint)).toEqual([pc.endpoint]);
-      expect(renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] === pc.server_id)).toHaveLength(1);
+      expect(cardsFor(pc.server_id)).toHaveLength(1);
       locks.resolve();
       await until(cardsIdle, "the Add is done");
       expect(readSeenPcs(ACCOUNT).pcs[pc.endpoint]).toEqual({ how: "invited" });
-      expect(renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] === pc.server_id)).toEqual([]);
+      expect(cardsFor(pc.server_id)).toEqual([]);
     } finally {
-      if (saved) Object.defineProperty(globalThis, "navigator", saved);
+      if (saved) Object.defineProperty(page.window.navigator, "locks", saved);
       setPageAccountList(null);
     }
   });
@@ -873,7 +860,7 @@ describe("a PC that asks to be added to an account with a signed list", () => {
       // admitted, and the list did not take the entry: the card stays, and says so
       expect(text()).toContain("is not in your account's list yet. Try again.");
       await focus();
-      expect(renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] === pc.server_id)).toHaveLength(1);
+      expect(cardsFor(pc.server_id)).toHaveLength(1);
       stopped = false;
       await press("Try again");
       expect([pcAdmits(), list.view().pcs.map((row) => row.endpoint), listView(held().state).invites.map((row) => row.refusal)]).toEqual([1, [pc.endpoint], ["invite_revoked"]]);
@@ -1011,14 +998,14 @@ describe("a PC that asks to be added to an account with a signed list", () => {
       expect(text()).toContain("is not in your account's list yet. Try again.");
       expect(buttons()).toEqual(["Try again", "No"]);
       // the directory lists the PC as admitted now: the card stays all the same
-      await act(async () => { window.dispatchEvent(new Event("focus")); });
+      await act(async () => { page.window.dispatchEvent(new page.window.Event("focus")); });
       await settle();
-      expect(renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] === pc.server_id)).toHaveLength(1);
+      expect(cardsFor(pc.server_id)).toHaveLength(1);
       stopped = false;
       await press("Try again");
       expect([pcAdmits(), held().entries.length, list.view().pcs.map((row) => row.endpoint)]).toEqual([1, 2, [pc.endpoint]]);
       expect(readSeenPcs(ACCOUNT).pcs[pc.endpoint]).toEqual({ how: "added" });
-      expect(renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] === pc.server_id)).toEqual([]);
+      expect(cardsFor(pc.server_id)).toEqual([]);
     } finally { setPageAccountList(null); }
   });
 
@@ -1028,7 +1015,7 @@ describe("a PC that asks to be added to an account with a signed list", () => {
       if (!stopped) return null;
       // the page comes to the front while the entry is on its way: the account's PCs are read again, and the PC,
       // admitted by now, is no longer one that asks
-      window.dispatchEvent(new Event("focus"));
+      await act(async () => { page.window.dispatchEvent(new page.window.Event("focus")); });
       for (let turns = 0; turns < 50; turns++) await new Promise((resolve) => setTimeout(resolve, 0));
       return Response.json({ error: { code: "list_stopped", message: "stopped" } }, { status: 503 });
     } });
@@ -1039,7 +1026,7 @@ describe("a PC that asks to be added to an account with a signed list", () => {
       // the entry's answer comes after the read of the account's PCs: waited for by its words, within a deadline
       const deadline = Date.now() + 5_000;
       while (!text().includes("The account service cannot change the list right now.") && Date.now() < deadline) await settle();
-      expect(renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] === pc.server_id)).toHaveLength(1);
+      expect(cardsFor(pc.server_id)).toHaveLength(1);
       expect(buttons()).toEqual(["Try again", "No"]);
       stopped = false;
       await press("Try again");
@@ -1056,7 +1043,7 @@ describe("a PC that asks to be added to an account with a signed list", () => {
       expect(buttons()).toEqual(["Try again", "No"]);
       await press("No");
       // the account no longer lists the PC, and the card is gone
-      expect([fake.pcs(ACCOUNT).map((row) => row.server_id), renderer!.root.findAll((node) => node.props["data-unconfirmed-pc"] === pc.server_id)]).toEqual([[], []]);
+      expect([fake.pcs(ACCOUNT).map((row) => row.server_id), cardsFor(pc.server_id)]).toEqual([[], []]);
     } finally { setPageAccountList(null); }
   });
 
@@ -1067,7 +1054,7 @@ describe("a PC that asks to be added to an account with a signed list", () => {
       await mount({ numberWaitMs: 0 });
       await press("Add");
       expect(text()).toContain("The PC did not answer. Start again on the PC.");
-      expect(renderer!.root.findAllByProps({ className: "relay-shell-digits" })).toEqual([]);
+      expect([...page.container.querySelectorAll(".relay-shell-digits")]).toEqual([]);
       expect([pcAdmits(), held().entries.length]).toEqual([0, 1]);
     } finally { setPageAccountList(null); }
   });
