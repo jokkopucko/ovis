@@ -30,12 +30,8 @@ import { AgentToolHub } from "./agent-tools/hub.ts";
 import { useAgentToolHub } from "./agent-tools/launch.ts";
 import { harnessToolSetting } from "../shared/harness-tool.ts";
 
-import { claudeApprovals } from "./approvals/claude.ts";
-import { copilotApprovals } from "./approvals/copilot.ts";
+import { APPROVAL_ADAPTERS } from "./approvals/adapters.ts";
 import { CodexServers } from "./approvals/codex.ts";
-import { omoApprovals } from "./approvals/omo.ts";
-import { ompApprovals } from "./approvals/omp.ts";
-import { piApprovals } from "./approvals/pi.ts";
 import { SeenStore } from "./seen.ts";
 import type { SeenFinish } from "../shared/seen.ts";
 import { TailnetIdentitySource } from "./tailscale.ts";
@@ -538,7 +534,7 @@ export function createServer(
   readBrowserToolSetting(() => preferences.get().settings.agentBrowserTools, join(stateDir, "browser tools"));
   // a turn a hook tells of goes to the status of its pane, and a command it ran to the chat's send of it: no hook runs
   // before the core below starts an agent
-  const approvals = new ApprovalHub(join(stateDir, "approval hooks"), [claudeApprovals, piApprovals, omoApprovals, ompApprovals, copilotApprovals], {
+  const approvals = new ApprovalHub(join(stateDir, "approval hooks"), APPROVAL_ADAPTERS, {
     onTurn: (paneId, kind, turn) => core.hookTurn(paneId, kind, turn),
     onCommand: (paneId, kind, command) => noteHookCommand(paneId, kind, command),
     onContext: (paneId, context) => core.hookContextChanged(paneId, context),
