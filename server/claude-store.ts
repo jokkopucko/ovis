@@ -882,6 +882,26 @@ async function readSmallFile(path: string, max: number): Promise<string | null> 
   } finally { await file.close(); }
 }
 
+/** The last `max` bytes of a Claude record, read as readSmallFile reads one. */
+async function readClaudeFileTail(path: string, max: number): Promise<string> {
+  if (!await ownedClaudeFile(path)) throw Object.assign(new Error("Unverified Claude record"), { code: "EACCES" });
+  const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+  try {
+    const info = await file.stat();
+    if (!info.isFile() || !ownUid(info.uid)) throw Object.assign(new Error("Unverified Claude record"), { code: "EACCES" });
+    const start = Math.max(0, info.size - max);
+    const bytes = Buffer.alloc(info.size - start);
+    let length = 0;
+    while (length < bytes.length) {
+      const { bytesRead } = await file.read(bytes, length, bytes.length - length, start + length);
+      if (bytesRead === 0) break;
+      length += bytesRead;
+    }
+    // from the file's start, its first line is whole: a blank line ahead keeps it a line the caller reads
+    return `${start === 0 ? "\n" : ""}${bytes.subarray(0, length).toString("utf8")}`;
+  } finally { await file.close(); }
+}
+
 /*
  * Claude Code's root options as 2.1.308 reads them when it looks for a subcommand such as `attach`
  * (its backgroundSessionVerbIndex). An option missing here makes an `attach` behind it no attach, so
@@ -1234,6 +1254,69 @@ export async function claudeForegroundSession(
   } catch {
     // two stores claim the process, or one cannot be read: no session to pin
     return null;
+  }
+}
+
+const HISTORY_TAIL_BYTES = 256 * 1024;
+const PASTE_CACHE_MAX_BYTES = 4 * 1024 * 1024;
+const TRANSCRIPT_TAIL_BYTES = 1024 * 1024;
+
+/**
+ * Whether Claude Code's input box, holding only `box`, one folded paste (`[Pasted text #2 +12 lines]`), is `sent`,
+ * the chat's own message, put back by Claude after the turn it began was stopped (#3563). The words of the box are
+ * no proof: anyone's paste of as many lines reads the same. Claude's own records are: the last prompt the pane's
+ * session wrote to `history.jsonl` is that one paste holding exactly `sent` (inline, or in `paste-cache/<hash>.txt`
+ * when long), and Claude puts a stopped prompt's paste back under the next number with the same line count, while
+ * any paste after it takes a later one (both measured on 2.1.330). A turn that went on is no stop: the paste a person
+ * makes after its answer takes that same next number, so the session's transcript must hold no reply after its last
+ * prompt, as when Claude dropped the turn before answering. Anything else, or a record that cannot be read: false.
+ */
+export async function claudeRestoredPaste(
+  processes: readonly { pid: number; name?: string | null; argv0?: string | null; argv?: readonly string[] | null; cwd?: string | null }[],
+  box: string, sent: string, home = userHome(),
+): Promise<boolean> {
+  const shown = /^\[Pastedtext#(\d+)((?:\+\d+lines?)?)\]$/.exec(box.replace(/^❯/, "").replace(/\s+/g, ""));
+  const claude = processes.filter((entry) => isClaudeProcess({ name: entry.name ?? undefined, argv0: entry.argv0 ?? undefined, argv: entry.argv ?? undefined }));
+  if (shown === null || claude.length !== 1) return false;
+  const number = Number(shown[1]) - 1;
+  const only = claude[0]!;
+  try {
+    const dir = await processClaudeConfigDir(only.pid, only.argv ?? [only.argv0 ?? only.name ?? ""], home) || defaultClaudeConfigDir(home);
+    const session = await claudeProcessSession(home, only.pid, dir);
+    if (session === null) return false;
+    const lines = (await readClaudeFileTail(join(dir, "history.jsonl"), HISTORY_TAIL_BYTES)).split("\n");
+    let last: Record<string, unknown> | undefined;
+    // the first line of the tail may be cut: it is never read as a prompt
+    for (let index = lines.length - 1; index > 0 && last === undefined; index--) {
+      try {
+        const entry: unknown = JSON.parse(lines[index]!);
+        if (entry !== null && typeof entry === "object" && "sessionId" in entry && entry.sessionId === session) last = entry as Record<string, unknown>;
+      } catch { /* a line being written, or no prompt */ }
+    }
+    if (typeof last?.display !== "string" || last.display.replace(/\s+/g, "") !== `[Pastedtext#${number}${shown[2]}]`) return false;
+    const pastes = last.pastedContents !== null && typeof last.pastedContents === "object" ? Object.values(last.pastedContents) : [];
+    const paste: unknown = pastes.length === 1 ? pastes[0] : null;
+    if (paste === null || typeof paste !== "object" || !("id" in paste) || paste.id !== number || !("type" in paste) || paste.type !== "text") return false;
+    const content = "content" in paste && typeof paste.content === "string" ? paste.content
+      : "contentHash" in paste && typeof paste.contentHash === "string" && /^[0-9a-f]{8,128}$/.test(paste.contentHash)
+        ? await readSmallFile(join(dir, "paste-cache", `${paste.contentHash}.txt`), PASTE_CACHE_MAX_BYTES) : null;
+    const lf = (text: string): string => text.replace(/\r\n?/g, "\n");
+    // Claude keeps a paste with each tab as four spaces
+    if (content === null || lf(content) !== lf(sent).replace(/\t/g, "    ")) return false;
+    const transcript = await claudeTranscriptFile(home, session, [only.cwd], dir);
+    if (transcript === null) return false;
+    const records = (await readClaudeFileTail(transcript, TRANSCRIPT_TAIL_BYTES)).split("\n");
+    for (let index = records.length - 1; index > 0; index--) {
+      let entry: unknown;
+      // a record being written may be the reply: only a blank line is passed over
+      try { entry = JSON.parse(records[index]!); } catch { if (records[index]!.trim() === "") continue; return false; }
+      if (entry === null || typeof entry !== "object" || !("type" in entry)) continue;
+      if (entry.type === "assistant") return false;
+      if (entry.type === "user" && "origin" in entry && entry.origin !== null && typeof entry.origin === "object" && "kind" in entry.origin && entry.origin.kind === "human") return true;
+    }
+    return false;
+  } catch {
+    return false;
   }
 }
 
