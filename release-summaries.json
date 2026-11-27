@@ -1,4 +1,90 @@
 {
+  "0.5.12": {
+    "en": {
+      "new": [
+        "Agents can start Gemini CLI and Kiro CLI on this PC for you.",
+        "Pick a Markdown style for Chat replies in Settings → Appearance.",
+        "Ovis on Windows adds a Linux or Mac PC to your account over SSH.",
+        "Ovis for Mac shows its own header in place of the title bar."
+      ],
+      "improved": [
+        "Claude, Copilot, Codex and Grok tell Ovis their state directly.",
+        "Linux and Mac terminals run on the Rust PTY host; node-pty is gone.",
+        "Adding a PC over SSH shows each step with a progress bar.",
+        "Beta desktop apps also take a release newer than their beta."
+      ],
+      "fixed": [
+        "Terminals open at their newest rows and copy rows cleanly.",
+        "Two devices saving settings at once no longer undo each other.",
+        "The relay tab says when you use another Ovis account than this PC.",
+        "Codex chats on herdr-core open in Chat and take messages again.",
+        "Question cards on a phone show their whole context."
+      ]
+    },
+    "ko": {
+      "new": [
+        "에이전트가 이 PC에서 Gemini CLI와 Kiro CLI를 띄울 수 있어요.",
+        "설정 → 화면에서 채팅 답변의 마크다운 스타일을 고를 수 있어요.",
+        "윈도우의 Ovis가 리눅스·맥 PC를 SSH로 계정에 넣을 수 있어요.",
+        "맥용 Ovis는 제목 표시줄 대신 자체 헤더를 보여 줘요."
+      ],
+      "improved": [
+        "Claude·Copilot·Codex·Grok이 상태를 Ovis에 직접 알려요.",
+        "리눅스·맥 터미널은 Rust PTY 호스트에서 돌아요. node-pty는 빠졌어요.",
+        "SSH로 PC를 추가할 때 단계와 진행 막대가 보여요.",
+        "베타 데스크톱 앱도 베타보다 새 정식 버전을 받아요."
+      ],
+      "fixed": [
+        "터미널이 가장 최근 줄에서 열리고 복사도 깔끔해요.",
+        "두 기기가 동시에 설정을 저장해도 서로 덮어쓰지 않아요.",
+        "이 PC와 다른 Ovis 계정을 쓰면 릴레이 탭이 알려 줘요.",
+        "herdr-core의 Codex 채팅이 다시 채팅에서 열리고 메시지를 받아요.",
+        "폰의 질문 카드가 내용을 잘리지 않고 보여 줘요."
+      ]
+    },
+    "ja": {
+      "new": [
+        "エージェントがこの PC で Gemini CLI と Kiro CLI を起動できます。",
+        "設定 → 外観でチャット返信の Markdown スタイルを選べます。",
+        "Windows の Ovis が Linux・Mac の PC を SSH でアカウントに追加できます。",
+        "Mac 版 Ovis はタイトルバーの代わりに独自のヘッダーを表示します。"
+      ],
+      "improved": [
+        "Claude・Copilot・Codex・Grok が状態を Ovis に直接伝えます。",
+        "Linux・Mac のターミナルは Rust PTY ホストで動き、node-pty はなくなりました。",
+        "SSH で PC を追加するとき、手順と進捗バーが表示されます。",
+        "ベータ版デスクトップアプリもベータより新しい正式版を受け取ります。"
+      ],
+      "fixed": [
+        "ターミナルが最新の行で開き、コピーもきれいになりました。",
+        "2 台が同時に設定を保存しても互いに上書きしなくなりました。",
+        "この PC と別の Ovis アカウントを使うと、リレータブが知らせます。",
+        "herdr-core の Codex チャットが再びチャットで開き、メッセージを受け取ります。",
+        "スマホの質問カードが内容を省略せずに表示します。"
+      ]
+    },
+    "zh": {
+      "new": [
+        "智能体可以在这台 PC 上启动 Gemini CLI 和 Kiro CLI。",
+        "可在 设置 → 外观 中选择聊天回复的 Markdown 样式。",
+        "Windows 上的 Ovis 可以通过 SSH 把 Linux 或 Mac PC 加入账户。",
+        "Mac 版 Ovis 用自己的标题栏取代系统标题栏。"
+      ],
+      "improved": [
+        "Claude、Copilot、Codex 和 Grok 直接向 Ovis 报告状态。",
+        "Linux 和 Mac 上的终端运行在 Rust PTY 主机上，node-pty 已移除。",
+        "通过 SSH 添加 PC 时会显示步骤和进度条。",
+        "测试版桌面应用也会更新到比测试版更新的正式版。"
+      ],
+      "fixed": [
+        "终端从最新一行打开，复制也更干净。",
+        "两台设备同时保存设置不再互相覆盖。",
+        "使用与这台 PC 不同的 Ovis 账户时，中继页会提示。",
+        "herdr-core 上的 Codex 聊天重新可在聊天中打开并接收消息。",
+        "手机上的提问卡片完整显示上下文。"
+      ]
+    }
+  },
   "0.5.11": {
     "en": {
       "new": [
