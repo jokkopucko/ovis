@@ -40,6 +40,14 @@ export type UsageCredits =
  */
 export type UsageProblem = "expired" | "rate_limited" | "failed" | "locked";
 
+/**
+ * What a `failed` read ran into, where the server could tell: the provider answered with a server error (5xx, Claude's
+ * 529 overload); it did not answer within the time allowed; it answered something that is not its usage (an HTML page,
+ * no JSON); this PC could not reach it at all (DNS, a refused or dropped connection); the hub could not read the
+ * account for us (it set the account aside, or its request failed).
+ */
+export type UsageFailure = "upstream" | "timeout" | "bad_response" | "network" | "hub";
+
 /** A tool on the server's PC whose own record of an account's limits the server reads: Oh My Pi, Gajae Code. */
 export type UsageRecorder = "omp" | "gjc";
 
@@ -85,6 +93,8 @@ export interface ProviderUsage {
   /** usage beyond the plan's limits; absent when the provider has none to show. Kept like `windows` */
   readonly credits?: UsageCredits;
   readonly problem: UsageProblem | null;
+  /** With `problem` "failed": what the read ran into, when the server could tell. Absent otherwise, and from an older server. */
+  readonly failure?: UsageFailure;
   /** ISO 8601 time `windows` were read; null when they never were */
   readonly checked_at: string | null;
   /**
@@ -94,9 +104,9 @@ export interface ProviderUsage {
    */
   readonly recorded?: UsageRecorded;
   /**
-   * Claude refused a sign-in whose token has not expired (a 403, as a blocked network answers, not a
-   * real expiry), and Claude's limits are not read from its status line on this PC yet: turning that
-   * on (POST /api/usage/statusline) can stand in. Absent otherwise.
+   * Claude's endpoint could not give this sign-in's limits (a 403 to a token that has not expired, as a blocked network
+   * answers, a 429, or a failed read), and Claude's limits are not read from its status line on this PC yet: turning
+   * that on (POST /api/usage/statusline) can stand in. Absent otherwise.
    */
   readonly statusline_offer?: true;
 }

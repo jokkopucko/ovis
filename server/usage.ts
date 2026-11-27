@@ -21,9 +21,9 @@ import { closeSync, mkdtempSync, openSync, readdirSync, readSync, rmSync, statSy
 import { open, type FileHandle } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { readStatusline, type StatuslinePayload } from "./statusline.ts";
+import { readStatusline, STALE_MS, type StatuslinePayload } from "./statusline.ts";
 import { installStatusline, removeStatusline, StatuslineInstallError, statuslineInstallState, type StatuslineInstallState } from "./statusline-install.ts";
-import type { ProviderUsage, UsageCredits, UsageProblem, UsageProviderId, UsageReport, UsageResets, UsageWindow } from "../shared/protocol.ts";
+import type { ProviderUsage, UsageCredits, UsageFailure, UsageProblem, UsageProviderId, UsageReport, UsageResets, UsageWindow } from "../shared/protocol.ts";
 import { jsonResponse } from "./http.ts";
 import { opencodeDatabasePath } from "./opencode.ts";
 import { recordedUsages, type RecordedReading, type RecordedSource, type RecordedUsage } from "./usage-recorded.ts";
@@ -89,6 +89,8 @@ interface Reading {
   credits?: UsageCredits | null;
   account?: Account | null;
   checkedAt?: number;
+  /** a local reading that still describes every window it named: taken before the provider is asked */
+  current?: boolean;
 }
 
 export interface UsageProvider {
@@ -105,7 +107,18 @@ export interface UsageProvider {
   recorded?: readonly RecordedSource[];
 }
 
-class UsageTooLarge extends Error {}
+/** A read that failed in a way the meter names (shared/usage.ts UsageFailure). */
+export class UsageFailed extends Error {
+  constructor(readonly failure: UsageFailure, message: string) {
+    super(message);
+  }
+}
+
+/** What a failed read ran into, as the meter names it; null when it is none of those (an HTTP status other than 5xx). */
+export function failureOf(error: unknown): UsageFailure | null {
+  if (error instanceof UsageFailed) return error.failure;
+  return error instanceof UsageHttpError && error.status >= 500 ? "upstream" : null;
+}
 
 export class UsageHttpError extends Error {
   constructor(readonly status: number, readonly retryAfterMs: number | null) {
@@ -241,14 +254,20 @@ function retryAfter(header: string | null): number | null {
 }
 
 async function requestJson(ctx: UsageContext, url: string, init: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Json> {
-  const response = await ctx.fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+  const host = new URL(url).host;
+  // the time allowed ran out (AbortSignal.timeout), else the connection itself failed (DNS, refused, dropped)
+  const unreachable = (error: unknown) => error instanceof UsageFailed ? error : new UsageFailed(
+    error instanceof Error && error.name === "TimeoutError" ? "timeout" : "network", `${host}: ${error instanceof Error ? error.message : String(error)}`);
+  let response: Response;
+  try { response = await ctx.fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) }); } catch (error) { throw unreachable(error); }
   if (!response.ok) {
     await response.body?.cancel();
     throw new UsageHttpError(response.status, retryAfter(response.headers.get("retry-after")));
   }
-  const body = await readCapped(response.body);
-  if (body === null) throw new UsageTooLarge(`${new URL(url).host} answered more than ${MAX_READ_BYTES} bytes`);
-  return record(JSON.parse(body));
+  let body: string | null;
+  try { body = await readCapped(response.body); } catch (error) { throw unreachable(error); }
+  if (body === null) throw new UsageFailed("bad_response", `${host} answered more than ${MAX_READ_BYTES} bytes`);
+  try { return record(JSON.parse(body)); } catch { throw new UsageFailed("bad_response", `${host} answered something other than JSON`); }
 }
 
 /**
@@ -369,7 +388,10 @@ const claude: UsageProvider = {
     const local = readStatusline(ctx.home, ctx.now());
     if (!local?.account || local.account.id !== signIn.account?.id) return null;
     const windows = claudeStatuslineWindows(local);
-    return windows.length > 0 ? { plan: signIn.plan ?? null, windows, checkedAt: local.readAt } : null;
+    // a window that names no reset cannot be told to have started over: only a reading moments old counts for it; one
+    // whose window has started over never does
+    const current = !local.turnedOver && (windows.every((window) => window.resets_at !== null) || ctx.now() - local.readAt < FRESH_MS);
+    return windows.length > 0 ? { plan: signIn.plan ?? null, windows, checkedAt: local.readAt, current } : null;
   },
   async read(ctx, signIn) {
     const body = await requestJson(ctx, "https://api.anthropic.com/api/oauth/usage", {
@@ -1255,7 +1277,9 @@ export class UsageService {
       const key = entry?.usage?.key;
       const hidden = key !== undefined && this.lastSkipped.has(key);
       const current = entry !== undefined && entry.holder === holderOf(signIn) &&
-        (hidden || (now < entry.nextAt && !(forced && entry.usage?.problem !== "rate_limited")));
+        // a forced refresh reads a rate-limited one again too: its backoff keeps the endpoint unasked, and a status-line
+        // reading that came meanwhile can stand in
+        (hidden || (now < entry.nextAt && !forced));
       if (current) return [source, { usage: entry.usage, readAt: entry.readAt, nextAt: entry.nextAt, holder: entry.holder }];
       if (hidden && entry?.usage) this.dropped.set(entry.usage.key, { provider: provider.id, holder: entry.holder, account: entry.usage.account });
       // a hidden account with no reading kept (evicted, or never read by this server) is listed unread, never read
@@ -1303,24 +1327,40 @@ export class UsageService {
     // the last numbers stay, named by what went wrong since - unless the place now holds another
     // account's sign-in: those numbers and that name were someone else's
     const kept = previous !== null && (!found.account || previous.key === identity(null).key) ? previous : null;
-    const keep = (problem: UsageProblem, plan: string | null, wait: number) => settle({
+    const keep = (problem: UsageProblem, plan: string | null, wait: number, more: Pick<ProviderUsage, "failure" | "statusline_offer"> = {}) => settle({
       id: provider.id, ...(kept ? { key: kept.key, account: kept.account } : identity(null)),
-      plan: kept?.plan ?? plan, windows: kept?.windows ?? [], ...extras(kept ?? {}), problem, checked_at: kept?.checked_at ?? null,
+      plan: kept?.plan ?? plan, windows: kept?.windows ?? [], ...extras(kept ?? {}), problem, ...more, checked_at: kept?.checked_at ?? null,
     }, wait);
     if ("locked" in found) return keep("locked", null, FRESH_MS);
     const signIn: SignIn = found;
     const local = provider.readLocal?.(this.ctx, signIn) ?? null;
     const fromLocal = (reading: Reading): Entry => {
       const resets = reading.windows.flatMap((window) => window.resets_at === null ? [] : [Date.parse(window.resets_at)]);
+      // what the status line is not handed (a model's own week, extra usage) stays as the endpoint last gave it
+      const named = (window: UsageWindow) => reading.windows.some((own) => own.kind === window.kind && own.scope === window.scope);
+      const others = (kept?.windows ?? []).filter((window) => !named(window) && (window.resets_at === null || Date.parse(window.resets_at) > now));
+      // read again by the time the reading is too old to count (STALE_MS) or a window it names starts over
+      const until = [...resets, (reading.checkedAt ?? now) + STALE_MS].map((at) => at - now);
       return settle({ id: provider.id, ...identity(reading.account), plan: reading.plan ?? signIn.plan ?? null,
-        windows: reading.windows, problem: null, checked_at: new Date(reading.checkedAt ?? now).toISOString() }, Math.min(FRESH_MS, ...resets.map((reset) => reset - now)));
+        windows: [...reading.windows, ...others], ...extras(kept ?? {}), problem: null, checked_at: new Date(reading.checkedAt ?? now).toISOString() }, Math.min(FRESH_MS, ...until));
     };
-    if (local && now - (local.checkedAt ?? now) < FRESH_MS) return fromLocal(local);
+    // the numbers Claude's own status line drew, while they still describe every window: no request, no token
+    if (local?.current) return fromLocal(local);
+    // Claude's endpoint could not give the limits but its status line can stand in: offered only where it can be turned
+    // on (never on Windows, never once it is on), and only for the sign-in in the config directory the switch changes:
+    // another one's status line is not wrapped
+    const offer = (): Pick<ProviderUsage, "statusline_offer"> => {
+      if (provider.id !== "claude") return {};
+      const statusline = this.statusline();
+      return statusline.supported && !statusline.installed && this.switchesConfigOf(found.source) ? { statusline_offer: true } : {};
+    };
     const fallback = local !== null && !(kept?.checked_at && Date.parse(kept.checked_at) > (local.checkedAt ?? now)) ? local : null;
     if (signIn.expiresAt !== null && signIn.expiresAt <= now) return fallback ? fromLocal(fallback) : keep("expired", signIn.plan ?? null, RETRY_MS);
     const backoff = found.account ? `${provider.id}:${found.account.id}` : `${provider.id}#${createHash("sha256").update(signIn.token).digest("hex")}`;
     const until = this.backoffs.get(backoff);
-    if (until !== undefined && now < until) return fallback ? fromLocal(fallback) : keep("rate_limited", signIn.plan ?? null, until - now);
+    // looked at again within FRESH_MS though the backoff runs longer: a status-line reading may come meanwhile, and the
+    // backoff still keeps the endpoint unasked
+    if (until !== undefined && now < until) return fallback ? fromLocal(fallback) : keep("rate_limited", signIn.plan ?? null, Math.min(until - now, FRESH_MS), offer());
     this.backoffs.delete(backoff);
     try {
       const reading = await provider.read(this.ctx, signIn);
@@ -1333,20 +1373,14 @@ export class UsageService {
       if (error instanceof UsageHttpError && error.status === 429) this.backoffs.set(backoff, now + wait);
       if (fallback) return fromLocal(fallback);
       if (error instanceof UsageHttpError && (error.status === 401 || error.status === 403)) {
-        const expired = keep("expired", signIn.plan ?? null, RETRY_MS);
         // a 403 for a token that has not expired is a refusal, not an expiry: the status line can stand in
-        const refused = provider.id === "claude" && error.status === 403 && (signIn.expiresAt === null || signIn.expiresAt > now);
-        const statusline = this.statusline();
-        // offered only where it can be turned on (never on Windows, never once it is on), and only for the
-        // sign-in in the config directory the switch changes: another one's status line is not wrapped
-        if (refused && expired.usage && statusline.supported && !statusline.installed && this.switchesConfigOf(found.source)) {
-          expired.usage = { ...expired.usage, statusline_offer: true };
-        }
-        return expired;
+        const refused = error.status === 403 && (signIn.expiresAt === null || signIn.expiresAt > now);
+        return keep("expired", signIn.plan ?? null, RETRY_MS, refused ? offer() : {});
       }
-      if (error instanceof UsageHttpError && error.status === 429) return keep("rate_limited", signIn.plan ?? null, wait);
-      console.warn(`usage: ${provider.id} could not be read: ${error instanceof Error ? error.message : String(error)}`);
-      return keep("failed", signIn.plan ?? null, RETRY_MS);
+      if (error instanceof UsageHttpError && error.status === 429) return keep("rate_limited", signIn.plan ?? null, Math.min(wait, FRESH_MS), offer());
+      const failure = failureOf(error);
+      console.warn(`usage: ${provider.id} could not be read${failure ? ` (${failure})` : ""}: ${error instanceof Error ? error.message : String(error)}`);
+      return keep("failed", signIn.plan ?? null, RETRY_MS, { ...(failure ? { failure } : {}), ...offer() });
     }
   }
 }
@@ -1360,7 +1394,8 @@ function ownStands(own: ProviderUsage, recorded: RecordedUsage, now: number): bo
 function standingIn(own: ProviderUsage, record: RecordedUsage): ProviderUsage {
   return {
     id: own.id, key: own.key, account: own.account ?? record.account, plan: own.plan, windows: record.windows, problem: own.problem,
-    checked_at: record.checked_at, recorded: { ...record.recorded, signed_in: true }, ...(own.statusline_offer ? { statusline_offer: true as const } : {}),
+    checked_at: record.checked_at, recorded: { ...record.recorded, signed_in: true }, ...(own.failure ? { failure: own.failure } : {}),
+    ...(own.statusline_offer ? { statusline_offer: true as const } : {}),
   };
 }
 

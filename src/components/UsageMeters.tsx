@@ -24,9 +24,20 @@ function problemText(t: Translate, usage: ProviderUsage, offered: boolean): stri
   if (usage.recorded && (usage.problem === "failed" || usage.problem === "rate_limited")) return null;
   return usage.problem === "expired" ? offered ? t("Sign-in expired.") : t("Sign-in expired. Open {name} to renew it.", { name })
     : usage.problem === "rate_limited" ? t("{name} asked to slow down. These are the last numbers.", { name })
-    : usage.problem === "failed" ? t("{name} could not be reached.", { name })
+    : usage.problem === "failed" ? failureText(t, usage, name)
     : usage.problem === "locked" ? t("The server cannot open the keychain holding this sign-in.")
     : null;
+}
+
+function failureText(t: Translate, usage: ProviderUsage, name: string): string {
+  switch (usage.failure) {
+    case "upstream": return t("{name} is busy or down. Try again later.", { name });
+    case "timeout": return t("{name} took too long to answer.", { name });
+    case "bad_response": return t("{name} sent an answer Ovis cannot read.", { name });
+    case "network": return t("This PC could not connect to {name}.", { name });
+    case "hub": return t("Hub could not read this account.");
+    case undefined: return t("{name} could not be reached.", { name });
+  }
 }
 
 function isError(usage: ProviderUsage): boolean {
@@ -83,13 +94,13 @@ function Provider({ usage, now, count, onLocalLogin, onFollow, watching }: { usa
       {recorded && <p className="usage-note usage-recorded">{recorded.map((line) => <span key={line}>{line}</span>)}</p>}
       {problem && <p className={`usage-note${isError(usage) ? " is-problem" : ""}`}>{problem}</p>}
       {offered && <UsageSignInAgain usage={usage} onStarted={onLocalLogin} onFollow={onFollow} />}
-      {/* a 403 to a token that has not expired is a refused network, not an expired sign-in: the status line can stand in */}
+      {/* Claude's endpoint refused (a 403 to a token that has not expired), limited or failed: the status line can stand in */}
       {usage.statusline_offer && !watching && <button type="button" className="btn btn-ghost usage-offer" disabled={statusline.busy} onClick={() => void statusline.set(true)}>
         {t("Read from Claude's status line instead")}
       </button>}
       {statusline.error && <p className="usage-note is-problem" role="alert">{statusline.error}</p>}
       {/* turned on here, the numbers come once Claude next draws its line: say so instead of leaving "expired" alone */}
-      {statusline.state?.installed && usage.problem === "expired" && <p className="usage-note" role="status">{t("On. Claude's limits show once Claude Code next draws its status line.")}</p>}
+      {statusline.state?.installed && usage.problem !== null && !usage.statusline_offer && <p className="usage-note" role="status">{t("On. Claude's limits show once Claude Code next draws its status line.")}</p>}
       {usage.windows.map((window, index) => {
         const reset = formatResetIn(window.resets_at, now);
         const value = meterPercent(window, count);

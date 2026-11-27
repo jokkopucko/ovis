@@ -572,7 +572,7 @@ export interface ApiError {
 
 export type { PaneFindMatch, PaneFindRequest, PaneFindResponse } from "./find.ts";
 
-export type { UsageProviderId, UsageWindow, UsageResets, UsageCredits, UsageProblem, UsageRecorder, UsageRecorded, ProviderUsage, UsageReport, MissingCommand, StatuslineState } from "./usage.ts";
+export type { UsageProviderId, UsageWindow, UsageResets, UsageCredits, UsageProblem, UsageFailure, UsageRecorder, UsageRecorded, ProviderUsage, UsageReport, MissingCommand, StatuslineState } from "./usage.ts";
 
 export type { CLIProxyStatus, CLIProxyProvider, CLIProxyLogin, CLIProxyLoginStatus } from "./cliproxy.ts";
 

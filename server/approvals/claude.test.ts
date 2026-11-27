@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -210,11 +210,12 @@ describe.skipIf(!posix)("the status line of a Claude Ovis starts", () => {
       .toEqual({ line: "its given", exit: 3, window: 200_000 });
   });
 
-  it("keeps no limits or account: only the Settings switch keeps them", async () => {
-    const { statusLine, draw, home } = claudeIn({ user: line("printf mine") });
+  it("keeps the limits and the account of its config directory with the Settings switch off", async () => {
+    const { statusLine, draw, home, config } = claudeIn({ user: line("printf mine") });
+    writeFileSync(join(config, ".claude.json"), JSON.stringify({ oauthAccount: { accountUuid: "account-2", emailAddress: "two@example.test" } }));
     const limited = JSON.stringify({ ...JSON.parse(PAYLOAD), rate_limits: { five_hour: { used_percentage: 12, resets_at: 2_000_000_000 } } });
     expect((await draw(statusLine()!, limited)).line).toBe("mine");
-    expect(existsSync(join(home, ".herdr", "statusline-last.json"))).toBe(false);
+    expect(readStatusline(home)).toMatchObject({ account: { id: "account-2", label: "two@example.test" }, fiveHour: { usedPercent: 12 } });
   });
 
   it("keeps the limits while the Settings switch is on, as its wrapper would", async () => {
