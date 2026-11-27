@@ -137,9 +137,9 @@ function cover(state: unknown): void {
 let pushing = false;
 let stepping: Set<string> | null = null;
 /**
- * Where the browser tells its entries (the Navigation API), the key of the one the step on its way lands on: the entry
- * under the one it leaves, named as the step is asked, as the browser names it then. A sheet that makes its entry
- * meanwhile changes neither.
+ * Where the entries have keys (the Navigation API's, or the ones this module keeps), the key of the one the step on its
+ * way lands on: the entry under the one it leaves, named as the step is asked, as it is named then. A sheet that makes
+ * its entry meanwhile changes neither.
  */
 let stepOnto: string | null = null;
 let steppedOff = false;
@@ -187,6 +187,18 @@ function tellTraversalOver(): void {
   for (const listener of [...traversalOver]) listener();
 }
 
+const entriesMade = new Set<(over: string | undefined) => void>();
+
+/**
+ * Calls `listener` when the page made a history entry, whoever pushed it (a sheet, Settings, a file,
+ * a move to another pane): the history is on an entry no traversal landed on, so no popstate tells of it.
+ * `over` is the key of the entry it was made over, where the browser or this module tells one.
+ */
+export function onHistoryEntryMade(listener: (over: string | undefined) => void): () => void {
+  entriesMade.add(listener);
+  return () => { entriesMade.delete(listener); };
+}
+
 /** The page a sheet's item leaves for (leavePageFromSheet), loaded once no step of a closing sheet is to come or on its way. */
 let departure: string | null = null;
 
@@ -213,7 +225,7 @@ export function leavePageFromSheet(url: string): void {
 }
 
 function stepBack(): void {
-  const api = (window as unknown as { navigation?: NavigationApi }).navigation;
+  const api = navigation();
   const at = api?.currentEntry;
   stepOnto = api && at ? api.entries().find((entry) => entry.index === at.index - 1)?.key ?? null : null;
   stepping = new Set();
@@ -391,15 +403,23 @@ if (typeof window !== "undefined") {
   history.replaceState = ((state: unknown, ...rest: [string, (string | URL | null)?]) =>
     replace(counting() ? placed(state, placeIn(history.state)) : state, ...rest)) as History["replaceState"];
   history.pushState = ((state: unknown, ...rest: [string, (string | URL | null)?]) => {
+    let made = false;
     try {
-      if (pushing) return pushEntry(state, ...rest);
-      seen = null;
-      if (owned(history.state)) { cover(history.state); return history.replaceState(without(state), ...rest); }
-      return pushEntry(without(state), ...rest);
+      if (!pushing) {
+        seen = null;
+        if (owned(history.state)) { cover(history.state); return history.replaceState(without(state), ...rest); }
+      }
+      pushEntry(pushing ? state : without(state), ...rest);
+      made = true;
     } finally {
       here = where();
       ahead = null;
       stood = null;
+      if (made) {
+        const at = here;
+        const over = at === null ? undefined : navigation()?.entries().find((entry) => entry.index === at.index - 1)?.key;
+        for (const listener of [...entriesMade]) listener(over);
+      }
     }
   }) as History["pushState"];
   here = where();
@@ -439,8 +459,16 @@ if (typeof window !== "undefined") {
     if (event === heard) return;
     heard = event;
     holding = false;
-    const was = here;
+    let was = here;
     here = where();
+    // A closed sheet's step lands on the entry it named. One that landed there unheard leaves this
+    // traversal, onto another entry, the user's own, from the entry that step landed on.
+    if (stepping !== null && stepOnto !== null && here !== null && here.key !== stepOnto) {
+      was = navigation()?.entries().find((entry) => entry.key === stepOnto) ?? was;
+      stepping = null;
+      stepOnto = null;
+      seen = null;
+    }
     settle(here);
     ahead = null;
     took = climbing !== null && here?.key === climbing.key;

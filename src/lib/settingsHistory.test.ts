@@ -19,7 +19,9 @@ function fakeWindow() {
 }
 const fake = fakeWindow();
 (globalThis as unknown as { window: unknown }).window = fake.window;
-const { outsideSettings, recordSettings, settingsEntry, settingsLevels, settingsSteppedOff } = await import("./settingsHistory.ts");
+// a copy of its own: the module listens on the window it loads with, and another file may have loaded it first
+const modulePath = "./settingsHistory.ts?settings-history-test";
+const { outsideSettings, recordSettings, settingsEntry, settingsLevels, settingsSteppedOff }: typeof import("./settingsHistory.ts") = await import(modulePath);
 const settled = async () => { for (let i = 0; i < 4; i++) await new Promise((resolve) => queueMicrotask(() => resolve(undefined))); };
 
 describe("settingsLevels", () => {
