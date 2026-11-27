@@ -195,7 +195,12 @@ describe("P11 review: what a page that holds a saved copy draws and opens", () =
     const { w, phone, desk, rogue, directory } = await account();
     setPageAccountList(reloaded(w, phone));
     // the page's own sign-in, as the sidebar reads it (indexedAccountStore, the page's fetch)
-    const spies = [spyOn(indexedAccountStore, "get").mockImplementation(phone.store.get), spyOn(indexedAccountStore, "update").mockImplementation(phone.store.update), spyOn(indexedAccountStore, "set").mockImplementation(phone.store.set)];
+    const spies = [
+      spyOn(indexedAccountStore, "get").mockImplementation(phone.store.get),
+      spyOn(indexedAccountStore, "update").mockImplementation(phone.store.update),
+      spyOn(indexedAccountStore, "updateMany").mockImplementation(phone.store.updateMany),
+      spyOn(indexedAccountStore, "set").mockImplementation(phone.store.set),
+    ];
     const fetchBefore = globalThis.fetch;
     globalThis.fetch = (async (input: Request | string | URL, init?: RequestInit) => {
       const request = new Request(input, init);

@@ -98,6 +98,7 @@ describe("the hosted shell's front page", () => {
     const accountStore = memoryAccountStore();
     await accountStore.set("session", { service: SERVICE, account: "acct-test", provider: "github", access_token: "access", refresh_token: "refresh", expires_at: Date.now() + 3_600_000 });
     const stale = Promise.withResolvers<Response>();
+    const revoked = Promise.withResolvers<Response>();
     const tokened = Promise.withResolvers<void>();
     let reads = 0;
     const savedFetch = globalThis.fetch;
@@ -106,7 +107,7 @@ describe("the hosted shell's front page", () => {
         accountService: SERVICE, accountProviders: ["github", "apple"], accountStore, store: deviceStore([]),
         accountFetch: async (input) => {
           if (["/v1/devices/challenge", "/v1/providers"].includes(new URL(String(input)).pathname)) return new Response(null, { status: 404 });
-          if (new URL(String(input)).pathname === "/v1/signout") return Response.json({});
+          if (new URL(String(input)).pathname === "/v1/signout") return revoked.promise;
           return ++reads === 2 ? stale.promise : Response.json({ pcs: [] });
         },
       }));
@@ -120,6 +121,7 @@ describe("the hosted shell's front page", () => {
       await until(() => { const { state } = last(); return (state.kind === "list" || state.kind === "empty") && state.account?.kind === "signed-in" && state.account.pcs !== null; }, "the new sign-in's directory drawn");
       expect(reads).toBe(3);
     } finally {
+      revoked.resolve(new Response(null, { status: 204 }));
       stale.resolve(Response.json({ pcs: [] }));
       Reflect.deleteProperty(globalThis, "Capacitor");
       globalThis.fetch = savedFetch;

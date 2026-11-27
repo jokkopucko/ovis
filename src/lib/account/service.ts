@@ -376,6 +376,11 @@ export interface AccountServiceOptions {
   readonly signIn?: AccountSession;
 }
 
+interface SignInSnapshot {
+  readonly generation: string;
+  readonly session: AccountSession;
+}
+
 /**
  * Calls on the signed-in account. An access token about to run out is refreshed first; a refused
  * refresh, or a 401 after one, signs this client out (the stored session goes) and throws
@@ -390,7 +395,7 @@ export class AccountService {
   private readonly now: () => number;
   private readonly lock: AccountLock;
 
-  constructor(private readonly options: AccountServiceOptions) {
+  constructor(private readonly options: AccountServiceOptions, private readonly operationGeneration?: string) {
     const send: Fetch = options.fetch ?? ((input, init) => fetch(input, init));
     // fetch fails with a TypeError only when no answer came (an abort is a DOMException, and passes as it is); a redirect
     // is never followed, so a redirect target's answer never stands in for this endpoint's own: it fails, as no answer
@@ -399,6 +404,78 @@ export class AccountService {
     });
     this.now = options.now ?? Date.now;
     this.lock = options.lock ?? accountLock;
+  }
+
+  /** A persisted generation also covers sign-ins that return in a different tab or after navigation. */
+  static async signInGeneration(store: AccountStore): Promise<string> {
+    let generation: string = crypto.randomUUID();
+    await store.update("generation", (current) => generation = current ?? generation);
+    return generation;
+  }
+
+  static async checkGeneration(store: AccountStore, generation: string): Promise<void> {
+    if (await store.get("generation") !== generation) throw new SignedOutError();
+  }
+
+  /** Only the generation that started a sign-in may install it, including a held re-authentication session. */
+  static async storeSignIn(store: AccountStore, session: AccountSession, wanted: (current: AccountSession | undefined) => boolean = () => true): Promise<boolean> {
+    if (session.sign_in_generation === undefined) return false;
+    let kept = false;
+    await store.updateMany(["session", "generation"], (current) => {
+      kept = current.generation === session.sign_in_generation && wanted(current.session);
+      return kept ? { ...current, session } : current;
+    });
+    return kept;
+  }
+
+  /** Ends exactly this token family, without ever reading or writing the current session. */
+  static async revokeSession(session: AccountSession, options: { readonly fetch?: Fetch; readonly now?: () => number } = {}): Promise<void> {
+    const send = options.fetch ?? fetch;
+    const signOut = (live: AccountSession) => send(new URL("/v1/signout", live.service), {
+      method: "POST", headers: { authorization: `Bearer ${live.access_token}` }, redirect: "error",
+    });
+    if (session.expires_at - REFRESH_EARLY_MS > (options.now ?? Date.now)()) {
+      const response = await signOut(session);
+      if (response.ok) return;
+      if (response.status !== 401) throw await failure(response);
+    }
+    let live: AccountSession;
+    try {
+      live = await requestToken(session.service, { grant_type: "refresh_token", refresh_token: session.refresh_token }, options);
+    } catch (error) {
+      if (error instanceof AccountServiceError && (error.status === 400 || error.status === 401)) return;
+      throw error;
+    }
+    const response = await signOut(live);
+    if (!response.ok) throw await failure(response);
+  }
+
+  private async snapshot(expected = this.options.signIn, generation = this.operationGeneration): Promise<SignInSnapshot> {
+    let seen: SignInSnapshot | undefined;
+    await this.options.store.updateMany(["session", "generation"], (current) => {
+      const stored = current.session;
+      if (generation !== undefined && current.generation !== generation) return current;
+      if (stored === undefined || (expected !== undefined && !sameSignIn(stored, expected))) return current;
+      const session = stored.sign_in_id === undefined ? { ...stored, sign_in_id: legacySignInId(stored.refresh_token) } : stored;
+      seen = { generation: current.generation ?? crypto.randomUUID(), session };
+      return seen;
+    });
+    if (seen === undefined) throw new SignedOutError();
+    return seen;
+  }
+
+  private async current(started: SignInSnapshot): Promise<AccountSession> {
+    const current = await this.snapshot(started.session, started.generation);
+    return current.session;
+  }
+
+  private forSnapshot(started: SignInSnapshot): AccountService {
+    return new AccountService({ ...this.options, signIn: started.session }, started.generation);
+  }
+
+  /** Several HTTP requests in one operation (for example, a proof and its write) share one sign-in. */
+  private async forOperation(): Promise<AccountService> {
+    return this.forSnapshot(await this.snapshot());
   }
 
   /**
@@ -490,10 +567,11 @@ export class AccountService {
    * out on the way (a send again after no answer) is made anew once.
    */
   async putPc(serverId: string, entry: { label: string; public_key: string; relay: string; os?: AccountOs } & PcProofFields, signal?: AbortSignal, again?: SendAgain, { prove = false }: { readonly prove?: boolean } = {}): Promise<void> {
+    const account = await this.forOperation();
     const proved = (): Promise<PcAddProof | null> => prove
-      ? this.addProof("list", serverId, async () => await this.listingOf(serverId, signal, again) === null ? "" : null, signal, again)
+      ? account.addProof("list", serverId, async () => await account.listingOf(serverId, signal, again) === null ? "" : null, signal, again)
       : Promise.resolve(null);
-    const send = (proof: PcAddProof | null) => this.proving(proof, () => this.call("PUT", `/v1/pcs/${serverId}`, proof === null ? entry : { ...entry, key_proof: proof }, signal, again));
+    const send = (proof: PcAddProof | null) => account.proving(proof, () => account.call("PUT", `/v1/pcs/${serverId}`, proof === null ? entry : { ...entry, key_proof: proof }, signal, again));
     const proof = await proved();
     try { await send(proof); }
     catch (error) {
@@ -535,8 +613,9 @@ export class AccountService {
    * `admitted_at`: the service's time of the admission, as its directory row gives it; null when the answer does not say.
    */
   async admitPc(serverId: string, signal?: AbortSignal, listingId?: string): Promise<{ readonly account: string; readonly new_until: string; readonly admitted_at: string | null }> {
-    const proof = await this.addProof("admit", serverId, async () => listingId ?? await this.listingOf(serverId, signal) ?? "", signal);
-    const body = await this.proving(proof, () => this.call("POST", `/v1/pcs/${serverId}/admit`, proof === null ? {} : { key_proof: proof }, signal));
+    const account = await this.forOperation();
+    const proof = await account.addProof("admit", serverId, async () => listingId ?? await account.listingOf(serverId, signal) ?? "", signal);
+    const body = await account.proving(proof, () => account.call("POST", `/v1/pcs/${serverId}/admit`, proof === null ? {} : { key_proof: proof }, signal));
     if (!isRecord(body) || typeof body.account !== "string" || typeof body.new_until !== "string") throw new AccountServiceError(502, "invalid_answer", "The account service sent no admission");
     return { account: body.account, new_until: body.new_until, admitted_at: typeof body.admitted_at === "string" && Number.isFinite(Date.parse(body.admitted_at)) ? body.admitted_at : null };
   }
@@ -668,19 +747,19 @@ export class AccountService {
    * the name the account's lists and the PCs' notices show for the key; without one the service names it "Device {no}".
    */
   async registerDeviceKey(key: { readonly private_key: CryptoKey; readonly public_spki: string }, label?: string): Promise<{ no: number; key: string } | null> {
+    const started = await this.snapshot();
+    const account = this.forSnapshot(started);
     let issued: unknown;
-    try { issued = await this.call("POST", "/v1/devices/challenge", {}); }
+    try { issued = await account.call("POST", "/v1/devices/challenge", {}); }
     catch (error) {
       if (error instanceof AccountServiceError && error.status === 404) return null;
       throw error;
     }
-    const session = await this.session();
-    if (session === undefined) return this.signedOut();
     if (!isRecord(issued) || typeof issued.challenge_id !== "string" || typeof issued.challenge !== "string") throw new AccountServiceError(502, "invalid_answer", "The account service sent no challenge");
-    const bytes = registerSigningBytes(session.account, key.public_spki, issued.challenge_id, issued.challenge);
+    const bytes = registerSigningBytes(started.session.account, key.public_spki, issued.challenge_id, issued.challenge);
     const signature = toBase64Url(new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key.private_key, bytes)));
     const name = accountLabel(label ?? "");
-    const body = await this.call("POST", "/v1/devices", { challenge_id: issued.challenge_id, key: key.public_spki, signature, ...(name === "" ? {} : { label: name }) });
+    const body = await account.call("POST", "/v1/devices", { challenge_id: issued.challenge_id, key: key.public_spki, signature, ...(name === "" ? {} : { label: name }) });
     if (!isRecord(body) || !Number.isSafeInteger(body.no) || body.key !== key.public_spki) throw new AccountServiceError(502, "invalid_answer", "The account service answered for another key");
     return { no: body.no as number, key: key.public_spki };
   }
@@ -708,42 +787,42 @@ export class AccountService {
    * A sign-in older than ten minutes gets 403 `reauth_required` before anything starts: the caller
    * asks the person to sign in again, then repeats. The link is redeemed by this same sign-in.
    */
-  async addMethod(provider: AccountProvider, signIn: (linkToken: string, bearer: string) => Promise<AccountSession>): Promise<AccountSession> {
-    const body = await this.call("POST", "/v1/identities/link", { provider });
+  async addMethod(provider: AccountProvider, signIn: (linkToken: string, bearer: string, generation: string) => Promise<AccountSession>): Promise<AccountSession> {
+    const started = await this.snapshot();
+    const body = await this.forSnapshot(started).call("POST", "/v1/identities/link", { provider });
     const linkToken = isRecord(body) && typeof body.link_token === "string" && body.link_token !== "" ? body.link_token : null;
     if (linkToken === null) throw new AccountServiceError(502, "invalid_answer", "The account service sent no link");
-    const before = await this.session();
-    if (before === undefined) return this.signedOut();
-    const after = await signIn(linkToken, before.access_token);
-    const end = (session: AccountSession, what: string) => this.fetch(new URL("/v1/signout", session.service), { method: "POST", headers: { authorization: `Bearer ${session.access_token}` } })
-      .catch((error: unknown) => console.warn(`Ovis: ${what} was not ended at the account service`, error instanceof Error ? error.name : error));
+    const before = await this.current(started);
+    const after = await signIn(linkToken, before.access_token, started.generation);
+    const end = (session: AccountSession) => AccountService.revokeSession(session, { fetch: this.fetch, now: this.now });
     if (after.account !== before.account) {
-      await end(after, "a sign-in for another account");
+      await end(after);
       throw new AccountServiceError(502, "invalid_answer", "The account service answered for another account");
     }
     // under the lock sign-out and refresh take: the answer replaces only the sign-in that asked for it
     const outcome = await this.lock(async () => {
       let result: "kept" | "moved-on" | "signed-out" = "signed-out";
-      await this.options.store.update("session", (current) => {
-        if (current?.refresh_token === before.refresh_token) { result = "kept"; return after; }
-        // refreshed by another tab, or signed in again there: the link holds at the service, and that session stays
-        if (current !== undefined && current.account === before.account) result = "moved-on";
+      await this.options.store.updateMany(["session", "generation"], (current) => {
+        if (current.generation !== started.generation || current.session === undefined || !sameSignIn(current.session, before)) return current;
+        if (current.session.refresh_token === before.refresh_token) { result = "kept"; return { ...current, session: after }; }
+        // Refreshed by another tab: the link holds at the service, and that session stays.
+        result = "moved-on";
         return current;
       });
       return result;
     });
     if (outcome === "signed-out") {
       // signed out (or into another account) meanwhile: the new sign-in must not outlive that
-      await end(after, "a link that finished after a sign-out");
+      await end(after);
       throw new SignedOutError();
     }
-    if (outcome === "moved-on") {
-      await end(after, "a link's sign-in no tab keeps");
-      return (await this.session()) ?? after;
+    // The link already holds at the service. Cleanup failure does not undo it.
+    try {
+      await end(outcome === "moved-on" ? after : before);
+    } catch {
+      console.warn("Ovis: the sign-in method was added, but the unused session could not be revoked");
     }
-    // the old sign-in's tokens would otherwise live on at the service until they expire
-    await end(before, "the replaced sign-in");
-    return after;
+    return this.current(outcome === "moved-on" ? started : { generation: started.generation, session: after });
   }
 
   /**
@@ -773,12 +852,15 @@ export class AccountService {
    * wants an own sign-in made in the last ten minutes (403 `reauth_required`, `web_sign_in_required`).
    */
   async signOutEverywhere(): Promise<void> {
-    const ended = this.options.signIn ?? await this.session();
-    if (ended === undefined) throw new SignedOutError();
+    const started = await this.snapshot();
     // only the documented 204 ended them: any other success leaves this sign-in as it was
-    await this.call("POST", "/v1/signout/all", {}, undefined, undefined, 204);
-    await this.options.store.update("session", (current) => current !== undefined && sameSignIn(current, ended) ? undefined : current);
-    if (this.options.store === indexedAccountStore) globalThis.window?.dispatchEvent(new Event(ACCOUNT_SIGN_OUT_EVENT));
+    await this.forSnapshot(started).call("POST", "/v1/signout/all", {}, undefined, undefined, 204);
+    let cleared = false;
+    await this.options.store.updateMany(["session", "generation"], (current) => {
+      cleared = current.generation === started.generation && current.session !== undefined && sameSignIn(current.session, started.session);
+      return cleared ? { generation: crypto.randomUUID() } : current;
+    });
+    if (cleared && this.options.store === indexedAccountStore) globalThis.window?.dispatchEvent(new Event(ACCOUNT_SIGN_OUT_EVENT));
   }
 
   async postRecord(serverIds: readonly string[], record: AccountRecord): Promise<number> {
@@ -872,10 +954,11 @@ export class AccountService {
    * from the log, never from this answer. `list` is entry 0's hash, which the caller worked out itself.
    */
   async startList(list: string, entry: string, wrap: { readonly member: string; readonly wrap: string }, signal?: AbortSignal): Promise<"placed" | "exists"> {
+    const account = await this.forOperation();
     const body = genesisBody(entry, wrap);
-    const proved = (): Promise<PcAddProof | null> => this.addProof("list-genesis", list, async () => "", signal);
+    const proved = (): Promise<PcAddProof | null> => account.addProof("list-genesis", list, async () => "", signal);
     const send = async (proof: PcAddProof | null): Promise<"placed" | "exists"> => {
-      try { await this.proving(proof, () => this.listCall("POST", "/v2/lists", proof === null ? body : { ...body, key_proof: proof }, signal, 201)); }
+      try { await account.proving(proof, () => account.listCall("POST", "/v2/lists", proof === null ? body : { ...body, key_proof: proof }, signal, 201)); }
       catch (error) {
         if (error instanceof AccountServiceError && !(error instanceof AccountRefreshError) && error.status === 409 && error.code === "list_exists") return "exists";
         throw error;
@@ -917,9 +1000,10 @@ export class AccountService {
    * Claimed again, it is renewed.
    */
   async claimListKey(list: string, card: { readonly key: string; readonly enc: string; readonly card: string }, signal?: AbortSignal): Promise<void> {
+    const account = await this.forOperation();
     // asked by the device itself, as the list's own routes are: the challenge is sent once, and no answer to it ends the sign-in
-    const proved = (): Promise<PcAddProof | null> => this.addProof("list-claim", list, async () => card.key, signal, SENT_ONCE, 200);
-    const send = (proof: PcAddProof | null) => this.proving(proof, () => this.listCall("POST", `/v2/lists/${list}/claims`, proof === null ? card : { ...card, key_proof: proof }, signal));
+    const proved = (): Promise<PcAddProof | null> => account.addProof("list-claim", list, async () => card.key, signal, SENT_ONCE, 200);
+    const send = (proof: PcAddProof | null) => account.proving(proof, () => account.listCall("POST", `/v2/lists/${list}/claims`, proof === null ? card : { ...card, key_proof: proof }, signal));
     const proof = await proved();
     try { await send(proof); }
     catch (error) {
@@ -969,8 +1053,9 @@ export class AccountService {
     const body = { entries, ...(wraps.length === 0 ? {} : { wraps }), ...(link === undefined ? {} : { link }) };
     if (invite === undefined) { await this.listCall("POST", `/v2/lists/${list}/entries`, body, signal); return; }
     // an invite is placed as one is made: by a sign-in of the last ten minutes, or with a proof of its registered key for that invite
-    const proof = await this.inviteProof(invite.key, invite.auto, signal);
-    await this.proving(proof, () => this.listCall("POST", `/v2/lists/${list}/entries`, proof === null ? body : { ...body, key_proof: proof }, signal));
+    const account = await this.forOperation();
+    const proof = await account.inviteProof(invite.key, invite.auto, signal);
+    await account.proving(proof, () => account.listCall("POST", `/v2/lists/${list}/entries`, proof === null ? body : { ...body, key_proof: proof }, signal));
   }
 
   /**
@@ -994,14 +1079,15 @@ export class AccountService {
    * was spent or ran out on the way is made anew once.
    */
   async makeInvite(inviteKey: string, auto: boolean, signal?: AbortSignal): Promise<{ readonly id: string; readonly account: string; readonly expires_at: string; readonly auto: boolean }> {
+    const account = await this.forOperation();
     const send = async (proof: PcAddProof | null): Promise<unknown> =>
-      this.proving(proof, () => this.call("POST", "/v1/pc-invites", { invite_key: inviteKey, auto, ...(proof === null ? {} : { key_proof: proof }) }, signal));
-    const proof = await this.inviteProof(inviteKey, auto, signal);
+      account.proving(proof, () => account.call("POST", "/v1/pc-invites", { invite_key: inviteKey, auto, ...(proof === null ? {} : { key_proof: proof }) }, signal));
+    const proof = await account.inviteProof(inviteKey, auto, signal);
     let made: unknown;
     try { made = await send(proof); }
     catch (error) {
       if (proof === null || !(error instanceof AccountServiceError && error.status === 400 && error.code === "challenge_invalid")) throw error;
-      made = await send(await this.inviteProof(inviteKey, auto, signal));
+      made = await send(await account.inviteProof(inviteKey, auto, signal));
     }
     if (!isRecord(made) || typeof made.id !== "string" || !/^[0-9a-f]{32}$/.test(made.id) || typeof made.account !== "string" || typeof made.expires_at !== "string" || Number.isNaN(Date.parse(made.expires_at)) || made.auto !== auto) {
       throw new AccountServiceError(502, "invalid_answer", "The account service sent no invite");
@@ -1026,62 +1112,61 @@ export class AccountService {
   }
 
   /**
-   * Ends the sign-in on the service, then here. An expired access token is refreshed first, so the
-   * service really ends the sign-in's tokens; the session goes here whatever the service answers, and
-   * a revocation the service did not confirm throws, so the caller can say so. Only the session it
-   * ended goes: a new sign-in made while the service answers (the phone app's page stays open) stays.
+   * Invalidates this generation before waiting for the refresh lock or the service. A sign-out
+   * aimed at an already replaced sign-in only revokes that old family, leaving the current one alone.
    */
-  async signOut(): Promise<void> {
-    await this.lock(async () => {
-      const stored = await this.session();
-      if (stored === undefined) return;
-      // signed in again since the sign-in this service is for: that one's tokens are ended, and the new sign-in stays
+  async signOut(locallyEnded?: () => void): Promise<void> {
+    let ended: AccountSession | undefined;
+    let cleared = false;
+    await this.options.store.updateMany(["session", "generation"], (current) => {
       const from = this.options.signIn;
-      const replaced = from !== undefined && !sameSignIn(stored, from);
-      const session = replaced ? from : stored;
-      let live = session;
-      try {
-        live = replaced || session.expires_at - REFRESH_EARLY_MS > this.now() ? session : await this.refreshed(session);
-        const response = await this.fetch(new URL("/v1/signout", live.service), { method: "POST", headers: { authorization: `Bearer ${live.access_token}` } });
-        if (!response.ok) throw await failure(response);
-      } catch (error) {
-        if (!(error instanceof SignedOutError)) throw error;
-      } finally {
-        if (!replaced) {
-          await this.options.store.update("session", (current) => current?.refresh_token === session.refresh_token || current?.refresh_token === live.refresh_token ? undefined : current);
-          // its unsent blocks stay: only the service's answer takes one away, and a later sign-in to this account sends them (S32-1)
-          if (this.options.store === indexedAccountStore) globalThis.window?.dispatchEvent(new Event(ACCOUNT_SIGN_OUT_EVENT));
-        }
+      if (from !== undefined && (current.session === undefined || !sameSignIn(current.session, from))) {
+        ended = from;
+        return current;
       }
+      if (current.session === undefined) return current;
+      ended = current.session;
+      cleared = true;
+      return { generation: crypto.randomUUID() };
     });
+    if (cleared && this.options.store === indexedAccountStore) globalThis.window?.dispatchEvent(new Event(ACCOUNT_SIGN_OUT_EVENT));
+    locallyEnded?.();
+    const session = ended;
+    if (session !== undefined) await this.lock(() => AccountService.revokeSession(session, { fetch: this.fetch, now: this.now }));
   }
 
-  /** Forgets `from` here, unless another sign-in took its place meanwhile. */
-  private async signedOut(from?: AccountSession): Promise<never> {
-    await this.options.store.update("session", (current) => from === undefined || current?.refresh_token === from.refresh_token ? undefined : current);
+  /** Forgets the refused token only while it and its generation are still current. */
+  private async signedOut(started: SignInSnapshot, from: AccountSession): Promise<never> {
+    await this.options.store.updateMany(["session", "generation"], (current) =>
+      current.generation === started.generation && current.session?.refresh_token === from.refresh_token
+        ? { generation: crypto.randomUUID() } : current);
     throw new SignedOutError();
   }
 
   /** One refresh of `from`; its answer is stored only if `from` is still the stored session. */
-  private async refreshed(from: AccountSession): Promise<AccountSession> {
+  private async refreshed(started: SignInSnapshot, from: AccountSession): Promise<AccountSession> {
     let next: AccountSession;
     try {
       next = await requestToken(from.service, { grant_type: "refresh_token", refresh_token: from.refresh_token }, { fetch: this.fetch, now: this.now });
     } catch (error) {
-      if (error instanceof AccountServiceError && (error.status === 400 || error.status === 401)) return this.signedOut(from);
+      if (error instanceof AccountServiceError && (error.status === 400 || error.status === 401)) return this.signedOut(started, from);
+      await this.current(started);
       throw error instanceof AccountServiceError ? new AccountRefreshError(error) : error;
     }
     // a refresh answers for the sign-in it was asked for: tokens naming another account are no answer, and are not kept
     if (next.account !== from.account) throw new AccountRefreshError(new AccountServiceError(502, "account_changed", "The account service answered a refresh for another account"));
     // the same sign-in: it keeps its id and when it was made (sessionOf stamped the refresh's own time, which is not that)
     const { signed_in_at: _refreshedAt, ...renewed } = next;
-    const carried: AccountSession = { ...renewed, sign_in_id: from.sign_in_id ?? next.sign_in_id, ...(from.signed_in_at === undefined ? {} : { signed_in_at: from.signed_in_at }) };
+    const carried: AccountSession = { ...renewed, sign_in_id: from.sign_in_id ?? next.sign_in_id, sign_in_generation: started.generation, ...(from.signed_in_at === undefined ? {} : { signed_in_at: from.signed_in_at }) };
     let kept = false;
-    await this.options.store.update("session", (current) => {
-      kept = current?.refresh_token === from.refresh_token;
-      return kept ? carried : current;
+    await this.options.store.updateMany(["session", "generation"], (current) => {
+      kept = current.generation === started.generation && current.session?.refresh_token === from.refresh_token;
+      return kept ? { ...current, session: carried } : current;
     });
-    if (!kept) throw new SignedOutError();
+    if (!kept) {
+      await AccountService.revokeSession(next, { fetch: this.fetch, now: this.now });
+      throw new SignedOutError();
+    }
     return carried;
   }
 
@@ -1090,21 +1175,16 @@ export class AccountService {
    * `signal` bounds this caller's wait, the wait for the lock included: work not begun by then is skipped, and a
    * refresh already sent finishes, so the token it rotated is kept for the next call.
    */
-  private async fresh(stale?: string, signal?: AbortSignal): Promise<AccountSession> {
+  private async fresh(started: SignInSnapshot, stale?: string, signal?: AbortSignal): Promise<AccountSession> {
     signal?.throwIfAborted();
-    // bound to a sign-in that is no longer the stored one: the stored one is someone else's to use or end
-    const foreign = (session: AccountSession | undefined): boolean => this.options.signIn !== undefined && (session === undefined || !sameSignIn(session, this.options.signIn));
-    const session = await this.session();
-    if (foreign(session)) throw new SignedOutError();
-    if (session === undefined) return this.signedOut();
+    const session = started.session;
     if (stale === undefined && session.expires_at - REFRESH_EARLY_MS > this.now()) return session;
     return this.locked(async () => {
-      const current = await this.session();
-      if (foreign(current)) throw new SignedOutError();
-      if (current === undefined) return this.signedOut();
+      const current = await this.current(started);
+      signal?.throwIfAborted();
       // another tab refreshed while this one waited: its tokens are the ones to use
       if (current.access_token !== (stale ?? session.access_token)) return current;
-      return this.refreshed(current);
+      return this.refreshed(started, current);
     }, signal);
   }
 
@@ -1126,43 +1206,66 @@ export class AccountService {
    * `again.sends` HTTP sends in all, a send after a 401 included. Without it a 401 is sent again once, as always.
    */
   private async call(method: string, path: string, body?: unknown, signal?: AbortSignal, again?: SendAgain, only?: number): Promise<unknown> {
+    signal?.throwIfAborted();
+    const started = await this.snapshot();
     let stale: string | undefined;
     let refreshed = false;
     const sends = again?.sends ?? 2;
     for (let sent = 1; ; sent++) {
-      const session = await this.fresh(stale, signal);
+      await this.fresh(started, stale, signal);
       await again?.before(sent);
-      // nothing is awaited between this and the send
+      const live = await this.current(started);
       signal?.throwIfAborted();
       let response: Response;
       try {
-        response = await this.fetch(new URL(path, session.service), {
+        response = await this.fetch(new URL(path, live.service), {
           method,
-          headers: { authorization: `Bearer ${session.access_token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
+          headers: { authorization: `Bearer ${live.access_token}`, ...(body === undefined ? {} : { "content-type": "application/json" }) },
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
           ...(signal === undefined ? {} : { signal }),
         });
       } catch (error) {
+        await this.current(started);
         if (again !== undefined && error instanceof AccountServiceUnreachableError && sent < sends && await again.wait(error, sent)) continue;
+        await this.current(started);
         throw error;
       }
+      // Deletion and signed safety-record receipts belong to the old account's durable work
+      // (S32-1), not the current view. Their callers apply them only to that account/record.
+      if (method === "DELETE" && path === "/v1/account" && response.status === 204) return null;
+      const safetyReceipt = path === "/v1/safety-records" && [200, 400, 403, 409].includes(response.status);
+      if (!safetyReceipt) await this.current(started);
       if (response.status === 401 && !refreshed) {
-        if (sent >= sends) throw await failure(response);
+        if (sent >= sends) {
+          const refusal = await failure(response);
+          await this.current(started);
+          throw refusal;
+        }
         refreshed = true;
-        stale = session.access_token;
+        stale = live.access_token;
         continue;
       }
       // a strict call (`only`) refused again with tokens a refresh just gave: that request's refusal, not a revoked sign-in
-      if (response.status === 401 && only !== undefined) throw await failure(response);
-      if (response.status === 401) return this.signedOut(session);
+      if (response.status === 401 && only === undefined) return this.signedOut(started, live);
       if (!response.ok) {
         const refusal = await failure(response);
+        if (!safetyReceipt) await this.current(started);
         if (again !== undefined && refusal.status === 429 && sent < sends && await again.wait(refusal, sent)) continue;
+        if (!safetyReceipt) await this.current(started);
         throw refusal;
       }
       // `only`: the one success status that counts; another is no answer to rely on
       if (only !== undefined && response.status !== only) throw new AccountServiceError(response.status, "unconfirmed", `The account service answered ${response.status}, not ${only}`);
-      return response.status === 204 ? null : response.json();
+      if (response.status === 204) return null;
+      let result: unknown;
+      try {
+        result = await response.json();
+      } catch (error) {
+        if (!safetyReceipt) await this.current(started);
+        throw error;
+      }
+      if (!safetyReceipt) await this.current(started);
+      return result;
     }
   }
 }

@@ -7,8 +7,8 @@
  */
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { callNative, hasNativePlugin, inAndroidApp } from "../nativeApp.ts";
-import { requestToken } from "./service.ts";
-import { beginSignIn, finishOwnSignIn } from "./signin.ts";
+import { AccountService, requestToken } from "./service.ts";
+import { beginSignIn, finishIssuedSignIn, finishOwnSignIn } from "./signin.ts";
 import type { AccountProvider, AccountSession, AccountStore } from "./store.ts";
 
 export const AUTH_PLUGIN = "OvisAuth";
@@ -31,11 +31,12 @@ export class SignInNotWanted extends Error {
 /** `wanted`: asked once the pending record is written, right before the sheet opens; false opens nothing (SignInNotWanted) */
 export async function nativeSignIn(provider: AccountProvider, options: { store: AccountStore; service: string; wanted?: () => boolean | Promise<boolean> }): Promise<AccountSession> {
   if (provider === "apple" && !inAndroidApp()) {
+    const generation = await AccountService.signInGeneration(options.store);
     const nonce = toBase64Url(crypto.getRandomValues(new Uint8Array(32)));
     const { idToken } = await callNative<{ idToken: string }>(AUTH_PLUGIN, "signInWithApple", { nonce: await sha256Hex(nonce) });
+    await AccountService.checkGeneration(options.store, generation);
     const session = await requestToken(options.service, { grant_type: "apple_id_token", id_token: idToken, nonce });
-    await options.store.set("session", session);
-    return session;
+    return finishIssuedSignIn(session, generation, options);
   }
   const url = await beginSignIn(provider, { store: options.store, service: options.service, redirectUri: NATIVE_REDIRECT });
   if (options.wanted !== undefined && !await options.wanted()) throw new SignInNotWanted();

@@ -9,7 +9,7 @@ import type { RelayDevice } from "../relay/device.ts";
 import { myPcs, OFFLINE_AFTER_MS } from "./myPcs.ts";
 import { accountProvidersOf, AccountService, AccountServiceError, accountServiceOf, pcAccountServiceOf, shellAccountServiceOf, SignedOutError } from "./service.ts";
 import { beginSignIn, finishOwnSignIn, finishSignIn, SignInError, signInReturn } from "./signin.ts";
-import { memoryAccountStore, memoryLock, newKey } from "./store.ts";
+import { memoryAccountStore, memoryLock, newKey, type AccountStore } from "./store.ts";
 import { desktopProviders } from "./desktop.ts";
 
 const SERVICE = "https://account.example";
@@ -413,7 +413,7 @@ describe("signing in on a PC's own page, with GitHub's device flow", () => {
   it("takes back the session of a sign-in cancelled while it was being written", async () => {
     const { fake, store, options } = setup();
     const cancel = new AbortController();
-    const slow = { ...store, set: async (...args: Parameters<typeof store.set>) => { await store.set(...args); cancel.abort(); } };
+    const slow: AccountStore = { ...store, updateMany: async (names, change) => { await store.updateMany(names, change); cancel.abort(); } };
     const started = await startDeviceSignIn({ ...options, store: slow });
     fake.approveDevice(started.userCode, "acct_page");
     await expect(started.finish(cancel.signal)).rejects.toMatchObject({ name: "AbortError" });

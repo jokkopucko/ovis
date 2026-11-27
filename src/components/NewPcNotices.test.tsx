@@ -60,6 +60,7 @@ beforeEach(async () => {
   listed = null;
   const get = spyOn(indexedAccountStore, "get").mockImplementation(store.get);
   const update = spyOn(indexedAccountStore, "update").mockImplementation(store.update);
+  const updateMany = spyOn(indexedAccountStore, "updateMany").mockImplementation(store.updateMany);
   const send = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     if (rejectDelete && init?.method === "DELETE") return new Response(null, { status: 503 });
     if (listed !== null && init?.method === "GET" && new URL(String(input instanceof Request ? input.url : input)).pathname === "/v1/pcs") return Response.json({ pcs: listed });
@@ -68,7 +69,7 @@ beforeEach(async () => {
     ] });
     return service.fetch(input, init);
   }, { preconnect: fetch.preconnect }));
-  restore = () => { get.mockRestore(); update.mockRestore(); send.mockRestore(); };
+  restore = () => { get.mockRestore(); update.mockRestore(); updateMany.mockRestore(); send.mockRestore(); };
 });
 
 afterEach(async () => {
@@ -375,6 +376,7 @@ it("on an account with a signed list, tells of a PC another device added by the 
   service = w.fake;
   spyOn(indexedAccountStore, "get").mockImplementation(second.store.get);
   spyOn(indexedAccountStore, "update").mockImplementation(second.store.update);
+  spyOn(indexedAccountStore, "updateMany").mockImplementation(second.store.updateMany);
   setPageAccountList(second.list);
   try {
     const refreshed = Promise.withResolvers<void>();
@@ -393,6 +395,8 @@ it("on an account with a signed list, tells of a PC another device added by the 
     // the device that added it is told nothing
     setPageAccountList(first.list);
     spyOn(indexedAccountStore, "get").mockImplementation(first.store.get);
+    spyOn(indexedAccountStore, "update").mockImplementation(first.store.update);
+    spyOn(indexedAccountStore, "updateMany").mockImplementation(first.store.updateMany);
     const laptop = await addListPc(w, first, "Laptop");
     expect([first.list.holdsPc(laptop.endpoint), statuses(await mount(null))]).toEqual([true, []]);
   } finally { setPageAccountList(null); }
@@ -412,6 +416,7 @@ it("follows the account's list: the notice of a PC goes when another device puts
   service = w.fake;
   spyOn(indexedAccountStore, "get").mockImplementation(second.store.get);
   spyOn(indexedAccountStore, "update").mockImplementation(second.store.update);
+  spyOn(indexedAccountStore, "updateMany").mockImplementation(second.store.updateMany);
   setPageAccountList(second.list);
   try {
     const root = await mount(null);

@@ -215,6 +215,7 @@ export function createAccountController(mount: RelayShellMount, view: {
   /** the sign-in whose list was last read at once: another one's is read at once too, and by the clock after that */
   let followedFor: AccountSession | undefined;
   let generation = 0;
+  let signingOutLocally: Promise<void> | undefined;
   let leaving = false;
   /**
    * The delete or the sign-out of every device pressed for (deleteAccount, signOutEverywhere), until it ends: a sign-out,
@@ -653,6 +654,12 @@ export function createAccountController(mount: RelayShellMount, view: {
   const signOut = (shown?: Shown): void => {
     // the sign-in the person ended, read before anything waits: one made meanwhile stays (service.ts, forSignIn)
     const ending = account.session();
+    const local = Promise.withResolvers<void>();
+    signingOutLocally = local.promise;
+    const locallyEnded = (): void => {
+      if (signingOutLocally === local.promise) signingOutLocally = undefined;
+      local.resolve();
+    };
     // the key this device is in its account's list with, as the person saw it, or as the page shows it now
     const member = shown?.scope?.member ?? (lists === null ? null : scopeOf(lists.view())?.member ?? null);
     // the list showed two histories: this device signs nothing, and its old listing goes from a member that shows none
@@ -679,7 +686,8 @@ export function createAccountController(mount: RelayShellMount, view: {
         if (epoch === generation) await refresh(true);
         return;
       }
-      if (session !== undefined) await account.forSignIn(session).signOut().catch((error: unknown) => console.warn("Ovis: the account service did not confirm the sign-out", error instanceof Error ? error.name : error));
+      if (session !== undefined) await account.forSignIn(session).signOut(locallyEnded).catch((error: unknown) => console.warn("Ovis: the account service did not confirm the sign-out", error instanceof Error ? error.name : error));
+      locallyEnded();
       // the stored sign-in is gone by now: the list's view goes with it, and so does what opens its names
       try {
         if (out === null || session === undefined || lists === null) { forgetNames(session?.account); return; }
@@ -697,7 +705,7 @@ export function createAccountController(mount: RelayShellMount, view: {
           await changed();
         }
       } finally { leavingList = null; followed?.poke(); }
-    }).catch((error: unknown) => console.warn("Ovis: this device did not forget its account", error instanceof Error ? error.name : error));
+    }).catch((error: unknown) => console.warn("Ovis: this device did not forget its account", error instanceof Error ? error.name : error)).finally(locallyEnded);
   };
   /** This device leaves the account; the outcome is the asking page's to show (hostedSignIn.ts, LeaveOutcome). */
   const leave = (shown?: Shown): Promise<LeaveOutcome> => {
@@ -986,7 +994,7 @@ export function createAccountController(mount: RelayShellMount, view: {
     if (accountService === null) return;
     if (accountView?.kind === "signing-in") return;
     deletion = undefined;
-    generation++;
+    const epoch = ++generation;
     accountView = { kind: "signing-in", provider };
     void changed();
     // in the phone app the system's sign-in sheet brings the return back to the page; elsewhere the page goes to the provider
@@ -996,11 +1004,15 @@ export function createAccountController(mount: RelayShellMount, view: {
       .then(async (session) => { if (pairing === undefined) await registerSignIn(session); await refresh(true, false, pairing === undefined ? session : undefined); }, (error: unknown) => error instanceof SignInNotWanted ? unwanted() : Promise.reject(error));
     // a press starts as before; a start that asks `wanted` waits on it before it starts, and again before the page (or
     // the app's sheet) leaves for the provider (the link entry, shell.tsx)
-    const started = nativeSignInAvailable()
+    const start = (): Promise<void> => nativeSignInAvailable()
       ? (wanted === undefined ? native() : Promise.resolve(wanted()).then((go) => go ? native() : unwanted()))
       : beginSignIn(provider, { store: accountStore, service: accountService, redirectUri: `${window.location.origin}/`, ...(pairing ? { pairing } : {}), ...(pc ? { pc } : {}), ...(everywhere ? { signOutEverywhere: everywhere } : {}) })
         .then(async (url) => wanted === undefined || await wanted() ? leave(url) : unwanted());
+    // The shell shows signed-out immediately, even when it must first remove its list member.
+    // A new sign-in waits for the local generation change, not for remote token revocation.
+    const started = signingOutLocally === undefined ? start() : signingOutLocally.then(() => epoch === generation ? start() : undefined);
     started.catch(async (error: unknown) => {
+      if (epoch !== generation) return;
       console.warn("Ovis: the sign-in did not start", error);
       accountView = { kind: "signed-out", error: signInFailure(error), provider };
       await changed();

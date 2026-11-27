@@ -5,7 +5,7 @@
  * host that serves the app.
  */
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
-import { AccountServiceError, requestToken } from "./service.ts";
+import { AccountService, AccountServiceError, requestToken, SignedOutError } from "./service.ts";
 import type { AccountProvider, AccountSession, AccountStore, PendingPairing, PendingSignIn } from "./store.ts";
 
 /** A sign-in left at the provider's pages longer than this is not finished: its return is refused. */
@@ -30,12 +30,13 @@ function random(bytes: number): string {
  * `linkToken` (AccountService.addMethod) adds the provider to the signed-in account instead. `pairing` waits in the
  * same record, so only this sign-in's return takes it, and it goes when the sign-in does.
  */
-export async function beginSignIn(provider: AccountProvider, options: { store: AccountStore; service: string; redirectUri: string; now?: () => number; linkToken?: string; pairing?: PendingPairing; pc?: string; signOutEverywhere?: string }): Promise<string> {
+export async function beginSignIn(provider: AccountProvider, options: { store: AccountStore; service: string; redirectUri: string; now?: () => number; linkToken?: string; pairing?: PendingPairing; pc?: string; signOutEverywhere?: string; generation?: string }): Promise<string> {
+  const generation = options.generation ?? await AccountService.signInGeneration(options.store);
   const verifier = random(32);
   const state = random(16);
   const challenge = toBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
   const now = (options.now ?? Date.now)();
-  const pending: PendingSignIn = { service: options.service, provider, state, verifier, redirect_uri: options.redirectUri, started_at: now, ...(options.pairing ? { pairing: options.pairing } : {}), ...(options.pc ? { pc: options.pc } : {}),
+  const pending: PendingSignIn = { service: options.service, provider, state, verifier, redirect_uri: options.redirectUri, started_at: now, generation, ...(options.pairing ? { pairing: options.pairing } : {}), ...(options.pc ? { pc: options.pc } : {}),
     ...(options.signOutEverywhere ? { sign_out_everywhere: options.signOutEverywhere } : {}) };
   // one per state: another tab's sign-in stays, and only ones past their time are dropped
   await options.store.update("pending", (current) => ({
@@ -102,17 +103,29 @@ export async function redeemSignIn(pending: PendingSignIn | undefined, returned:
   if (now() - pending.started_at > SIGN_IN_MS) throw new SignInError("expired", "The sign-in took too long");
   if ("error" in returned && returned.error === "invalid_link") throw new SignInError("expired", "The link to add a sign-in method ran out");
   if ("error" in returned) throw new SignInError("denied", "The sign-in was cancelled or refused");
+  // A pending record is consumed once. A previous build did not stamp it, so adopt the generation now.
+  const generation = pending.generation ?? await AccountService.signInGeneration(options.store);
+  await AccountService.checkGeneration(options.store, generation);
   let session: AccountSession;
   try {
     session = await requestToken(pending.service, {
       grant_type: "authorization_code", code: returned.code, code_verifier: pending.verifier, redirect_uri: pending.redirect_uri,
     }, { ...(options.fetch ? { fetch: options.fetch } : {}), now, ...(options.bearer === undefined ? {} : { bearer: options.bearer }) });
   } catch (error) {
+    await AccountService.checkGeneration(options.store, generation);
     if (error instanceof AccountServiceError && error.code === "identity_in_use") throw new SignInError("in_use", "That sign-in already belongs to another account");
     throw error;
   }
-  if (options.bearer === undefined) await options.store.set("session", session);
-  return session;
+  return finishIssuedSignIn(session, generation, options);
+}
+
+/** A link is installed by addMethod; other sign-ins are installed atomically against the generation. */
+export async function finishIssuedSignIn(issued: AccountSession, generation: string, options: FinishOptions): Promise<AccountSession> {
+  const session = { ...issued, sign_in_generation: generation };
+  const kept = options.bearer !== undefined || await AccountService.storeSignIn(options.store, session);
+  if (kept && await options.store.get("generation") === generation) return session;
+  await AccountService.revokeSession(session, options);
+  throw new SignedOutError();
 }
 
 /**

@@ -17,7 +17,7 @@ import { holdingSessionStore } from "./deleteAccount.ts";
 import { desktopAccount } from "./desktop.ts";
 import { startDeviceSignIn, startLinkPageSignIn, type DeviceSignIn } from "./deviceSignIn.ts";
 import { ownSignIn as startOwnSignIn, useOwnWindowRedirect } from "./ownWindow.ts";
-import { offeredProviders, type OfferedProviders } from "./service.ts";
+import { AccountService, offeredProviders, SignedOutError, type OfferedProviders } from "./service.ts";
 import { indexedAccountStore, type AccountProvider, type AccountSession } from "./store.ts";
 
 export type LinkPageSignInState =
@@ -86,9 +86,11 @@ export function useLinkPageSignIn(service: string, onSignedIn: (session: Account
       const blocked = (link: string): void => setState({ kind: "redirecting", link });
       startOwnSignIn(provider, { bridge, service, redirect: ownRedirect ?? null, store, signal: controller.signal, blocked }).then(async (session) => {
         // kept only if not cancelled, decided inside the write itself: a Cancel after it is too late and shows the sign-in
-        let kept = false;
-        await indexedAccountStore.update("session", (current) => { if (controller.signal.aborted) return current; kept = true; return session; });
-        if (!kept) return;
+        if (!await AccountService.storeSignIn(indexedAccountStore, session, () => !controller.signal.aborted)) {
+          await AccountService.revokeSession(session);
+          if (controller.signal.aborted) return;
+          throw new SignedOutError();
+        }
         if (running.current === controller) running.current = null;
         setState({ kind: "signed-in", session });
         signedIn.current(session);

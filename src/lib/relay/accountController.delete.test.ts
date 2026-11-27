@@ -233,16 +233,17 @@ describe("deleting the account from the hosted shell", () => {
       let now = Date.now();
       const { fake, accountStore } = await signedInShell(() => now, "apple");
       now += 11 * 60_000;
-      let armed = false;
+      let installs = 0;
       const reached = Promise.withResolvers<void>();
       const gate = Promise.withResolvers<void>();
-      const update = accountStore.update.bind(accountStore);
-      accountStore.update = (async (name, change) => {
-        if (name === "session" && armed) { armed = false; reached.resolve(); await gate.promise; }
-        return update(name, change);
-      }) as typeof accountStore.update;
+      const updateMany = accountStore.updateMany.bind(accountStore);
+      accountStore.updateMany = async (names, change) => {
+        // After checking the held session's generation, pause its actual install transaction.
+        if (names.some((name) => name === "session") && installs > 0 && --installs === 0) { reached.resolve(); await gate.promise; }
+        return updateMany(names, change);
+      };
       Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: { isNativePlatform: () => true, getPlatform: () => "ios", PluginHeaders: [{ name: "OvisAuth" }], nativePromise: async () => ({ idToken: "apple-id-token" }) } });
-      globalThis.fetch = Object.assign(async () => { armed = true; return Response.json({ access_token: fake.issueToken(ACCOUNT), refresh_token: "refresh-again", expires_in: 3600, account: ACCOUNT, provider: "apple" }); }, { preconnect: savedFetch.preconnect });
+      globalThis.fetch = Object.assign(async () => { installs = 2; return Response.json({ access_token: fake.issueToken(ACCOUNT), refresh_token: "refresh-again", expires_in: 3600, account: ACCOUNT, provider: "apple" }); }, { preconnect: savedFetch.preconnect });
       const done = shellAccountActions()?.deleteAccount();
       await reached.promise;
       shellAccountActions()?.signOut();

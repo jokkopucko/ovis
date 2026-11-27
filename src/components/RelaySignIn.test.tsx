@@ -382,11 +382,13 @@ describe("the relay tab's Sign in on the PC's own window", () => {
     setUp("Mozilla/5.0 (X11; Linux x86_64) Chrome/130.0");
     const writing = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
-    const update = indexedAccountStore.update.bind(indexedAccountStore);
-    spyOn(indexedAccountStore, "update").mockImplementation((async (name: string, change: never) => {
-      if (name === "session") { writing.resolve(); await release.promise; }
-      return update(name as never, change);
-    }) as never);
+    const updateMany = indexedAccountStore.updateMany.bind(indexedAccountStore);
+    let installs = 0;
+    spyOn(indexedAccountStore, "updateMany").mockImplementation(async (names, change) => {
+      // The first transaction checks the generation of the held session; the second installs it.
+      if (names.some((name) => name === "session") && ++installs === 2) { writing.resolve(); await release.promise; }
+      return updateMany(names, change);
+    });
     await mount();
     await press("Continue with Google");
     const start = await sent.promise;
@@ -401,8 +403,12 @@ describe("the relay tab's Sign in on the PC's own window", () => {
 
   it("shows the failure, not a stuck page, when the sign-in could not be kept", async () => {
     setUp("Mozilla/5.0 (X11; Linux x86_64) Chrome/130.0");
-    const update = indexedAccountStore.update.bind(indexedAccountStore);
-    spyOn(indexedAccountStore, "update").mockImplementation(((name: string, change: never) => name === "session" ? Promise.reject(new Error("disk full")) : update(name as never, change)) as never);
+    const updateMany = indexedAccountStore.updateMany.bind(indexedAccountStore);
+    let installs = 0;
+    spyOn(indexedAccountStore, "updateMany").mockImplementation(async (names, change) => {
+      if (names.some((name) => name === "session") && ++installs === 2) throw new Error("disk full");
+      return updateMany(names, change);
+    });
     const failed = Promise.withResolvers<void>();
     spyOn(console, "warn").mockImplementation((message) => {
       if (message === "Ovis: the sign-in did not finish") failed.resolve();

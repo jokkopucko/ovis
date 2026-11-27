@@ -1569,6 +1569,14 @@ export function accountList(options: AccountListOptions): AccountList {
             return await once(session, bound, stop.signal);
           } catch (error) {
             if (stop.signal.aborted) return shown;
+            if (error instanceof SignedOutError) {
+              const still = await service.session();
+              if (still !== undefined && !sameSignIn(still, session)) {
+                held = null;
+                misses = 0;
+                return publish(OFF);
+              }
+            }
             // another page saved the copy under this round: it loads what is saved now and takes its pages again
             if (!(error instanceof StaleCopyError)) throw error;
             if (tries >= SAVE_TRIES) {
@@ -1655,7 +1663,7 @@ export function accountList(options: AccountListOptions): AccountList {
         // the wraps are asked for with a time of their own: the pages before them may have used up the round's
         view = await viewOf(next, keys, reached ? { bound, signal: AbortSignal.any([stopped, AbortSignal.timeout(ROUND_MS)]) } : null);
       } catch (error) {
-        if (stopped.aborted || error instanceof StaleCopyError || loaded.copy === null) throw error;
+        if (stopped.aborted || error instanceof SignedOutError || error instanceof StaleCopyError || loaded.copy === null) throw error;
         // The round failed past the copy this device saved (a store that takes no write, a fault of the reading). The
         // device still goes by that copy: it is shown as it was saved, as a list the account service was not reached
         // for, so a page never draws or opens by the account service's word alone while it holds a copy. The fault
