@@ -22,6 +22,7 @@ export const AGENT_LABELS: Record<string, string> = {
   opencode: "OpenCode",
   copilot: "GitHub Copilot",
   kimi: "Kimi",
+  qwen: "Qwen Code",
   amp: "Amp",
   hermes: "Hermes",
   grok: "Grok",

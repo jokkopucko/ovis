@@ -104,7 +104,7 @@ the earlier "ACP is not Ovis's path"). In this contract it is four things:
     `waiting_human` (G8 holds).
   - Ovis adds no approval of its own, so a child that requests nothing ends with no card.
     See [the per-harness defaults](harness-tool.md#child-defaults-and-approvals) for what can
-    run unasked. Claude, agy, Gemini CLI and Kimi Code must report `default`, Kiro `vibe`. A full-access mode, an unreported
+    run unasked. Claude, agy, Gemini CLI, Kimi Code and Qwen Code must report `default`, Kiro `vibe`. A full-access mode, an unreported
     starting mode or Copilot's separate Allow All setting stops the launch. The keeper checks
     again before registration and refuses a prompt if the mode has changed or Allow All is on.
   - Ovis offers the agent no client file or terminal methods (`fs/*`, `terminal/*`). ACP v2 drops
@@ -300,7 +300,7 @@ What `agent_harnesses` reports today, and from what:
 
 | Flag | Reported today | From |
 |---|---|---|
-| `drive` | `["terminal", "acp"]` when Ovis finds an ACP command here, else `["terminal"]` | `resolveHarness`: GJC, OpenCode, agy, Copilot, Gemini CLI (`gemini`), Kiro (`kiro-cli`) and Kimi Code (`kimi`) on the PATH; Claude Code and Codex with their installed adapters. No version pin (read, `server/agent-tools/harnesses.ts`). |
+| `drive` | `["terminal", "acp"]` when Ovis finds an ACP command here, else `["terminal"]` | `resolveHarness`: GJC, OpenCode, agy, Copilot, Gemini CLI (`gemini`), Kiro (`kiro-cli`), Kimi Code (`kimi`) and Qwen Code (`qwen`) on the PATH; Claude Code and Codex with their installed adapters. No version pin (read, `server/agent-tools/harnesses.ts`). |
 | `level` | `structured` with ACP drive, else `terminal` | as `drive` |
 | `acp_protocol` | `1` with ACP drive, else `null` | the version the checked launches answered; not read again from each launch's `initialize` |
 | `approvals` | `keys` always; `hook` when the approval hub has an adapter for the harness (Claude Code, pi, OmO, omp), whether or not the launched version gets the hook; `acp` with ACP drive. Codex's app-server answers are not announced yet | `approvals.handles` (read, `server/approvals/hub.ts`) |

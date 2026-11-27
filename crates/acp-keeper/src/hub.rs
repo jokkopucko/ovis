@@ -456,7 +456,9 @@ impl Hub {
                 let Some(seq) = self.archive.append("from-agent", &Value::Object(msg.clone()).to_string()) else {
                     return;
                 };
-                if method.starts_with("fs/") || method.starts_with("terminal/") {
+                // only a permission or a question waits for a person; anything else (`fs/*`, `terminal/*`, an agent's own
+                // extension such as Qwen Code's `craft/drainMidTurnQueue`) would wait for no one and block the next prompt
+                if !matches!(method.as_str(), "session/request_permission" | "elicitation/create") {
                     let raw = json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": "Method not found"}}).to_string();
                     self.forward(&raw);
                     self.note_row("_keeper/auto_answered", json!({"id": ours, "method": method}));
@@ -955,6 +957,18 @@ mod tests {
         let cancelled: Value = serde_json::from_slice(&sent.try_recv().unwrap().bytes).unwrap();
         assert_eq!(cancelled["id"], 7);
         assert_eq!(cancelled["result"]["action"], "cancel");
+        drop(hub);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn an_agent_extension_request_is_refused_at_once_and_leaves_nothing_pending() {
+        let dir = std::env::temp_dir().join(format!("ak-unit-{}-ext", std::process::id()));
+        let (mut hub, mut sent) = hub(&dir);
+        hub.handle(Ev::Agent(0, json!({"jsonrpc": "2.0", "id": 4, "method": "craft/drainMidTurnQueue", "params": {}}).to_string()));
+        let response: Value = serde_json::from_slice(&sent.try_recv().unwrap().bytes).unwrap();
+        assert_eq!(response, json!({"jsonrpc": "2.0", "id": 4, "error": {"code": -32601, "message": "Method not found"}}));
+        assert!(hub.model.pending.is_empty());
         drop(hub);
         std::fs::remove_dir_all(dir).unwrap();
     }
