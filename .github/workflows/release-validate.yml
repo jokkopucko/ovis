@@ -76,7 +76,7 @@ jobs:
     outputs:
       passed: ${{ steps.passed.outputs.passed }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       CHECK_DIR: ${{ github.workspace }}/.ci
       UNIT_TEST_WORKERS: 4

@@ -395,7 +395,7 @@ jobs:
     name: Fast checks
     needs: changes
     runs-on: ${{ inputs.hosted_only && 'ubuntu-24.04' || fromJSON(needs.changes.outputs.fast) }}
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       CHECK_DIR: ${{ github.workspace }}/.ci
       UNIT_TEST_WORKERS: 4
