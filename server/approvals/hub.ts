@@ -19,7 +19,9 @@
  * permission dialog, dialogs/claude.ts; OmO's permission dialog and the one Ovis's pi extension draws like it, dialogs/pi.ts)
  * only says whether the request is still open: one the screen shows no dialog for, or a dialog showing another request's
  * subject whole, was answered in the terminal. An adapter may also read the turns its agent's hook tells of
- * (`onTurn`) and the commands it says the agent ran (`onCommand`), which ask nothing and get no answer. The adapters: Claude Code (claude.ts), pi (pi.ts) and OmO (omo.ts).
+ * (`onTurn`), the commands it says the agent ran (`onCommand`) and the session it says the agent runs (`toldSession`,
+ * kept with the process that ran the hook), which ask nothing and get no answer. The adapters: Claude Code (claude.ts),
+ * pi (pi.ts), OmO (omo.ts) and GitHub Copilot CLI (copilot.ts).
  *
  * Codex asks no hook: Ovis is a client of its own app server (codex.ts), whose requests are held with `hold` and
  * released when Codex says they were answered, never by a read of the screen.
@@ -31,7 +33,8 @@ import { join } from "node:path";
 import type { PaneContext } from "../../shared/protocol.ts";
 import { settingsFile } from "../claude-settings-file.ts";
 import { COMPILED, projectSafeCommand, ROOT } from "../entries.ts";
-import { isNonce, keyDigest, LINE_MAX, lineObject, seal, unseal } from "./relay.ts";
+import { readProcessBirth } from "../process-owner.ts";
+import { isNonce, isPid, keyDigest, LINE_MAX, lineObject, seal, unseal } from "./relay.ts";
 
 export type ApprovalDecision = "allow" | "deny";
 
@@ -77,9 +80,12 @@ export interface ApprovalDialog {
   kind?: string;
 }
 
-/** A turn the agent told began or ended, with the prompt or turn id where the agent gives one. */
+/**
+ * A turn the agent told began or ended, with the prompt or turn id where the agent gives one, and the transcript of the
+ * session where its end names one (Copilot's Stop).
+ */
 export type TurnEvent = { readonly prompt: string | null } & (
-  { readonly turn: "began" } | { readonly turn: "ended"; readonly failed?: true }
+  { readonly turn: "began" } | { readonly turn: "ended"; readonly failed?: true; readonly transcript?: string }
 );
 
 /**
@@ -98,6 +104,19 @@ export interface ToldMode {
   session: string;
 }
 
+/** What an agent's hook says of the session it runs: that session, or that it ended. */
+export type SessionEvent = { readonly session: string } | { readonly ended: string };
+
+/**
+ * The session the agent started in a pane last told it runs, and the process that ran the hook (the agent itself, with
+ * its start as the kernel records it on Linux, else null): the session is that process's only while it still runs.
+ */
+export interface ToldSession {
+  session: string;
+  pid: number;
+  birth: string | null;
+}
+
 export interface HeldApproval extends ApprovalRequest {
   /** what a card built on this request carries in its id, so that its answer settles this request and no other */
   id: string;
@@ -109,6 +128,8 @@ export interface HeldApproval extends ApprovalRequest {
 export interface ApprovalAdapter {
   /** the agent kind it serves, as herdr names it */
   readonly kind: string;
+  /** its hook only tells (turns, the session) and never answers an approval: Copilot's */
+  readonly toldOnly?: true;
   /** whether this version of the agent takes the hook as launchArgs adds it; an unknown version gets none */
   supports(version: string): boolean;
   /**
@@ -125,6 +146,8 @@ export interface ApprovalAdapter {
   mode?(event: unknown): ToldMode | null;
   /** The command an event the hook sent says the agent ran (Claude's PostCompact), else null. */
   command?(event: unknown): CommandEvent | null;
+  /** The session an event the hook sent says the agent runs, or ended (Copilot's sessionStart and sessionEnd), else null. */
+  session?(event: unknown): SessionEvent | null;
   /** A sample from the running session: null for no measurement, undefined for other events. */
   context?(event: unknown): PaneContext | null | undefined;
   /** The decision a card option is, or null for an option that goes to the dialog as its keys. */
@@ -239,6 +262,8 @@ export class ApprovalHub {
   private readonly pending = new Map<string, Pending[]>();
   /** each pane's agent's permission mode, as its hook last told */
   private readonly modes = new Map<string, ToldMode>();
+  /** each pane's agent's session, as its hook last told, with the launch whose hook told it */
+  private readonly sessions = new Map<string, ToldSession & { launch: Launch }>();
   private readonly contexts = new Map<string, ContextLaunch>();
   private readonly adapters: ReadonlyMap<string, ApprovalAdapter>;
   private readonly platform: string;
@@ -267,6 +292,27 @@ export class ApprovalHub {
   /** The permission mode the hook of the agent started in `paneId` last told, and in which of its sessions, or null. */
   toldMode(paneId: string): ToldMode | null {
     return this.modes.get(paneId) ?? null;
+  }
+
+  /** The session the hook of the agent started in `paneId` last told it runs, with the process that told it, or null. */
+  toldSession(paneId: string): ToldSession | null {
+    const told = this.sessions.get(paneId);
+    return told === undefined ? null : { session: told.session, pid: told.pid, birth: told.birth };
+  }
+
+  /** Only a hook run by the agent itself (its pid named in the sealed request) tells its session. */
+  private tellSession(launch: Launch, told: SessionEvent, pid: number | undefined): void {
+    const paneId = launch.paneId;
+    const before = this.sessions.get(paneId);
+    if ("ended" in told) {
+      if (before?.session === told.ended) this.sessions.delete(paneId);
+      return;
+    }
+    if (pid === undefined || (before?.launch === launch && before.pid === pid && before.session === told.session)) return;
+    // read once per process, and only where it is cheap: Chat proves a Copilot's session on Linux alone
+    const reading = before?.pid === pid ? null : this.platform === "linux" ? readProcessBirth(pid) : null;
+    const birth = before?.pid === pid ? before.birth : reading?.state === "identified" ? reading.birth.value : null;
+    this.sessions.set(paneId, { session: told.session, pid, birth, launch });
   }
 
   /** No report (undefined) differs from a running extension that reported unknown context (null). */
@@ -298,6 +344,12 @@ export class ApprovalHub {
     return this.adapters.has(kind);
   }
 
+  /** Whether the hook of an agent of this kind can answer an approval, not only tell. */
+  answers(kind: string): boolean {
+    const adapter = this.adapters.get(kind);
+    return adapter !== undefined && adapter.toldOnly !== true;
+  }
+
   /**
    * The decision a card option is for the request of `paneId` whose id is `id`, by the adapter of the agent that sent it
    * (herdr may name the pane otherwise: an OmO waiting on its user, pi), or null for one that goes as keys.
@@ -318,7 +370,7 @@ export class ApprovalHub {
     chmodSync(this.dir, 0o700);
     // a settings file, extension or key file is of an earlier run of this server, which nothing here answers any more,
     // and the socket of that run is in the way of this one's
-    for (const name of readdirSync(this.dir)) if (/\.(?:js|json|key)$/.test(name) || name === SOCKET_NAME) rmSync(join(this.dir, name), { force: true });
+    for (const name of readdirSync(this.dir)) if (/\.(?:js|json|key|plugin)$/.test(name) || name === SOCKET_NAME) rmSync(join(this.dir, name), { recursive: true, force: true });
     const listener = createServer((socket) => this.receive(socket));
     // a bind that fails comes as an event on the next tick (a pipe's name taken, a folder it may not bind in): no
     // hook works then, as its relay finds no answer, and the server goes on
@@ -400,7 +452,11 @@ export class ApprovalHub {
     const nonce = envelope?.["nonce"];
     const launch = typeof envelope?.["launch"] === "string" ? this.launches.get(envelope["launch"]) : undefined;
     if (launch === undefined || !isNonce(nonce)) return void socket.destroy();
-    const event = unseal(launch.key, "request", nonce, envelope!["sealed"]);
+    // a relay of an earlier build names no process; one that does has it sealed in
+    const named = envelope!["pid"];
+    const pid = named === undefined ? undefined : isPid(named) ? named : null;
+    if (pid === null) return void socket.destroy();
+    const event = unseal(launch.key, "request", nonce, envelope!["sealed"], pid);
     if (event === null || Buffer.byteLength(event) > EVENT_MAX) return void socket.destroy();
     const reply = (decision: ApprovalDecision | null, answered?: QuestionAnswer) => {
       if (socket.destroyed) return;
@@ -410,11 +466,13 @@ export class ApprovalHub {
     try { parsed = JSON.parse(event); } catch { return void socket.destroy(); }
     const mode = launch.adapter.mode?.(parsed) ?? null;
     if (mode !== null) this.modes.set(launch.paneId, mode);
+    const session = launch.adapter.session?.(parsed) ?? null;
+    if (session !== null) this.tellSession(launch, session, pid);
     // told, not asked: the hook prints nothing, so the agent goes on as it would without it
     const turn = launch.adapter.turn?.(parsed) ?? null;
     const command = turn === null ? launch.adapter.command?.(parsed) ?? null : null;
     const context = launch.adapter.context?.(parsed);
-    if (context !== undefined || turn !== null || command !== null) {
+    if (context !== undefined || turn !== null || command !== null || session !== null) {
       socket.end(`${JSON.stringify({ sealed: seal(launch.key, "answer", nonce, "") })}\n`);
       if (context !== undefined) {
         const report = this.contexts.get(launch.paneId);
@@ -580,6 +638,7 @@ export class ApprovalHub {
    */
   forget(paneId: string): void {
     this.modes.delete(paneId);
+    this.sessions.delete(paneId);
     for (const entry of [...(this.pending.get(paneId) ?? [])]) entry.settle(null);
     for (const [digest, launch] of this.launches) if (launch.paneId === paneId) this.dropLaunch(digest);
   }
@@ -589,6 +648,8 @@ export class ApprovalHub {
     const launch = this.launches.get(digest);
     this.launches.delete(digest);
     this.dropKey(digest);
+    // a session told through a key no request is taken for any more could not be told again (its /clear): it goes too
+    if (launch !== undefined && this.sessions.get(launch.paneId)?.launch === launch) this.sessions.delete(launch.paneId);
     if (launch !== undefined && this.contexts.get(launch.paneId)?.launch === launch) this.dropContext(launch.paneId);
   }
 
@@ -599,6 +660,7 @@ export class ApprovalHub {
   stop(): void {
     this.stopped = true;
     this.contexts.clear();
+    this.sessions.clear();
     // each held request gets its answer (no decision, so the terminal's dialog stands) before the listener closes
     for (const list of [...this.pending.values()]) for (const entry of [...list]) entry.settle(null);
     if (this.listener === null) return;
