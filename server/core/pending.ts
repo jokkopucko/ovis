@@ -875,7 +875,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
         if (target && !codexDisagrees(context.pane, target.threadId)) {
           const anchor = await prepareCodexReceipt(paneId, context.identity);
           const clientId = crypto.randomUUID(), at = Date.now();
+          let steerMark = mark;
           const reply = await target.send(text, clientId, async () => {
+            steerMark = pending.mark(paneId);
             const current = await pendingContext(owner, paneId, lease, identity, false, true);
             if (!current.working || current.collapsed || codexDisagrees(current.pane, target.threadId))
               throw new HerdrError(TARGET_CHANGED.code, TARGET_CHANGED.message);
@@ -884,7 +886,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             authorizePending(owner, paneId, lease);
             if (row.withdrawn?.() || Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS))
               throw new HerdrError("submit_timeout", "The message expired before delivery");
-            committing(true, false, pending.mark(paneId));
+            committing(true, false, steerMark);
             wrote = true;
           });
           if (reply === "accepted") { noteSubmitted(paneId, text, command, at); return { ok: true }; }

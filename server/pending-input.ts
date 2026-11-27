@@ -145,7 +145,7 @@ export class PendingInputs<Owner, Lease> {
           // on its discard must see this uncertainty before it can withdraw.
           item.message.state = "uncertain";
           item.message.error = { code: reply.code ?? "pending_uncertain", message: reply.message ?? "Check the terminal before sending this message again" };
-          this.gates.delete(paneId);
+          if (this.gates.get(paneId)?.completed) this.gates.delete(paneId);
           this.holdPane(paneId, item.message.error);
           this.publish(item.owner, paneId);
         }
@@ -328,7 +328,8 @@ export class PendingInputs<Owner, Lease> {
       this.reviewOnly.add(item);
       if (gate?.completed) this.gates.delete(item.paneId);
     } else {
-      if (uncertain || gate?.by === item.message.id || gate?.completed) this.gates.delete(item.paneId);
+      // an uncertain send's committed Enter keeps its wait: its turn is still to be seen to start and finish
+      if ((!uncertain && gate?.by === item.message.id) || (gate?.by === item.message.id && !gate.committed) || gate?.completed) this.gates.delete(item.paneId);
       if (uncertain) this.holdPane(item.paneId, fault.code === "pasted_not_sent" ? BEHIND_PASTE : fault);
     }
     this.publish(item.owner, item.paneId);
@@ -402,7 +403,7 @@ export class PendingInputs<Owner, Lease> {
   /** A message of the pane waits, or an Enter's turn has not been seen to start and finish: one sent now goes behind it. */
   waiting(paneId: string): boolean {
     return this.gates.get(paneId)?.committed === true
-      || [...this.records.values()].some((item) => item.paneId === paneId && (item.inFlight || item.message.state === "queued"));
+      || [...this.records.values()].some((item) => item.paneId === paneId && (item.inFlight || item.message.state === "queued" || this.blocksQueue(item)));
   }
 
   forget(paneId: string): void { this.statuses.delete(paneId); this.events.delete(paneId); this.gates.delete(paneId); this.waits.delete(paneId); this.readAt.delete(paneId); this.readBy.delete(paneId); }

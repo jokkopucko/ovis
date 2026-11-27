@@ -20,13 +20,14 @@ afterEach(() => { mock.restore(); });
 type Row = { id: string; state: string; text: string; error?: { code: string } };
 const steeringPanel = (entry: string) => `• Working (2s • esc to interrupt)\n• Messages to be submitted after next tool call (press esc to interrupt and send immediately)\n  ↳ ${entry}\n› Ask Codex to do anything\n  gpt-6.1 default · /workspace\n`;
 
-function pane() {
+/** `argv`: the Codex process herdr reports in front; `options`: added to createPendingDelivery's options. */
+function pane(argv: string[] = ["codex"], options: Record<string, unknown> = {}) {
   const typed: string[] = [];
   const now = { status: "working", screen: "" };
   const on: { keys?: (keys: string[]) => void; read?: (count: number) => void } = {};
   let reads = 0;
   spyOn(processStart, "processStartedAtAsync").mockImplementation(async () => 1000);
-  spyOn(herdr, "paneProcessInfo").mockImplementation(async () => ({ pane_id: "p", shell_pid: 41000, foreground_processes: [{ pid: 41001, name: "codex", argv: ["codex"] }] }) as Awaited<ReturnType<typeof herdr.paneProcessInfo>>);
+  spyOn(herdr, "paneProcessInfo").mockImplementation(async () => ({ pane_id: "p", shell_pid: 41000, foreground_processes: [{ pid: 41001, name: "codex", argv }] }) as Awaited<ReturnType<typeof herdr.paneProcessInfo>>);
   spyOn(herdr, "paneRead").mockImplementation(async () => { on.read?.(++reads); return { text: now.screen } as Awaited<ReturnType<typeof herdr.paneRead>>; });
   // as herdrRpc does: the guard is asked right before the write, and a refused write sends nothing
   const refused = (guard?: () => boolean): void => { if (guard && !guard()) throw new herdr.HerdrError("cancelled", "the write was withheld"); };
@@ -36,7 +37,7 @@ function pane() {
   let tail: Promise<unknown> = Promise.resolve();
   const serialize = <T,>(_pane: string, run: () => T | Promise<T>): Promise<T> => { const next = tail.catch(() => {}).then(run); tail = next; return next; };
   const delivery = createPendingDelivery({
-    options: { submitDelayMs: 0 }, clients: new Set<unknown>([page]), attachments: new Map(), serialize, lastTyped: new Map(),
+    options: { submitDelayMs: 0, ...options }, clients: new Set<unknown>([page]), attachments: new Map(), serialize, lastTyped: new Map(),
     sight: () => ({ facts: () => ({ attached: true, origin: true, sameAttachment: true, samePty: true, sameClaim: true, claimed: true, member: true,
       ready: true, held: false, currentHeld: false, mirror: false, cols: 80 }), write: () => {} }),
     submitText: async () => { typed.push("immediate"); },
@@ -771,4 +772,115 @@ it("takes no tracker's remembered working from a reconcile that reads no status 
   onBaseline([shown("unknown")], new Set(), now + 2000);
   onBaseline([shown("idle")], new Set(), now + 3000);
   expect(pending.next(PANE)).toBeNull();
+});
+
+it("keeps a Codex restart's wait when a second Send now steers through Codex's app server after the interruption's idle", async () => {
+  let useServer = false;
+  const d: ReturnType<typeof pane> = pane(["codex", "--remote", "unix:///tmp/codex.sock"], {
+    pendingStartTimeoutMs: 0,
+    codexServers: {
+      steerTarget: () => !useServer ? null : {
+        threadId: "th-1",
+        send: async (_input: string, _clientId: string, checkPane: () => Promise<void>, writing: () => void) => {
+          await checkPane();
+          // Between checkPane's working read and turn/steer, Escape's interruption reaches the queue as idle.
+          d.now.status = "idle";
+          d.delivery.pending.status("p", "idle");
+          writing();
+          d.typed.push("rpc:Y");
+          return "accepted";
+        },
+      },
+    },
+  });
+  d.delivery.pending.status("p", "working");
+  await d.queue("X");
+  await d.queue("Y");
+  await d.queue("Z");
+  d.on.keys = (keys) => {
+    if (keys.includes("Enter")) d.now.screen = steeringPanel("X");
+    if (keys.includes("Escape")) d.now.screen = "";
+  };
+  await d.sendNow("X");
+  await d.settled();
+  expect(d.typed).toEqual(["paste:X", "Enter", "Escape"]);
+  useServer = true;
+  await d.sendNow("Y");
+  await d.settled();
+  expect(d.typed).toEqual(["paste:X", "Enter", "Escape", "rpc:Y"]);
+  // With pendingStartTimeoutMs: 0, the joined window has already passed: a bare idle still cannot release Z before the restarted turn was seen at work.
+  d.event("idle");
+  await d.settled();
+  expect(d.typed).toEqual(["paste:X", "Enter", "Escape", "rpc:Y"]);
+  d.now.status = "working";
+  d.event("working");
+  d.now.status = "idle";
+  d.event("idle");
+  await d.settled();
+  expect(d.typed).toEqual(["paste:X", "Enter", "Escape", "rpc:Y", "paste:Z", "Enter"]);
+});
+
+it("treats an uncertain row as waiting so a queued submit is refused instead of typed at once", async () => {
+  const typed: string[] = [];
+  const sentFrames: unknown[] = [];
+  let failPasteAfterWrite = false;
+  spyOn(processStart, "processStartedAtAsync").mockImplementation(async () => 1000);
+  spyOn(herdr, "paneProcessInfo").mockImplementation(async () => ({ pane_id: "p", shell_pid: 41000, foreground_processes: [{ pid: 41001, name: "claude", argv: ["claude"] }] }) as Awaited<ReturnType<typeof herdr.paneProcessInfo>>);
+  spyOn(herdr, "paneRead").mockImplementation(async () => ({ text: "" }) as Awaited<ReturnType<typeof herdr.paneRead>>);
+  const refused = (guard?: () => boolean): void => { if (guard && !guard()) throw new herdr.HerdrError("cancelled", "the write was withheld"); };
+  spyOn(herdr, "paneSendText").mockImplementation(async (_pane, text, _socket, guard) => {
+    refused(guard);
+    typed.push(text.replace("\u001b[200~", "paste:").replace("\u001b[201~", ""));
+    if (failPasteAfterWrite) throw new herdr.HerdrError("socket_error", "lost reply after paste");
+  });
+  spyOn(herdr, "paneSendKeys").mockImplementation(async (_pane, keys, _socket, guard) => { refused(guard); typed.push(keys.join(",")); });
+  const page = { data: connectionData({ deviceId: undefined, readOnly: false }), getBufferedAmount: () => 0, send: (raw: string) => { sentFrames.push(JSON.parse(raw)); return 1; } };
+  let tail: Promise<unknown> = Promise.resolve();
+  const serialize = <T,>(_pane: string, run: () => T | Promise<T>): Promise<T> => { const next = tail.catch(() => {}).then(run); tail = next; return next; };
+  const delivery = createPendingDelivery({
+    options: { submitDelayMs: 0 },
+    clients: new Set<unknown>([page]), attachments: new Map(), serialize, lastTyped: new Map(),
+    sight: () => ({ facts: () => ({ attached: true, origin: true, sameAttachment: true, samePty: true, sameClaim: true, claimed: true, member: true,
+      ready: true, held: false, currentHeld: false, mirror: false, cols: 80 }), write: () => {} }),
+    submitText: async () => { typed.push("immediate"); },
+    authorizeSocket: () => {},
+    clientSnapshot: async () => ({ panes: [{ pane_id: "p", terminal_id: "p", workspace_id: "w", tab_id: "t", agent: "claude", agent_status: "idle", focused: false, revision: 0 }] }),
+    omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
+  } as unknown as Parameters<typeof createPendingDelivery>[0]);
+  page.data.attached.set("p", { keepSize: false });
+  // Queue X while held, then Send now fails right after paste (before committing), leaving X uncertain with no committed gate.
+  await delivery.pendingFrames.submit(page as never, { type: "submit", id: 1, pane_id: "p", text: "X", payload: "X", delivery: "hold" } as never);
+  const xRow = (delivery.pending.list(page as never, "p") as Row[])[0]!;
+  failPasteAfterWrite = true;
+  await delivery.pendingFrames["pending-action"](page as never, { type: "pending-action", id: 2, pane_id: "p", pending_id: xRow.id, action: "steer" } as never);
+  expect((delivery.pending.list(page as never, "p") as Row[])[0]?.state).toBe("uncertain");
+  expect(delivery.pending.waiting("p")).toBe(true);
+  expect(typed).toEqual(["paste:X"]);
+
+  failPasteAfterWrite = false;
+  await delivery.pendingFrames.submit(page as never, { type: "submit", id: 3, pane_id: "p", text: "Y", payload: "Y", delivery: "queue" } as never);
+  // Y must be refused with pending_uncertain, never typed at once onto the half-pasted terminal.
+  expect(typed).toEqual(["paste:X"]);
+  expect(sentFrames.find((frame) => (frame as { type?: string; id?: number }).type === "submit-result" && (frame as { id?: number }).id === 3))
+    .toMatchObject({ ok: false, code: "pending_uncertain" });
+});
+
+it("keeps a committed turn gate when an uncertain send is confirmed from the native transcript", () => {
+  const pending = new PendingInputs<string, null>(() => {}, () => 1_000, 10_000);
+  const identity = { agent: "codex", terminalId: "p", session: null };
+  pending.status("p", "idle");
+  const x = pending.enqueue("a", "p", 1, "X", null, identity);
+  expect(pending.claim(x, true)).toBe(true);
+  pending.committing(x);
+  pending.settle(x, { code: "submit_changed", message: "Outcome not confirmed" }, true, false);
+  expect(x.message.state).toBe("uncertain");
+  expect(pending.confirmRecorded(x, () => true)).toBe(true);
+  // X's turn has not been seen to start and finish yet: Y queued afterwards must wait for X's turn evidence.
+  expect(pending.waiting("p")).toBe(true);
+  const y = pending.enqueue("a", "p", 2, "Y", null, identity);
+  expect(pending.next("p")).toBeNull();
+  pending.status("p", "working");
+  expect(pending.next("p")).toBeNull();
+  pending.status("p", "idle");
+  expect(pending.next("p")).toBe(y);
 });

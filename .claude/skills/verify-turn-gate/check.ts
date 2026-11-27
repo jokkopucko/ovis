@@ -27,6 +27,7 @@ export const CONFIGS: Config[] = [
   // each rule can fail: a broken copy of the class
   broken("claim-replaces-wait", "QueueWaitsForTurnEvidence", { free: true }),
   broken("sent-ends-wait", "QueueWaitsForTurnEvidence", { free: true }),
+  broken("uncertain-ends-wait", "QueueWaitsForTurnEvidence", { free: true }),
   broken("timeout-without-hold", "QueueWaitsForTurnEvidence", { free: true }),
   broken("deadline-at-once", "QueueWaitsForTurnEvidence", { free: true }),
   broken("restart-counts-old-working", "QueueWaitsForTurnEvidence", { free: true }),

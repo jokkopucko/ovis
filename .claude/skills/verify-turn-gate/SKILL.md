@@ -1,6 +1,6 @@
 ---
 name: verify-turn-gate
-description: Check a change to the chat queue's turn gate against the rule that the next queued message is typed on its own only after the turn of the message before it was seen to start and to finish. Use when a change touches the gate in server/pending-input.ts (gates, next, claim, committing, settle, apply, status, observe, mark, expire, hold, holdPane, move, forget, resend), what feeds it in server/core/pending.ts (drainPending, dispatchPending, dispatchPendingText, the submit and pending-action frames) or server/core/status.ts (a pending.status call, clientSnapshot, onBaseline), the Escape of a Codex Send now in server/codex-steering.ts, or the order of status events and snapshots in server/collector.ts and server/completion.ts.
+description: Check a change to the chat queue's turn gate against the rule that the next queued message is typed on its own only after the turn of the message before it was seen to start and to finish. Use when a change touches the gate in server/pending-input.ts (gates, next, claim, committing, settle, confirmRecorded, apply, status, observe, baseline, mark, expire, hold, holdPane, move, forget, resend), what feeds it in server/core/pending.ts (drainPending, dispatchPending, dispatchPendingText, reconcileCodexDeliveries, the submit and pending-action frames) or server/core/status.ts (a pending.status call, deliverySnapshot, clientSnapshot, onBaseline), the Escape of a Codex Send now in server/codex-steering.ts, or the order of status events and snapshots in server/collector.ts and server/completion.ts.
 ---
 
 # Verify the queue's turn gate
@@ -21,7 +21,7 @@ few of those orders. This check covers every order within its bounds.
 
 | Rule | What it says | What a break does |
 | --- | --- | --- |
-| `QueueWaitsForTurnEvidence` | From the `committing` of an Enter on, the queue is offered no message of that pane until readings of the agent made after that commit have shown the turn to start and then to finish: ready after work for an Enter that joined a turn at work, and ready, work, ready after the Escape of a Codex Send now. A reading is a status event, a snapshot's status that no event overtook, or the last read of a later send. One made before the commit, or before a reading already counted, says nothing of the turn. The wait may end without that only where no message of the pane is left queued, in the step that ends it: a send left uncertain, the start timeout, the pane ending or moving. | The queue takes up the next message on the strength of a status that says nothing about the turn before it. |
+| `QueueWaitsForTurnEvidence` | From the `committing` of an Enter on, the queue is offered no message of that pane until readings of the agent made after that commit have shown the turn to start and then to finish: ready after work for an Enter that joined a turn at work, and ready, work, ready after the Escape of a Codex Send now. A reading is a status event, a snapshot's status that no event overtook, or the last read of a later send. One made before the commit, or before a reading already counted, says nothing of the turn. The wait may end without that only where no message of the pane is left queued, in the step that ends it: the start timeout, the pane ending or moving. | The queue takes up the next message on the strength of a status that says nothing about the turn before it. |
 | `NoAutomaticEnterIntoQueuedTurn` | The queue's own Enter never reaches the agent while the agent is on, or has yet to begin, the turn of a message this queue sent before it. | The message lands in that turn: steered into it, queued behind it by the agent, or merged with it. |
 
 The first rule is about the class and its callers, and is also asked with no description of the
@@ -56,7 +56,7 @@ every line starts with `ok` and it exits 0:
 | `turns-claude`, `turns-codex`, `turns-moved` | both rules, with the agent and herdr [as described](#what-the-check-assumes) | holds |
 | `turns-ahead` | `NoAutomaticEnterIntoQueuedTurn`, with a snapshot ahead of status events put back | holds |
 | `turns-other-turn` | `NoAutomaticEnterIntoQueuedTurn`, with a turn something else starts | holds |
-| `broken-*` (seven) | one rule each, on a copy of the class with one edit (`VARIANTS` in `explore.ts`) | that rule breaks |
+| `broken-*` (eight) | one rule each, on a copy of the class with one edit (`VARIANTS` in `explore.ts`) | that rule breaks |
 | `finding-*` (one) | one rule, with one thing the real system does put back | that rule breaks: [what it has found](#what-it-has-found) |
 | `limit-*` (two) | `NoAutomaticEnterIntoQueuedTurn`, with one thing status evidence cannot tell put back | it breaks: [known limits](#what-the-check-assumes) |
 
@@ -154,11 +154,14 @@ wrong check: correct the step, then run everything again.
    or `atOnce` in `check.ts`) into `described`, so the main runs ask the rules with it, and delete
    the run and its paragraph below. Then run the whole check again: the main runs now ask more
    than they did in step 2.
-5. Update the coverage record, then run `covered.sh --record` and commit `covered.blobs` with your
-   change: that moves the sync commit. Do it only after you have read the covered functions as
-   they are now and confirmed that the steps describe them, never to make `covered.sh` quiet.
-   `--record` reads the files as they are in the working tree, so commit those same versions: on
-   the clean tree after the commit, `covered.sh` must say that no covered file changed.
+5. Update the coverage record, then run `.claude/skills/verify-turn-gate/covered.sh --record` and
+   `bun scripts/verify-turn-gate.ts --record`, and commit `covered.blobs` and `pins.json` with your
+   change: that moves the sync commit and updates the targeted AST pin checked by
+   `scripts/verify-turn-gate.test.ts` in `bun run check fast`. Do it only after you have read the
+   covered functions as they are now and confirmed that the steps describe them, never to make
+   `covered.sh` or `verify-turn-gate.test.ts` quiet. `--record` reads the files as they are in the
+   working tree, so commit those same versions: on the clean tree after the commit, `covered.sh`
+   must say that no covered file changed.
 
 Never weaken a rule, the rule's record or a bound to make a run pass. When the product should
 behave differently, say so to the maintainer first.
@@ -251,9 +254,11 @@ key typed into a turn and never a wait with no end.
   late verdicts (`claudeLate`, `codexRest`), `tellQueue`. The `gate` runs cover them as far as the
   class goes (any status at any time); the `turns-*` runs do not describe them.
 - A pane's first message (`FIRST_MESSAGE_OWNER`, `holdItem`, `rehold`), omp's start
-  (`waitingFor`, `holdQueued`, a message queued behind a starting omp with no `observe`), a
-  message for an agent alone, Grok's second Enter after a Send now, agy's alt+m after a Send now (it
-  joins the turn at work, so it arms no restart: `SEND_NOW` in `server/codex-steering.ts`), Pi's receipt.
+  (`waitingFor`, `holdQueued`, a message queued behind a starting omp with no `observe`), ACP child
+  sessions (`acp:`, whose single-step `committing` and Send now `observe("working", mark)` call the
+  same `PendingInputs` methods), a message for an agent alone, Grok's second Enter after a Send now,
+  agy's alt+m after a Send now (it joins the turn at work, so it arms no restart: `SEND_NOW` in
+  `server/codex-steering.ts`), Pi's receipt.
 - `close` and the 60 s after it (a closed owner's rows are held first, then dropped). The
   bookkeeping of `resend` around a Send now (a repeated request gets the first one's answer): read,
   not explored. A held copy sent again is explored, as one step, for a row still listed.
@@ -275,20 +280,22 @@ against it. A squash merge keeps blob ids, so the record stays right on `main`.
 
 | Step in `explore.ts` | Code |
 | --- | --- |
-| every call on `inst` | `server/pending-input.ts` `PendingInputs`: `enqueue`, `next`, `claim`, `committing` (with the read's mark), `typedAtOnce`, `settle`, `discard`, `mark`, `current`, `status`, `observe`, `baseline`, `waiting`, `forget`, `hold`, `holdPane`, `move`, `expire`, `resend`, and the private `apply` and `finish` they reach |
+| every call on `inst` | `server/pending-input.ts` `PendingInputs`: `enqueue`, `next`, `claim`, `committing` (with the read's mark), `typedAtOnce`, `settle`, `confirmRecorded`, `discard`, `mark`, `current`, `status`, `observe`, `baseline`, `waiting`, `forget`, `hold`, `holdPane`, `move`, `expire`, `resend`, and the private `apply`, `read`, `finish` and `blocksQueue` (an uncertain row kept for review alone, `reviewOnly`, does not stop the queue) they reach |
 | `status event applied` | `server/core/status.ts`: `pending.status(paneId, …)` and the `drainPending` after it, in `reportStatus`, `omoChanged`, `gjcChanged` |
-| `a reconcile reads the pane`, `the reconcile's reading is told to the queue as its baseline` | `server/collector.ts` `reconcile` (`await deps.snapshot()`, then `handlers.onBaseline` with the panes that had an event since it was asked for); `status.ts` `onBaseline`, `pending.baseline` for the others |
-| `… reads the pane`, `… has read the pane` | `server/core/pending.ts` `pendingContext`, `currentIdentity`; `status.ts` `clientSnapshot`; `server/completion.ts` `readSnapshot` (an event applied during the read wins) |
+| `a reconcile reads the pane`, `the reconcile's reading is told to the queue as its baseline` | `server/collector.ts` `reconcile` (`await deps.snapshot()`, then `handlers.onBaseline` with the panes that had an event since it was asked for; `created` is for web push alone); `status.ts` `onBaseline`, `pending.baseline` for the others |
+| `… reads the pane`, `… has read the pane` | `server/core/pending.ts` `pendingContext`, `currentIdentity`; `status.ts` `deliverySnapshot` (handed to `createPendingDelivery` in `server-core.ts` as `clientSnapshot`); `server/completion.ts` `readSnapshot` (an event applied during the read wins) |
 | `sends … to queue / hold`, `accepted to … (observe, enqueue)`, `Codex's questions are collapsed`, `typed at once` | `pending.ts` `pendingFrames.submit`, the `waits` branch: `pending.mark`, `pendingContext`, `pending.observe`, `pending.enqueue`, and its `dispatchPendingText(…, queued)` whose `committing` is `pending.typedAtOnce` |
 | `the queue takes up`, `claimed by the queue` | `pending.ts` `drainPending`: `pending.next`, `pending.claim(item, true)` |
 | `the queue reads the pane (mark taken)`, `put off (observe …)`, `put off with no status told`, `refused before the paste`, `a screen of Codex's own has the input`, `pasted` | `pending.ts` `dispatchPendingText` up to its paste: `pending.mark`, `pendingContext`, `pending.observe(paneId, "working" / "blocked", mark)`; `dispatchPending`: `retry`, `left`, `pending.settle`, and `pending.holdPane` for an `unannounced` refusal |
-| `reads the pane before its Enter`, `committing (…)`, `its Enter lands`, `refused after the paste: uncertain`, `sent` | `dispatchPendingText` from its paste on: `enterMark`, `beforeEnter`, `steering`, `committing(steering, false, enterMark)`, `paneSendKeys`, the `catch` that makes every failure after `wrote` a `submit_changed`; `dispatchPending`'s `pending.settle` |
+| `reads the pane before its Enter`, `committing (…)`, `its Enter lands`, `refused after the paste: uncertain`, `sent` | `dispatchPendingText` from its paste on: `enterMark`, `beforeEnter`, `steering`, `committing(steering, false, enterMark)`, `paneSendKeys`, the `catch` that makes every failure after `wrote` a `submit_changed`; for a Codex at rest on the server Ovis started, `sendCodexTextAsData`'s `mayWrite`, whose `committing(false, false, pending.mark(paneId))` comes right before turn/start stands for the Enter (its mark is taken later than `enterMark`, so fewer readings count); `dispatchPending`'s `pending.settle` |
 | `Send now on`, `Send now refused before it began`, `claimed by Send now` | `pending.ts` `pendingFrames["pending-action"]`, action `steer`: `pending.claim(item, false)`, and the claim and settle of a send refused before its claim |
-| `Send now reads the pane for Codex's steering panel`, `the panel shows it: committing (restarting the turn)`, `Escape lands`, `Codex is no longer at work` | `server/codex-steering.ts` `interruptCodexSteering`, `codexSteeringPending`; `pending.ts` its `read`, `restarting` and `press`, with the guard on `pending.current` |
+| `Send now reads the pane for Codex's app server`, `Send now checks Codex's loaded threads`, `refused before Codex's steer`, `Codex's loaded threads changed`, `Codex's app server leaves the send to the terminal`, `committing (steering via Codex's app server)`, `Codex's app server confirms the steer`, `Codex's app server reply is lost` | `pending.ts` `dispatchPendingText` `steerTarget.send` (`server/approvals/codex.ts` `Connection.steer`): `steerMark` before `pendingContext`, `thread/loaded/list`, `pending.holdPane` on `"changed"`, fallback to terminal path without `nativeItem` on `"unsent"`, `committing(true, false, steerMark)` before `turn/steer`, then `"accepted"` vs `"unknown"` |
+| `Send now reads the pane for Codex's steering panel`, `the panel shows it: committing (restarting the turn)`, `Escape lands`, `Codex is no longer at work`, `the restart is not confirmed`, `Codex reads at rest / at work after the Enter` | `server/codex-steering.ts` `interruptCodexSteering` (its `"unconfirmed"` answer, and the read after an Enter typed while Codex was at rest), `codexSteeringPending`, `SEND_NOW`; `pending.ts` its `read`, `restarting` and `press`, with the guard on `pending.current`, and `keepTurnGate`, which `dispatchPending` settles as `settle(…, "preserve-turn")` |
+| `native transcript confirms it (confirmRecorded)` | `pending.ts` `reconcileCodexDeliveries`: `pending.confirmRecorded` inside `serialize` |
 | `a saved copy of … is sent again` | `pending.ts` `pendingFrames.submit` with a `resend_id`; `PendingInputs.resend` and its reply handler |
 | `Discard` | `pending-action`, action `discard`: `pending.discard` |
-| `…'s page leaves the pane` | `pending.ts` `holdPending`, `pending.hold` |
-| `the pane's terminal restarts under its pages` | `pending.ts` `holdPendingPane`, `pending.holdPane` |
+| `…'s page leaves the pane` | `pending.ts` `holdPending` (also from `terminals.ts` `retireFit`, `fitHeld`, `fitPane` when a native Windows terminal's control moves), `pending.hold` |
+| `the pane's terminal restarts under its pages` | `pending.ts` `holdPendingPane`, `pending.holdPane` (including `server-core.ts` when an ACP child's status turns `unknown`) |
 | `the pane ends` | `status.ts` `paneGone`: `holdPendingPane`, then `pending.forget` |
 | `herdr moves the pane under a new id` | `pending.ts` `movePendingPane`: `holdPendingPane`, then `pending.move` |
 | `the start timeout passes`, `the 100 ms timer runs expire()` | `server/core/server-core.ts` `start`: `pending.expire()` every 100 ms, and `drainPending` for each pane it returns; `PENDING_START_TIMEOUT_MS`. A wait the class ends then, for a deadline it had when the timeout passed, ends the rule's record's wait too where nothing is left queued (`expiredGate`) |
