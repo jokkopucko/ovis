@@ -38,6 +38,8 @@ export interface PaneSummaries {
    * may be asked again
    */
   summaries: Record<string, PaneSummary | null>;
+  /** Panes the request did not reach, rather than reads that timed out or failed. Older servers omit this. */
+  readonly skipped?: readonly string[];
 }
 
 type TextPart = Extract<ConversationPart, { kind: "text" }>;

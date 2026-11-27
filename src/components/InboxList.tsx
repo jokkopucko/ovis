@@ -94,7 +94,7 @@ export function InboxList({ ref, machines, activity, watching, wide, filter, onF
   const { agentGroupSort: sort, sidebarRows, statusIndicators } = settings;
   const all = useMemo(() => inboxOrder(machines, activity, { sort, name: (row) => agentRowTitle(row, sidebarRows === "one").drawn }), [machines, activity, sort, sidebarRows]);
   const questions = useInboxQuestions(questionReads, questionTargets(all, activity));
-  const summaries = useInboxSummaries(summaryReads, summaryTargets(all, activity));
+  const summaries = useInboxSummaries(summaryReads, summaryTargets(all, activity), focus.opening);
   const stamps = useAgentStateStamps();
   const [tick, setTick] = useState(0);
   const wordsOf = (row: AgentRow): string | null => {

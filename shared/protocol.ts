@@ -345,7 +345,8 @@ export type { DevicePairedEvent, DevicePairedSeenEvent, DeviceRemovedEvent, Pair
  *         readable store answers no matches, one that loses it after a page was read 409 history_changed.)
  *  GET    /api/pane/summary?pane_id=&pane_id=... -> PaneSummaries (each pane's last words for a
  *         list row, read pane after pane within PANE_SUMMARY_DEADLINE_MS: a pane not read by then
- *         is left out, one with nothing said or no readable conversation is null. 400
+ *         is left out, one not reached is also listed in skipped, and one with nothing said
+ *         or no readable conversation is null. 400
  *         missing_pane_id, 400 too_many_panes past PANE_SUMMARY_MAX_IDS distinct ids)
  *  POST   /api/pane/close { pane_id }         -> { ok: true } (pane.close RPC; the collector's
  *         session-changed broadcast removes it from every client's sidebar)

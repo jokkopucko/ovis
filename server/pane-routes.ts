@@ -339,10 +339,12 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
     const gone = new Promise<"gone">((resolve) => { leave = () => resolve("gone"); });
     if (request.signal.aborted) leave(); else request.signal.addEventListener("abort", leave, { once: true });
     for (const [paneId, entry] of summaryReads) if (entry.settledAt !== undefined && Date.now() - entry.settledAt >= PANE_SUMMARY_KEEP_MS) summaryReads.delete(paneId);
+    let attempted = 0;
     try {
       for (const paneId of paneIds) {
         const left = deadline - Date.now();
         if (left <= 0 || request.signal.aborted) break;
+        attempted++;
         const running = summaryReads.get(paneId);
         let entry: SummaryReadEntry;
         if (running?.settledAt !== undefined) {
@@ -378,7 +380,8 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
     } finally {
       request.signal.removeEventListener("abort", leave);
     }
-    return jsonResponse({ server_time: new Date().toISOString(), summaries } satisfies PaneSummaries, 200, { "cache-control": "no-store" });
+    const skipped = attempted < paneIds.length ? paneIds.slice(attempted) : undefined;
+    return jsonResponse({ server_time: new Date().toISOString(), summaries, skipped } satisfies PaneSummaries, 200, { "cache-control": "no-store" });
   }
 
   if (pathname === "/api/pane/conversation") {

@@ -26,7 +26,7 @@ await mock.module("../lib/api.ts", () => ({
 const { InboxList } = await import("./InboxList.tsx");
 const { newQuestionReads } = await import("../lib/useInboxQuestions.ts");
 type InboxListHandle = import("../lib/useInbox.ts").InboxListHandle;
-const { SummaryReads } = await import("../lib/useInboxSummaries.ts");
+const { SUMMARY_RETRIES, SummaryReads } = await import("../lib/useInboxSummaries.ts");
 const { useAgentStateStamping } = await import("../lib/useAgentStateSince.ts");
 
 function Stamping({ machines, activity }: { machines: Machine[]; activity: SidebarActivity }) {
@@ -198,6 +198,32 @@ describe("InboxList", () => {
     const keys = byClass(root, "inbox-item").map((node) => `${node.getAttribute("data-machine")}:${node.getAttribute("data-pane")}`);
     expect(keys).toEqual(inboxOrder(machines, activity).map(inboxKey));
     expect(keys.length).toBeGreaterThan(1);
+  });
+
+  it("fills an unread row when the inbox opens again after summary retries ran out", async () => {
+    const retries: (() => void)[] = [];
+    summaryReads = new SummaryReads(
+      (machineId, paneIds) => new Promise((resolve) => { summaryCalls.push({ machineId, paneIds, resolve }); }),
+      (run) => { retries.push(run); return () => {}; },
+    );
+    const root = await draw(roster(), { wide: true, opening: 1 });
+    const paneId = order(root)[0];
+    if (!paneId) throw new Error("Missing inbox row");
+    const server_time = new Date().toISOString();
+    for (let attempt = 0; attempt <= SUMMARY_RETRIES; attempt++) {
+      await act(async () => {
+        const call = summaryCalls.shift();
+        if (!call) throw new Error("Missing summary request");
+        call.resolve({ server_time, summaries: Object.fromEntries(call.paneIds.filter((id) => id !== paneId).map((id) => [id, null])) });
+      });
+      await act(async () => { retries.shift()?.(); });
+    }
+    await redraw({ opening: 2 });
+    expect(summaryCalls.map((call) => call.paneIds)).toEqual([[paneId]]);
+    await act(async () => {
+      summaryCalls.shift()?.resolve({ server_time, summaries: { [paneId]: said("Read on reopening", null) } });
+    });
+    expect(words(root, paneId)).toEqual(["Read on reopening"]);
   });
 
   it("has no heading and names the list for a screen reader", async () => {

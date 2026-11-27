@@ -30,6 +30,14 @@ const answer = (summaries: Record<string, PaneSummary | null>, server_time = "19
 const settled = () => new Promise<void>((resolve) => queueMicrotask(resolve)).then(() => undefined);
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
+async function omitThrough({ calls, waits }: ReturnType<typeof harness>, retries = SUMMARY_RETRIES) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (attempt > 0) waits.at(-1)?.run();
+    calls.at(-1)?.resolve(answer({}));
+    await settled();
+  }
+}
+
 describe("summaryTargets", () => {
   it("stamps a row with its PC's herdr lifetime, so a replaced herdr reusing the pane reads it again", () => {
     const activity: SidebarActivity = { seqs: () => new Map(), status: (_machineId, pane) => pane.agent_status as AgentStatus };
@@ -77,6 +85,25 @@ describe("SummaryReads", () => {
       await settled();
     }
     expect(reads.summaries().size).toBe(rows.length);
+  });
+
+  it("still fills a row after other reads repeatedly use up the batch deadline", async () => {
+    const { reads, calls, waits } = harness();
+    const last = target("tail");
+    const rows = [...Array.from({ length: 6 }, (_, index) => target(`slow-${index}`)), last];
+    reads.sync(rows);
+    for (let turn = 0; turn < rows.length * (SUMMARY_RETRIES + 1); turn++) {
+      const call = calls[turn];
+      if (!call) break;
+      const [first, ...skipped] = call.paneIds;
+      // Each slow read takes the whole deadline; the tail answers as soon as it is reached.
+      const reply = { ...answer(first === last.paneId ? { [last.paneId]: said("Reached the tail") } : {}), skipped };
+      call.resolve(reply);
+      await settled();
+      if (reads.summaries().has(last.key)) break;
+      for (const wait of waits.splice(0)) if (!wait.cancelled) wait.run();
+    }
+    expect(reads.summaries().get(last.key)?.text).toBe("Reached the tail");
   });
   it("asks each PC in batches of at most 24, one request in flight per PC", async () => {
     const { reads, calls } = harness();
@@ -470,6 +497,69 @@ describe("SummaryReads", () => {
     expect(calls).toHaveLength(SUMMARY_RETRIES + 1);
     reads.sync([target("a")]);
     expect(calls).toHaveLength(SUMMARY_RETRIES + 1);
+  });
+
+  it("does not recheck a returned row whose exhausted stamp departed during reopening", async () => {
+    const h = harness();
+    const working = target("a", ":0:working");
+    const blocked = target("a", ":0:blocked");
+    h.reads.sync([working]);
+    h.calls.at(-1)?.resolve(answer({ "pane-a": said("Working") }));
+    await settled();
+    h.reads.sync([blocked]);
+    await omitThrough(h);
+
+    h.reads.sync([], true);
+    h.reads.sync([blocked]);
+    const requests = h.calls.length;
+    const waits = h.waits.length;
+    h.calls.at(-1)?.resolve(answer({ "pane-a": said("Returned") }));
+    await settled();
+    for (const wait of h.waits.slice(waits)) wait.run();
+
+    expect(h.reads.summaries().get("a")?.text).toBe("Returned");
+    expect(h.calls).toHaveLength(requests);
+  });
+
+  it.each([false, true])("reopening during the final retry recovers the row without a duplicate request (final retry answers: %s)", async (answers) => {
+    const h = harness();
+    const row = target("a");
+    h.reads.sync([row]);
+    await omitThrough(h, SUMMARY_RETRIES - 1);
+    h.waits.at(-1)?.run();
+    const requests = h.calls.length;
+    const waits = h.waits.length;
+
+    h.reads.sync([row], true);
+    h.calls.at(-1)?.resolve(answer(answers ? { "pane-a": said("Recovered") } : {}));
+    await settled();
+    for (const wait of h.waits.slice(waits)) wait.run();
+    if (!answers && h.calls.length > requests) {
+      h.calls.at(-1)?.resolve(answer({ "pane-a": said("Recovered") }));
+      await settled();
+    }
+
+    expect(h.reads.summaries().get("a")?.text).toBe("Recovered");
+    expect(h.calls).toHaveLength(requests + (answers ? 0 : 1));
+  });
+
+  it("retries on reopening when working returns with the same stamp after blocked", async () => {
+    const h = harness();
+    const working = target("a", ":0:working");
+    h.reads.sync([working]);
+    h.calls.at(-1)?.resolve(answer({ "pane-a": said("Previous working state") }));
+    await settled();
+    h.reads.sync([target("a", ":0:blocked")]);
+    await omitThrough(h);
+    expect(h.reads.summaries().has("a")).toBe(false);
+    h.reads.sync([working]);
+    await omitThrough(h);
+
+    h.reads.sync([working], true);
+    h.calls.at(-1)?.resolve(answer({ "pane-a": said("Current working state") }));
+    await settled();
+
+    expect(h.reads.summaries().get("a")?.text).toBe("Current working state");
   });
 
   it("removes the words of an earlier stamp once the new read has used its retries", async () => {
