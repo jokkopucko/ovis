@@ -373,6 +373,26 @@ try {
         }, ROWS);
         assert.ok(gridCursor.top >= gridCursor.viewTop - 1 && gridCursor.bottom <= gridCursor.viewBottom + 1, `the grid's cursor row stays in view under the folded rows ${JSON.stringify(gridCursor)}`);
 
+        // Automatic cursor following may move this scrollable host after a drawer swipe lifts.
+        // It is layout work; a user's pan remains outside the layout notifications.
+        await page.waitForFunction(() => document.getElementById("workspace-drawer")!.getBoundingClientRect().right <= 0.5);
+        const drawerTouch = await page.context().newCDPSession(page);
+        await drawerTouch.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: 170, y: 400 }] });
+        for (const x of [190, 220, 260, 300]) await drawerTouch.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: 400 }] });
+        await drawerTouch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        await page.locator("#workspace-drawer.is-open").waitFor();
+        await pushScreen(page, frameOf(["DRAWER-FOLLOW-TOP"]));
+        await page.waitForFunction(() => document.querySelector(".terminal-fold")?.textContent?.includes("DRAWER-FOLLOW-TOP"));
+        await settled(page);
+        assert.equal(await page.locator("#workspace-drawer").getAttribute("aria-modal"), "true", "a folded terminal following its first row does not close the settled drawer");
+        await pushScreen(page, SCREEN);
+        await drawnScreen(page);
+        await settled(page);
+        assert.equal(await page.locator("#workspace-drawer").getAttribute("aria-modal"), "true", "cursor following back to the last row keeps the drawer open");
+        await page.keyboard.press("Escape");
+        await drawerTouch.detach();
+
+        // a cleared shell, its prompt on the first row: the folded rows keep it in sight, not the blank rows under it
         await page.setViewportSize({ width: 390, height: 600 });
         await pushScreen(page, frameOf(["PROMPT-TOP C:\\>"]));
         await page.waitForFunction(() => document.querySelector(".pane-frame.is-current .terminal-fold")?.textContent?.includes("PROMPT-TOP"));

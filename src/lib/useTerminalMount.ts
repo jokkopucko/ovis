@@ -30,6 +30,8 @@ import { pinchFontSize } from "./pinchFontSize.ts";
 import { finalStep, HERDR_MOUSE_SCROLL_LINES, wheelSteps } from "./wheelSteps.ts";
 import { createTouchFling, createVelocityTracker } from "./touchFling.ts";
 import { createTouchWheelPacer } from "./touchWheelPacer.ts";
+import { layoutScroll } from "./layoutScroll.ts";
+import { TOUCH_STROKE_CLAIMED } from "./touchClaim.ts";
 import { attachTerminalWheel, canPanTerminalGrid } from "./terminalWheel.ts";
 import { createTerminalFold, dimmedColor, wideGridKey, wideGrids } from "./terminalFold.ts";
 import { screenRows, terminalScreen, viewRows } from "./terminalScreen.ts";
@@ -421,7 +423,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
       // else at the bottom of the view (a cleared shell's prompt on the first row stays in sight).
       const followFold = (): void => {
         const bottom = fold.cursorBottom();
-        if (bottom !== null) host.scrollTop = bottom <= host.clientHeight ? 0 : bottom - host.clientHeight;
+        if (bottom !== null) layoutScroll(host, () => { host.scrollTop = bottom <= host.clientHeight ? 0 : bottom - host.clientHeight; });
       };
       const wideOwner = {};
       const fold = createTerminalFold(term, host, {
@@ -474,7 +476,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         const row = screen.offsetHeight / term.rows;
         const cursorBottom = screen.offsetTop + (viewRows(term).cursorY + 1) * row;
         const max = host.scrollHeight - host.clientHeight;
-        host.scrollTop = cursorBottom <= host.clientHeight ? 0 : cursorBottom - row >= max ? max : cursorBottom - host.clientHeight;
+        layoutScroll(host, () => { host.scrollTop = cursorBottom <= host.clientHeight ? 0 : cursorBottom - row >= max ? max : cursorBottom - host.clientHeight; });
       };
       followCursorRef.current = () => { panned = false; fold.sync(); followCursor(); };
       const keyboardHolds = (force: boolean): boolean => {
@@ -497,8 +499,11 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         heldForce = false;
         // xterm's helper textarea can sit at the old grid's cursor row for a while and keep the host
         // scrollable: a view panned under the keyboard would stay panned past the grid's top
-        host.scrollTop = 0;
-        if (!adopted()) host.scrollLeft = 0;
+        layoutScroll(host, () => {
+          host.scrollTop = 0;
+          if (!adopted()) host.scrollLeft = 0;
+        });
+        // the grid is this browser's again: a grid held under the keyboard unfolds
         fold.sync();
         syncInputViewport();
       };
@@ -2134,6 +2139,8 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         if (event.type === "touchcancel" || event.touches.length < 2) finishPinch(event.type === "touchend");
         if (event.touches.length === 0) pinchStroke = false;
       };
+      const onTouchClaimed = (): void => cancelTouchRef.current();
+      host.addEventListener(TOUCH_STROKE_CLAIMED, onTouchClaimed, { capture: true, passive: true });
       // Safari zooms inside an overflow region (xterm's viewport) despite touch-action: none
       const onGesture = (event: Event): void => { if (!chatViewRef.current) event.preventDefault(); };
       host.addEventListener("touchstart", onTouchStart, { capture: true, passive: false });
@@ -2544,6 +2551,7 @@ export function useTerminalMount(deps: TerminalMountDeps): void {
         host.removeEventListener("touchmove", onTouchMove, { capture: true });
         host.removeEventListener("touchend", onTouchEnd, { capture: true });
         host.removeEventListener("touchcancel", onTouchEnd, { capture: true });
+        host.removeEventListener(TOUCH_STROKE_CLAIMED, onTouchClaimed, { capture: true });
         touchFling.dispose();
         delete host.dataset.touchFling;
         touchPacer.dispose();

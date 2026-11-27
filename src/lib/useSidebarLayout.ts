@@ -25,7 +25,9 @@ export function useSidebarLayout({ initialLink, drawerBlocked }: SidebarLayoutPa
   const drawerOpenRef = useRef(drawerOpen); drawerOpenRef.current = drawerOpen;
   const wideScreen = useMediaQuery("(min-width: 769px)");
   useEffect(() => { if (wideScreen) setDrawerOpen(false); }, [wideScreen]);
-  useEffect(() => watchDrawerSwipe(() => drawerOpenRef.current, setDrawerOpen), []);
+  // on a phone the drawer follows a swipe in from the left edge, and a swipe back (lib/edgeSwipe.ts)
+  useEffect(() => watchDrawerSwipe(() => drawerOpenRef.current, setDrawerOpen,
+    () => drawerBlocked?.current !== true && document.getElementById("workspace-drawer") !== null), [drawerBlocked, setDrawerOpen]);
   const drawerOpenedAt = useRef<number | null>(null);
   const toggleDrawerByButton = useCallback((at: number) => {
     if (!drawerOpenRef.current) drawerOpenedAt.current = at;

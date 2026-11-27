@@ -1,3 +1,4 @@
+import { layoutScroll } from "../lib/layoutScroll.ts";
 import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { legacyEditText } from "../../shared/edit-output.ts";
@@ -1238,7 +1239,7 @@ function TerminalSnapshot({ text }: { text: string }) {
     if (pinned !== null || !followOnRelease.current) return;
     followOnRelease.current = false;
     const view = section.current?.closest<HTMLElement>(".chat-view");
-    if (view) view.scrollTop = view.scrollHeight;
+    if (view) layoutScroll(view, () => { view.scrollTop = view.scrollHeight; });
   }, [pinned]);
   return <section ref={section} className="chat-terminal-snapshot" aria-label={t("Terminal")} data-newer-read={shown !== text ? "" : undefined}>
     <div className="chat-terminal-snapshot-head"><span><SquareTerminal aria-hidden="true" />{t("Terminal")}</span>
@@ -1820,7 +1821,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     if (anchor === null) return;
     prependAnchor.current = null;
     const index = slots.current.rows.findIndex((row) => row.key === anchor.key);
-    if (index >= 0) void timeline.current?.scrollToIndex({ index, viewPosition: 0, viewOffset: anchor.offset, animated: false });
+    if (index >= 0) void timeline.current?.scrollToIndex({ index, viewPosition: 0, viewOffset: anchor.offset, animated: false, layoutScroll: true });
   }, [older]);
 
   // Prompts belong to the visible screen, not the native transcript: a Codex directory-trust
@@ -1974,8 +1975,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   useLayoutEffect(() => {
     const node = scroller.current;
     if (node !== null && stickToBottom.current && !selecting.current) {
-      if (state.source === "conversation") timeline.current?.scrollToEnd({ animated: false });
-      else node.scrollTop = node.scrollHeight;
+      if (state.source === "conversation") timeline.current?.scrollToEnd({ animated: false, layoutScroll: true });
+      else layoutScroll(node, () => { node.scrollTop = node.scrollHeight; });
     }
   }, [state, prompt, agentStatus, connected, ended]);
 
@@ -2002,7 +2003,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
         // Put the view at the DOM end before paint. A deferred scroll to the list's measured
         // end could undo that write if some of the transcript is still unmeasured.
         dropPendingListScroll(timeline.current);
-        node.scrollTop = node.scrollHeight;
+        layoutScroll(node, () => { node.scrollTop = node.scrollHeight; });
         followed(node.scrollTop);
       }
       measureEndRef.current();
@@ -2020,8 +2021,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   useLayoutEffect(() => {
     const node = scroller.current;
     if (node !== null && stickToBottom.current && !selecting.current) {
-      if (timeline.current) timeline.current.scrollToEnd({ animated: false });
-      else node.scrollTo({ top: node.scrollHeight, behavior: "instant" });
+      if (timeline.current) timeline.current.scrollToEnd({ animated: false, layoutScroll: true });
+      else layoutScroll(node, () => node.scrollTo({ top: node.scrollHeight, behavior: "instant" }));
     }
   }, [faces]);
   useEffect(() => {
@@ -2144,10 +2145,10 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     if (layoutMoved && stickToBottom.current && !pagingAway.current && !manualLayout.current && !selecting.current
       && scrollbarPress.current === null && distanceFromBottom > READER_ALLOWANCE_PX) {
       if (!listEndPadded(node)) {
-        node.scrollTop = node.scrollHeight;
+        layoutScroll(node, () => { node.scrollTop = node.scrollHeight; });
         followed(node.scrollTop);
       }
-      else if (scrollingUp && distanceFromBottom > LAYOUT_ALLOWANCE_PX) timeline.current?.scrollToEnd({ animated: false });
+      else if (scrollingUp && distanceFromBottom > LAYOUT_ALLOWANCE_PX) timeline.current?.scrollToEnd({ animated: false, layoutScroll: true });
     }
     if (!stickToBottom.current || readingUp || pagingAway.current) {
       const following = !pagingAway.current && distanceFromBottom <= allowance;
@@ -2193,7 +2194,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     if (node !== null) node.scrollTo({ top: node.scrollTop, behavior: "instant" });
     setAway(true);
   }, [navigationRef]);
-  const scrollToBottom = (): void => {
+  const scrollToBottom = (source: "reader" | "layout"): void => {
     const node = scroller.current;
     if (node === null) return;
     restoring.current = null;
@@ -2201,14 +2202,14 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     pagingAway.current = false; stickToBottom.current = true;
     manualLayout.current = false;
     rememberPlace(node);
-    if (timeline.current) timeline.current.scrollToEnd({ animated: false });
+    if (timeline.current) timeline.current.scrollToEnd({ animated: false, layoutScroll: source === "layout" });
     else node.scrollTo({ top: node.scrollHeight, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
     measureEnd();
   };
   useLayoutEffect(() => {
     if (localSend === undefined || seenLocalSend.current === localSend.key) return;
     seenLocalSend.current = localSend.key;
-    if (localSend.navigationGeneration === navigationRef.current) scrollToBottom();
+    if (localSend.navigationGeneration === navigationRef.current) scrollToBottom("layout");
   }, [localSend]);
   useEffect(() => { if (!paneVisible) navigationRef.current += 1; }, [paneVisible, navigationRef]);
   useEffect(() => () => { navigationRef.current += 1; }, [navigationRef]);
@@ -2327,12 +2328,13 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       return { ...row, beforeUser: row.turn?.role === "assistant" && next !== undefined && (next.turn === null || next.turn.role === "user") };
     });
   }, [withOutcomes, shownTurns, rowSlots]);
-  const placeRow = (list: LegendListRef, node: HTMLDivElement, index: number, offset: number): void => {
+  const placeRow = (list: LegendListRef, node: HTMLDivElement, position: { readonly index: number; readonly offset: number; readonly layoutScroll?: boolean }): void => {
+    const { index, offset, layoutScroll } = position;
     stopRestore.current?.();
     const key = timelineRows[index]!.key;
     pagingAway.current = true; stickToBottom.current = false; setAway(true);
     navigated();
-    void list.scrollToIndex({ index, viewPosition: 0, viewOffset: offset, animated: false });
+    void list.scrollToIndex({ index, viewPosition: 0, viewOffset: offset, animated: false, layoutScroll });
     const olderAt = olderCount.current;
     let frame = 0, frames = 0, stable = 0;
     const stop = (): void => {
@@ -2346,7 +2348,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       const row = node.querySelector<HTMLElement>(`[data-chat-row="${CSS.escape(key)}"]`);
       if (row !== null) {
         const delta = row.getBoundingClientRect().top - node.getBoundingClientRect().top - offset;
-        if (Math.abs(delta) > 1) { stable = 0; void list.scrollToOffset({ offset: node.scrollTop + delta, animated: false }); }
+        if (Math.abs(delta) > 1) { stable = 0; void list.scrollToOffset({ offset: node.scrollTop + delta, animated: false, layoutScroll: true }); }
         else if (++stable >= 2) { stop(); rememberPlace(node); return; }
       }
       frame = requestAnimationFrame(settle);
@@ -2385,18 +2387,18 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const list = timeline.current, node = scroller.current;
     if (node === null || list === null) return;
     if (saved.historyId !== (history.current ?? null)) {
-      scrollToBottom();
+      scrollToBottom("layout");
       return;
     }
     const index = chatRestoreIndex(saved, history.current ?? null, timelineRows.map((row) => row.turn === null ? `outcome|${row.outcome.id}` : chatTurnAnchor(row.turn)));
     if (index !== null) {
       restoring.current = null;
-      placeRow(list, node, index, saved.offset);
+      placeRow(list, node, { index, offset: saved.offset, layoutScroll: true });
     } else if (restoreReach(saved) !== "gone") {
       // Remounts initially have only the newest page. Keep the place until its row is loaded.
       dropPendingListScroll(list);
       pagingAway.current = true; stickToBottom.current = false; setAway(true);
-    } else scrollToBottom();
+    } else scrollToBottom("layout");
   }, [visible, loaded, error, state.source, timelineRows, olderCursor, outcomesRead, pollPrompt, connected]);
   useEffect(() => {
     const saved = restoring.current;
@@ -2412,7 +2414,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     if (list === null || node === null) { pick.done("failed"); return; }
     const index = pickedTurn(timelineRows.map((row) => row.turn), pick.match);
     if (typeof index !== "number") { pick.done("missing"); return; }
-    placeRow(list, node, index, 0);
+    placeRow(list, node, { index, offset: 0 });
     const { turn, key } = timelineRows[index]!;
     const folded = turn !== null ? foldedRequestsMatch(turn, pick.match.match) : null;
     if (folded !== null) {
@@ -2428,7 +2430,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
         if (timeline.current !== list) return;
         const row = node.querySelector<HTMLElement>(`[data-chat-row="${CSS.escape(key)}"]`);
         const at = row === null ? null : matchTop(row, words);
-        if (at !== null && at > node.clientHeight / 3) placeRow(list, node, index, Math.round(node.clientHeight / 3 - at));
+        if (at !== null && at > node.clientHeight / 3) placeRow(list, node, { index, offset: Math.round(node.clientHeight / 3 - at) });
       });
     }
     pick.done("shown");
@@ -2569,8 +2571,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       {loaded && empty && error === null && prompt === null && activity === "idle" && !(greeted && blank) && sentWaiting.length === 0 && <div className="chat-empty"><AgentMark agent={agent ?? "agent"} size={32} /><p>{t("No conversation yet — say something below")}</p></div>}
       {ended && <p className="chat-endcap">{t("terminal ended")}</p>}
   </>;
-  const jump = newMessages ? <button type="button" className="btn chat-new-messages chat-virtual-jump" onClick={scrollToBottom}>{t("New messages")} <ArrowDown aria-hidden="true" /></button>
-    : away && <button type="button" className="btn chat-new-messages chat-virtual-jump is-icon" aria-label={t("Jump to latest")} title={t("Jump to latest")} onClick={scrollToBottom}><ArrowDown aria-hidden="true" /></button>;
+  const jump = newMessages ? <button type="button" className="btn chat-new-messages chat-virtual-jump" onClick={() => scrollToBottom("reader")}>{t("New messages")} <ArrowDown aria-hidden="true" /></button>
+    : away && <button type="button" className="btn chat-new-messages chat-virtual-jump is-icon" aria-label={t("Jump to latest")} title={t("Jump to latest")} onClick={() => scrollToBottom("reader")}><ArrowDown aria-hidden="true" /></button>;
   return <ChatMarkdownImages paneId={paneId} cwd={cwd} connected={connected} onOpen={openMarkdownImage}><FileNameLookupContext.Provider value={fileNames}><ChatPaneContext.Provider value={paneId}><ChatHistoryContext.Provider value={historyId ?? ""}><ImageViewerContext.Provider value={openViewer}><ToolPathRootContext.Provider value={toolPathRoot(cwd)}>
     {/* a reader away from the end has not seen the answer a finish lands there: presented only at the end */}
     <div className="chat-frame" data-pane-content={active && visible && !covered && connected && !ended && loaded && error === null && !away && !newMessages

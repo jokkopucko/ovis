@@ -1189,9 +1189,39 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   dialog, a menu or popover the focus is in or on, or a field in it whose Escape does something (a rename, a filter with
   words), takes it first; hidden with the focus in it, it hands the focus to its toggle; a click on the toggle
   keeps the sidebar open as before. A touch never peeks (lib/sidebarPeek.ts). On touch, a mostly horizontal swipe in
-  from the left `24px` edge opens the drawer and a swipe to the left closes it. While the finger is
+  from the left `24px` edge opens the drawer and a swipe to the left closes it. Away from that
+  edge, opening requires `dx >= 2 * |dy|` so diagonal scrolling stays with the page; strokes
+  starting on a split divider (`role="separator"`) or its children cannot open a closed drawer,
+  but still close an open drawer. Interior strokes remain uncancelled until they reach `56px`
+  horizontally at that angle, letting an initially flat stroke turn into vertical scrolling.
+  [Paseo phone web](https://github.com/getpaseo/paseo/blob/main/packages/app/src/mobile-panels/gesture-intent.ts)
+  keeps opening edge-only to protect interior scrollers. Ovis deliberately allows a flatter interior
+  stroke as agreed in [#2705](https://github.com/devswha/ovis/issues/2705), retaining its existing
+  horizontal-scroll, input, selection and modal exclusions. While the finger is
   down the drawer is under it and the scrim darkens with it; let go, it stays open when more than half
   shows or a flick (`0.35` px/ms, not after a `100ms` rest) went that way, and slides the rest from there.
+  An interior opening released at or beyond `56px` stays open even when less than half shows,
+  so a slow stroke near the right edge works; reversing below that threshold or flicking left
+  can still close it. Edge-started strokes keep their original settling behavior. The opening
+  yields if a scrollable origin or the page has moved, including a compositor scroll delivered
+  while the finger is held, with one final movement check at lift. Once the stroke ends its
+  origin is discarded: a delayed send receipt's smooth follow is no longer touch scrolling and
+  cannot close the settled drawer. Instant automatic chat scrolling announces its actual writes through
+  `layoutScroll` and the LegendList patch, including delayed end follows and row adjustments.
+  Before a write the gesture checks for an unread native scroll; after it the gesture rebases
+  its origin. Nested writes share that interval. Terminal cursor follows and fit corrections use
+  the same layout notifications. A browser clamp to a shorter end also rebases.
+  This keeps opening available while an answer streams, including near-end and two-stage follows,
+  without excusing a reader's scroll. Smooth scrolling and explicit reader navigation still yield.
+  A committed interior opening tells its connected origin to discard pending touch work:
+  terminal remainder pixels and queued wheel reports cannot escape at the lift. If scrolling has
+  not already won, that claim also locks the origin's auto/scroll axes with inline overflow:hidden.
+  A later upward turn keeps the drawer under the finger instead of starting native scrolling.
+  Lift, cancel, a second touch, a wide viewport, backgrounding, exceptions and cleanup restore
+  each original inline value and priority; the original target also hears end/cancel if detached.
+  Settled openings hold neither a lock nor scroll ownership. Programmatic streaming and cursor follows still
+  work while locked. An actual movement despite the lock retains the scroll-yield fallback. Native end/cancel
+  events still reach their consumers to finish pinch, reorder and other gesture cleanup.
 - A phone's open drawer has no X: the drawer toggle's place holds the Ovis mark (`.drawer-toggle.is-mark`, `OvisMark`),
   still the toggle, named **Close workspace list**, as the app's mark at the head of the Codex and Claude apps'
   sidebars. Beside it the header names the PC and the workspace the list is on (`.drawer-head-title`: the PC, then
