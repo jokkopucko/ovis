@@ -35,6 +35,8 @@ const RECORDED: readonly Recorded[] = [
   ...["ask-write", "ask-mkdir"].map(run => ({ harness: "kiro", fixture: `kiro-3.6.2-${run}`, version: "kiro-cli 3.6.2", mode: "vibe", kinds: [null] })),
   // as Kiro's, Kimi Code's request names no kind; the tool call it announced before it does
   ...["ask-write", "ask-mkdir"].map(run => ({ harness: "kimi", fixture: `kimi-2.8.1-${run}`, version: "2.8.1", mode: "default", kinds: [null] })),
+  ...([["ask-write", "edit"], ["ask-mkdir", "execute"]] as const)
+    .map(([run, kind]) => ({ harness: "qwen", fixture: `qwen-0.28.7-${run}`, version: "0.28.7", mode: "default", kinds: [kind] })),
 ];
 
 describe.skipIf(!keeperBuilt).each([...RECORDED])("a $harness child replaying $fixture", ({ harness, fixture, version, mode, kinds }) => {
@@ -188,6 +190,7 @@ exec "${process.execPath}" "${REPLAY}" "${FIXTURE}" "${join(dir, "replay.jsonl")
     ["gemini-0.71.1-ask-write", ["autoEdit", "yolo"]],
     ["kiro-3.6.2-ask-write", ["autonomous"]],
     ["kimi-2.8.1-ask-write", ["auto", "yolo"]],
+    ["qwen-0.28.7-ask-write", ["auto-edit", "auto", "yolo"]],
   ]).get(fixture);
   if (elevatedModes) {
     it.each([...elevatedModes])("stops a child in wider mode %s before sending its initial task", async (startMode) => {

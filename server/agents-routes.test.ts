@@ -80,9 +80,9 @@ describe("GET /api/agents", () => {
     process.env["PATH"] = bin;
     const serving = spyOn(served, "capabilities").mockReturnValue(HERDR_CORE);
     const machine = spyOn(runtime, "hcMachine").mockReturnValue({ name: "lab", id: "lab-id" });
-    manifests.mockImplementationOnce(async () => ({ manifests: [{ agent: "codex" }] }) as unknown as Awaited<ReturnType<typeof herdr.agentManifests>>);
+    manifests.mockImplementationOnce(async () => ({ manifests: [{ agent: "codex" }, { agent: "qwen" }] }) as unknown as Awaited<ReturnType<typeof herdr.agentManifests>>);
     try {
-      expect(await (await fetch(url("/api/agents"))).json()).toEqual({ agents: [{ kind: "codex", label: "Codex" }] });
+      expect(await (await fetch(url("/api/agents"))).json()).toEqual({ agents: [{ kind: "codex", label: "Codex" }, { kind: "qwen", label: "Qwen Code" }] });
       // no shell-started agent is looked for here: it would start from this PC's path in that machine's shell
       expect(located).toEqual([]);
     } finally {

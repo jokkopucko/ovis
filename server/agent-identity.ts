@@ -24,7 +24,7 @@ function candidatesOf(platform: ProgramPlatform): readonly CatalogPlatform[] {
   return platform === "posix" ? ["linux", "macos"] : [platform];
 }
 
-const REPORTED_NAMES: Readonly<Record<string, string>> = { "claude-code": "claude", antigravity: "agy", "kimi-code": "kimi", "grok-build": "grok" };
+const REPORTED_NAMES: Readonly<Record<string, string>> = { "claude-code": "claude", antigravity: "agy", "kimi-code": "kimi", "qwen-code": "qwen", "grok-build": "grok" };
 
 /** The interpreters an agent's script runs under when its install is a script (npm's node bin, a Python entry point). */
 const INTERPRETERS = new Set(["node", "bun", "python", "python3"]);

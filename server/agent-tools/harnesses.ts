@@ -21,7 +21,7 @@ const resolved = (path: string | null): string | null => {
 };
 export function resolveHarness(kind: string): HarnessCommand | null {
   switch (kind) {
-    case "gjc": case "opencode": case "agy": case "copilot": case "gemini": case "kiro": case "kimi": {
+    case "gjc": case "opencode": case "agy": case "copilot": case "gemini": case "kiro": case "kimi": case "qwen": {
       const path = resolved(Bun.which(kind === "kiro" ? "kiro-cli" : kind, { PATH: process.env["PATH"] }));
       if (!path) return null;
       switch (kind) {
@@ -37,6 +37,10 @@ export function resolveHarness(kind: string): HarnessCommand | null {
         // Kimi Code 2.8 reports `default` on every new ACP session, though it runs in the mode the person saved
         // (`default_permission_mode`, e.g. yolo); setting the mode makes the report true
         case "kimi": return { argv: [path, "acp"], setMode: "default" };
+        // Qwen Code 0.28 opens ACP sessions in `auto` (a model approves actions) or in the person's saved approval mode;
+        // the flag outranks both. Its `agent` tool starts a subagent in `auto-edit` in a trusted folder (every folder,
+        // unless the person turned folder trust on), so one approved launch would let edits run unasked: the child has none
+        case "qwen": return { argv: [path, "--acp", "--approval-mode", "default", "--exclude-tools", "agent"] };
       }
     }
     case "claude": case "codex": {
@@ -67,7 +71,7 @@ const FULL_ACCESS_MODES: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ["copilot", new Set(["autopilot", "allow-all", "https://agentclientprotocol.com/protocol/session-modes#autopilot", "https://agentclientprotocol.com/protocol/session-modes#allow-all"])],
 ]);
 /** Harnesses whose child must start in their ordinary mode, not merely outside a known full-access one. */
-const ORDINARY_MODES: ReadonlyMap<string, string> = new Map([["claude", "default"], ["agy", "default"], ["gemini", "default"], ["kiro", "vibe"], ["kimi", "default"]]);
+const ORDINARY_MODES: ReadonlyMap<string, string> = new Map([["claude", "default"], ["agy", "default"], ["gemini", "default"], ["kiro", "vibe"], ["kimi", "default"], ["qwen", "default"]]);
 export function allowsDelegatedMode(kind: string, mode: string): boolean {
   const ordinary = ORDINARY_MODES.get(kind);
   if (ordinary !== undefined) return mode === ordinary;

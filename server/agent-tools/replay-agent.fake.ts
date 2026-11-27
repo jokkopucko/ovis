@@ -19,6 +19,8 @@ const { startMode, openingAllowAll, updatedMode, updatedAllowAll, refuseSetMode 
 const recorded = readFileSync(fixture, "utf8").trim().split("\n").map(line => JSON.parse(line) as Record<string, any>);
 const [initialized, opened] = recorded.filter(m => "result" in m);
 const asks = recorded.filter(m => m.method === "session/request_permission");
+/** Requests of the agent's own (Qwen Code's `craft/drainMidTurnQueue`): asked again in each turn, and the turn ends only once answered. */
+const extensions = recorded.filter(m => m.method !== undefined && m.id !== undefined && m.method !== "session/request_permission");
 const ended = recorded.filter(m => "result" in m).at(-1)!;
 const sessionId: string = opened!.result.sessionId;
 
@@ -50,6 +52,12 @@ async function turn(id: unknown, text: string) {
     const answered = new Promise(resolve => waiting.set(ours, resolve));
     send({ id: ours, method: ask.method, params: { ...ask.params, sessionId } });
     note({ answered: ask.params.toolCall.toolCallId, answer: await answered });
+  }
+  for (const request of extensions) {
+    const ours = `replay-${++asked}`;
+    const answered = new Promise(resolve => waiting.set(ours, resolve));
+    send({ id: ours, method: request.method, params: { ...request.params, sessionId } });
+    note({ extension: request.method, answer: await answered });
   }
   send({ method: "session/update", params: { sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "all asked" } } } });
   send({ id, result: ended.result });

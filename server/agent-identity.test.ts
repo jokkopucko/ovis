@@ -8,6 +8,7 @@ describe("which agent a pane runs", () => {
     expect(paneAgent({ reported: "claude-code" }, "linux")).toBe("claude");
     expect(paneAgent({ reported: "antigravity" }, "linux")).toBe("agy");
     expect(paneAgent({ reported: "kimi-code" }, "linux")).toBe("kimi");
+    expect(paneAgent({ reported: "qwen-code", foreground: ["qwen-payg"] }, "linux")).toBe("qwen");
     // Grok Build 1.0.67 reports itself as `grok-build` (old-desktop, 2026-11-08)
     expect(paneAgent({ reported: "grok-build" }, "linux")).toBe("grok");
   });
