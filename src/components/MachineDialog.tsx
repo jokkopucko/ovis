@@ -73,7 +73,6 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
   const choosing = job?.action_required === "choose_herdr" && asksChoice(job.error, job.found_herdr_sessions ?? [], job.found_ovis ?? []);
   const choiceAfterFailure = job?.action_required === "choose_herdr" && !choosing;
   const besideOvis = job?.action_required === "choose_herdr" && !!job.found_ovis?.length;
-  const keepOpen = job?.windows_startup === true;
   const own = job?.remote_ovis ?? (job || !machine ? null : ownOvisAction(machine));
   const ownUpdate = own?.updatable === true;
   // Add another PC to this PC's account over SSH (docs/account.md, "Adding a PC over SSH"): offered for a new PC only, in
@@ -92,6 +91,8 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
   const againRun = useRef<AbortController | null>(null);
   // an update asked with "Add it to my account": the server takes the add as its own setup, run once the update connects
   const addAfterUpdate = useRef<string | null>(null);
+  // a Windows start waits on this dialog, and so does such an add: closing it while the update runs would end a plain SSH PC
+  const keepOpen = job?.windows_startup === true || (job !== null && addAfterUpdate.current === job.id);
   const [install, setInstall] = useState<PcInstallJob | null>(null);
   const installing = install !== null && !["connected", "failed", "cancelled"].includes(install.phase);
   useEffect(() => {
@@ -226,10 +227,11 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
     setAgain((now) => now === null ? null : { step: "offered", from: now.from });
   };
   useEffect(() => {
-    if (!job || job.phase !== "connected" || addAfterUpdate.current !== job.id) return;
+    // an answer still under way (the approval's, say, after the poll saw it connect) holds the add until it is back
+    if (!job || job.phase !== "connected" || addAfterUpdate.current !== job.id || pending) return;
     addAfterUpdate.current = null;
     void begin(undefined, job.machine_id);
-  }, [job?.id, job?.phase]);
+  }, [job?.id, job?.phase, pending]);
   // Ovis installed there with the official installer, then the account add again on the PC it added
   const installOvis = async () => {
     if (pending) return;
@@ -330,7 +332,7 @@ export function MachineDialog({ machine, preset, updateRemote = false, onClose, 
         {again.link !== null && <ExternalLink kind="sign-in" className="btn btn-primary" href={again.link}>{t("Open the sign-in page")}</ExternalLink>}
         <button className="btn" onClick={cancelAgain}>{t("Cancel")}</button>
       </>}
-      {job?.phase === "connected" ? <button className={again === null ? "btn btn-primary" : "btn"} onClick={() => onConnected(job.machine_id)}>{t("Open PC")}</button> : (!job || finished) && <button className={choosing && job?.found_ovis?.length ? "btn" : "btn btn-primary"} form="machine-connect-form" type="submit" disabled={pending}>{t(pending ? "Connecting…" : needsBridgeUpdate && ownUpdate ? (previewVersion(own?.latest_version) ? "Update this PC's Ovis to the preview and connect" : "Update this PC's Ovis and connect") : needsBridgeUpdate ? "Update bridge and connect" : job ? "Retry connection" : "Connect")}</button>}
+      {job?.phase === "connected" ? <button className={again === null ? "btn btn-primary" : "btn"} disabled={pending || addAfterUpdate.current === job.id} onClick={() => onConnected(job.machine_id)}>{t("Open PC")}</button> : (!job || finished) && <button className={choosing && job?.found_ovis?.length ? "btn" : "btn btn-primary"} form="machine-connect-form" type="submit" disabled={pending}>{t(pending ? "Connecting…" : needsBridgeUpdate && ownUpdate ? (previewVersion(own?.latest_version) ? "Update this PC's Ovis to the preview and connect" : "Update this PC's Ovis and connect") : needsBridgeUpdate ? "Update bridge and connect" : job ? "Retry connection" : "Connect")}</button>}
     </footer>
   </dialog>;
 }

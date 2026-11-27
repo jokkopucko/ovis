@@ -88,6 +88,123 @@ async function exercise(action: "install_ovis" | "update_bridge") {
 test("install completion resumes the account add after its setup lookup returns", () => exercise("install_ovis"));
 test("update-and-connect submits a setup the server accepts", () => exercise("update_bridge"));
 
+/**
+ * An update asked with Add it to my account runs the add only once the update connects, from this dialog: while that
+ * update runs, the dialog asks to stay open rather than offering to go on in the background (a PC's own Ovis updated
+ * from a closed dialog ended a plain SSH PC, never added). `account`: the PC's account, or none (no add offered).
+ */
+async function whileUpdating(account: string | null): Promise<{ background: boolean; closable: boolean; keepOpen: boolean }> {
+  pcPage(PC_META);
+  Object.defineProperty(page.window, "setTimeout", { configurable: true, value: () => 1 });
+  Object.defineProperty(page.window, "clearTimeout", { configurable: true, value: () => {} });
+  const translation = spyOn(i18n, "useT").mockImplementation(() => (key) => key);
+  const session = spyOn(AccountService.prototype, "session").mockResolvedValue({ service: "https://account.test", account: "acct_1", provider: "google", access_token: "test", refresh_token: "test", expires_at: Date.now() + 60_000 });
+  const transport = getTransport();
+  const failed: SetupJob = { id: "first", machine_id: "initial", phase: "failed", step: "Failed", action_required: "update_bridge", error: "Setup needed", challenge: null, installations: [], ssh_output: null, target: { destination: "lab" },
+    remote_ovis: { version: "0.5.10", latest_version: "0.5.11", updatable: true, reason: null, address: "lab", url: null } };
+  setTransport({ ...transport, fetch: async (input, init) => {
+    switch (String(input)) {
+      case "/api/health": return Response.json({ auth: { via: "local" } });
+      case "/api/account/status": return Response.json({ account, pc_add_from_account: true });
+      case "/api/machines/setup": {
+        const request = JSON.parse(String(init?.body)) as SetupRequest;
+        return Response.json(request.update_remote ? { ...failed, id: "updating", phase: "installing", action_required: null, error: null } : failed);
+      }
+      default: throw new Error(`Unexpected request: ${input}`);
+    }
+  } });
+  try {
+    await page.render(createElement(MachineDialog, { preset: { destination: "lab" }, onClose() {}, onConnected() {} }));
+    for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
+    await submit();
+    await submit();
+    const hints = [...page.container.querySelectorAll(".field-hint")].map((node) => node.textContent);
+    return {
+      background: buttons().some((button) => button.textContent === "Continue in background"),
+      closable: hints.includes("You can close this; the install keeps going and the sidebar shows it."),
+      keepOpen: hints.includes("Keep this dialog open until the PC connects."),
+    };
+  } finally {
+    await page.render(null);
+    setTransport(transport); session.mockRestore(); translation.mockRestore();
+  }
+}
+
+test("an update that carries Add it to my account asks to keep the dialog open, as the add runs from it once the update connects", async () => {
+  expect(await whileUpdating("acct_1")).toEqual({ background: false, closable: false, keepOpen: true });
+});
+
+test("an update whose approval answers only after it connected still runs the add", async () => {
+  let poll: (() => void) | undefined;
+  pcPage(PC_META);
+  Object.defineProperty(page.window, "setTimeout", { configurable: true, value: (callback: () => void) => { poll = callback; return 1; } });
+  Object.defineProperty(page.window, "clearTimeout", { configurable: true, value: () => {} });
+  const translation = spyOn(i18n, "useT").mockImplementation(() => (key) => key);
+  const session = spyOn(AccountService.prototype, "session").mockResolvedValue({ service: "https://account.test", account: "acct_1", provider: "google", access_token: "test", refresh_token: "test", expires_at: Date.now() + 60_000 });
+  const transport = getTransport();
+  const sent: SetupRequest[] = [];
+  const failed: SetupJob = { id: "first", machine_id: "initial", phase: "failed", step: "Failed", action_required: "update_bridge", error: "Setup needed", challenge: null, installations: [], ssh_output: null, target: { destination: "lab" },
+    remote_ovis: { version: "0.5.10", latest_version: "0.5.11", updatable: true, reason: null, address: "lab", url: null } };
+  const connected: SetupJob = { ...failed, id: "updating", machine_id: "lab-pc", phase: "connected", action_required: null, error: null };
+  const approved = Promise.withResolvers<Response>();
+  setTransport({ ...transport, fetch: async (input, init) => {
+    switch (String(input)) {
+      case "/api/health": return Response.json({ auth: { via: "local" } });
+      case "/api/account/status": return Response.json({ account: "acct_1", pc_add_from_account: true });
+      case "/api/machines/setup": {
+        const request = JSON.parse(String(init?.body)) as SetupRequest;
+        sent.push(request);
+        if (request.account_add && request.machine_id) return new Promise<Response>(() => {});
+        return Response.json(request.update_remote ? { ...failed, id: "updating", phase: "approval", action_required: null, error: null, installations: ["Ovis 0.5.11"] } : failed);
+      }
+      // the approval's answer comes late; the poll sees the update connected first
+      case "/api/machines/setup/updating": return init?.method === "POST" ? approved.promise : Response.json(connected);
+      default: throw new Error(`Unexpected request: ${input}`);
+    }
+  } });
+  try {
+    await page.render(createElement(MachineDialog, { preset: { destination: "lab" }, onClose() {}, onConnected() {} }));
+    for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
+    await submit();
+    await submit();
+    await act(async () => { buttons().find((button) => button.textContent === "Install and connect")!.click(); });
+    await act(async () => { poll!(); });
+    await act(async () => { approved.resolve(Response.json(connected)); });
+    for (let flush = 0; flush < 4; flush += 1) await act(async () => {});
+    expect(sent.slice(1)).toEqual([{ destination: "lab", update_remote: true }, { destination: "lab", machine_id: "lab-pc", account_add: true }]);
+  } finally {
+    await page.render(null);
+    setTransport(transport); session.mockRestore(); translation.mockRestore();
+  }
+});
+
+test("a Windows PC that connected opens: only an add still due holds Open PC", async () => {
+  Object.defineProperty(page.window, "setTimeout", { configurable: true, value: () => 1 });
+  Object.defineProperty(page.window, "clearTimeout", { configurable: true, value: () => {} });
+  const translation = spyOn(i18n, "useT").mockImplementation(() => (key) => key);
+  const transport = getTransport();
+  setTransport({ ...transport, fetch: async (input) => {
+    switch (String(input)) {
+      case "/api/health": return Response.json({ auth: { via: "local" } });
+      case "/api/account/status": return Response.json({ account: null, pc_add_from_account: false });
+      case "/api/machines/setup": return Response.json({ id: "win", machine_id: "win-pc", phase: "connected", step: "Connected", action_required: null, error: null, challenge: null, installations: [], ssh_output: null, target: { destination: "win" }, windows_startup: true } satisfies SetupJob);
+      default: throw new Error(`Unexpected request: ${input}`);
+    }
+  } });
+  try {
+    await page.render(createElement(MachineDialog, { preset: { destination: "win" }, onClose() {}, onConnected() {} }));
+    await submit();
+    expect(buttons().find((button) => button.textContent === "Open PC")?.disabled).toBe(false);
+  } finally {
+    await page.render(null);
+    setTransport(transport); translation.mockRestore();
+  }
+});
+
+test("an update with no add still goes on in the background", async () => {
+  expect(await whileUpdating(null)).toEqual({ background: true, closable: true, keepOpen: false });
+});
+
 /** Add on a row of the relay tab's list opens this dialog for that host; what it offers, on a page with `meta` alone */
 async function offered(meta: string | null): Promise<{ label: boolean; ticked: boolean | null; sent: SetupRequest[] }> {
   page.window.document.head.querySelectorAll("meta").forEach((node) => node.remove());
