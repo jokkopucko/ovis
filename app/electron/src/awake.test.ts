@@ -30,15 +30,25 @@ describe("holdAwake", () => {
 });
 
 describe("awake settings", () => {
-  it("are off until the user turns them on, and survive a restart", () => {
+  it("hold the computer awake on power until the user chooses, and survive a restart", () => {
     const path = join(folder(), "awake.json");
-    expect(readAwakeSettings(path)).toEqual({ whileWorking: false, onBattery: false });
+    expect(readAwakeSettings(path)).toEqual({ whileWorking: true, onBattery: false });
     writeAwakeSettings(path, { whileWorking: true, onBattery: true });
     expect(readAwakeSettings(path)).toEqual({ whileWorking: true, onBattery: true });
     writeFileSync(path, "{ not json");
-    expect(readAwakeSettings(path)).toEqual({ whileWorking: false, onBattery: false });
+    expect(readAwakeSettings(path)).toEqual({ whileWorking: true, onBattery: false });
     writeFileSync(path, JSON.stringify({ whileWorking: "yes", onBattery: 1 }));
+    expect(readAwakeSettings(path)).toEqual({ whileWorking: true, onBattery: false });
+  });
+
+  it("keep a choice the user saved, field by field", () => {
+    const path = join(folder(), "awake.json");
+    writeAwakeSettings(path, { whileWorking: false, onBattery: false });
     expect(readAwakeSettings(path)).toEqual({ whileWorking: false, onBattery: false });
+    writeFileSync(path, JSON.stringify({ whileWorking: false }));
+    expect(readAwakeSettings(path)).toEqual({ whileWorking: false, onBattery: false });
+    writeFileSync(path, JSON.stringify({ onBattery: true }));
+    expect(readAwakeSettings(path)).toEqual({ whileWorking: true, onBattery: true });
   });
 });
 
