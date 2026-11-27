@@ -3,7 +3,8 @@ import { paneTranscript, type NativeTranscript } from "./conversation.ts";
 import { ConversationUnavailable } from "./conversation-shared.ts";
 import { lettaMessagesPath } from "./letta-store.ts";
 import { grokHeldTranscript } from "./grok-store.ts";
-import { sessionSnapshot } from "./herdr/client.ts";
+import { paneProcessInfo, sessionSnapshot } from "./herdr/client.ts";
+import { readKiroV3MessagesTail } from "./kiro.ts";
 import { FileBusyError, fileTask } from "./file-pool.ts";
 import { AgyUnavailable, agyPendingStepsOffThread } from "./agy.ts";
 import { hermesPendingMessagesOffThread } from "./hermes.ts";
@@ -17,6 +18,7 @@ import { copilotRecord } from "./dialogs/copilot-record.ts";
 import { museRecord } from "./dialogs/muse-record.ts";
 import { agyRecord } from "./dialogs/agy-record.ts";
 import { hermesRecord } from "./dialogs/hermes-record.ts";
+import { kiroRecord } from "./dialogs/kiro-record.ts";
 
 /**
  * Where an agent's record of a pane's session says which command waits (`read`), and the dialog that shows it.
@@ -68,6 +70,13 @@ const RECORDS: Readonly<Record<string, RecordSource>> = {
     const found = await paneTranscript(paneId);
     return found.source === "hermes-transcript"
       ? within(`${found.path}\0${found.sessionId}`, hermesRecord.pending(await hermesPendingMessagesOffThread(found.path, found.sessionId))) : undefined;
+  } },
+  // Kiro CLI V3's messages.jsonl, read under a single lease- and inode-verified binding (kiro.ts)
+  // its own approval card takes it (prompt.ts), the generic card too
+  kiro: { record: kiroRecord, read: async (paneId) => {
+    const info = await paneProcessInfo(paneId).catch(() => null);
+    const found = await readKiroV3MessagesTail(info);
+    return found === null ? undefined : within(`${found.path}\0${found.identity}`, kiroRecord.pending(found.text));
   } },
 };
 

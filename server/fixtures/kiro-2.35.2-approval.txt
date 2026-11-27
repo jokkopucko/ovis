@@ -1,0 +1,13 @@
+  › run echo
+
+• I will run it.
+↓ Shell echo hello-permission-test
+    ╰ summary=Print a test string
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ shell requires approval
+ ❯ Yes, single permission
+   Trust, always allow in this session
+   No (Tab to edit)
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ esc to close · ↑↓ to navigate · ↵ to select · Tab to edit

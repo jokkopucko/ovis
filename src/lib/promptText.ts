@@ -33,9 +33,10 @@ const TRAILING_HINT = /\s*[([][^)\]]*[)\]]\s*$/u;
  */
 function statedScope(label: string): ApprovalScope | "yes" | null {
   const words = label.replace(TRAILING_HINT, "").trim().toLowerCase();
-  if (/^(?:no|deny|reject|block)\b/u.test(words)) return "deny";
+  if (/^(?:(?:no|deny|reject|block)\b|always\s+(?:deny|reject|block)\b)/u.test(words)) return "deny";
   if (!/^(?:yes|allow|approve|always)\b/u.test(words)) return null;
   if (/\balways\b|\b(?:don'?t|do not|never) ask(?: me)? again\b|\ballow all\b|\b(?:for|during) (?:the rest of )?this (?:session|project)\b|\bfrom now on\b/u.test(words)) return "always";
+  if (/\band\s+enable\b/u.test(words)) return null;
   if (/\bonce\b|\bone time\b|\bthis time\b|\bjust this\b/u.test(words)) return "once";
   return /^(?:yes|allow|approve)(?:,?\s+(?:proceed|allow|approve|run it))?$/u.test(words) ? "yes" : null;
 }

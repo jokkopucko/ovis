@@ -200,5 +200,15 @@ describe("what an approval option grants, read off its own words (G-071)", () =>
     expect(scopes(approval("gemini", "Yes, allow once", "Yes, allow always", "Modify with external editor", "No, suggest changes (esc)"))).toEqual(["once", "always", null, "deny"]);
     expect(scopes(approval("codex", "Yes, and run it in the sandbox", "Yes, and don't ask again", "Abort"))).toEqual([null, "always", null]);
     expect(scopes({ ...approval("claude", "Yes", "Yes, allow all edits this session", "No"), kind: "question" })).toEqual([null, null, null]);
+    // Kiro 2.32 and 3.6.2 options: Always deny must deny (not allow always), and Approve-for-me must not read as allow-once
+    expect(scopes(approval("kiro", "Allow", "Always allow", "Deny", "Always deny"))).toEqual(["once", "always", "deny", "deny"]);
+    expect(scopes(approval(
+      "kiro",
+      "Allow once",
+      "Deny once",
+      "Create allow rule to approve future similar actions",
+      "Create deny rule to block future similar actions",
+      "Allow once and enable Approve for me",
+    ))).toEqual(["once", "deny", null, null, null]);
   });
 });
