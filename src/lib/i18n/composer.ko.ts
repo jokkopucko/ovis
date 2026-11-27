@@ -255,7 +255,6 @@ export const COMPOSER_KO: Record<string, string> = {
   "In Grok's queue behind {count} queued before it; it goes when they do. Nothing more was pressed. This copy stays here to read and is not sent again.": "Grok 대기열에서 먼저 대기 중인 {count}개 뒤에 있습니다. 그 메시지들이 보내진 뒤에 보냅니다. 더 이상 누르지 않았습니다. 이 사본은 확인용으로 여기에 남으며 다시 보내지 않습니다.",
   "In Grok's queue; it goes when Grok gets to it. Nothing more was pressed. This copy stays here to read and is not sent again.": "Grok 대기열에 있습니다. Grok의 차례가 되면 보냅니다. 더 이상 누르지 않았습니다. 이 사본은 확인용으로 여기에 남으며 다시 보내지 않습니다.",
   "Quote": "인용",
-  "Quote it in your message": "메시지에 인용",
   "Selection": "선택한 텍스트",
   "Too long to quote: shorten the message or the selection.": "인용하기에 너무 깁니다. 메시지나 선택을 줄이세요.",
   "Comment on the reply": "답변에 코멘트",

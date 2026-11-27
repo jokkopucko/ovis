@@ -180,6 +180,7 @@ const BASE: Record<string, string> = {
   "Scroll pane up": "패널 위로 스크롤",
   "Scroll pane down": "패널 아래로 스크롤",
   "Find in terminal": "터미널에서 찾기",
+  "Quote it in your message": "메시지에 인용",
   "Previous match": "이전 결과",
   "Next match": "다음 결과",
   "Close search": "검색 닫기",

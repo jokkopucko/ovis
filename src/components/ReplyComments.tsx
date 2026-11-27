@@ -6,6 +6,8 @@ import { composerDraftKey, composerDrafts } from "../lib/composerDraft.ts";
 import { chatSelectionClipboardPayload } from "../lib/markdownClipboard.ts";
 import { replyComments, type ReplyComment } from "../lib/replyComments.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
+import { useSettings } from "../lib/settings.ts";
+import { formatKeys, isMacPlatform, isRecordingShortcut, matchShortcut, modalOpenBesides, shortcutDisplayKeys } from "../lib/shortcuts.ts";
 import "./ReplyComments.css";
 
 /**
@@ -111,6 +113,8 @@ function writeReplyCommentDraft(storageKey: string, quote: string, text: string)
 
 export function ReplyCommentAction({ scroller, storageKey, paneKey }: { scroller: RefObject<HTMLDivElement | null>; storageKey: string; paneKey: string | null }) {
   const t = useT();
+  const { settings } = useSettings();
+  const quoteKeys = formatKeys(shortcutDisplayKeys("quote-chat", settings.shortcutOverrides)).join("+");
   const layer = useRef<HTMLDivElement>(null);
   const [offer, setOffer] = useState<Placed | null>(null);
   const [form, setForm] = useState<(Placed & { docked: boolean }) | null>(null);
@@ -190,17 +194,32 @@ export function ReplyCommentAction({ scroller, storageKey, paneKey }: { scroller
     setComment(readReplyCommentDraft(storageKey, placed.quote));
     setForm({ ...placed, left, top: Math.min(placed.top, Math.max(height - 220, EDGE)), docked });
   };
-  const quote = (placed: Placed) => {
+  const quote = useCallback((placed: Placed) => {
     pressing.current = false;
     if (paneKey === null || !quoteFits(composerDrafts.read(composerDraftKey(paneKey)).text, placed.quote)) return;
     setOffer(null);
     // cleared before the composer takes the keyboard: clearing after would take its caret too
     getSelection()?.removeAllRanges();
     quoteIntoComposer(paneKey, placed.quote);
-  };
+  }, [paneKey]);
   const draft = useSyncExternalStore(composerDrafts.subscribe, () => paneKey === null ? "" : composerDrafts.read(composerDraftKey(paneKey)).text);
   // a secret prompt stands in the composer's place (paneKey null): Comment alone, which waits for the next message
   const fits = offer !== null && paneKey !== null && quoteFits(draft, offer.quote);
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.defaultPrevented || event.repeat || isRecordingShortcut() || modalOpenBesides(null)
+        || matchShortcut(event, isMacPlatform(), settings.shortcutOverrides) !== "quote-chat") return;
+      const target = event.target;
+      if (target instanceof Element && (target.closest("input, textarea, [contenteditable]:not([contenteditable='false'])") !== null)) return;
+      const root = scroller.current;
+      if (!fits || offer === null || formOpen.current || dragging.current || root === null || root.getClientRects().length === 0
+        || replySelectionText(getSelection(), root) !== offer.quote) return;
+      event.preventDefault();
+      quote(offer);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [fits, offer, quote, scroller, settings.shortcutOverrides]);
   const updateComment = (value: string) => {
     setComment(value);
     if (form !== null) writeReplyCommentDraft(storageKey, form.quote, value);
@@ -238,7 +257,7 @@ export function ReplyCommentAction({ scroller, storageKey, paneKey }: { scroller
       onPointerDown={() => { pressing.current = true; }}
       onPointerCancel={() => { pressing.current = false; }}>
       {paneKey !== null && <button type="button" className="selection-quote" aria-disabled={!fits || undefined}
-        aria-describedby={fits ? undefined : quoteNote} title={fits ? t("Quote it in your message") : undefined} onClick={() => quote(offer)}>
+        aria-describedby={fits ? undefined : quoteNote} title={fits ? `${t("Quote it in your message")}${quoteKeys ? ` (${quoteKeys})` : ""}` : undefined} onClick={() => quote(offer)}>
         <Quote aria-hidden="true" />{t("Quote")}
       </button>}
       <button type="button" className="reply-comment-offer" aria-label={t("Comment")} title={t("Comment")} onClick={() => open(offer)}>

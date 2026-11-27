@@ -1,6 +1,6 @@
 export type ShortcutOverrides = Record<string, string | null>;
 export const FIXED_SHORTCUT_IDS: readonly string[] = ["voice", "hold-message"];
-export const CUSTOM_SHORTCUT_IDS = ["palette", "find", "toggle-view", "focus-input", "scroll-up", "scroll-down", "toggle-sidebar", "new-session", "new-tab", "rename-tab", "split-right", "split-down", "zoom-pane", "close-pane", "close-tab", "previous-pane", "next-pane", "previous-tab", "next-tab", "previous-workspace", "next-workspace", "settings"];
+export const CUSTOM_SHORTCUT_IDS = ["palette", "find", "toggle-view", "focus-input", "quote-chat", "scroll-up", "scroll-down", "toggle-sidebar", "new-session", "new-tab", "rename-tab", "split-right", "split-down", "zoom-pane", "close-pane", "close-tab", "previous-pane", "next-pane", "previous-tab", "next-tab", "previous-workspace", "next-workspace", "settings"];
 
 export interface ExactChord {
   ctrl: boolean;

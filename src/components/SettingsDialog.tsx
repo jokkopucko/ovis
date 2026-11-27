@@ -1063,7 +1063,7 @@ function ShortcutsPage() {
       const value = result.kind === "key" ? result.key : result.value;
       if (shortcutConflict(recordingId, [value], settings.shortcutOverrides, platformIsMac)) return setRecording({ id: recordingId, problem: t("Already assigned") });
       setRecording(null);
-      if (result.kind === "exact" && result.risk !== null) return setPending({ id: recordingId, value, risk: result.risk });
+      if (result.kind === "exact" && result.risk !== null && (result.risk !== "terminal" || recordingId !== "quote-chat")) return setPending({ id: recordingId, value, risk: result.risk });
       update({ shortcutOverrides: { ...settings.shortcutOverrides, [recordingId]: value } });
     };
     window.addEventListener("keydown", onKeyDown, true);
@@ -1099,7 +1099,8 @@ function ShortcutsPage() {
           const selectedKey = displayedKeys[displayedKeys.length - 1];
           const override = Object.hasOwn(settings.shortcutOverrides, shortcut.id) ? settings.shortcutOverrides[shortcut.id] : null;
           const exact = override ? parseExactChord(override) : null;
-          const selectedRisk = exact ? exactChordRisk(exact, platformIsMac) : selectedKey !== undefined && isReservedShortcutKey(selectedKey, platformIsMac) ? "browser" : null;
+          const risk = exact ? exactChordRisk(exact, platformIsMac) : selectedKey !== undefined && isReservedShortcutKey(selectedKey, platformIsMac) ? "browser" : null;
+          const selectedRisk = risk === "terminal" && shortcut.id === "quote-chat" ? null : risk;
           const confirming = pending?.id === shortcut.id ? pending : null;
           const defaultKeys = shortcutDisplayKeys(shortcut.id, {});
           const defaultKey = defaultKeys[defaultKeys.length - 1];
@@ -1126,7 +1127,7 @@ function ShortcutsPage() {
                     update({ shortcutOverrides: { ...settings.shortcutOverrides, [confirming.id]: confirming.value } });
                   }}>{t("Save anyway")}</button>
                   <button type="button" className="btn" onClick={() => settlePending(confirming.id)}>{t("Cancel")}</button>
-                </> : <SettingsSelect className="settings-shortcut-select" aria-label={t(shortcut.label)} value={Object.hasOwn(settings.shortcutOverrides, shortcut.id) ? settings.shortcutOverrides[shortcut.id] ?? (unbound ? "default" : "off") : "default"} onChange={(event) => {
+                </> : <SettingsSelect className="settings-shortcut-select" aria-label={t(shortcut.label)} value={override ?? (unbound || displayedKeys.length > 0 ? "default" : "off")} onChange={(event) => {
                   const next = { ...settings.shortcutOverrides };
                   if (event.target.value === "default") delete next[shortcut.id];
                   else next[shortcut.id] = event.target.value === "off" ? null : event.target.value;

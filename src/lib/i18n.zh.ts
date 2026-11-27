@@ -184,6 +184,7 @@ const BASE: Record<string, string> = {
   "Scroll pane up": "向上滚动面板",
   "Scroll pane down": "向下滚动面板",
   "Find in terminal": "在终端中查找",
+  "Quote it in your message": "引用到消息中",
   "Previous match": "上一个匹配",
   "Next match": "下一个匹配",
   "Close search": "关闭搜索",

@@ -255,7 +255,6 @@ export const COMPOSER_ZH: Record<string, string> = {
   "In Grok's queue behind {count} queued before it; it goes when they do. Nothing more was pressed. This copy stays here to read and is not sent again.": "已在 Grok 的队列中，排在之前的 {count} 条之后；它们发送后才会发送。未再按任何键。此副本保留在这里供查看，不会再次发送。",
   "In Grok's queue; it goes when Grok gets to it. Nothing more was pressed. This copy stays here to read and is not sent again.": "已在 Grok 的队列中，轮到时 Grok 会发送。未再按任何键。此副本保留在这里供查看，不会再次发送。",
   "Quote": "引用",
-  "Quote it in your message": "引用到消息中",
   "Selection": "所选文本",
   "Too long to quote: shorten the message or the selection.": "太长，无法引用：请缩短消息或所选内容。",
   "Comment on the reply": "评论回复",
