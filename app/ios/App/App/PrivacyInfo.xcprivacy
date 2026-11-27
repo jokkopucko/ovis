@@ -8,6 +8,9 @@
   Signing in (optional) gives the developer's account service a random account ID (a user ID),
   device push subscriptions and PC relay IDs (device IDs) and the country and city of a join
   request (coarse location): collected for app functionality, linked, never used for tracking.
+  A GitHub or Google sign-in also gives it a keyed hash of the provider's verified email address
+  (email address: Apple counts a hashed address as the type), kept only for the hint that an
+  account made with another provider may exist: app functionality, linked, never tracking.
   The one required-reason API the app's own code uses is UserDefaults, for its own settings
   (PCStore in HerdrBridgeViewController.swift); Capacitor brings its own manifest for its use.
 -->
@@ -60,6 +63,18 @@
 		<dict>
 			<key>NSPrivacyCollectedDataType</key>
 			<string>NSPrivacyCollectedDataTypeUserID</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeEmailAddress</string>
 			<key>NSPrivacyCollectedDataTypeLinked</key>
 			<true/>
 			<key>NSPrivacyCollectedDataTypeTracking</key>

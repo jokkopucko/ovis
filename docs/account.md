@@ -2474,9 +2474,11 @@ empty or missing `device_page`: no link page). A provider that is not listed has
 keeps the sign-ins its build names (GitHub alone by default), so a Google button never leads to a
 service that has no Google client.
 
-Google asks for `openid` and nothing else, and the service keeps none of Google's tokens, and no
-email or name, past the sign-in: it reads the identity token's `sub` (the account's key for that
-Google user), checks `iss`, `aud` and `exp` (and, in the redirect sign-in, the `nonce` it sent; Google's
+GitHub asks for `read:user user:email` and Google for `openid email`. The service keeps none of
+the provider's tokens, and no email address, name or GitHub login, past the sign-in: only a keyed
+fingerprint of the verified address (GitHub's primary verified one, Google's when `email_verified`),
+an HMAC-SHA256 under a key only the service holds, for the hint below. From Google's identity token it reads `sub` (the account's key for that
+Google user) and its email, checks `iss`, `aud` and `exp` (and, in the redirect sign-in, the `nonce` it sent; Google's
 device flow carries none), and drops the rest.
 
 #### Sign-in methods
@@ -2484,11 +2486,14 @@ device flow carries none), and drops the rest.
 Each provider is its own sign-in method: an account has at most one identity per provider, and a
 sign-in with an identity no account has makes a new account. The service never joins two accounts
 because their email addresses match (whoever controls an address at one provider would take the
-account). A signed-in person adds another method on purpose, from Settings:
+account). When a sign-in with a new method matches the fingerprint of another account's method, the
+service only says so: a sign-in started with `create=ask` comes back with
+`error=existing_account&existing_provider=<provider>` instead of making an account, and one started
+with `create=never` comes back with `error=no_account` when there's no account to sign in to. A signed-in person adds another method on purpose, from Settings:
 
 | request | body | answer |
 |---|---|---|
-| `GET /v1/identities` | | `{ "identities": [{ "provider", "added_at" }] }`: this account's sign-in methods. Nothing names the person behind one: the service keeps no email or GitHub login |
+| `GET /v1/identities` | | `{ "identities": [{ "provider", "added_at" }] }`: this account's sign-in methods. Nothing names the person behind one: the service keeps no email address or GitHub login, only a keyed fingerprint of the verified address |
 | `POST /v1/identities/link` | `{ "provider" }` | `{ "link_token", "expires_in" }`: good once, for 10 minutes, for this sign-in and that provider. The client starts a redirect sign-in (step 1) carrying it. 409 `identity_exists` when the account already has that provider; 403 `reauth_required` unless this sign-in was made in the last 10 minutes |
 | `DELETE /v1/identities/{provider}` | | `204`: removes that method and ends the sign-ins made with it. 409 `last_identity` when it is the account's only one; 403 `reauth_required` unless this sign-in was made in the last 10 minutes |
 
