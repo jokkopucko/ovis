@@ -20,7 +20,9 @@ import type { HerdrPane } from "../shared/protocol.ts";
  *   person's prompt.
  *
  * What the turn started is what started since the prompt. A task started before the pane's process
- * is a gone process's (START_SLACK_MS as in claude-subagents.ts). A timer due within TIMER_LIMIT_MS
+ * is a gone process's (START_SLACK_MS as in claude-subagents.ts). A Grok restarted on the same
+ * session appends to the same file, so its start is looked up again with the session and is a bound
+ * from below with no slack: a task its old process began seconds before the restart is not its own. A timer due within TIMER_LIMIT_MS
  * is held until it is due, past the hold's limit: it surely resumes the turn, and a command may be a
  * server. Only its process fires it, so while one is held its pane is looked up again each RESOLVE_MS,
  * and a pane whose session can no longer be looked up holds nothing: not on one lookup that failed,
@@ -103,8 +105,8 @@ export function readTaskLine(agent: TaskAgent, state: SessionTasks, line: string
   }
 }
 
-export function taskCount(state: SessionTasks, started: number | null, now: number): TaskCount {
-  const live = [...state.tasks.values()].filter((task) => (started === null || task.at >= started - START_SLACK_MS) && (task.due === null || now < task.due + DUE_GRACE_MS));
+export function taskCount(state: SessionTasks, started: number | null, now: number, slack = START_SLACK_MS): TaskCount {
+  const live = [...state.tasks.values()].filter((task) => (started === null || task.at >= started - slack) && (task.due === null || now < task.due + DUE_GRACE_MS));
   const turn = live.filter((task) => state.promptAt === null || task.at >= state.promptAt);
   // a timer surely resumes the turn when it is due, whatever runs beside it; commands alone are held to the limit
   return { running: live.length, turnRunning: turn.length, promptAt: state.promptAt, capped: !turn.some((task) => task.due !== null) };
@@ -244,7 +246,7 @@ export class AgentTaskStatus {
     if (current !== undefined && current.agent === agent && current.path === found.path && current.owner === found.owner) {
       current.resolvedAt = this.now();
       current.pane = { ...pane, agent };
-      current.started ??= found.started;
+      current.started = found.started ?? current.started;
       return;
     }
     if (current !== undefined) this.deps.onReset(pane.pane_id);
@@ -256,7 +258,7 @@ export class AgentTaskStatus {
     for (const [paneId, tracked] of this.panes) {
       if (only !== undefined && paneId !== only) continue;
       readOn(tracked);
-      const count = taskCount(tracked, tracked.started, this.now());
+      const count = taskCount(tracked, tracked.started, this.now(), tracked.agent === "grok" ? 0 : START_SLACK_MS);
       // a timer is held past the hold's limit only while its process lasts: no event tells that of a pane at rest.
       // Nor does any bring the lookup after one that failed, which keeps what the pane holds or lets it go
       // a lookup in flight answers for the pane already, and may be for the agent a newer snapshot names

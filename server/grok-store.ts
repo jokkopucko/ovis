@@ -3,6 +3,7 @@ import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import type { HerdrPane } from "../shared/protocol.ts";
 import { darwinProcess } from "./claude-store.ts";
 import { paneProcessInfo } from "./herdr/client.ts";
+import { processStartIdentity } from "./process-start.ts";
 
 const SESSION = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 const MAX_GROUPS = 4096;
@@ -378,10 +379,8 @@ function herdrReportedGrokSession(pane: HerdrPane): { present: boolean; id: stri
   return { present: true, id: SESSION.test(session.value) ? session.value : null };
 }
 
-async function resolveDarwinGrokStore(paneId: string, pid: number, sessionId: string, configuredHome: string | undefined): Promise<string | null> {
+async function resolveDarwinGrokStore(paneId: string, pid: number, started: bigint, sessionId: string, configuredHome: string | undefined): Promise<string | null> {
   if (!Number.isSafeInteger(pid) || pid <= 0) return null;
-  const started = darwinProcess.startTime(pid);
-  if (started === null) return null;
   const listed = await lsofListing(pid);
   const evidence = listed === null ? null : grokLsofEvidence(listed);
   if (evidence === null || !isGrokExecutable(evidence.executable ?? "")) return null;
@@ -403,6 +402,14 @@ async function resolveDarwinGrokStore(paneId: string, pid: number, sessionId: st
  * on the terminal view.
  * Write times confirm that ID; they never select a different conversation. */
 export async function resolveGrokStore(pane: HerdrPane, configuredHome?: string, platform: string = process.platform): Promise<string | null> {
+  return (await resolveGrokSession(pane, configuredHome, platform))?.path ?? null;
+}
+
+/**
+ * resolveGrokStore's file with the pid of the Grok process that writes it, the same process
+ * (its birth identity) before and after the lookup.
+ */
+export async function resolveGrokSession(pane: HerdrPane, configuredHome?: string, platform: string = process.platform): Promise<{ path: string; pid: number } | null> {
   if (pane.agent !== "grok" || (platform !== "linux" && platform !== "darwin")) return null;
   const reported = herdrReportedGrokSession(pane);
   if (reported.present) {
@@ -413,7 +420,13 @@ export async function resolveGrokStore(pane: HerdrPane, configuredHome?: string,
   try {
     const ownerPid = grokOwnerPid((await paneProcessInfo(pane.pane_id)) ?? {}, platform);
     if (ownerPid === null) return null;
-    if (platform === "darwin") return await resolveDarwinGrokStore(pane.pane_id, ownerPid, reported.id!, configuredHome);
+    if (platform === "darwin") {
+      const started = darwinProcess.startTime(ownerPid);
+      const path = started === null ? null : await resolveDarwinGrokStore(pane.pane_id, ownerPid, started, reported.id!, configuredHome);
+      return path === null ? null : { path, pid: ownerPid };
+    }
+    const started = processStartIdentity(ownerPid);
+    if (started === null) return null;
     const pidStart = reported.present ? null : linuxPidStart(ownerPid);
     if (!reported.present && pidStart === null) return null;
     const home = configuredHome ?? grokHomeFromEnvironment(readFileSync(`/proc/${ownerPid}/environ`, "utf8"));
@@ -428,7 +441,8 @@ export async function resolveGrokStore(pane: HerdrPane, configuredHome?: string,
       if (grokOwnerPid((await paneProcessInfo(pane.pane_id)) ?? {}, platform) !== ownerPid) return null;
       if (linuxPidStart(ownerPid) !== pidStart) return null;
     }
-    return reportedSessionPath(home, sessionId, held);
+    const path = reportedSessionPath(home, sessionId, held);
+    return path !== null && processStartIdentity(ownerPid) === started ? { path, pid: ownerPid } : null;
   } catch { return null; }
 }
 
