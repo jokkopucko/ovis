@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bounded } from "../relay/test-helpers.ts";
 import {
-  CONFIRM_MS, LOCAL_CONFIRM_FILE, LocalConfirms, desktopOwnerChannel, dropDesktopOwnerFd, peerUidInTable, openConfirmListener, openOnDesktop, peerUidOnLinux, takeDesktopOwnerFd,
+  CONFIRM_MS, LOCAL_CONFIRM_FILE, LocalConfirms, desktopOwnerChannel, dropDesktopOwnerFd, peerUidInTable, openConfirmListener, openOnDesktop, peerUidOnLinux, takeDesktopOwnerFd, unknownServeArgument,
   type ScreenAction,
 } from "./local-confirm.ts";
 
@@ -318,6 +318,15 @@ test("N6: a descriptor that is not a pipe or a socket gives no channel", () => {
     expect(takeDesktopOwnerFd(argv)).toBeNull();
     expect(argv).toEqual(["serve"]);
   }
+});
+
+test("N6: serve takes the desktop owner argument and no other", () => {
+  for (const args of [[], ["--desktop-owner-fd", "5"], ["--desktop-owner-fd=5"], ["--desktop-owner-fd"], ["--desktop-owner-fd=x"]]) {
+    expect(unknownServeArgument(args)).toBeUndefined();
+  }
+  expect(unknownServeArgument(["--port", "8080"])).toBe("--port");
+  expect(unknownServeArgument(["8080"])).toBe("8080");
+  expect(unknownServeArgument(["--desktop-owner-fd", "5", "extra"])).toBe("extra");
 });
 
 test.if(linux)("N6: a process that is not the server drops the argument and closes only a socket it names", async () => {

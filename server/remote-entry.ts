@@ -18,7 +18,7 @@ import { chosenHerdrSocketStatus, discoverHerdrSessions, validHerdrSocket } from
 const [request, socketArgument, ...extra] = process.argv.slice(2);
 const REMOTE_USAGE = "usage: ovis-server remote [--discover | --socket-status <herdr socket>]\n  with no argument: the bridge for the herdr session HERDR_REMOTE_SESSION names, started over SSH";
 const DRAIN_MS = 10_000;
-if (request === "--help") {
+if (request === "--help" || request === "-h") {
   console.log(REMOTE_USAGE);
   process.exit(0);
 }

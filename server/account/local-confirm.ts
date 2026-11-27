@@ -199,6 +199,24 @@ export function dropDesktopOwnerFd(argv: string[]): void {
   } catch {}
 }
 
+/**
+ * The first argument `serve` does not take, or undefined: it takes only the desktop app's `--desktop-owner-fd <n>` (or
+ * `=<n>`), and is otherwise set up by its environment. server/main.ts refuses the rest, so a word meant for a command
+ * (`serve --port 8080`) is not ignored by a server that starts anyway.
+ */
+export function unknownServeArgument(args: readonly string[]): string | undefined {
+  for (let index = 0; index < args.length; index++) {
+    const argument = args[index]!;
+    if (argument.startsWith(`${DESKTOP_OWNER_ARGUMENT}=`)) continue;
+    if (argument === DESKTOP_OWNER_ARGUMENT) {
+      if (/^\d+$/.test(args[index + 1] ?? "")) index++;
+      continue;
+    }
+    return argument;
+  }
+  return undefined;
+}
+
 function desktopOwnerArgument(argv: string[]): number | null {
   let value: string | undefined;
   for (let index = argv.length - 1; index >= 0; index--) {
