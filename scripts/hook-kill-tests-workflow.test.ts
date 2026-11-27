@@ -46,6 +46,13 @@ describe("hook kill tests workflow", () => {
     for (const step of job.steps ?? []) expect(step.if, `${step.name ?? step.uses}: a step that can be skipped`).toBeUndefined();
   });
 
+  test("cancels a pull request's superseded run and never a push run of main", () => {
+    expect(workflow.concurrency).toEqual({
+      group: "hook-kill-tests-${{ github.event.pull_request.number || github.ref }}",
+      "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
+    });
+  });
+
   test("cannot go green on a failure or wait on another job", () => {
     const failSoft = (owner: object) => (owner as Record<string, unknown>)["continue-on-error"];
     expect(failSoft(job)).toBeUndefined();

@@ -2,14 +2,13 @@ import type { AcpChildren } from "../acp/children.ts";
 import type { AgentDetector } from "../agent-catalog-detect.ts";
 import { agentCatalogFor } from "../agent-catalog-routes.ts";
 import { catalogPlatform } from "../../shared/agent-catalog.ts";
-import { isBrowserToolAgent } from "../../shared/browser-tools.ts";
 import { answer, refuse } from "../../shared/harness-tool.ts";
 import { paneConversation } from "../conversation.ts";
 import { paneRead, sessionSnapshot } from "../herdr/client.ts";
 import { coreConnection } from "../herdr-core/runtime.ts";
 import type { Machine } from "../../shared/machines.ts";
 import { readPrompt } from "../prompt.ts";
-import { resolveHarness } from "./harnesses.ts";
+import { harnessCapabilities } from "./harnesses.ts";
 import { childState, ChildTurns, untrusted } from "./turns.ts";
 import type { Ledger } from "./ledger.ts";
 
@@ -22,34 +21,28 @@ const eligible = (pane: { pane_id: string; agent?: string | null }) => !!pane.ag
 export class HarnessView {
   readonly signInNeeded = new Set<string>();
   constructor(private readonly options: ViewOptions, private readonly acp: AcpChildren, private readonly ledger: Ledger) {}
-  async query(verb: string, args: Record<string, unknown>, turns: ChildTurns) {
+  async query(verb: string, args: Record<string, unknown>, turns: ChildTurns, reader: string) {
     switch (verb) {
       case "machines": return answer("machines", { machines: (this.options.machines?.() ?? []).map(m => ({ id: m.id, name: m.name, online: m.state === "connected", versions: {}, reach: m.kind === "local" ? "local" : m.kind === "hc" ? "hc-via" : m.kind === "ssh" ? "hc-ssh" : m.kind })) });
       case "harnesses": {
         if (!this.options.detector) return refuse("unavailable", "No harness catalog.");
         const { agents } = await agentCatalogFor(catalogPlatform(process.platform), this.options.detector);
-        return answer("harnesses", { harnesses: agents.map(agent => {
-          const acp = resolveHarness(agent.id) !== null;
-          return { kind: agent.id, installed: agent.state.installed, version: agent.state.version, signed_in: this.signInNeeded.has(agent.id) ? false : null, capabilities: {
-            drive: acp ? ["terminal", "acp"] : ["terminal"], level: acp ? "structured" : "terminal", acp_protocol: acp ? 1 : null,
-            approvals: ["keys", ...(this.options.hasHook?.(agent.id) ? ["hook"] : []), ...(acp ? ["acp"] : [])], transcript: acp ? "acp" : "none", turn_end: acp ? "strong" : "weak", turn_end_from: acp ? ["acp"] : ["terminal"],
-            model_switch: "none", resume: false, images: false, slash_commands: false, subagents: false, tool_delivery: isBrowserToolAgent(agent.id) || acp ? ["mcp","shell"] : [],
-            browser_tool: isBrowserToolAgent(agent.id), memory_tool: false,
-          } };
-        }) });
+        return answer("harnesses", { harnesses: agents.map(agent => ({ kind: agent.id, installed: agent.state.installed, version: agent.state.version,
+          signed_in: this.signInNeeded.has(agent.id) ? false : null, capabilities: harnessCapabilities(agent.id, this.options.hasHook?.(agent.id) ?? false) })) });
       }
       case "ls": {
         const { panes } = await sessionSnapshot();
         return answer("sessions", { sessions: panes.filter(eligible).map(p => {
           const child = this.acp.forPane(p.pane_id), row = this.ledger.children.get(p.pane_id);
           return { address: p.pane_id, drive: child ? "acp" : "terminal", harness: p.agent, machine: "local", parent: panes.some(parent => parent.pane_id === p.parent_pane_id) ? p.parent_pane_id : null, agent_session_id: child?.client.session ?? p.agent_session?.value ?? null,
+            ...(row && row.id === child?.id && row.version && { version: row.version }),
             started_by: row && row.id === child?.id ? "agent" : "human", state: child ? childState(child, row) : { state: p.agent_status === "blocked" ? "waiting_human" : p.agent_status, turn: null } };
         }) });
       }
-      default: return this.read(args, turns);
+      default: return this.read(args, turns, reader);
     }
   }
-  private async read(args: Record<string, unknown>, turns: ChildTurns) {
+  private async read(args: Record<string, unknown>, turns: ChildTurns, reader: string) {
     const session = String(args.session);
     if (session.includes("/")) return refuse("unknown_session", "Only sessions on this PC can be read.");
     const child = this.acp.forPane(session), row = this.ledger.children.get(session);
@@ -62,7 +55,7 @@ export class HarnessView {
     observe();
     if (uncertain) return refuse("taken_over", "ACP does not own this conversation.");
     const state = async () => {
-      if (child) return childState(child, row);
+      if (child) return childState(child, row, row?.id === child.id && row.starter === reader);
       const read = await readPrompt(session);
       if (!eligible(read.pane) || read.pane.terminal_id !== target?.terminal_id || read.pane.agent !== target?.agent) throw new Error("Agent session changed.");
       if (read.stale || read.inputUnverified) throw new Error("Session changed.");
@@ -70,9 +63,9 @@ export class HarnessView {
     };
     const before = await state();
     const stateOnly = (s: typeof before) => answer("state", { session, state: s });
-    if (args.what === "state" || before.state === "waiting_human" || child && !child.client.connected) return stateOnly(before);
+    if (args.what === "state" || before.state === "waiting_human" || before.state === "waiting_parent" || child && !child.client.connected) return stateOnly(before);
     if ((child || args.what === "result") && before.state === "working") return stateOnly(before);
-    if (args.what === "result" && child && row) return turns.result(child, row, undefined);
+    if (args.what === "result" && child && row) return turns.result(child, row, undefined, row.id === child.id && row.starter === reader);
     let output: object;
     if (args.what === "screen") {
       const screen = await paneRead({ paneId: session, source: "visible", format: "text" });
@@ -93,7 +86,7 @@ export class HarnessView {
     const after = await state();
     observe();
     if (uncertain) return refuse("taken_over", "ACP ownership changed during the read.");
-    return after.state === "waiting_human" || (child || args.what === "result") && after.state === "working" || child && !child.client.connected ? stateOnly(after) : output;
+    return after.state === "waiting_human" || after.state === "waiting_parent" || (child || args.what === "result") && after.state === "working" || child && !child.client.connected ? stateOnly(after) : output;
     } finally { off?.(); }
   }
 }

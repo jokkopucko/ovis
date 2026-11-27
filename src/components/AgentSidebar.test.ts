@@ -322,6 +322,7 @@ describe("AgentSidebar folded helpers (#772)", () => {
     pane("t3", { agent_status: "blocked", parent_pane_id: "t1" }),
     pane("t6", { agent_status: "idle", parent_pane_id: "t1" }),
     pane("t4", { agent_status: "working" }),
+    pane("t7", { agent_status: "idle" }),
   ];
   const draw = (selectedPaneId: string | null = null): string => renderToStaticMarkup(createElement(SettingsProvider, {
     children: createElement(AgentSidebar, { machines: [machine(family)], selectedMachineId: "local", selectedPaneId, stateWord: () => "disconnected", onSelect: () => {} }),
@@ -332,21 +333,21 @@ describe("AgentSidebar folded helpers (#772)", () => {
       : item[1] === "agent-item" ? `${/data-pane="([^"]+)"/.exec(item[2]!)![1]}${/ hidden=""/.test(item[2]!) ? " hidden" : ""}`
         : `${/<span>(\+\d+ resting)<\/span>/.exec(item[3]!)![1]} ${/aria-expanded="(true|false)"/.exec(item[3]!)![1]}`);
 
-  test("off by default: every helper is listed under its agent, with no helpers line; the resting helper folds under the list's resting line", () => {
+  test("off by default: every helper is listed under its agent, with no helpers line, a resting helper of a busy agent too; a resting agent folds under the list's resting line", () => {
     const html = draw();
-    expect(entries(html)).toEqual(["t1", "t2", "t5", "t3", "t4", "+1 resting false", "t6 hidden"]);
-    expect(entries(draw("t6"))).toEqual(["t1", "t2", "t5", "t3", "t4", "+1 resting false", "t6"]);
+    expect(entries(html)).toEqual(["t1", "t2", "t5", "t3", "t6", "t4", "+1 resting false", "t7 hidden"]);
+    expect(entries(draw("t7"))).toEqual(["t1", "t2", "t5", "t3", "t6", "t4", "+1 resting false", "t7"]);
   });
 
   test("in a saved Workspaces order the resting helper stays under its agent, with no resting line", () => {
     stored["ovis:settings"] = JSON.stringify({ agentOrder: "workspace" });
-    expect(entries(draw())).toEqual(["t1", "t2", "t5", "t3", "t6", "t4"]);
+    expect(entries(draw())).toEqual(["t1", "t2", "t5", "t3", "t6", "t4", "t7"]);
   });
 
   test("on: an agent's helpers fold under one line that says how many, and a helper that needs you stays in sight", () => {
     stored["ovis:fold-helpers"] = "true";
     const html = draw();
-    expect(entries(html)).toEqual(["t1", "+t1 4 false", "t2 hidden", "t5 hidden", "t3", "t4", "+1 resting false", "t6 hidden"]);
+    expect(entries(html)).toEqual(["t1", "+t1 4 false", "t2 hidden", "t5 hidden", "t3", "t6 hidden", "t4", "+1 resting false", "t7 hidden"]);
     expect(html).toMatch(/data-helpers-of="local:t1"[\s\S]*?<span class="agent-helpers-name" aria-hidden="true">Helpers<\/span><span class="visually-hidden">Helpers of t1<\/span>/);
     expect(html).toMatch(/data-helpers-of="local:t1"[\s\S]*?data-state="blocked"[\s\S]*?1 need you[\s\S]*?data-state="working"[\s\S]*?2 working/);
     expect(html).toMatch(/<li [^>]*data-pane="t3"[^>]*data-depth="1"(?![^>]*data-more)[^>]*>/);
@@ -354,15 +355,15 @@ describe("AgentSidebar folded helpers (#772)", () => {
 
   test("on: the selected helper stays in sight", () => {
     stored["ovis:fold-helpers"] = "true";
-    expect(entries(draw("t5"))).toEqual(["t1", "+t1 4 false", "t2 hidden", "t5", "t3", "t4", "+1 resting false", "t6 hidden"]);
+    expect(entries(draw("t5"))).toEqual(["t1", "+t1 4 false", "t2 hidden", "t5", "t3", "t6 hidden", "t4", "+1 resting false", "t7 hidden"]);
   });
 
-  test("on: an agent this device opened lists every helper, its line open; its resting helper still waits under the resting line", () => {
+  test("on: an agent this device opened lists every helper, its line open, its resting helper too; a resting agent still waits under the resting line", () => {
     stored["ovis:fold-helpers"] = "true";
     stored["ovis:agents-helpers-open"] = JSON.stringify(["local:t1"]);
-    expect(entries(draw())).toEqual(["t1", "+t1 4 true", "t2", "t5", "t3", "t4", "+1 resting false", "t6 hidden"]);
+    expect(entries(draw())).toEqual(["t1", "+t1 4 true", "t2", "t5", "t3", "t6", "t4", "+1 resting false", "t7 hidden"]);
     stored["ovis:agents-resting-open"] = "1";
-    expect(entries(draw())).toEqual(["t1", "+t1 4 true", "t2", "t5", "t3", "t4", "+1 resting true", "t6"]);
+    expect(entries(draw())).toEqual(["t1", "+t1 4 true", "t2", "t5", "t3", "t6", "t4", "+1 resting true", "t7"]);
   });
 });
 

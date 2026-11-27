@@ -9,6 +9,7 @@ export const TERMINAL_ZH: Record<string, string> = {
   "Searching…": "搜索中…",
   "Pane changed. Search again.": "窗格内容已更改，请重新搜索。",
   "Search moves the pane for every client.": "搜索会移动所有已连接客户端的窗格视图。",
+  "This terminal could not be drawn. Reload the page to try again.": "无法绘制此终端。请刷新页面后重试。",
   "Waiting for terminal input…": "正在准备终端输入…",
   "Paused while you use another window": "使用其他窗口时已暂停",
   "View only while you use another window · click to type": "使用其他窗口时仅查看 · 点击即可输入",

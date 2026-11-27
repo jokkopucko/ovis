@@ -2,7 +2,7 @@
  * Nothing is stored past the page; a row that leaves the list leaves its summary behind.
  */
 import { useEffect, useRef, useSyncExternalStore } from "react";
-import { PANE_SUMMARY_MAX_IDS } from "../../shared/pane-summary.ts";
+import { PANE_SUMMARY_DEADLINE_MS, PANE_SUMMARY_MAX_IDS, PANE_SUMMARY_PANE_MS } from "../../shared/pane-summary.ts";
 import type { PaneSummaries, PaneSummary } from "../../shared/protocol.ts";
 import { inboxKey, inboxStatus } from "./agentInbox.ts";
 import type { AgentRow } from "./agentRoster.ts";
@@ -12,6 +12,7 @@ import type { SidebarActivity } from "./sidebarActivity.tsx";
 export const SUMMARY_ROWS = 60;
 export const SUMMARY_RETRY_MS = 2000;
 export const SUMMARY_RETRIES = 3;
+const RETRY_BATCH = Math.min(PANE_SUMMARY_MAX_IDS, Math.max(1, Math.floor(PANE_SUMMARY_DEADLINE_MS / PANE_SUMMARY_PANE_MS)));
 
 export interface RowSummary {
   role: "assistant" | "user";
@@ -61,6 +62,7 @@ export class SummaryReads {
   private targets = new Map<string, SummaryTarget>();
   private readonly started = new Set<string>();
   private readonly retries = new Map<string, number>();
+  private readonly exhausted = new Set<string>();
   private readonly waits = new Map<string, () => void>();
   private readonly queues = new Map<string, SummaryTarget[]>();
   private readonly busy = new Set<string>();
@@ -82,7 +84,7 @@ export class SummaryReads {
 
   summaries = (): ReadonlyMap<string, RowSummary> => this.current;
 
-  sync(targets: readonly SummaryTarget[]): void {
+  sync(targets: readonly SummaryTarget[], reopened = false): void {
     const earlier = this.targets;
     this.targets = new Map(targets.map((target) => [target.key, target]));
     const live = new Set(targets.map(readOf));
@@ -92,6 +94,7 @@ export class SummaryReads {
       if (live.has(read)) continue;
       this.started.delete(read);
       this.retries.delete(read);
+      this.exhausted.delete(read);
       this.rechecked.delete(read);
       this.replacing.delete(read);
       this.waits.get(read)?.();
@@ -99,7 +102,7 @@ export class SummaryReads {
     }
     for (const [machineId, queue] of this.queues) this.queues.set(machineId, queue.filter((target) => this.isCurrent(target)));
     const gone = [...this.current.keys()].filter((key) => !this.targets.has(key));
-    for (const key of [...this.answeredFor.keys()]) if (!this.targets.has(key)) this.answeredFor.delete(key);
+    for (const [key, stamp] of this.answeredFor) if (this.targets.get(key)?.stamp !== stamp) this.answeredFor.delete(key);
     for (const key of [...this.answeredIn.keys()]) if (!this.targets.has(key)) this.answeredIn.delete(key);
     const replaced = [...this.current.keys()].filter((key) => {
       const was = this.answeredIn.get(key);
@@ -113,6 +116,13 @@ export class SummaryReads {
     if (gone.length > 0) this.change((summaries) => { for (const key of gone) summaries.delete(key); });
     for (const target of targets) {
       const read = readOf(target);
+      if (reopened && this.exhausted.delete(read)) {
+        this.started.delete(read);
+        this.retries.delete(read);
+      } else if (reopened && this.retries.get(read) === SUMMARY_RETRIES && this.answeredFor.get(target.key) !== target.stamp) {
+        // A final retry may already be queued or in flight. Give it another chance only if it misses.
+        this.retries.set(read, SUMMARY_RETRIES - 1);
+      }
       if (this.started.has(read) || this.missing.has(target.machineId)) continue;
       this.started.add(read);
       const before = earlier.get(target.key)?.stamp;
@@ -142,8 +152,11 @@ export class SummaryReads {
   private pump(machineId: string): void {
     if (this.busy.has(machineId) || this.missing.has(machineId)) return;
     const queue = (this.queues.get(machineId) ?? []).filter((target) => this.isCurrent(target));
-    const batch = queue.splice(0, PANE_SUMMARY_MAX_IDS);
-    this.queues.set(machineId, queue);
+    // Retry before the server's cached answer expires, without shortening unrelated first reads.
+    const retries = queue.filter((target) => this.retries.has(readOf(target))).slice(0, RETRY_BATCH);
+    const batch = retries.length === 0 ? queue.slice(0, PANE_SUMMARY_MAX_IDS) : retries;
+    const sent = new Set(batch);
+    this.queues.set(machineId, queue.filter((target) => !sent.has(target)));
     if (batch.length === 0) return;
     this.busy.add(machineId);
     const failed = () => {
@@ -189,7 +202,8 @@ export class SummaryReads {
       this.sources.set(target.key, source);
       if (!repeated || kept.failed !== row.failed) set.set(target.key, row);
     }
-    for (const target of [...left.slice(1), ...left.slice(0, 1)]) this.again(target);
+    const skipped = Array.isArray(answer.skipped) && answer.skipped.length <= PANE_SUMMARY_MAX_IDS ? answer.skipped : [];
+    for (const target of [...left.slice(1), ...left.slice(0, 1)]) this.again(target, !skipped.includes(target.paneId));
     if (set.size > 0 || cleared.length > 0) this.change((summaries) => {
       for (const key of cleared) summaries.delete(key);
       for (const [key, row] of set) summaries.set(key, row);
@@ -208,14 +222,15 @@ export class SummaryReads {
     }, SUMMARY_RETRY_MS));
   }
 
-  private again(target: SummaryTarget): void {
+  private again(target: SummaryTarget, attempted = true): void {
     const read = readOf(target);
     const tried = this.retries.get(read) ?? 0;
-    if (tried >= SUMMARY_RETRIES) {
+    if (attempted && tried >= SUMMARY_RETRIES) {
       if (this.current.has(target.key) && this.answeredFor.get(target.key) !== target.stamp) this.change((summaries) => { summaries.delete(target.key); });
+      if (this.answeredFor.get(target.key) !== target.stamp) this.exhausted.add(read);
       return;
     }
-    this.retries.set(read, tried + 1);
+    this.retries.set(read, attempted ? tried + 1 : tried);
     this.waits.set(read, this.wait(() => {
       this.waits.delete(read);
       if (!this.isCurrent(target)) return;
@@ -227,9 +242,13 @@ export class SummaryReads {
 
 export const newSummaryReads = (): SummaryReads => new SummaryReads(fetchPaneSummaries);
 
-export function useInboxSummaries(reads: SummaryReads, targets: readonly SummaryTarget[]): ReadonlyMap<string, RowSummary> {
+export function useInboxSummaries(reads: SummaryReads, targets: readonly SummaryTarget[], opening: number): ReadonlyMap<string, RowSummary> {
   const targetsRef = useRef(targets); targetsRef.current = targets;
+  const previousOpening = useRef<number | undefined>(undefined);
   const signature = targets.map((target) => `${target.key}:${target.machineId}:${target.paneId}:${target.stamp}`).join("\n");
-  useEffect(() => { reads.sync(targetsRef.current); }, [reads, signature]);
+  useEffect(() => {
+    reads.sync(targetsRef.current, previousOpening.current !== opening);
+    previousOpening.current = opening;
+  }, [reads, signature, opening]);
   return useSyncExternalStore(reads.subscribe, reads.summaries, reads.summaries);
 }

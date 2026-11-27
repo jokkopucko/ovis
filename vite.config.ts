@@ -1,14 +1,11 @@
-import { buildXtermSource } from "./scripts/build-xterm.ts";
 import { compressedAssets } from "./scripts/compressed-assets.ts";
 import { serviceWorkerBuild } from "./scripts/service-worker-build.ts";
 import { themeBootstrapBuild } from "./scripts/theme-bootstrap-build.ts";
-import { defineConfig, normalizePath, type Plugin } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
-import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
-const patchedXtermSource = normalizePath(buildXtermSource(fileURLToPath(new URL(".", import.meta.url))));
 
 let revision: string | null = null;
 try { revision = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch {}
@@ -53,14 +50,7 @@ export default defineConfig(async ({ mode }) => ({
   },
   // Keep Vite 6's syntax targets when changing the bundler, including installed mobile clients.
   build: { outDir: mode === "shell" ? "dist-shell" : "dist", target: ["es2020", "edge88", "firefox78", "chrome87", "safari14"] },
-  // The Bun patch targets xterm's readable source, not its minified distribution. Build that
-  // source so dev, production and the website use the same reviewed IME backport.
   resolve: { alias: [
-    { find: /^@xterm\/xterm$/, replacement: `${patchedXtermSource}/browser/public/Terminal.js` },
-    { find: /^browser\//, replacement: `${patchedXtermSource}/browser/` },
-    { find: /^common\//, replacement: `${patchedXtermSource}/common/` },
-    { find: /^vs\/nls$/, replacement: `${patchedXtermSource}/vs/patches/nls.js` },
-    { find: /^vs\//, replacement: `${patchedXtermSource}/vs/` },
     { find: "@shared", replacement: new URL("./shared", import.meta.url).pathname },
   ] },
 }));

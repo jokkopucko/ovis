@@ -18,7 +18,12 @@ A second table, `active`, holds one row per install and UTC day the app was open
 (`POST /v1/active`): the day, the random install ID, the version, the OS, the CPU architecture, how
 the app was installed, the terminal runtime, the country, and `harnesses`, a JSON array of the kinds of coding agents
 running that day, from the fixed list `TELEMETRY_HARNESSES` in `shared/telemetry.ts` (any other
-agent is `other`). A later message for the same day replaces the version and the harnesses.
+agent is `other`), and `usage`, the day's use as JSON (`TelemetryUsage`). A newer app's `usage` also has
+`agents`, per kind of agent seen that day the most panes seen at one visit that an Ovis server started (`ovis`) and
+the rest (`other`), and the major.minor versions its sessions named (`versions`, at most four), and `answers`, the bucket
+of the day's answers per way (`native`, `record`, `screen`, `terminal`; `TELEMETRY_ANSWER_WAYS`), both or neither: no
+column of their own, so no ALTER, but a Worker deployed before them refuses a message that has them, so it goes out
+first. A later message for the same day replaces the version, the harnesses and the usage.
 A third table, `counts`, holds one row per install and UTC day that has ended, for apps since notice
 version 6, which says so (`POST /v1/counts`): the day, the random install ID, the app's version that day, and
 `narrow` and `wide`, the day's use of the app's controls in a window at most 640px wide and in a
@@ -184,6 +189,22 @@ GROUP BY way.value ORDER BY installs DESC, ingress;
 SELECT day, COUNT(*) AS installs, SUM(json_extract(usage, '$.prompt_answers')) AS prompt_answers,
   SUM(json_extract(usage, '$.alerts_delivered')) AS alerts_delivered, SUM(json_extract(usage, '$.alerts_opened')) AS alerts_opened
 FROM active WHERE usage IS NOT NULL GROUP BY day ORDER BY day;
+-- panes per kind of agent an Ovis server started and the others, summed over each install's most at once per day,
+-- the last 7 days (rows from newer apps only)
+SELECT kind.key AS agent, SUM(json_extract(kind.value, '$.ovis')) AS ovis, SUM(json_extract(kind.value, '$.other')) AS other
+FROM active CROSS JOIN json_each(active.usage, '$.agents') AS kind
+WHERE active.day >= date('now', '-6 days') AND json_type(active.usage, '$.agents') IS NOT NULL
+GROUP BY kind.key ORDER BY ovis + other DESC;
+-- installs per kind of agent and major.minor version in the last 30 days
+SELECT kind.key AS agent, version.value AS version, COUNT(DISTINCT active.install_id) AS installs
+FROM active CROSS JOIN json_each(active.usage, '$.agents') AS kind CROSS JOIN json_each(kind.value, '$.versions') AS version
+WHERE active.day >= date('now', '-29 days')
+GROUP BY kind.key, version.value ORDER BY agent, installs DESC;
+-- install-days per answer way and bucket in the last 7 days (1: 1-2, 2: 3-9, 3: 10-29, 4: 30 or more)
+SELECT way.key AS way, way.value AS bucket, COUNT(*) AS install_days
+FROM active CROSS JOIN json_each(active.usage, '$.answers') AS way
+WHERE active.day >= date('now', '-6 days')
+GROUP BY way.key, way.value ORDER BY way, bucket;
 -- share of installs that used each counter at least once in the last 7 finished days, per width, among
 -- installs that sent counts at that width; a bucket's lower bound is 1, 3, 10 or 30 uses that day
 SELECT width, item.key AS counter, COUNT(DISTINCT c.install_id) AS installs,

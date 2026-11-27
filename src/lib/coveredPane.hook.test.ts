@@ -1,46 +1,41 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { createElement, useLayoutEffect, type RefObject } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { createElement, useLayoutEffect } from "react";
 import { useKeptPaneBoxes } from "./coveredPane.ts";
+import { openPage, type Page } from "./page.fixture.ts";
 
 interface Box { left: number; top: number; width: number; height: number }
 
-class FakeSlot {
-  box: Box;
-  reads = 0;
-  readonly attributes = new Map<string, string>();
-  readonly properties = new Map<string, string>();
-  readonly computed = new Map<string, string>();
-  readonly style = {
-    getPropertyValue: (name: string): string => this.properties.get(name) ?? "",
-    setProperty: (name: string, value: string): void => { this.properties.set(name, value); },
-    removeProperty: (name: string): void => { this.properties.delete(name); },
-  };
-  constructor(box: Box, own: Record<string, string> = {}) {
-    this.box = box;
-    for (const [name, value] of Object.entries(own)) this.properties.set(name, value);
-  }
-  getBoundingClientRect(): Box { this.reads += 1; return { ...this.box }; }
-  setAttribute(name: string, value: string): void { this.attributes.set(name, value); }
-  getAttribute(name: string): string | null { return this.attributes.get(name) ?? null; }
-  removeAttribute(name: string): void { this.attributes.delete(name); }
-  kept(): Record<string, string> | null {
-    return this.attributes.has("data-kept-box") ? Object.fromEntries(this.properties) : null;
-  }
-}
-
 describe("useKeptPaneBoxes", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
-  let slots: FakeSlot[];
+  let page: Page;
+  let slots: Slot[];
   let areaBox: Box;
   let asked: { panes: number; box: number; observers: number };
-  const area = { current: null } as unknown as RefObject<HTMLElement | null>;
+  const area: { current: HTMLElement | null } = { current: null };
+
+  class Slot {
+    readonly element = page.container.ownerDocument.createElement("div");
+    reads = 0;
+    get style() { return this.element.style; }
+    get properties(): Map<string, string> {
+      return new Map(Array.from({ length: this.style.length }, (_, index) => {
+        const name = this.style.item(index);
+        return [name, this.style.getPropertyValue(name)];
+      }));
+    }
+    constructor(public box: Box, own: Record<string, string> = {}) {
+      this.element.className = "pane-slot";
+      for (const [name, value] of Object.entries(own)) this.style.setProperty(name, value);
+      Object.defineProperty(this.element, "getBoundingClientRect", { value: () => { this.reads += 1; return { ...this.box }; } });
+    }
+    kept(): Record<string, string> | null {
+      return this.element.hasAttribute("data-kept-box") ? Object.fromEntries(this.properties) : null;
+    }
+  }
 
   beforeEach(() => {
-    for (const key of ["ResizeObserver", "MutationObserver", "IS_REACT_ACT_ENVIRONMENT", "getComputedStyle"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: (slot: FakeSlot) => ({ getPropertyValue: (name: string) => slot.computed.get(name) ?? "" }) });
+    page = openPage();
+    for (const key of ["ResizeObserver", "MutationObserver"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     asked = { panes: 0, box: 0, observers: 0 };
     const Observer = class {
       constructor() { asked.observers += 1; }
@@ -51,15 +46,19 @@ describe("useKeptPaneBoxes", () => {
     for (const key of ["ResizeObserver", "MutationObserver"]) Object.defineProperty(globalThis, key, { configurable: true, value: Observer });
     slots = [];
     areaBox = { left: 0, top: 52, width: 390, height: 792 };
-    (area as { current: unknown }).current = {
-      querySelectorAll: () => { asked.panes += 1; return slots; },
-      getBoundingClientRect: () => { asked.box += 1; return { ...areaBox }; },
-    };
+    const host = page.container.ownerDocument.createElement("div");
+    page.container.ownerDocument.body.append(host);
+    const query = host.querySelectorAll.bind(host);
+    Object.defineProperties(host, {
+      querySelectorAll: { configurable: true, value: (selector: string) => { asked.panes += 1; return query(selector); } },
+      getBoundingClientRect: { value: () => { asked.box += 1; return { ...areaBox }; } },
+    });
+    area.current = host;
   });
 
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
+    await page.close();
+    area.current = null;
     for (const [key, descriptor] of descriptors) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
       else Reflect.deleteProperty(globalThis, key);
@@ -72,14 +71,12 @@ describe("useKeptPaneBoxes", () => {
     return null;
   }
   const draw = async (covered: boolean): Promise<void> => {
-    await act(async () => {
-      if (renderer) renderer.update(createElement(Probe, { covered }));
-      else renderer = create(createElement(Probe, { covered }));
-    });
+    area.current!.replaceChildren(...slots.map((slot) => slot.element));
+    await page.render(createElement(Probe, { covered }));
   };
 
   it("holds a covered pane in the box it was shown in, whatever the shell around it has become, and lets it go when it is shown again", async () => {
-    const slot = new FakeSlot({ left: 0, top: 52, width: 390, height: 792 });
+    const slot = new Slot({ left: 0, top: 52, width: 390, height: 792 });
     slots = [slot];
     await draw(false);
     expect(slot.kept()).toBeNull();
@@ -96,7 +93,7 @@ describe("useKeptPaneBoxes", () => {
   });
 
   it("reads a pane's box as the list is about to cover it and not while it is covered: the box it keeps is the last it was shown in", async () => {
-    const slot = new FakeSlot({ left: 0, top: 42, width: 1440, height: 830 });
+    const slot = new Slot({ left: 0, top: 42, width: 1440, height: 830 });
     slots = [slot];
     await draw(false);
     areaBox = { left: 320, top: 0, width: 1120, height: 900 };
@@ -116,7 +113,7 @@ describe("useKeptPaneBoxes", () => {
   it("leaves alone a pane that came to the page under the list, until it has been shown", async () => {
     areaBox = { left: 0, top: 0, width: 390, height: 844 };
     await draw(true);
-    const slot = new FakeSlot({ left: 0, top: 0, width: 390, height: 844 });
+    const slot = new Slot({ left: 0, top: 0, width: 390, height: 844 });
     slots = [slot];
     await draw(true);
     expect(slot.kept()).toBeNull();
@@ -129,8 +126,8 @@ describe("useKeptPaneBoxes", () => {
 
   it("holds each half of a classic split in its own box over the rectangle its style carries, and gives that style back", async () => {
     const rectangle = (left: string) => ({ left, top: "0%", width: "50%", height: "100%" });
-    const first = new FakeSlot({ left: 320, top: 42, width: 560, height: 830 }, rectangle("0%"));
-    const second = new FakeSlot({ left: 880, top: 42, width: 560, height: 830 }, rectangle("50%"));
+    const first = new Slot({ left: 320, top: 42, width: 560, height: 830 }, rectangle("0%"));
+    const second = new Slot({ left: 880, top: 42, width: 560, height: 830 }, rectangle("50%"));
     slots = [first, second];
     areaBox = { left: 320, top: 42, width: 1120, height: 830 };
     await draw(false);
@@ -149,7 +146,7 @@ describe("useKeptPaneBoxes", () => {
 
   it("leaves what React wrote on a slot's style in the commit that shows it again: a thread's slot has no rectangle", async () => {
     const rectangle = { left: "0%", top: "0%", width: "50%", height: "100%" };
-    const slot = new FakeSlot({ left: 320, top: 42, width: 560, height: 830 }, rectangle);
+    const slot = new Slot({ left: 320, top: 42, width: 560, height: 830 }, rectangle);
     slots = [slot];
     areaBox = { left: 320, top: 42, width: 1120, height: 830 };
     await draw(false);
@@ -164,7 +161,7 @@ describe("useKeptPaneBoxes", () => {
   });
 
   it("holds a split's half that Back mounts again under the list at the box the list found it in", async () => {
-    const half = (id: string, left: number) => { const slot = new FakeSlot({ left, top: 42, width: 560, height: 830 }); slot.setAttribute("data-slot", id); return slot; };
+    const half = (id: string, left: number) => { const slot = new Slot({ left, top: 42, width: 560, height: 830 }); slot.element.setAttribute("data-slot", id); return slot; };
     const first = half("a", 320);
     slots = [first, half("b", 880)];
     areaBox = { left: 320, top: 42, width: 1120, height: 830 };
@@ -177,30 +174,30 @@ describe("useKeptPaneBoxes", () => {
     const again = half("b", 880);
     again.box = { left: 880, top: 0, width: 560, height: 900 };
     let queries = 0;
-    (area as unknown as { current: { querySelectorAll(): FakeSlot[] } }).current.querySelectorAll = () => (queries++ === 0 ? [first] : [first, again]);
+    const host = area.current!;
+    const query = host.querySelectorAll.bind(host);
+    Object.defineProperty(host, "querySelectorAll", { value: (selector: string) => {
+      if (++queries === 2) host.append(again.element);
+      return query(selector);
+    } });
     await draw(true);
 
     expect(again.kept()).toEqual({ position: "absolute", left: "560px", top: "42px", width: "560px", height: "830px" });
   });
 
   it("holds a covered pane at its size before anything in the commit that covers it reads the page", async () => {
-    const slot = new FakeSlot({ left: 0, top: 52, width: 390, height: 792 });
-    slots = [slot];
+    const slot = new Slot({ left: 0, top: 52, width: 390, height: 792 });
+    area.current!.append(slot.element);
     const seen: string[] = [];
     function Opening({ covered }: { covered: boolean }) {
       useLayoutEffect(() => { if (covered) seen.push(slot.style.getPropertyValue("height") || "not held"); }, [covered]);
       return null;
     }
-    function Page({ covered }: { covered: boolean }) {
+    function Cover({ covered }: { covered: boolean }) {
       useKeptPaneBoxes(area, covered);
       return createElement(Opening, { covered });
     }
-    const show = async (covered: boolean): Promise<void> => {
-      await act(async () => {
-        if (renderer) renderer.update(createElement(Page, { covered }));
-        else renderer = create(createElement(Page, { covered }));
-      });
-    };
+    const show = (covered: boolean) => page.render(createElement(Cover, { covered }));
     await show(false);
 
     areaBox = { left: 0, top: 0, width: 390, height: 844 };
@@ -211,8 +208,10 @@ describe("useKeptPaneBoxes", () => {
   });
 
   it("holds the room a header over the pane took of it as it was shown (--header-over), and gives it back", async () => {
-    const slot = new FakeSlot({ left: 320, top: 0, width: 1120, height: 900 });
-    slot.computed.set("--header-over", "calc(34px + 12px * 2)");
+    const slot = new Slot({ left: 320, top: 0, width: 1120, height: 900 });
+    const style = page.container.ownerDocument.createElement("style");
+    style.textContent = ".pane-slot { --header-over: calc(34px + 12px * 2); }";
+    page.container.ownerDocument.head.append(style);
     slots = [slot];
     areaBox = { left: 320, top: 0, width: 1120, height: 900 };
     await draw(false);
@@ -226,7 +225,7 @@ describe("useKeptPaneBoxes", () => {
   });
 
   it("reads nothing of the page and watches nothing while no list covers a pane, as in the classic app", async () => {
-    const slot = new FakeSlot({ left: 0, top: 52, width: 390, height: 792 });
+    const slot = new Slot({ left: 0, top: 52, width: 390, height: 792 });
     slots = [slot];
 
     await draw(false);

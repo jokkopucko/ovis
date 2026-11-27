@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
-import type { Terminal } from "@xterm/xterm";
+import type { GhosttyTerminal } from "./ghostty/terminal.ts";
 import type { AgentStatus } from "../../shared/protocol.ts";
 import type { InputRowState, FrameGate } from "./inputRow.ts";
 import { modalOpen } from "./focus.ts";
@@ -34,7 +34,7 @@ export interface PeekReturnDeps {
   presented: boolean;
   receiptRowRef: RefObject<{ pane: string; text: string; state: InputRowState } | null>;
   stackRef: RefObject<HTMLDivElement | null>;
-  termRef: RefObject<Terminal | null>;
+  termRef: RefObject<GhosttyTerminal | null>;
   terminalId: string | null;
   t: Translate;
   heldRef: RefObject<boolean>;
@@ -181,7 +181,7 @@ export function usePeekReturn(deps: PeekReturnDeps) {
   // guard of its own, and keys typed after the return would reach the pane), and a desktop's typing
   // goes back to the message box of the same pane (another pane's composer focuses itself, or not,
   // as a pane switch decides). A phone's keyboard stays down. Keep Terminal (or the header's
-  // Terminal) keeps the grid, and gives it the keyboard its button took.
+  // GhosttyTerminal) keeps the grid, and gives it the keyboard its button took.
   const shownPeekRef = useRef<TerminalPeek | null>(null);
   useLayoutEffect(() => {
     const was = shownPeekRef.current;

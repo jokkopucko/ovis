@@ -48,5 +48,6 @@ it("lists and decides account joins for this PC's own window only, and never wit
   expect((await post({ id: own.joins[0]!.id, digits: "654321" }, forwarded)).status).not.toBe(200);
   expect((await post({ id: own.joins[0]!.id })).status).toBe(400);
   expect((await post({ id: own.joins[0]!.id, digits: "654321" })).status).toBe(200);
-  expect(await waiting.decision).toEqual({ approved: true });
+  // decided in this PC's own window: the approval says so
+  expect(await waiting.decision).toEqual({ approved: true, own: true });
 });

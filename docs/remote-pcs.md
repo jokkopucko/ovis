@@ -30,7 +30,7 @@ addresses/sessions appear with an error and do not connect.
 
 The connection server uses its own operating-system account’s OpenSSH configuration and ssh-agent (on Windows, when Git for Windows' OpenSSH runs, only an agent named by `SSH_AUTH_SOCK` in the server's environment; see below). The browser never opens SSH itself. Existing keys are tried first; unknown host fingerprints and password/key-passphrase prompts appear in the setup dialog. Secret entry requires HTTPS or localhost. Verify a new fingerprint against the target PC. A changed host key fails closed; correcting trust is a deliberate administrator action, not an automatic reset.
 
-After inspection, **Install and connect** lists the proposed changes. The installer uses a private runtime bundle containing the compiled Ovis server, Node and native node-pty, plus a pinned herdr fallback. It uses an existing herdr where available, starts a daemon only when its socket is absent, and never stops/replaces a running herdr daemon. Agent CLI installation and login remain the remote account’s responsibility. Cancelling a setup closes its SSH processes; already-created remote work is preserved.
+After inspection, **Install and connect** lists the proposed changes. The installer uses a private runtime bundle containing the compiled Ovis server and its Rust PTY host, plus a pinned herdr fallback. It uses an existing herdr where available, starts a daemon only when its socket is absent, and never stops/replaces a running herdr daemon. Agent CLI installation and login remain the remote account’s responsibility. Cancelling a setup closes its SSH processes; already-created remote work is preserved.
 
 Password or encrypted-key authentication also offers registration of an app-specific ed25519 key for unattended reconnection. The private key stays on the connection server under `<stateDir>/ssh/<machine-id>`, mode `0600`; only its public key is appended to the remote account’s `authorized_keys`. The original SSH keys/configuration are preserved. One-time secrets pass in memory through a private askpass socket (a Unix socket, or a named pipe on Windows) that answers only a helper presenting its connection's random token; they are not stored in jobs or configuration files.
 
@@ -73,10 +73,12 @@ In **Add a connection → Tailscale**, **Connect** opens SSH setup with the PC's
 
 PCs already added through the relay keep working. Clients that support pairing links or typed codes can still use them between unbound PCs: both PCs only connect out to the [Ovis relay](relay.md). On the other PC, open
 **Settings → Devices and PCs → Connect** (with the relay on) and type the ten-character code it shows
-beside its QR code here (an older Ovis names it **Show a code to type**; its pairing link works too):
+beside its QR code here (its pairing link works too):
 this PC's server finds that PC through the relay as a phone does ([Pairing with a typed code](relay.md)),
 keeps what it found, and shows that PC's ID. Choose **It matches** only if every group matches the ID
-at the top of **My devices** on that PC's screen (under the code on an older Ovis). This PC's server then pairs with that one exactly as a phone does: the same one-time code, the same
+under the code on that PC's screen. On older versions, look for the ID in **Settings → Devices and PCs →
+Connected to this PC**, or go back and use a code from **Settings → Agents → Setup guide → Other ways →
+Show a code to type**. This PC's server then pairs with that one exactly as a phone does: the same one-time code, the same
 end-to-end encryption and the same device key, kept on this server in
 `<stateDir>/relay-pcs/<pc id>.json` (mode `0600`). The other PC lists it under Devices as
 `Ovis on <this PC's name>`, with the access any paired device has. The PC itself is saved in
@@ -261,7 +263,8 @@ and herdr's default session only.
 - An SSH PC whose own Ovis was started by hand (`bun run server`, not its updater) offers
   `ovis_update.how: "install"`: its `steps` name the process it stops; Ovis is installed as a herdr
   plugin that updates itself (`OVIS_RUNTIME=herdr`), started (herdr is started headless when it is
-  not running, which starts the plugin), and the PC connected again. As when it is run by hand, the
+  not running, which starts the plugin: the installer starts it, and sets up a user service that starts
+  it again at boot where lingering is on or can be turned on), and the PC connected again. As when it is run by hand, the
   installer adds what is missing for that account (herdr, Bun, which may add itself to the shell's
   startup file) and serves Ovis to the tailnet when Tailscale runs there; the steps say so first. An
   Ovis already installed there (a herdr plugin or its user service) is started that way instead, since
@@ -457,7 +460,7 @@ or MSYS tools earlier on PATH cannot reinterpret the archive's drive-letter path
 
 ## Building and distributing runtimes
 
-`bun run build:remote` builds for the host OS and CPU after `bun run build`; any platform can be named and assembled on any OS. Every bundle holds the server compiled for its platform (`ovis-server`, `scripts/server-artifact.ts`) with the built client and the agent integrations beside it, and no server or shared sources. Linux and macOS bundles add checksum-pinned Node 22.23.2 and that platform's prebuilt PTY package (`@lydell/node-pty-<platform>`, fetched checksum-pinned from the npm registry when it is not the host's), and the Rust PTY host with its record when `HERDR_BUNDLE_PTY_SIDECAR` names one (CI always does). The Windows bundle (`win32-x64`) is the compiled server alone, with no Node, PTY package or herdr:
+`bun run build:remote` builds for the host OS and CPU after `bun run build`; any platform can be named and assembled on any OS. Every bundle holds the server compiled for its platform (`ovis-server`, `scripts/server-artifact.ts`) with the built client and the agent integrations beside it, and no server or shared sources. Linux and macOS bundles add the Rust PTY host with its record, which `HERDR_BUNDLE_PTY_SIDECAR` must name (CI always does; the build stops without it). The Windows bundle (`win32-x64`) is the compiled server alone, with no PTY host or herdr:
 
 ```sh
 bun run build:remote darwin-arm64  # Apple Silicon
@@ -465,7 +468,7 @@ bun run build:remote win32-x64     # Windows
 bun run build:remote darwin-x64    # Intel Mac
 ```
 
-The builder verifies herdr 0.9.3, all downloaded runtime checksums, macOS executable architectures and PTY helper permissions. Native builds run an actual PTY smoke test. Cross-platform assembly records `native_smoke_tested: false`; the destination runs the bundled server (`ovis-server remote --help`), herdr and a Node PTY smoke test **before activating** the installed runtime. macOS runtime execution still needs native CI or a real Mac to verify it. No build tools are required on the remote PC.
+The builder verifies herdr 0.9.3, all downloaded runtime checksums and macOS executable architectures. Native builds run an actual PTY smoke test. Cross-platform assembly records `native_smoke_tested: false`; the destination runs the bundled server (`ovis-server remote --help`), herdr and the Rust PTY host on a pty **before activating** the installed runtime. macOS runtime execution still needs native CI or a real Mac to verify it. No build tools are required on the remote PC.
 
 The connection server first honors an explicit `OVIS_BUNDLE_MANIFEST`, then automatically uses `remote-bundles/manifest-<target OS>-<target CPU>.json` beside the server checkout, and otherwise downloads the versioned release. Local discovery follows the **remote** architecture, independently of the server OS and launch directory. Invalid local/configured manifests fail closed; they do not fall back to a different runtime.
 

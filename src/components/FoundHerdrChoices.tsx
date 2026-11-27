@@ -33,7 +33,10 @@ export function FoundHerdrChoices({ sessions, ownOvis = [], error, busy, onChoos
   const herdrChoices = <HerdrSessionChoices sessions={sessions} busy={busy} onChoose={onChoose} />;
   return <div className={`machine-action${question ? " is-setup" : ""}`} role="status">
     {reason !== null && <p className="machine-action-text"><strong>{reason}</strong></p>}
-    {ownOvis.map((found, at) => <button key={found.socket_path} type="button" className={question ? "btn btn-primary" : "btn"} disabled={busy} onClick={() => onChoose({ own_ovis: found.socket_path, herdr_socket: undefined, start_new_herdr: undefined })}>{t("Use Ovis on this PC (herdr-core)")}{nth(ownOvis, at, () => true)}</button>)}
+    {ownOvis.map((found, at) => <button key={found.socket_path} type="button" className={`btn machine-action-choice${question ? " btn-primary" : ""}`} disabled={busy} onClick={() => onChoose({ own_ovis: found.socket_path, herdr_socket: undefined, start_new_herdr: undefined })}>
+      {ownOvis.length > 1 && found.port ? t("Use Ovis on this PC (herdr-core) on port {port}", { port: found.port }) : t("Use Ovis on this PC (herdr-core)")}{nth(ownOvis, at, (a, b) => ownOvis.length > 1 && a.port === b.port)}
+      {found.newer_than_app && ` ${t("(update this app first)")}`}
+    </button>)}
     {ownOvis.length ? !foldedAbove && <details className="machine-action-more"><summary>{t("Advanced settings")}</summary>{herdrChoices}</details> : <>
       {reason === null && (sessions.length ? <p className="machine-action-text"><strong>{t("A herdr session is already running on this PC")}</strong><span>{t("Choose the session to use, or start a new herdr here.")}</span></p>
         : <p className="machine-action-text"><strong>{t("The chosen herdr session is no longer running")}</strong><span>{t("Start it on that PC and reconnect, or start a new herdr here.")}</span></p>)}

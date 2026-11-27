@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,8 +12,10 @@ import {
   hermesConversationPage,
   hermesDbPath,
   hermesHomeInPsLine,
+  hermesTerminalId,
   hermesToolOutput,
   hermesToolSummary,
+  hermesTranscriptForPane,
   isHermesProcess,
   parseHermesRows,
   processHermesHome,
@@ -21,6 +24,7 @@ import {
 import { ConversationNotStarted, ConversationUnavailable, HistoryChanged, TRANSCRIPT_WINDOW_BYTES, type RecognizedConversation } from "./conversation.ts";
 import type { ConversationPart, ConversationTurn } from "../shared/protocol.ts";
 import { toolSummary } from "./transcript-records.ts";
+import { hermesLauncherArgv } from "./fixtures/hermes-installed-launcher.ts";
 
 describe("hermes paths", () => {
   it("computes default hermes home and db path", () => {
@@ -102,6 +106,48 @@ describe("hermes terminal breadcrumb resolution", () => {
 
   afterEach(() => {
     rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it.skipIf(process.platform !== "linux" && process.platform !== "darwin")("resolves a breadcrumb when the foreground name is Python and argv is the Hermes installer launcher", async () => {
+    const ready = Promise.withResolvers<void>();
+    const child = Bun.spawn(["/bin/sh", "-c", "printf ready; exec cat"], {
+      env: process.env,
+      terminal: { cols: 80, rows: 24, data: () => ready.resolve() },
+    });
+    const path = join(tempDir, "herdr.sock");
+    const socket = createServer((client) => {
+      let input = "";
+      client.on("data", (data) => {
+        input += data.toString();
+        if (!input.endsWith("\n")) return;
+        const { id, method } = JSON.parse(input);
+        const result = method === "pane.process_info"
+          ? { process_info: { foreground_processes: [{ pid: child.pid, name: "Python", argv: hermesLauncherArgv }] } }
+          : { agent: {} };
+        client.end(`${JSON.stringify({ id, result })}\n`);
+      });
+    });
+    const previous = process.env["HERDR_SOCKET"];
+    try {
+      await new Promise<void>((resolve, reject) => { socket.once("error", reject); socket.listen(path, resolve); });
+      process.env["HERDR_SOCKET"] = path;
+      await Promise.race([ready.promise, child.exited]);
+      const terminalId = hermesTerminalId(child.pid);
+      if (terminalId === null) throw new Error("The test process has no terminal");
+      const markers = join(tempDir, "terminal-sessions");
+      mkdirSync(markers);
+      writeFileSync(join(markers, terminalId), JSON.stringify({ session_id: "installed-session", cwd: tempDir, ts: Date.now() / 1000 }));
+      const dbPath = join(tempDir, "state.db");
+      writeFileSync(dbPath, "");
+      const pane = { agent: "hermes", agent_status: "idle", focused: true, pane_id: "p_1", revision: 0, tab_id: "tab", terminal_id: "term", workspace_id: "work" } as const;
+      expect(await hermesTranscriptForPane(pane, tempDir, tempDir)).toEqual({ sessionId: "installed-session", dbPath });
+    } finally {
+      if (previous === undefined) delete process.env["HERDR_SOCKET"]; else process.env["HERDR_SOCKET"] = previous;
+      socket.close();
+      child.kill();
+      await child.exited;
+      child.terminal?.close();
+    }
   });
 
   it.skipIf(process.platform === "win32")("accepts only a current-process breadcrumb for the canonical cwd", () => {

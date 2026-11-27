@@ -1,0 +1,231 @@
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { act, createElement } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
+import { FakeAccountService, WEB_REDIRECT } from "../../shared/account-service-fake.ts";
+import { accountList, type AccountList } from "../lib/account/accountList.ts";
+import { askingPc, pcComparing, postPcKeys, type AskingPc } from "../lib/account/accountList.test-helpers.ts";
+import { postedPcs, type PostedPc } from "../lib/account/listAdd.ts";
+import { memoryListLock, memoryListStore } from "../lib/account/listStore.ts";
+import { ACCOUNT_PCS_CHANGED_EVENT } from "../lib/account/myPcs.ts";
+import { readSeenPcs } from "../lib/account/seenPcs.ts";
+import { AccountService } from "../lib/account/service.ts";
+import { beginSignIn, finishSignIn, signInReturn } from "../lib/account/signin.ts";
+import { memoryAccountStore, memoryLock, newKey, type AccountStore } from "../lib/account/store.ts";
+import { SettingsProvider } from "../lib/settings.ts";
+import { AddPcByNumber } from "./AddPcByNumber.tsx";
+
+const ORIGIN = "https://account.ovis.sh";
+const ACCOUNT = "acct_owner";
+
+const globals = new Map<string, PropertyDescriptor | undefined>();
+let page: Page;
+let fake: FakeAccountService;
+let store: AccountStore;
+let changes = 0;
+
+const textOf = (node: Element): string => node.textContent ?? "";
+const buttonNodes = () => [...page.container.querySelectorAll("button")];
+const buttons = (): string[] => buttonNodes().map((node) => textOf(node).trim());
+const settle = async (): Promise<void> => { for (let i = 0; i < 20; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
+const press = async (label: string): Promise<void> => {
+  const found = buttonNodes().filter((node) => textOf(node).trim() === label);
+  if (found.length !== 1) throw new Error(`${found.length} buttons say ${label}`);
+  await act(async () => { found[0]?.click(); });
+  await settle();
+};
+const text = (): string => textOf(page.one('[data-testid="add-pc-number"]'));
+/** Settles once `holds`, looking every 10 ms for two seconds at most: a wait for the PC runs on the real clock. */
+const until = async (holds: () => boolean): Promise<void> => {
+  for (let looks = 0; looks < 200 && !holds(); looks++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+};
+const digitsShown = (): string => textOf(page.one('[class="relay-shell-digits"]')).replaceAll(" ", "");
+
+beforeEach(() => {
+  page = openPage("https://app.ovis.sh/");
+  page.window.addEventListener(ACCOUNT_PCS_CHANGED_EVENT, () => { changes++; });
+  for (const name of ["localStorage", "Event", "CustomEvent"] as const) {
+    globals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+    Object.defineProperty(globalThis, name, { configurable: true, value: page.window[name] });
+  }
+  fake = new FakeAccountService();
+  fake.opensAll = true;
+  fake.listAccounts = "*";
+  fake.signInAs("github", ACCOUNT);
+  store = memoryAccountStore();
+  changes = 0;
+});
+
+afterEach(async () => {
+  await page.close();
+  for (const [name, descriptor] of globals) {
+    if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+    else Reflect.deleteProperty(globalThis, name);
+  }
+  globals.clear();
+});
+
+/**
+ * This device is in its account's list, and a PC the account lists already (an own sign-in listed it, before the
+ * account had a list) posted its keys and its card for that list.
+ */
+async function listedPc(): Promise<{ pc: AskingPc; play: ReturnType<typeof pcComparing>; list: AccountList; post: PostedPc; admits: () => number; opened: () => number; held: () => NonNullable<ReturnType<FakeAccountService["accountList"]>> }> {
+  const start = await beginSignIn("github", { store, service: ORIGIN, redirectUri: WEB_REDIRECT });
+  const returned = signInReturn(new URL((await fake.fetch(start)).headers.get("location") ?? "").hash);
+  if (returned === null) throw new Error("no sign-in came back");
+  await finishSignIn(returned, { store, fetch: fake.fetch });
+  const session = (await store.get("session"))!;
+  const made = await newKey();
+  await store.set("signin_key", { account: ACCOUNT, sign_in_id: session.sign_in_id!, key: made, no: fake.registerSessionKey(session.access_token, made.public_spki, "Phone") });
+  const pc = await askingPc();
+  let play: ReturnType<typeof pcComparing> | undefined;
+  // every comparison this device opened: an attempt with no reveal
+  let opened = 0;
+  // the PC answers as soon as the account service holds this device's commitment
+  const service = new AccountService({ store, lock: memoryLock(), fetch: async (input: Request | string | URL, init?: RequestInit) => {
+    const request = new Request(input, init);
+    if (request.method === "POST" && new URL(request.url).pathname.endsWith("/attempt") && (await request.clone().json() as { reveal?: string }).reveal === undefined) opened++;
+    const answer = await fake.fetch(request.clone());
+    if (request.method === "POST" && new URL(request.url).pathname.endsWith("/attempt")) await play?.answer();
+    return answer;
+  } });
+  const list = accountList({ service, accountStore: store, listStore: memoryListStore(), lock: memoryListLock(), genesis: () => "always", durable: async () => true, names: () => ({ label: "Phone", os: "ios" }) });
+  await list.sync();
+  const held = () => fake.accountList(ACCOUNT)!;
+  await postPcKeys(fake.fetch, ORIGIN, fake.issueToken(ACCOUNT), pc, held().id);
+  play = pcComparing({ fake, origin: ORIGIN } as unknown as Parameters<typeof pcComparing>[0], pc, held().id);
+  const post = (await postedPcs(list)).find((each) => each.server_id === pc.server_id);
+  if (post === undefined) throw new Error("the PC's post was not read");
+  return { pc, play, list, post, held, opened: () => opened, admits: () => fake.requests.filter((line) => line === `POST /v1/pcs/${pc.server_id}/admit`).length };
+}
+
+async function mount(list: AccountList, post: PostedPc, more: { waitMs?: number; now?: () => number } = {}): Promise<{ closed: () => number; added: () => number }> {
+  let closed = 0, added = 0;
+  await page.render(createElement(SettingsProvider, { children: createElement(AddPcByNumber, { list, account: ACCOUNT, post, name: "Desk", onClose: () => { closed++; }, onAdded: () => { added++; }, ...more }) }));
+  await settle();
+  return { closed: () => closed, added: () => added };
+}
+
+describe("a PC the account names that its signed list does not hold yet", () => {
+  it("shows the number the PC shows, and signs the PC into the list at Add, with no admission asked for", async () => {
+    const { pc, play, list, post, held, admits } = await listedPc();
+    const told = await mount(list, post);
+    expect(await play.digits()).toBe(digitsShown());
+    expect(text()).toContain("Add this PC to your account?");
+    expect(text()).toContain("Desk");
+    expect(text()).toContain("Check that the PC shows this number and confirm it there, then Add");
+    expect(buttons()).toEqual(["Cancel", "Not the same", "Add"]);
+    // nothing is signed before the press
+    expect(held().entries.length).toBe(1);
+    await press("Add");
+    expect([admits(), held().entries.length, told.added(), changes]).toEqual([0, 2, 1, 1]);
+    expect(list.view().pcs.map((row) => [row.endpoint, row.name?.label])).toEqual([[pc.endpoint, "Desk"]]);
+    // a number was compared on both screens: this device's own record of its PCs says that it added this one
+    await settle();
+    expect(readSeenPcs(ACCOUNT).pcs[pc.endpoint]).toEqual({ how: "added" });
+  });
+
+  it("keeps the number the PC confirmed when Add for that PC is pressed again or its post is read again: no second comparison, and Add then places the entry", async () => {
+    // the order of the real presses: Add on the PC's row (the number shows), yes at the PC, then Add on the row again (as
+    // Manage account's row button and My PCs' row each set the card again) or a read of the posts hands an equal post
+    const { pc, play, list, post, held, opened } = await listedPc();
+    const told = await mount(list, post);
+    const digits = await play.digits();
+    if (digits === null || digits === "mismatch") throw new Error("the PC shows no number");
+    expect(digitsShown()).toBe(digits);
+    expect(opened()).toBe(1);
+    // the PC said yes to that number: it answers no new comparison from now on
+    play.answer = async () => false;
+    await page.render(createElement(SettingsProvider, { children: createElement(AddPcByNumber, { list, account: ACCOUNT, post: { ...post }, name: "Desk", onClose: () => {}, onAdded: () => {} }) }));
+    await settle();
+    expect([opened(), digitsShown()]).toEqual([1, digits]);
+    expect(text()).not.toContain("Waiting for the PC");
+    await press("Add");
+    expect(held().entries.length).toBe(2);
+    expect(list.view().pcs.map((row) => row.endpoint)).toEqual([pc.endpoint]);
+    expect(told.closed()).toBe(0);
+  });
+
+  it("closes at Cancel while the number is shown, and adds nothing", async () => {
+    const { list, post, held } = await listedPc();
+    const told = await mount(list, post);
+    expect([...page.container.querySelectorAll('[class="relay-shell-digits"]')]).toHaveLength(1);
+    await press("Cancel");
+    expect([told.closed(), told.added(), held().entries.length]).toEqual([1, 0, 1]);
+  });
+
+  it("adds nothing where the person says the numbers are not the same, and offers no other try", async () => {
+    const { list, post, held } = await listedPc();
+    const told = await mount(list, post);
+    await press("Not the same");
+    expect(text()).toContain("The numbers did not match. This PC was not added.");
+    expect(buttons()).toEqual(["Close"]);
+    expect([...page.container.querySelectorAll('[class="relay-shell-digits"]')]).toEqual([]);
+    await press("Close");
+    expect([held().entries.length, told.added(), told.closed()]).toEqual([1, 0, 1]);
+    expect(readSeenPcs(ACCOUNT).pcs).toEqual({});
+  });
+
+  it("says so where the PC does not answer, shows no number, and asks again at Try again", async () => {
+    const { play, list, post, held } = await listedPc();
+    const answer = play.answer;
+    play.answer = async () => false;
+    await mount(list, post, { waitMs: 100 });
+    await until(() => text().includes("The PC did not answer"));
+    expect(text()).toContain("The PC did not answer. Start again on the PC.");
+    expect([...page.container.querySelectorAll('[class="relay-shell-digits"]')]).toEqual([]);
+    expect(buttons()).toEqual(["Close", "Try again"]);
+    play.answer = answer;
+    await press("Try again");
+    await until(() => [...page.container.querySelectorAll('[class="relay-shell-digits"]')].length > 0);
+    expect(await play.digits()).toBe(digitsShown());
+    expect(held().entries.length).toBe(1);
+  });
+
+  it("writes the added record before the dialog says it is done: never while another tab holds the record", async () => {
+    const { pc, list, post } = await listedPc();
+    const locks = Promise.withResolvers<void>();
+    const saved = Object.getOwnPropertyDescriptor(page.window.navigator, "locks");
+    Object.defineProperty(page.window.navigator, "locks", { value: { request: async (_name: string, work: () => Promise<void>) => { await locks.promise; return work(); } }, configurable: true });
+    try {
+      const told = await mount(list, post);
+      const add = buttonNodes().find((node) => textOf(node).trim() === "Add");
+      if (!add) throw new Error("No Add button");
+      await act(async () => { add.click(); });
+      await settle();
+      expect([list.view().pcs.map((row) => row.endpoint), told.added()]).toEqual([[pc.endpoint], 0]);
+      locks.resolve();
+      await settle();
+      expect([told.added(), readSeenPcs(ACCOUNT).pcs[pc.endpoint]]).toEqual([1, { how: "added" }]);
+    } finally {
+      locks.resolve();
+      if (saved) Object.defineProperty(page.window.navigator, "locks", saved);
+      else Reflect.deleteProperty(page.window.navigator, "locks");
+    }
+  });
+
+  it("asks for three numbers at most: after the third, no Try again", async () => {
+    const { play, list, post, held, opened } = await listedPc();
+    play.answer = async () => false;
+    await mount(list, post, { waitMs: 100 });
+    for (let more = 0; more < 2; more++) {
+      await until(() => buttons().includes("Try again"));
+      expect(buttons()).toEqual(["Close", "Try again"]);
+      await press("Try again");
+    }
+    await until(() => text().includes("Too many tries"));
+    expect(text()).toContain("Too many tries for this PC. Start again on the PC in a few minutes.");
+    expect(buttons()).toEqual(["Close"]);
+    expect([opened(), held().entries.length]).toEqual([3, 1]);
+  });
+
+  it("adds nothing at a press after the number ran out, whatever the timer did not draw yet", async () => {
+    const { list, post, held } = await listedPc();
+    let clock = Date.now();
+    await mount(list, post, { now: () => clock });
+    expect(buttons()).toEqual(["Cancel", "Not the same", "Add"]);
+    clock += 121_000;
+    await press("Add");
+    expect(text()).toContain("That number ran out. Press Add for a new one; if the PC already said the numbers match, start again on the PC.");
+    expect([held().entries.length, readSeenPcs(ACCOUNT).pcs]).toEqual([1, {}]);
+  });
+});

@@ -1,7 +1,7 @@
 import { describe, expect, it, spyOn } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { openPage } from "../lib/page.fixture.ts";
 
 import type { InteractivePrompt } from "../../shared/protocol.ts";
 import { translate } from "../lib/i18n.ts";
@@ -184,34 +184,24 @@ describe("a question's typed answer survives a page reload (G-008)", () => {
       settings: settingsModule.DEFAULT_SETTINGS,
       resolvedLanguage: "ko",
     } as ReturnType<typeof settingsModule.useSettings>);
-    const session = new Map<string, string>();
-    const local = new Map<string, string>();
-    const storage = (store: Map<string, string>) => ({ getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => { store.set(k, v); }, removeItem: (k: string) => { store.delete(k); } });
-    const listen = { addEventListener() {}, removeEventListener() {} };
-    const savedWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
-    const savedAct = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, writable: true, value: true });
-    Object.defineProperty(globalThis, "window", { configurable: true, writable: true, value: { ...listen, matchMedia: () => ({ matches: false, ...listen }), sessionStorage: storage(session), localStorage: storage(local) } });
+    const page = openPage();
     let owned: string | undefined;
     const card = (initialText?: string) => createElement(PromptCard, {
       paneId: "w1:p1", prompt: asked, onPromptChanged: () => {}, onAnswered: () => {}, onTextChange: (text) => { owned = text; }, ...(initialText === undefined ? {} : { initialText }),
     });
-    const field = (renderer: ReactTestRenderer) => renderer.root.find((node) => node.type === "input");
-    let renderer: ReactTestRenderer | undefined;
+    const field = () => page.one<HTMLInputElement>("input");
     try {
-      await act(async () => { renderer = create(card()); });
-      await act(async () => { field(renderer!).props.onChange({ currentTarget: { value: "이 질문의 답변 초안 보존 시험" } }); });
+      await page.render(card());
+      await page.type(field(), "이 질문의 답변 초안 보존 시험");
       expect(owned).toBe("이 질문의 답변 초안 보존 시험");
-      expect([...session.keys(), ...local.keys()].filter((key) => key.startsWith("ovis:prompt-draft:"))).toEqual([]);
+      expect([page.window.sessionStorage, page.window.localStorage].flatMap((storage) => Array.from({ length: storage.length }, (_, i) => storage.key(i) ?? "")).filter((key) => key.startsWith("ovis:prompt-draft:"))).toEqual([]);
 
-      await act(async () => { renderer!.unmount(); });
-      await act(async () => { renderer = create(card(owned)); });
-      expect(field(renderer!).props.value).toBe("이 질문의 답변 초안 보존 시험");
+      await page.render(null);
+      await page.render(card(owned));
+      expect(field().value).toBe("이 질문의 답변 초안 보존 시험");
     } finally {
-      await act(async () => { renderer?.unmount(); });
+      await page.close();
       settingsSpy.mockRestore();
-      if (savedWindow) Object.defineProperty(globalThis, "window", savedWindow); else Reflect.deleteProperty(globalThis, "window");
-      if (savedAct) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", savedAct); else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
     }
   });
 });

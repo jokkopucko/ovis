@@ -23,7 +23,8 @@ CREATE INDEX IF NOT EXISTS events_day ON events (day);
 -- One row per install and UTC day a browser visited (day is the visit's, even when the message
 -- arrived later). A later message that day replaces version and harnesses (the kinds of coding
 -- agents seen, a sorted JSON array from shared/telemetry.ts TELEMETRY_HARNESSES) and usage (the
--- day's TelemetryUsage as JSON: kinds of screen, ways in, and counts; NULL from senders before it).
+-- day's TelemetryUsage as JSON: kinds of screen, ways in, and counts, and from newer senders the panes per kind of
+-- agent by who started them, their major.minor versions and the answers per way; NULL from senders before it).
 CREATE TABLE IF NOT EXISTS active (
   day TEXT NOT NULL,
   install_id TEXT NOT NULL,

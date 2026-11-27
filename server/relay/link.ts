@@ -4,6 +4,7 @@ import type { MuxClock } from "../../shared/relay-mux-engine.ts";
 import type { RequestServices } from "../dispatch.ts";
 import type { RelayIdentity } from "./identity.ts";
 import { PAIR_APPROVAL_MS } from "../../shared/relay-pair-sas.ts";
+import { LIST_ALLOW_MS } from "../account/list-follow.ts";
 import { RelaySession, relayClock } from "./session.ts";
 import type { RelaySocketHandlers } from "./virtual-socket.ts";
 import { version } from "../../package.json";
@@ -359,7 +360,9 @@ export class RelayLink {
   private serveData(id: string, socket: WebSocket, proven: boolean): void {
     // Runs until the client signs in or pairs, not just until the protected channel opens.
     const deadline = () => {
-      if (entry.session?.verifying) entry.cancelTimeout = this.clock.setTimeout(() => socket.close(), SIGN_IN_GRACE_MS);
+      // a join that waits for its entry in the account's list has the time that placement may take, then is looked at again
+      if (entry.session?.placing) entry.cancelTimeout = this.clock.setTimeout(deadline, LIST_ALLOW_MS);
+      else if (entry.session?.verifying) entry.cancelTimeout = this.clock.setTimeout(() => socket.close(), SIGN_IN_GRACE_MS);
       else if (entry.session?.pairing) entry.cancelTimeout = this.clock.setTimeout(deadline, PAIR_APPROVAL_MS);
       else socket.close();
     };

@@ -1,14 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { chromium, type Locator } from "playwright-core";
+import type { Locator } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 import { DEMO_PREFIX, serveDemo } from "./demo-server.ts";
 
-const app = mkdtempSync(join(tmpdir(), "ovis-docked-file-link-demo-"));
 const evidence = process.env.UI_EVIDENCE_DIR;
 
 const FILES_SCRIPT = `<script>(${(() => {
@@ -28,35 +25,26 @@ const FILES_SCRIPT = `<script>(${(() => {
   };
 }).toString()})();</script>`;
 
-const server = await (async () => {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>${FILES_SCRIPT}\n    <script type="module"`));
-  return serveDemo(app);
-})();
-let draftServer: ReturnType<typeof serveDemo> | undefined;
-
-try {
-  draftServer = serveDemo(app);
-  const draftPath = "doc/draft-ietf-httpapi-idempotency-key-header.html";
-  const draftUrl = new URL(`${DEMO_PREFIX}${draftPath}`, draftServer.url).href;
-  mkdirSync(join(app, "doc"));
-  writeFileSync(join(app, draftPath), "<title>draft</title><h1>Idempotency-Key draft</h1>");
-  // The first navigation of a background tab must reach the fixture even before
-  // Playwright can attach to the tab and intercept requests.
-  const transport = join(app, "demo-transport.js");
-  const demo = readFileSync(transport, "utf8");
-  const ietf = "https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/";
-  assert.ok(demo.includes(ietf), "the conversation has the draft link");
-  writeFileSync(transport, demo.replace(ietf, draftUrl));
-  const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
+await withDemoBrowser({ tempPrefix: "ovis-docked-file-link-demo-", afterTransport: FILES_SCRIPT }, async ({ app, newContext, baseUrl }) => {
+  // a second origin for the same files: the page a link leaves the app for
+  const draftServer = serveDemo(app);
   try {
-    if (evidence) mkdirSync(evidence, { recursive: true });
+    const draftPath = "doc/draft-ietf-httpapi-idempotency-key-header.html";
+    const draftUrl = new URL(`${DEMO_PREFIX}${draftPath}`, draftServer.url).href;
+    mkdirSync(join(app, "doc"));
+    writeFileSync(join(app, draftPath), "<title>draft</title><h1>Idempotency-Key draft</h1>");
+    // The first navigation of a background tab must reach the fixture even before
+    // Playwright can attach to the tab and intercept requests.
+    const transport = join(app, "demo-transport.js");
+    const demo = readFileSync(transport, "utf8");
+    const ietf = "https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/";
+    assert.ok(demo.includes(ietf), "the conversation has the draft link");
+    writeFileSync(transport, demo.replace(ietf, draftUrl));
     const chatPane = panes.api;
     const errors: string[] = [];
 
     const open = async (touch: boolean) => {
-      const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US", hasTouch: touch });
+      const context = await newContext({ viewport: { width: 1280, height: 800 }, hasTouch: touch });
       await context.addInitScript(() => {
         if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", fileOpen: "panel" }));
         const clicks: { event: MouseEvent; reached: boolean }[] = [];
@@ -68,7 +56,7 @@ try {
       const page = await context.newPage();
       page.setDefaultTimeout(10_000);
       page.on("pageerror", (error) => errors.push(error.message));
-      await page.goto(new URL(`${DEMO_PREFIX}?pane=${encodeURIComponent(chatPane)}&view=chat`, server.url).href);
+      await page.goto(`${baseUrl}?pane=${encodeURIComponent(chatPane)}&view=chat`);
       const chatFrame = page.locator(`section.pane-frame[data-layout-pane=${JSON.stringify(chatPane)}]`);
       await chatFrame.locator("button.markdown-file", { hasText: "src/lib/idempotency.ts" }).waitFor();
       const shellPane = await page.evaluate(async (pane_id) => {
@@ -238,9 +226,5 @@ try {
       console.log("PASS a tap on a file link in a pane that is not selected opens its file, and the tap clicks nothing else");
     }
     assert.deepEqual(errors, []);
-  } finally { await browser.close(); }
-} finally {
-  await draftServer?.stop(true);
-  await server.stop(true);
-  rmSync(app, { recursive: true, force: true });
-}
+  } finally { await draftServer.stop(true); }
+});

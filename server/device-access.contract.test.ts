@@ -1,6 +1,6 @@
 import { expect, it, spyOn } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CLEAR_LEGACY_DEVICE_COOKIE, DEVICE_COOKIE, DEVICE_COOKIE_CLEARED } from "./auth.ts";
@@ -11,6 +11,7 @@ import { MachineRelay } from "./machine-relay.ts";
 import { MachineManager } from "./machines.ts";
 import { startFakePushService } from "./push.fake.ts";
 import { createServer } from "./index.ts";
+import { loadRelayIdentity } from "./relay/identity.ts";
 import { FakeAccountService } from "../shared/account-service-fake.ts";
 import { pressInto, registerSnapshotPc } from "./account/listed-pc.test-helpers.ts";
 import { workspaceCreate, workspaceClose } from "./herdr/client.ts";
@@ -149,6 +150,28 @@ it("keeps the gate closed, and a device paired in the install's other state dir 
     expect(paired.auth).toMatchObject({ authenticated: true, via: "device" });
     const preferences = await fetch(`${base}/api/preferences`, { headers: { ...remote, cookie } });
     expect(await preferences.json()).toMatchObject({ settings: { language: "en", sidebarRows: "two" } });
+  } finally {
+    server.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("takes nothing from another PC's state dir, Step 2 off too: a device paired to that PC is not let in here", async () => {
+  const root = mkdtempSync(join(tmpdir(), "herdr-device-access-"));
+  const [active, sibling] = [join(root, "herdr-web-ui"), join(root, "ovis")];
+  for (const dir of [active, sibling]) mkdirSync(dir);
+  expect(loadRelayIdentity(active).server_id).not.toBe(loadRelayIdentity(sibling).server_id);
+  const token = "6".repeat(64);
+  const created = "2026-10-25T05:20:00.000Z";
+  writeFileSync(join(sibling, "devices.json"), JSON.stringify({ gate_closed_at: created, devices: [{ id: "0123456789abcdef", label: "Phone", role: "drive", token_hash: createHash("sha256").update(token).digest("hex"), created_at: created, last_seen_at: null }] }));
+  const server = createServer({ port: 0, stateDir: active, siblingStateDir: sibling, tailscaleOwner: null, accountOpensAll: false });
+  const base = `http://127.0.0.1:${server.port}`;
+  const remote = { "x-forwarded-for": "100.64.0.9" };
+  try {
+    const paired = await (await fetch(`${base}/api/health`, { headers: { ...remote, cookie: `${DEVICE_COOKIE}=${token}` } })).json() as { auth: { via?: string } };
+    expect(paired.auth.via).not.toBe("device");
+    const merged = join(active, "devices.json");
+    expect(existsSync(merged) ? readFileSync(merged, "utf8") : "").not.toContain("0123456789abcdef");
   } finally {
     server.stop();
     rmSync(root, { recursive: true, force: true });

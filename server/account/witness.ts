@@ -12,6 +12,7 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { LetIn } from "../../shared/account-list-migrate.ts";
 import { privateStateFs, writePrivateState } from "../private-state.ts";
 
 export const ACCOUNT_WITNESS_FILE = "account-witness.json";
@@ -51,6 +52,8 @@ export interface WitnessDeps {
   /** The wall clock and the process's own running time, in milliseconds. */
   wall?(): number;
   mono?(): number;
+  /** What the durations this PC hands over are multiplied by: 1 but on a staging run (migrate-time.ts). */
+  readonly scale?: number;
 }
 
 interface Held {
@@ -90,6 +93,9 @@ export class AccountWitness {
     this.path = join(deps.stateDir, ACCOUNT_WITNESS_FILE);
   }
 
+  /** What the durations this PC hands over are multiplied by: 1 but on a staging run. */
+  get scale(): number { return this.deps.scale ?? 1; }
+
   start(): void {
     if (this.timer !== null) return;
     this.step();
@@ -112,6 +118,35 @@ export class AccountWitness {
       v: 1, account: held.account, server_id: held.serverId, saved: seconds(this.last?.wall ?? this.wall()),
       keys: Object.fromEntries([...held.keys].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, row]) => [key, { wall: seconds(row.wall), ran: seconds(row.ran), seen: row.seen }])),
     };
+  }
+
+  /**
+   * What this PC tells a device of its account that asks (GET /api/account/list/witness): the account, and the keys its
+   * account rows let in to drive right now, each with how long it has, by both counters, in seconds, and how long ago
+   * it was last used here (null: not since it was let in). A row that waits, for a whole read say, lets nobody in and
+   * is none of them; a pairing made at this PC never is. Null on a PC in no account, or whose rows cannot be read.
+   */
+  admits(): { readonly account: string; readonly admits: readonly LetIn[] } | null {
+    // The counts as of the last step, which runs on its own timer: an answer takes one only when that is due, so no
+    // caller makes this PC write the file, or counts the minute of slack per step, more often than the timer does
+    if (this.last === null || this.mono() - this.last.mono >= WITNESS_INTERVAL_MS) this.step();
+    const held = this.held;
+    const last = this.last;
+    if (held === null || last === null) return null;
+    // whom the rows let in right now, read only: a row that began to wait since the last step lets nobody in. Rows that
+    // cannot be read are no answer, not an answer that nobody is let in
+    const rows = this.deps.rows();
+    if (rows === null) return null;
+    const letting = new Map<string, number | null>();
+    for (const row of rows) if (row.lets) letting.set(row.key, Math.max(letting.get(row.key) ?? -1, row.seen ?? -1));
+    const scale = this.deps.scale ?? 1;
+    // how long ago a key was last used is read now, from the newest use the rows or the record know
+    const now = Math.floor(this.wall() / 1000);
+    const admits = [...held.keys].filter(([key]) => letting.has(key)).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([key, row]) => {
+      const seen = Math.max(row.seen ?? -1, letting.get(key) ?? -1);
+      return { key, wall: Math.floor(row.wall / 1000) * scale, ran: Math.floor(row.ran / 1000) * scale, idle: seen < 0 ? null : Math.max(0, now - seen) };
+    });
+    return { account: held.account, admits };
   }
 
   /**

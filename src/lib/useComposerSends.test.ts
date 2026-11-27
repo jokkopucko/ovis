@@ -1,11 +1,10 @@
 import { expect, it, spyOn } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { Terminal } from "@xterm/xterm";
+import { testTerminal } from "./ghostty/testTerminal.test-support.ts";
 import { readFileSync } from "node:fs";
 import { claudeMainAtRest } from "./compose.ts";
 import { inputRowState, readScreen, readScreenLines } from "./inputRow.ts";
-import { matchHerdrWidths } from "./terminalWidths.ts";
 import { paneStorageId } from "../../shared/machines.ts";
 import { PendingMessageStore, pendingMessages } from "./pendingMessages.ts";
 import { paneLifetimes } from "./paneLifetime.ts";
@@ -52,7 +51,7 @@ it("an offline uncertain display dismissal sends no pending action, submit or dr
   const wire: unknown[] = [], shown: string[] = [];
   const socket = { connected, pendingAction: (...args: unknown[]) => { wire.push(args); throw new Error("an offline dismissal must never call the backend"); } } as unknown as HerdrSocket;
   const key = `ovis:composer-draft:${owner}`;
-  composerDrafts.set(key, "keep my existing draft");
+  composerDrafts.set(key, "keep my existing draft", "replace");
   const pending = { id: `display-${connected}`, request_id: 7, text: "/thinking high", state: "uncertain" as const, created_at: "2026-11-17T00:00:00Z" };
   pendingMessages.accept(owner, pending, "scope");
   expect(pendingMessages.read(owner)[0]!.serverOwned).toBe(true);
@@ -67,14 +66,14 @@ it("an offline uncertain display dismissal sends no pending action, submit or dr
     // a connection that lists the ID again holds the bridge's record: only the bridge can settle it
     pendingMessages.publish(owner, [pending], [], "next-scope");
     expect(pendingMessages.read(owner)).toMatchObject([{ id: pending.id, serverOwned: true }]);
-  } finally { composerDrafts.set(key, ""); saved.restore(); }
+  } finally { composerDrafts.set(key, "", "replace"); saved.restore(); }
 });
 
 it("a live owner's uncertain dismissal asks the bridge to dismiss it, never as a withdrawal, a submit or a draft restore", async () => {
   const saved = savedStorage(), pane = "dismiss-live", owner = paneStorageId("local", pane), key = `ovis:composer-draft:${owner}`;
   const wire: unknown[] = [], shown: string[] = [];
   const pending = { id: "live-uncertain", request_id: 9, text: "/thinking high", state: "uncertain" as const, created_at: "2026-11-17T00:00:00Z" };
-  composerDrafts.set(key, "keep my existing draft");
+  composerDrafts.set(key, "keep my existing draft", "replace");
   pendingMessages.accept(owner, pending, "scope");
   // The bridge's discard of an uncertain record is its "dismissed" outcome, which also frees the pane's queue.
   const socket = { connected: true, on: () => () => {}, pendingAction: (...args: unknown[]) => {
@@ -88,7 +87,7 @@ it("a live owner's uncertain dismissal asks the bridge to dismiss it, never as a
     expect(wire).toEqual([[pane, pending.id, "discard", 0, false]]); expect(shown).toEqual([]);
     expect(composerDrafts.read(key).text).toBe("keep my existing draft");
     expect(pendingMessages.read(owner)).toEqual([]);
-  } finally { composerDrafts.set(key, ""); saved.restore(); }
+  } finally { composerDrafts.set(key, "", "replace"); saved.restore(); }
 });
 
 it.each(["pending_uncertain", "pending_not_found"])("a live owner's dismissal the bridge refuses with %s hides the copy until the bridge lists that record again", async (code) => {
@@ -156,7 +155,7 @@ it("another tab's dismissal of its uncertain copy leaves this tab's live row wit
     expect(pendingMessages.read(owner)).toMatchObject([{ id: live.id, state: "queued", serverOwned: true }]);
     const actions = sends(pane, { ok: true }, [], { socketRef: { current: socket } });
     for (const action of ["edit", "steer", "discard"] as const) await actions.actOnPending(live.id, action);
-    expect(wire).toEqual([[pane, live.id, "discard", 0, true], [pane, live.id, "steer", 0, false], [pane, live.id, "discard", 0, false]]);
+    expect(wire).toEqual([[pane, live.id, "discard", 0, true], [pane, live.id, "steer", 0, false, expect.any(Function)], [pane, live.id, "discard", 0, false]]);
     pendingMessages.publish(owner, [{ ...live, state: "held", error: { code: "agent_blocked", message: "waits for Send now" } }], [], "scope");
     expect(pendingMessages.read(owner)).toMatchObject([{ id: live.id, state: "held", serverOwned: true }]);
     otherTab.refresh(owner);
@@ -222,8 +221,7 @@ for (const autoSendQueued of [false, true]) {
     ["idle without waiting evidence", [...idleBox], false],
     ["permission dialog", [waiting, "Do you want to proceed?", "❯ 1. Yes", "  2. No", "esc to cancel"], false],
   ] as const)(`Claude %s chooses safe delivery with autoSendQueued=${autoSendQueued}`, async (_name, rows, immediate) => {
-    const term = new Terminal({ cols: 40, rows: 60, scrollback: 0, allowProposedApi: true });
-    matchHerdrWidths(term);
+    const term = await testTerminal({ cols: 40, rows: 60, scrollback: 0 });
     try {
       await new Promise<void>((resolve) => term.write(rows.join("\r\n"), resolve));
       const shown: string[] = [], deliveries: SubmitDelivery[] = [];
@@ -531,7 +529,7 @@ it("puts an edited agent-only message back in the box agent-only", async () => {
     expect(composerDrafts.read(key).text).toBe("> q\nc");
     expect(composerDrafts.isAgentOnly(key)).toBe(true);
   } finally {
-    composerDrafts.set(key, "");
+    composerDrafts.set(key, "", "replace");
     pendingMessages.removeCopy(owner, "srv-only");
     saved.restore();
   }

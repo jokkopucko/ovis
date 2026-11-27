@@ -1,8 +1,10 @@
 /**
  * What an OpenCode v2 pane's own service says, read only from a service that already runs and that
  * /api/info proves is the one service.json names (never started or ensured here): the command and
- * skill rows for the pane's directory, and the skill-activation and turn-completion events of the
- * pane's exact session, which settle a Chat send's outcome as native evidence.
+ * skill rows for the pane's directory, the skill-activation and turn-completion events of the
+ * pane's exact session, which settle a Chat send's outcome as native evidence (and, for the TUI's own
+ * /compact, the compaction it asked for), and the permission and question form
+ * events that tell a prompt watch to read the pane's requests and forms again.
  */
 import type { HerdrPane, SlashCommand } from "../shared/protocol.ts";
 import { resolveAgent, typingRoots } from "./pane-context.ts";
@@ -30,6 +32,8 @@ const CATALOG_MAX = 64;
 interface Watch {
   paneId: string; sessionID: string; at: number;
   sendId?: string; texts?: ReadonlySet<string>; skills?: ReadonlySet<string>;
+  /** a /compact the TUI runs itself, enqueuing no message of its text: its result is the compaction it started */
+  compact?: { inputID?: string };
   early: OpenCodeEvent[]; inboxID?: string; delivered: boolean;
   verified: boolean;
 }
@@ -121,7 +125,8 @@ function enqueuedMessage(data: Record<string, unknown>): { inboxID: string; text
 const sameSet = (left: ReadonlySet<string>, right: ReadonlySet<string>): boolean => left.size === right.size && [...left].every((item) => right.has(item));
 
 function step(watch: Watch, event: OpenCodeEvent): void {
-  if (event.type === "session.inbox.enqueued" && watch.inboxID === undefined) {
+  if (watch.compact !== undefined) compactStep(watch, watch.compact, event);
+  else if (event.type === "session.inbox.enqueued" && watch.inboxID === undefined) {
     const message = enqueuedMessage(event.data);
     if (message && watch.texts!.has(message.text) && sameSet(message.skills, watch.skills!)) watch.inboxID = message.inboxID;
   } else if (event.type === "session.inbox.delivered" && watch.inboxID !== undefined && event.data.inboxID === watch.inboxID) watch.delivered = true;
@@ -130,6 +135,22 @@ function step(watch: Watch, event: OpenCodeEvent): void {
     noteCommandEvidence(watch.paneId, watch.sendId!, { kind: "native", at: event.created! });
   } else if ((event.type === "session.execution.failed" || event.type === "session.execution.interrupted") && watch.delivered) {
     watches.splice(watches.indexOf(watch), 1);
+  }
+}
+
+/**
+ * A /compact's own compaction, as recorded on 2.2.2 (server/fixtures/opencode-result-events-2.2.2.json): the first
+ * `session.compaction.started` the user asked for (`reason: "manual"`) after the send names its input, a failure of that
+ * input drops the watch, and the `session.compaction.ended` that follows it, which names no input, is the result. A
+ * compaction begun before the send (an earlier /compact still running) or by OpenCode itself (`auto`) is not this one.
+ */
+function compactStep(watch: Watch, compact: { inputID?: string }, event: OpenCodeEvent): void {
+  if (event.data.reason !== "manual") return;
+  if (event.type === "session.compaction.started" && compact.inputID === undefined && typeof event.data.inputID === "string") compact.inputID = event.data.inputID;
+  else if (event.type === "session.compaction.failed" && compact.inputID !== undefined && event.data.inputID === compact.inputID) watches.splice(watches.indexOf(watch), 1);
+  else if (event.type === "session.compaction.ended" && compact.inputID !== undefined) {
+    watches.splice(watches.indexOf(watch), 1);
+    noteCommandEvidence(watch.paneId, watch.sendId!, { kind: "native", at: event.created! });
   }
 }
 
@@ -144,6 +165,32 @@ function onEvent(event: OpenCodeEvent): void {
   }
 }
 
+/**
+ * Told the verified panes whose permission requests or question forms changed: `permission.asked`, `permission.replied`
+ * (recorded on 2.2.2, server/fixtures/opencode-permission-2.2.2.json), `form.replied` and `form.cancelled` name the
+ * session in `data`, `form.created` in `data.form` (server/fixtures/opencode-form-2.2.2.json). Each stream's open names
+ * every pane on it, as events missed while it was down are gone. Only a wake: the listener reads the requests and forms
+ * again from the service.
+ */
+const promptListeners = new Set<(paneId: string) => void>();
+const PROMPT_EVENTS = new Set(["permission.asked", "permission.replied", "form.created", "form.replied", "form.cancelled"]);
+
+export function onOpenCodePromptChange(listener: (paneId: string) => void): () => void {
+  promptListeners.add(listener);
+  return () => { promptListeners.delete(listener); };
+}
+
+function promptEventSession({ data }: OpenCodeEvent): unknown {
+  return typeof data.form === "object" && data.form !== null ? (data.form as { sessionID?: unknown }).sessionID : data.sessionID;
+}
+
+function wakePanes(key: string, sessionID?: string): void {
+  for (const [paneId, entry] of verifiedPanes) {
+    if (entry.key !== key || (sessionID !== undefined && entry.sessionID !== sessionID)) continue;
+    for (const listener of promptListeners) listener(paneId);
+  }
+}
+
 function ensureStream(service: OpenCodeService): Stream {
   const key = JSON.stringify(service.config);
   if (stream?.key === key) return stream;
@@ -153,9 +200,19 @@ function ensureStream(service: OpenCodeService): Stream {
   for (const [paneId, entry] of verifiedPanes) if (entry.key !== key) verifiedPanes.delete(paneId);
   const next: Stream = { key, connected: false, close: () => {} };
   const subscription = subscribeOpenCodeEvents(service.config, {
-    onOpen: () => { catalogs.clear(); next.connected = true; },
-    onClose: () => { catalogs.clear(); next.connected = false; },
-    onEvent,
+    onOpen: () => { catalogs.clear(); next.connected = true; if (stream === next) wakePanes(key); },
+    onClose: () => {
+      catalogs.clear();
+      next.connected = false;
+      // a compaction's end may have gone by while the stream was down: a later one is not this send's
+      for (let index = watches.length - 1; index >= 0; index--) if (watches[index]!.compact !== undefined) watches.splice(index, 1);
+    },
+    onEvent: (event) => {
+      onEvent(event);
+      if (stream !== next || !PROMPT_EVENTS.has(event.type)) return;
+      const sessionID = promptEventSession(event);
+      if (typeof sessionID === "string") wakePanes(key, sessionID);
+    },
   });
   next.close = () => subscription.close();
   stream = next;
@@ -252,17 +309,17 @@ export async function openCodePaneService(pane: Pick<HerdrPane, "agent" | "agent
     if (own?.size === 0) inFlightByPane.delete(paneId!);
   }
   if (verification.cancelled || released) return null;
+  // a newer verification already bound the pane: this older one neither releases it nor replaces its session, its
+  // process or its stream
+  const superseded = paneId !== undefined && (verifiedPanes.get(paneId)?.started ?? 0) > verification.started;
   if (!held) {
-    if (paneId !== undefined && verifiedPanes.has(paneId)) releaseOpenCodePane(paneId);
+    if (paneId !== undefined && verifiedPanes.has(paneId) && !superseded) releaseOpenCodePane(paneId);
     return null;
   }
-  if (paneId === undefined) return { service: service!, sessionID };
+  if (paneId === undefined || superseded) return { service: service!, sessionID };
   const live = ensureStream(service!);
-  const earlier = verifiedPanes.get(paneId);
-  const known = earlier !== undefined && earlier.started > verification.started ? earlier.pid : pid;
-  const started = Math.max(verification.started, earlier?.started ?? 0);
   verifiedPanes.delete(paneId);
-  verifiedPanes.set(paneId, { sessionID, key: live.key, until: Date.now() + PANE_VERIFIED_MS, generation: ++verificationGeneration, pid: known, started });
+  verifiedPanes.set(paneId, { sessionID, key: live.key, until: Date.now() + PANE_VERIFIED_MS, generation: ++verificationGeneration, pid, started: verification.started });
   for (const [track, { handed }] of paneTrackers) handOver(track, handed, paneId);
   scheduleRecheck();
   return { service: service!, sessionID };
@@ -390,6 +447,8 @@ export function startOpenCodeWatch(pane: HerdrPane, sent: CommandSend | undefine
       if (!watches.includes(watch) || watch.sendId !== undefined) return;
       if (final.form?.interaction === "terminal") { remove(); return; }
       watch.sendId = final.id;
+      // only the command alone, as typed: with anything around it the TUI sends it as a prompt (or a server command)
+      if (final.text === "/compact") watch.compact = {};
       watch.texts = openCodePromptTexts(prompt);
       watch.skills = new Set(attached);
       flush();

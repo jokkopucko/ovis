@@ -29,6 +29,12 @@ export interface AccountApprovalPromptProps {
    */
   asker: Asker | null | undefined;
   onDecide: (decision: "approve" | "decline", digits?: string) => Promise<void>;
+  /**
+   * The PC lets devices in by the account's signed list alone (its session selected the list). A join of the account
+   * that brought no card is a pairing of that PC's own there, which no device is told was confirmed: it is approved on
+   * that PC's own screen, and Approve is held here.
+   */
+  followsList?: boolean;
 }
 
 const grouped = (digits: string): string => `${digits.slice(0, 3)} ${digits.slice(3)}`;
@@ -49,7 +55,7 @@ export function AccountAsker({ asker, language }: { asker: Asker; language: stri
   );
 }
 
-export function AccountApprovalCard({ request, pcName, pcCount, asker, onDecide, vouchedName }: AccountApprovalPromptProps) {
+export function AccountApprovalCard({ request, pcName, pcCount, asker, onDecide, vouchedName, followsList }: AccountApprovalPromptProps) {
   const t = useT();
   const { resolvedLanguage } = useSettings();
   const id = useId();
@@ -64,6 +70,14 @@ export function AccountApprovalCard({ request, pcName, pcCount, asker, onDecide,
     setReadFor(asker);
     if (asker === undefined) setPicked(null);
   }
+
+  // a join into the account's list: its approver signs the device's entry, and only for a device whose person said
+  // that the numbers match there (docs/account.md, "A PC allows a device into the list"), so Approve waits for that
+  const unconfirmed = request.list === true && request.intent === "account" && request.vouched !== true && request.confirmed !== true;
+  // a join the PC cannot let in at all (an app that knows no join into a list, on a pinned PC): no approval decides it,
+  // here or on the PC's own screen, so the card says to update that app instead
+  const olderApp = request.list_unknown === true;
+  const ownScreenOnly = !olderApp && followsList === true && request.list !== true && request.intent === "account" && request.vouched !== true;
 
   const decide = async (decision: "approve" | "decline"): Promise<void> => {
     setBusy(true);
@@ -103,11 +117,14 @@ export function AccountApprovalCard({ request, pcName, pcCount, asker, onDecide,
               className="account-approval-choice" disabled={busy || asker === undefined} onClick={() => setPicked(choice)}>{grouped(choice)}</button>
           ))}
         </div>
+        {unconfirmed && <p className="account-approval-hint" role="status">{t("First press “The numbers match” on {device}", { device: request.label })}</p>}
+        {ownScreenOnly && <p className="account-approval-hint" role="status">{t("Approve {device} on {pc}'s own screen", { device: request.label, pc: pcName })}</p>}
+        {olderApp && <p className="account-approval-hint" role="status">{t("{pc} cannot let {device} in: {pc} lets devices into your account by its signed list, and {device} asked as an Ovis older than 0.5.10 does. Update Ovis on {device}, then have it ask to join again.", { device: request.label, pc: pcName })}</p>}
         </>}
         {error !== null && <p className="account-approval-error" role="alert">{error}</p>}
         <div className="account-approval-actions">
           <button ref={deny} type="button" className="btn" disabled={busy} onClick={() => void decide("decline")}>{t("Deny")}</button>
-          {request.vouched ? vouchedName && <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void decide("approve")}>{t("Allow")}</button> : <button type="button" className="btn btn-primary" disabled={busy || picked === null || asker === undefined} onClick={() => void decide("approve")}>{t("Approve")}</button>}
+          {request.vouched ? vouchedName && <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void decide("approve")}>{t("Allow")}</button> : <button type="button" className="btn btn-primary" disabled={busy || picked === null || asker === undefined || unconfirmed || ownScreenOnly || olderApp} onClick={() => void decide("approve")}>{t("Approve")}</button>}
         </div>
         <p className="account-approval-note">{t("Approve only if you started this yourself just now. Didn't ask for it? Deny it.")}</p>
       </div>

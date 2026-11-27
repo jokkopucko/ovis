@@ -1,8 +1,7 @@
 /**
  * Chrome trims a
- * run of fullwidth punctuation (text-spacing-trim), and xterm's WidthCache measures a glyph as
- * a run of 32: it measured ，。（） at half width, gave each one half a glyph too much spacing,
- * and the rest of the row drew to the right.
+ * run of fullwidth punctuation (text-spacing-trim). A glyph measured as a run of 32 read ，。（） at half
+ * width, so each one took half a glyph too much spacing and the rest of the row drew to the right.
  */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
@@ -89,18 +88,17 @@ setInterval(() => {}, 1 << 30);
       }
     }
     if (marks.length !== count) return null;
-    const measure = document.querySelector<HTMLElement>(".pane-terminal .xterm-char-measure-element");
     const probe = document.createElement("span");
     probe.style.whiteSpace = "pre";
     probe.style.setProperty("text-spacing-trim", "normal");
     probe.textContent = "，".repeat(32);
-    (measure?.parentElement ?? document.body).append(probe);
+    document.body.append(probe);
     const trimmed = probe.getBoundingClientRect().width;
     probe.style.setProperty("text-spacing-trim", "space-all");
     const full = probe.getBoundingClientRect().width;
     probe.remove();
-    return { marks, trims: trimmed < full - 1, measureTrim: measure ? getComputedStyle(measure).getPropertyValue("text-spacing-trim") : null,
-      renderer: document.querySelector<HTMLElement>(".pane-terminal")?.dataset["renderer"] ?? "xterm" };
+    return { marks, trims: trimmed < full - 1,
+      renderer: document.querySelector<HTMLElement>(".pane-terminal")?.dataset["renderer"] ?? "ghostty" };
   }, [ROWS.length, shownRows(), shownRow()] as const);
   const drawn = await sample.jsonValue();
   await sample.dispose();
@@ -112,8 +110,6 @@ setInterval(() => {}, 1 << 30);
   const [plain, ...others] = drawn.marks;
   others.forEach((x, index) => assert.ok(Math.abs(x - plain!) < 1,
     `row ${index + 1}'s marker is drawn ${(x - plain!).toFixed(1)}px from its column`));
-  // xterm measures each glyph alone, as it is drawn, whether or not this browser's fonts trim
-  assert.equal(drawn.measureTrim, "space-all");
   assert.deepEqual(errors, []);
   console.log(`PASS fullwidth punctuation keeps its row's later cells in their columns${drawn.trims ? "" : " (this browser does not trim punctuation)"}`);
 } finally {

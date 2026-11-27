@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { act, createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { create, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import type { ConversationPart, ConversationTurn } from "../../shared/protocol.ts";
 import { ChatRowMemoryContext, type ChatRowMemory } from "../lib/chatRowState.tsx";
 import { SettingsProvider } from "../lib/settings.ts";
-import { Turn } from "./ChatView.tsx";
+import { Turn } from "./ChatTurn.tsx";
 
 const text = (value: string): ConversationPart => ({ kind: "text", text: value });
 const tool = (command: string): ConversationPart => ({ kind: "tool", name: "Bash", summary: command, input: JSON.stringify({ command }), output: "" });
@@ -220,24 +220,23 @@ describe("a run of todo updates, opened", () => {
 describe("an agent turn's folded work, drawn again", () => {
   const commentary = (value: string): ConversationPart => ({ kind: "text", text: value, phase: "commentary" });
   const answer = (value: string): ConversationPart => ({ kind: "text", text: value, phase: "final_answer" });
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
   let memory: ChatRowMemory;
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
+  let resizeObserver: PropertyDescriptor | undefined;
 
   const view = (parts: ConversationPart[], folds: Folds = {}) => createElement(ChatRowMemoryContext.Provider, { value: memory, children: createElement(SettingsProvider, { children: createElement(Turn, {
     paneId: "w1:p1", turn: { role: "assistant", ts: "2026-01-01T12:00:00Z", parts }, rowKey: "turn:1", live: true, waiting: false, showThinking: false, ...folds,
   }) }) });
   const draw = async (parts: ConversationPart[], folds: Folds = {}) => {
-    await act(async () => { if (renderer) renderer.update(view(parts, folds)); else renderer = create(view(parts, folds)); });
+    await page.render(view(parts, folds));
   };
-  const heads = () => renderer!.root.findAll((node) => node.props.className === "work-block-head");
-  const opened = () => heads().map((node) => node.props["aria-expanded"] as boolean);
-  const toggle = async (index: number) => { await act(async () => { heads()[index]!.props.onClick(); }); };
-  const thoughts = () => renderer!.root.findAll((node) => node.type === "div" && node.props.className === "work-row work-row-thinking").map((row) => row.findByType("button"));
-  const thoughtOpened = () => thoughts().map((node) => node.props["aria-expanded"] as boolean);
+  const heads = () => [...page.container.querySelectorAll<HTMLButtonElement>('button[class="work-block-head"]')];
+  const opened = () => heads().map((node) => node.getAttribute("aria-expanded"));
+  const toggle = async (index: number) => { await act(async () => { heads()[index]!.click(); }); };
+  const thoughts = () => [...page.container.querySelectorAll<HTMLButtonElement>('div[class="work-row work-row-thinking"] button')];
+  const thoughtOpened = () => thoughts().map((node) => node.getAttribute("aria-expanded"));
   const remount = async (parts: ConversationPart[], folds: Folds = {}) => {
-    await act(async () => { renderer!.unmount(); });
-    renderer = undefined;
+    await page.render(null);
     await draw(parts, folds);
   };
   const nextMessage = async (parts: ConversationPart[], folds: Folds = {}) => {
@@ -248,60 +247,51 @@ describe("an agent turn's folded work, drawn again", () => {
   it("keeps a work block as the reader opened or closed it for its message, whatever Collapse work says", async () => {
     const fold = { foldWork: true };
     await draw([tool("ls")], fold);
-    expect(opened()).toEqual([false]);
+    expect(opened()).toEqual(["false"]);
     await toggle(0);
-    expect(opened()).toEqual([true]);
+    expect(opened()).toEqual(["true"]);
     await draw([tool("ls"), tool("cat a")], fold);
-    expect(opened()).toEqual([true]);
+    expect(opened()).toEqual(["true"]);
     await remount([tool("ls"), tool("cat a")], fold);
-    expect(opened()).toEqual([true]);
+    expect(opened()).toEqual(["true"]);
     await draw([tool("ls"), tool("cat a")]);
     await toggle(0);
     await draw([tool("ls"), tool("cat a")], fold);
     await draw([tool("ls"), tool("cat a")]);
-    expect(opened()).toEqual([false]);
+    expect(opened()).toEqual(["false"]);
     await nextMessage([tool("ls")], fold);
-    expect(opened()).toEqual([false]);
+    expect(opened()).toEqual(["false"]);
     await draw([tool("ls")]);
-    expect(opened()).toEqual([true]);
+    expect(opened()).toEqual(["true"]);
   });
 
   it("keeps reasoning as the reader opened or closed it for its message, whatever Expand thinking says", async () => {
     const expand = { showThinking: true, expandThinking: true };
     await draw([reasoning, tool("ls")], expand);
-    expect(thoughtOpened()).toEqual([true]);
-    await act(async () => { thoughts()[0]!.props.onClick(); });
-    expect(thoughtOpened()).toEqual([false]);
+    expect(thoughtOpened()).toEqual(["true"]);
+    await act(async () => { thoughts()[0]!.click(); });
+    expect(thoughtOpened()).toEqual(["false"]);
     await draw([reasoning, tool("ls"), tool("cat a")], expand);
-    expect(thoughtOpened()).toEqual([false]);
+    expect(thoughtOpened()).toEqual(["false"]);
     await remount([reasoning, tool("ls"), tool("cat a")], expand);
-    expect(thoughtOpened()).toEqual([false]);
+    expect(thoughtOpened()).toEqual(["false"]);
     await nextMessage([reasoning, tool("ls")], expand);
-    expect(thoughtOpened()).toEqual([true]);
+    expect(thoughtOpened()).toEqual(["true"]);
     await draw([reasoning, tool("ls")], { showThinking: true });
-    expect(thoughtOpened()).toEqual([false]);
+    expect(thoughtOpened()).toEqual(["false"]);
   });
 
   beforeEach(() => {
-    for (const key of ["window", "document", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    descriptors.set("languages", Object.getOwnPropertyDescriptor(navigator, "languages"));
-    const listeners = { addEventListener() {}, removeEventListener() {} };
-    Object.defineProperty(globalThis, "window", { configurable: true, value: { ...listeners, matchMedia: () => ({ matches: false, ...listeners }) } });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: { ...listeners, querySelector: () => null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } } });
-    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
+    page = openPage();
+    resizeObserver = Object.getOwnPropertyDescriptor(globalThis, "ResizeObserver");
+    Object.defineProperty(globalThis, "ResizeObserver", { configurable: true, value: page.window.ResizeObserver });
     memory = { toggles: new Map(), outputs: new Map(), runs: new Map(), dormant: new Map() };
   });
 
   afterEach(async () => {
-    if (renderer) await act(async () => { renderer!.unmount(); });
-    renderer = undefined;
-    for (const [key, descriptor] of descriptors) {
-      const target = key === "languages" ? navigator : globalThis;
-      if (descriptor) Object.defineProperty(target, key, descriptor);
-      else Reflect.deleteProperty(target, key);
-    }
+    await page.close();
+    if (resizeObserver) Object.defineProperty(globalThis, "ResizeObserver", resizeObserver);
+    else Reflect.deleteProperty(globalThis, "ResizeObserver");
   });
 
   it("keeps a block folded when the words before its tools join it (#2063)", async () => {
@@ -309,59 +299,58 @@ describe("an agent turn's folded work, drawn again", () => {
       memory = { toggles: new Map(), outputs: new Map(), runs: new Map(), dormant: new Map() };
       await draw([before, tool("ls")]);
       await toggle(0);
-      expect(opened()).toEqual([false]);
+      expect(opened()).toEqual(["false"]);
       await draw([after, tool("ls")]);
-      expect(opened()).toEqual([false]);
+      expect(opened()).toEqual(["false"]);
       await remount([after, tool("ls")]);
-      expect(opened()).toEqual([false]);
-      await act(async () => { renderer!.unmount(); });
-      renderer = undefined;
+      expect(opened()).toEqual(["false"]);
+      await page.render(null);
     }
   });
 
   it("keeps a block folded when it merges with reasoning the chat does not show (#2111)", async () => {
     const reasoning: ConversationPart = { kind: "thinking", text: "Weighing it." };
     await draw([reasoning, text("Checking."), tool("ls")]);
-    expect(opened()).toEqual([true]);
+    expect(opened()).toEqual(["true"]);
     await toggle(0);
-    expect(opened()).toEqual([false]);
+    expect(opened()).toEqual(["false"]);
     await draw([reasoning, commentary("Checking."), tool("ls")]);
-    expect(opened()).toEqual([false]);
+    expect(opened()).toEqual(["false"]);
     await remount([reasoning, commentary("Checking."), tool("ls")]);
-    expect(opened()).toEqual([false]);
+    expect(opened()).toEqual(["false"]);
     await draw([reasoning, answer("Checking."), tool("ls")]);
-    expect(opened()).toEqual([false]);
+    expect(opened()).toEqual(["false"]);
     await remount([reasoning, answer("Checking."), tool("ls")]);
-    expect(opened()).toEqual([false]);
+    expect(opened()).toEqual(["false"]);
   });
 
   it("keeps a block's fold while its run is hidden reasoning alone, until it draws again", async () => {
     const reasoning: ConversationPart = { kind: "thinking", text: "Weighing it." };
     await draw([commentary("Checking."), reasoning]);
     await toggle(0);
-    expect(opened()).toEqual([false]);
+    expect(opened()).toEqual(["false"]);
     await draw([answer("Checking."), reasoning]);
     expect(opened()).toEqual([]);
     await draw([answer("Checking."), { ...reasoning, text: "Weighing it again." }]);
     expect(opened()).toEqual([]);
     await draw([answer("Checking."), { ...reasoning, text: "Weighing it again." }, tool("ls")]);
-    expect(opened()).toEqual([false]);
+    expect(opened()).toEqual(["false"]);
     await remount([answer("Checking."), { ...reasoning, text: "Weighing it again." }, tool("ls")]);
-    expect(opened()).toEqual([false]);
+    expect(opened()).toEqual(["false"]);
   });
 
   it("keeps a merged block's fold when a part leaves it", async () => {
     await draw([tool("ls"), text("One shelf."), commentary("Checking it.")]);
-    expect(opened()).toEqual([false, true]);
+    expect(opened()).toEqual(["false", "true"]);
     await toggle(1);
     await toggle(1);
     await draw([tool("ls"), commentary("One shelf."), commentary("Checking it.")]);
-    expect(opened()).toEqual([true]);
+    expect(opened()).toEqual(["true"]);
     await toggle(0);
-    expect(opened()).toEqual([false]);
+    expect(opened()).toEqual(["false"]);
     await draw([tool("ls"), commentary("One shelf."), answer("Checking it.")]);
-    expect(opened()).toEqual([false]);
+    expect(opened()).toEqual(["false"]);
     await remount([tool("ls"), commentary("One shelf."), answer("Checking it.")]);
-    expect(opened()).toEqual([false]);
+    expect(opened()).toEqual(["false"]);
   });
 });

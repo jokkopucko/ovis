@@ -1,0 +1,30 @@
+                 ██  ██       ▄▀▀▄ █▀▄▀▄ █▀▀▄
+                 ██  ██       ▀▄▄▀ █ █ █ █▄▄▀
+                 ▒▒  ██                  █
+                     ██       v19.1.0
+
+   Tip: Say `workflowz` in your message to drive the task
+   with parallel subagents in eval — watch it glow as you
+                            type
+
+
+                                                            
+ Run the form fixture.                                      
+                                                            
+
+╭─── ? Ask ────────────────────────────────────────────────╮
+│  Which route should carry the fictional session across a │
+│  narrow terminal that wraps long lines?                  │
+│  ✔ Other: MySQL 8                                        │
+│  Targets                                                 │
+│    (no answer)                                           │
+│  Region                                                  │
+│  ✔ United States                                         │
+│  Project name                                            │
+│  ✔ acme                                                  │
+╰──────────────────────────────────────────────────────────╯
+
+ done.                                                      
+
+ π > ⬢ Form fixture > 📁 …/T/omp-form-LS8usG/cwd ▶─6%─┃131K─
+╰─ done.                                                    

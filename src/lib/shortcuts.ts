@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useSettings } from "./settings.ts";
-import { bindingChord, formatExactChord, isMacPlatform, parseExactChord, type ExactChord, type ShortcutOverrides } from "./shortcutBindings.ts";
+import { bindingChord, FIXED_SHORTCUT_IDS, formatExactChord, isMacPlatform, parseExactChord, type ExactChord, type ShortcutOverrides } from "./shortcutBindings.ts";
 import { physicalKey } from "./keys.ts";
 
 import type { AppActions } from "./actions.ts";
@@ -12,6 +12,7 @@ export const SHORTCUTS = [
   { id: "find", label: "Find in terminal", keys: ["Mod", "Shift", "F"] },
   { id: "toggle-view", label: "Switch chat / terminal", keys: ["Mod", "Shift", "J"] },
   { id: "focus-input", label: "Focus pane input", keys: ["Mod", "Shift", "E"] },
+  { id: "quote-chat", label: "Quote it in your message", keys: ["Mod", "Shift", "9"] },
   { id: "scroll-up", label: "Scroll pane up", keys: ["Mod", "Shift", "PageUp"] },
   { id: "scroll-down", label: "Scroll pane down", keys: ["Mod", "Shift", "PageDown"] },
   { id: "toggle-sidebar", label: "Toggle sidebar", keys: ["Mod", "Shift", "B"] },
@@ -39,8 +40,8 @@ export const SHORTCUTS = [
 
 export type ShortcutId = (typeof SHORTCUTS)[number]["id"];
 
-export function listedOnly(id: ShortcutId): boolean {
-  return id === "voice" || id === "hold-message";
+export function fixedShortcut(id: ShortcutId): boolean {
+  return FIXED_SHORTCUT_IDS.includes(id);
 }
 
 export interface ShortcutEventLike {
@@ -59,6 +60,7 @@ const KEY_TO_ID: Readonly<Record<string, ShortcutId>> = {
   f: "find",
   j: "toggle-view",
   e: "focus-input",
+  "9": "quote-chat",
   PageUp: "scroll-up",
   PageDown: "scroll-down",
   b: "toggle-sidebar",
@@ -70,13 +72,18 @@ const KEY_TO_ID: Readonly<Record<string, ShortcutId>> = {
 };
 
 export function shortcutKeys(id: ShortcutId, overrides: ShortcutOverrides): string[] {
+  if (fixedShortcut(id)) return [];
   if (Object.hasOwn(overrides, id)) return overrides[id] ? [overrides[id]!] : [];
   return Object.entries(KEY_TO_ID).filter(([, action]) => action === id).map(([key]) => key);
 }
 
 export function shortcutDisplayKeys(id: ShortcutId, overrides: ShortcutOverrides): string[] {
   const shortcut = SHORTCUTS.find((candidate) => candidate.id === id)!;
-  if (listedOnly(id) || !Object.hasOwn(overrides, id)) return [...shortcut.keys];
+  if (overrides[id] === null) return [];
+  if (fixedShortcut(id) || !Object.hasOwn(overrides, id)) {
+    // An existing custom binding can already own the newly introduced Quote default.
+    return id === "quote-chat" && shortcutConflict(id, shortcutKeys(id, {}), overrides) ? [] : [...shortcut.keys];
+  }
   const value = overrides[id];
   return value ? bindingDisplayKeys(value) : [];
 }
@@ -140,7 +147,7 @@ export function matchShortcut(event: ShortcutEventLike, platformIsMac: boolean, 
   if (event.ctrlKey || event.altKey || event.metaKey) {
     const pressed = formatExactChord(exactChordFromEvent(event));
     for (const shortcut of SHORTCUTS) {
-      if (listedOnly(shortcut.id)) continue;
+      if (fixedShortcut(shortcut.id)) continue;
       const value = Object.hasOwn(overrides, shortcut.id) ? overrides[shortcut.id] : null;
       const chord = value ? parseExactChord(value) : null;
       if (chord && formatExactChord(chord) === pressed) return shortcut.id;
@@ -150,7 +157,7 @@ export function matchShortcut(event: ShortcutEventLike, platformIsMac: boolean, 
   if (!hasMod || !event.shiftKey || event.altKey) return null;
   const key = shortcutEventKey(event);
   for (const shortcut of SHORTCUTS) {
-    if (listedOnly(shortcut.id)) continue;
+    if (fixedShortcut(shortcut.id)) continue;
     if (Object.hasOwn(overrides, shortcut.id) && overrides[shortcut.id] === key) return shortcut.id;
   }
   const id = KEY_TO_ID[key];
@@ -198,7 +205,8 @@ export function keepsArrowsForText(target: KeyTargetLike | EventTarget | null): 
  * app shortcut for the pane: its key handler asks this first.
  */
 export function isAppShortcut(event: ShortcutEventLike, overrides: ShortcutOverrides = {}): boolean {
-  return matchShortcut(event, isMacPlatform(), overrides) !== null;
+  const shortcut = matchShortcut(event, isMacPlatform(), overrides);
+  return shortcut !== null && shortcut !== "quote-chat";
 }
 
 export { isMacPlatform };
@@ -264,7 +272,7 @@ export function useShortcuts(actions: AppActions, enabled: boolean): void {
     const onKeyDown = (event: KeyboardEvent): void => {
       if (recordingShortcut) return;
       const shortcut = matchShortcut(event, platformIsMac, settings.shortcutOverrides);
-      if (shortcut === null) return;
+      if (shortcut === null || shortcut === "quote-chat") return;
       if (keepsKeyForText(event, shortcut)) return;
       const closeStep = shortcut === "close-pane" || shortcut === "close-tab" ? closePaneKeyStep(event, modalOpenBesides(null)) : null;
       if (closeStep === "pass") return;

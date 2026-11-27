@@ -4,7 +4,7 @@ import { encodeOffer } from "../../../shared/relay-offer.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { importPublicKey } from "../../../shared/relay-e2ee.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
-import { AddPcWaitOver, addInOnePress, ownWindowHere, keepAddPcWaiting, listOfferedPc, listThisPc, onAddPcWaiting, pagePc, pcAnswers, reopenAddWindow } from "./addThisPc.ts";
+import { AddPcWaitOver, addByList, addInOnePress, ownWindowHere, keepAddPcWaiting, listOfferedPc, listThisPc, onAddPcWaiting, pagePc, pcAnswers, reopenAddWindow } from "./addThisPc.ts";
 import { FakeAccountService } from "../../../shared/account-service-fake.ts";
 import { readSeenPcs } from "./seenPcs.ts";
 import { AccountService, AccountServiceError } from "./service.ts";
@@ -363,6 +363,39 @@ test("the PC's own window, as the server judges it: its owner socket, or the acc
   expect(ownWindowHere({ via: "token" }, "192.168.1.10")).toBe(false);
   for (const via of ["device", "relay", "open", "portal"]) expect(ownWindowHere({ via }, "127.0.0.1")).toBe(false);
   expect(ownWindowHere(null, "127.0.0.1")).toBe(false);
+});
+
+const RUN = "0123456789abcdef";
+
+test("an add by the account's list names this PC's account first, then asks the PC to start it, as `ovis add` does", async () => {
+  const f = onePress({ pc: (path) => path === "/api/account/list/add" ? Response.json({ state: "waiting", run: RUN, account: "acct_1", list: "f".repeat(64), until: "x" }) : new Response(null, { status: 204 }) });
+  try {
+    expect(await addByList("acct_1")).toEqual({ kind: "run", run: RUN });
+    expect(f.calls).toEqual(['/api/account/relay-account {"account":"acct_1"}', '/api/account/list/add {"account":"acct_1"}']);
+  } finally { f.restore(); }
+});
+
+test("a naming the PC refuses does not stop the ask: the PC says itself what it lacks", async () => {
+  const f = onePress({ pc: (path) => path === "/api/account/list/add" ? Response.json({ error: { code: "account_mismatch", message: "x" } }, { status: 409 }) : Response.json({ error: { code: "internal", message: "x" } }, { status: 500 }) });
+  try {
+    expect(await addByList("acct_1")).toEqual({ kind: "refused", why: "account_mismatch" });
+    expect(f.calls.map((call) => call.split(" ")[0])).toEqual(["/api/account/relay-account", "/api/account/list/add"]);
+  } finally { f.restore(); }
+});
+
+test.each([
+  ["an account that keeps no list", 200, { state: "no_list", account: "acct_1" }, { kind: "none" }],
+  ["a PC that follows no list", 404, { error: { code: "not_found", message: "x" } }, { kind: "none" }],
+  ["a window that is not the PC's own", 403, { error: { code: "owner_only", message: "x" } }, { kind: "none" }],
+  ["an Ovis without the route", 405, { error: { code: "method_not_allowed", message: "x" } }, { kind: "none" }],
+  ["the account service away", 503, { error: { code: "account_unavailable", message: "x" } }, { kind: "refused", why: "account_unavailable" }],
+  ["a PC its account's list removed", 409, { error: { code: "list_removed", message: "x" } }, { kind: "refused", why: "list_removed" }],
+  ["an add that ended as it began", 200, { state: "ended", run: RUN, account: "acct_1", why: "unavailable" }, { kind: "refused", why: "unavailable" }],
+  ["a PC that is in the account by its list already", 200, { state: "added", run: RUN, account: "acct_1", list: "f".repeat(64) }, { kind: "added" }],
+] as const)("an add by the list where the PC answers for %s", async (_, status, body, outcome) => {
+  const f = onePress({ pc: (path) => path === "/api/account/list/add" ? Response.json(body, { status }) : new Response(null, { status: 204 }) });
+  try { expect(await addByList("acct_1")).toEqual(outcome); }
+  finally { f.restore(); }
 });
 
 test("a PC that cannot be reached after the account service admitted it is no one press: the digit wait comes, nothing is thrown", async () => {

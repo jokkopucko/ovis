@@ -225,6 +225,7 @@ export async function checkTelemetrySettings(browser: Browser): Promise<void> {
 // Focused QA entry point, e.g. `bun run check run --build bun scripts/telemetry-regression.ts`.
 if (import.meta.main) {
   const { chromium } = await import("playwright-core");
+  (await import("./chrome-path.ts")).checkChromeTmpdir();
   const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox", "--accept-lang=en-US"] });
   try { await checkTelemetrySettings(browser); }
   finally { await browser.close(); }

@@ -4,7 +4,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { HerdrPane } from "../../shared/protocol.ts";
+import type { AgentStatus, HerdrPane } from "../../shared/protocol.ts";
 import * as collector from "../collector.ts";
 import * as conversation from "../conversation.ts";
 import * as herdr from "../herdr/client.ts";
@@ -13,7 +13,7 @@ import { PendingInputs } from "../pending-input.ts";
 import type { AlertTiming } from "../push.ts";
 import { connectionData, type Client } from "./connections.ts";
 
-type Handlers = { onStatus: collector.StatusCollectorHandlers["onStatus"]; onBaseline: (panes: readonly unknown[]) => void; onReconciled: (panes: readonly HerdrPane[]) => void; onResync: NonNullable<collector.StatusCollectorHandlers["onResync"]>; onPaneEnded: (paneId: string) => void; onPaneClosed: (paneId: string) => void; onPaneMoved: (from: string, to: string) => void; herdrLive?: { identity: () => string | null; onChange: (identity: string | null) => void } };
+type Handlers = { onStatus: collector.StatusCollectorHandlers["onStatus"]; onBaseline: (panes: readonly unknown[], newer?: ReadonlySet<string>) => void; onReconciled: (panes: readonly HerdrPane[]) => void; onResync: NonNullable<collector.StatusCollectorHandlers["onResync"]>; onPaneEnded: (paneId: string) => void; onPaneClosed: (paneId: string) => void; onPaneMoved: (from: string, to: string, status?: AgentStatus) => void; herdrLive?: { identity: () => string | null; onChange: (identity: string | null) => void } };
 export let handlers: Handlers;
 export let collectorSnapshot: () => Promise<{ panes: HerdrPane[] }>;
 export const originalCollector = collector.startStatusCollector;
@@ -68,7 +68,8 @@ export const opencode = (session: string | null) => ({ ...base, agent: "opencode
 export const claude = { ...base, agent: "claude", agent_session: { agent: "claude", source: "hook", kind: "id", value: CLAUDE } };
 
 let hubs = 0;
-export function hub<Owner = unknown, Lease = unknown>(path = transcript, queued?: PendingInputs<Owner, Lease>, drain?: (paneId: string) => void, herdrIdentity?: () => string | null, alertTiming?: Partial<AlertTiming>, paneVacated?: (paneId: string) => void) {
+type Lifecycle = Pick<Parameters<typeof createStatusHub>[0]["options"], "paneVacated" | "hookContextOf" | "observeHookAgent">;
+export function hub<Owner = unknown, Lease = unknown>(path = transcript, queued?: PendingInputs<Owner, Lease>, drain?: (paneId: string) => void, herdrIdentity?: () => string | null, alertTiming?: Partial<AlertTiming>, lifecycle?: Lifecycle) {
   let panes: unknown[] = [];
   let gate: Promise<void> | null = null;
   let reading: (() => void) | undefined;
@@ -95,7 +96,7 @@ export function hub<Owner = unknown, Lease = unknown>(path = transcript, queued?
   // put back at once: the hub takes its collector as it is built, and this module's afterEach runs only in the first file
   // that loads it
   const status = (() => { try { return createStatusHub({
-    options: { stateDir: join(root, `state${++hubs}`), opencodeDb: store, machines: false, ...(herdrIdentity ? { herdrIdentity } : {}), cardTimer: (tick) => { cardTick = tick; return () => {}; }, ...(alertTiming ? { alertTiming } : {}), ...(paneVacated ? { paneVacated } : {}) },
+    options: { stateDir: join(root, `state${++hubs}`), opencodeDb: store, machines: false, ...(herdrIdentity ? { herdrIdentity } : {}), cardTimer: (tick) => { cardTick = tick; return () => {}; }, ...(alertTiming ? { alertTiming } : {}), ...lifecycle },
     devices: { gated: false, has: () => true, onPaired: () => {} } as never, preferences: { get: () => ({ revision: 0, settings: {}, muted_panes: [] }), subscribe: () => () => {} } as never,
     clients: new Set([client]), present, pending, drainPending: drain ?? (() => {}), holdPendingPane: (paneId, fault) => { held.push({ paneId, code: fault.code }); },
     usage: { invalidate() {} } as never, usageLogin: { ended: () => false } as never,
@@ -109,6 +110,7 @@ export function hub<Owner = unknown, Lease = unknown>(path = transcript, queued?
   stubs.push(spyOn(status.push, "onEnded").mockImplementation(async (paneId: string) => { ended.push(paneId); }));
   return {
     alerts, pending, status, held, client, present,
+    sessionChanges: () => frames.filter((seen) => seen.type === "session-changed").length,
     tickCards: () => cardTick(),
     ended: () => ({ push: [...ended], frames: frames.filter((seen) => seen.type === "pane-exited").length }),
     herdrSays: (...shown: unknown[]) => { panes = shown; },

@@ -59,7 +59,7 @@ function labelMapUses(): [key: string, file: string][] {
     ...grab("components/DevicesPanel.tsx", "VIA", value),
     ...grab("../shared/portal.ts", "PORTAL_AUTH_PROBLEMS", value),
     ...grab("components/ThemeCard.tsx", "THEME_NAMES", /^\s+"?[\w-]+"?: "([^"]*)",?$/gm),
-    ...grab("components/SettingsDialog.tsx", "HERDR_ACTION_LABELS", value),
+    ...grab("components/SettingsShortcutsPage.tsx", "HERDR_ACTION_LABELS", value),
     ...grab("lib/herdrWindow.ts", "HERDR_WINDOW_CHOICES", /descriptionKey: "([^"]+)"/g),
     ...grab("components/KeyBar.tsx", "ARROWS", /label: "([^"]+)"/g),
     ...grab("components/KeyBar.tsx", "KEY_SPOKEN_NAMES", /label: "([^"]+)"/g),
@@ -145,23 +145,24 @@ describe.each(Object.entries(DICTIONARIES))("%s dictionary", (_name, dictionary)
 });
 
 const PART_FILES: Record<string, string[]> = {
-  settings: ["components/SettingsDialog.tsx", "lib/herdrWindow.ts", "components/SignOutRow.tsx", "components/KeyBarSettings.tsx", "lib/paletteSettings.ts", "components/TelemetryControls.tsx", "components/SettingsControls.tsx", "components/AlertWebhookGroup.tsx", "components/ThemeFiles.tsx", "components/LinkBrowserRow.tsx", "components/TerminalCommandRow.tsx"],
+  settings: ["components/SettingsDialog.tsx", "components/SettingsAppearancePage.tsx", "components/SettingsChatPage.tsx", "components/SettingsTerminalPage.tsx", "components/SettingsAlertsPage.tsx", "components/SettingsExperimentalPage.tsx", "components/SettingsShortcutsPage.tsx", "components/SettingsDevicesPage.tsx", "components/SettingsAboutPage.tsx", "lib/herdrWindow.ts", "components/SignOutRow.tsx", "components/KeyBarSettings.tsx", "lib/paletteSettings.ts", "components/TelemetryControls.tsx", "components/SettingsControls.tsx", "components/AlertWebhookGroup.tsx", "components/ThemeFiles.tsx", "components/LinkBrowserRow.tsx", "components/TerminalCommandRow.tsx"],
   terminal: ["components/PaneTerminal.tsx", "lib/useTerminalMount.ts", "lib/useComposerSends.ts", "lib/usePeekReturn.ts", "lib/useTypedKeys.ts", "components/PaneCanvas.tsx", "components/KeyBar.tsx", "components/FindBar.tsx", "components/TerminalViewportTools.tsx", "components/SplitDropPreview.tsx", "components/TabStrip.tsx", "lib/terminalLabel.ts", "lib/tabName.ts"],
   composer: ["components/Composer.tsx", "components/ReplyComments.tsx", "components/ComposerNotices.tsx", "components/VoiceInput.tsx", "components/SecretInput.tsx", "components/TerminalInput.tsx", "components/PendingMessages.tsx", "lib/compose.ts", "components/PromptCard.tsx", "lib/promptAnswer.ts", "../shared/card-text.ts"],
-  chat: ["components/ChatView.tsx", "lib/chatImages.ts", "components/SentWaiting.tsx", "components/Markdown.tsx", "components/MermaidLightbox.tsx", "components/ChatMinimap.tsx", "components/ImageLightbox.tsx", "components/BackgroundTasks.tsx", "components/BackgroundAgentDetail.tsx", "components/Artifacts.tsx", "components/OmpBtw.tsx", "components/MarkdownLinkMenu.tsx", "lib/workBlocks.ts", "lib/toolVerbs.ts", "lib/outcomeChip.ts", "lib/chatTimestamp.ts", "lib/chatReadDeadline.ts", "components/ConversationSearch.tsx"],
+  chat: ["components/ChatView.tsx", "components/ChatWork.tsx", "components/ChatTurn.tsx", "lib/chatImages.ts", "components/SentWaiting.tsx", "components/Markdown.tsx", "components/MermaidLightbox.tsx", "components/ChatMinimap.tsx", "components/ImageLightbox.tsx", "components/BackgroundTasks.tsx", "components/BackgroundAgentDetail.tsx", "components/Artifacts.tsx", "components/OmpBtw.tsx", "components/MarkdownLinkMenu.tsx", "lib/workBlocks.ts", "lib/toolVerbs.ts", "lib/outcomeChip.ts", "lib/chatTimestamp.ts", "lib/chatReadDeadline.ts", "components/ConversationSearch.tsx"],
   sidebar: ["components/Sidebar.tsx", "components/AgentSidebar.tsx", "components/SidebarResizer.tsx", "components/SidebarSplit.tsx", "components/FoldHelpersRow.tsx", "components/InboxList.tsx", "lib/inboxRow.ts"],
   machines: ["components/MachineSidebar.tsx", "components/MachineHeader.tsx", "components/MachineDialog.tsx", "components/FoundHerdrChoices.tsx", "lib/bridgeProgress.ts", "components/MachineStats.tsx", "lib/systemReport.ts"],
   workspace: ["components/NewSessionDialog.tsx", "components/WorktreeDialog.tsx", "components/DirectoryBrowser.tsx", "components/RecentFolderChips.tsx", "components/SessionHistory.tsx", "lib/sessionHistory.ts", "lib/useAgentSkills.ts"],
   files: ["lib/fileFailure.ts", "components/Visualization.tsx", "components/FileViewer.tsx", "components/RelayRenderedPage.tsx", "components/FilesDialog.tsx", "components/FileReader.tsx", "components/TextFileView.tsx", "components/TextFileEditor.tsx", "components/FilePathLink.tsx", "components/FilePanelResizer.tsx", "components/HighlightedCode.tsx", "components/RepoDiffViewer.tsx", "components/RepoChanges.tsx", "components/RepoDiff.tsx", "lib/repoDiff.ts", "lib/diffLineNotes.ts", "components/WebPanel.tsx", "components/PullRequestPanel.tsx", "lib/pullRequest.ts", "components/FileTextSizeRow.tsx", "components/FilesPanelRow.tsx", "components/MarkdownDocuments.tsx", "components/MarkdownOutline.tsx", "components/BrowserSidePanel.tsx"],
-  devices: ["components/DevicesPanel.tsx", "components/AccountManage.tsx", "components/ConnectPhoneDialog.tsx", "lib/account/useAccountPcs.ts", "components/SidebarAccountPcs.tsx", "components/RelaySignIn.tsx", "components/CompactPair.tsx", "components/PhonePanel.tsx", "components/PortalPanel.tsx", "components/RelayPanel.tsx", "components/RelayNotice.tsx", "components/PortalAuth.tsx", "components/PortalInvite.tsx", "components/PushTestControls.tsx", "components/AccessGate.tsx", "components/LanExposureNotice.tsx", "components/DevicePairedNotice.tsx", "components/StrictModePanel.tsx", "components/PendingKeys.tsx", "components/JoinWait.tsx", "components/BlockOutcomes.tsx", "components/InstallHint.tsx", "lib/install.ts", "lib/installHint.ts", "lib/portalAuth.ts", "../shared/portal.ts"],
+  devices: ["components/DevicesPanel.tsx", "components/AccountManage.tsx", "components/ListDevices.tsx", "components/ListDeviceNotices.tsx", "components/ConnectPhoneDialog.tsx", "lib/account/useAccountPcs.ts", "components/SidebarAccountPcs.tsx", "components/RelaySignIn.tsx", "components/CompactPair.tsx", "components/PhonePanel.tsx", "components/PortalPanel.tsx", "components/RelayPanel.tsx", "components/RelayNotice.tsx", "components/PortalAuth.tsx", "components/PortalInvite.tsx", "components/PushTestControls.tsx", "components/AccessGate.tsx", "components/LanExposureNotice.tsx", "components/DevicePairedNotice.tsx", "components/StrictModePanel.tsx", "components/PendingKeys.tsx", "components/JoinWait.tsx", "components/BlockOutcomes.tsx", "components/InstallHint.tsx", "lib/install.ts", "lib/installHint.ts", "lib/portalAuth.ts", "../shared/portal.ts"],
   usage: ["components/UsageAccountDialog.tsx", "components/UsageSignInDialog.tsx", "components/UsageLocalLogin.tsx", "components/UsageHubConnect.tsx", "components/CLIProxyLogin.tsx", "components/UsageMeters.tsx", "components/UsageRemoveAccount.tsx", "lib/usage.ts"],
   updates: ["components/UpdateControls.tsx", "lib/updateProgress.ts"],
   palette: ["components/CommandPalette.tsx"],
-  setup: ["components/AgentSetupCard.tsx", "components/AddAgentPanel.tsx", "components/AgentTile.tsx", "components/AgentsSettings.tsx", "components/AgentCallsRows.tsx"],
+  setup: ["components/AddAgentPanel.tsx", "components/AgentTile.tsx", "components/AgentsSettings.tsx", "components/AgentCallsRows.tsx"],
   relay: ["components/RelayShell.tsx", "components/RelayShellScreens.tsx", "components/NoPcOnline.tsx", "components/RelayAddPc.tsx", "components/ConnectStart.tsx", "components/AccountPcs.tsx", "lib/relay/shell.tsx", "lib/relay/accountController.ts", "components/relayFailureText.ts"],
   guide: ["components/SetupGuide.tsx", "components/RelayOnlyWarning.tsx"],
   dashboard: ["components/AddPcSheet.tsx", "components/relayPcState.tsx"],
   "runtime-move": ["components/RuntimeMove.tsx", "components/RuntimeMoveViews.tsx", "lib/runtimeMove.ts"],
+  "list-move": ["components/ListMoveNotice.tsx"],
   memory: ["components/MemorySettings.tsx"],
 };
 
@@ -220,6 +221,17 @@ describe("dictionary parts", () => {
 });
 
 describe("translate", () => {
+  it("uses 로 after each provider in the Korean account hint", () => {
+    const keys = [
+      "It looks like you already have an account made with {provider}.",
+      "Sign in with {provider} and it will be connected to the same account.",
+      "Sign in with {provider} to connect",
+    ];
+    for (const provider of ["GitHub", "Google", "Apple"]) {
+      for (const key of keys) expect(translate("ko", key, { provider })).toContain(`${provider}로`);
+      expect(translate("ko", "It looks like you already have an account made with {provider}.", { provider })).toEndWith(".");
+    }
+  });
   it.each(["ko", "ja", "zh"] as const)("uses the same %s agent state in groups, rows and alert filters", (language) => {
     for (const [group, row] of [["Idle", "READY"], ["Working", "RUN"], ["Needs input", "INPUT"], ["Finished", "DONE"]] as const) {
       if (language === "ko" && group === "Idle") continue;

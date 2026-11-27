@@ -79,6 +79,13 @@ const ROUTES: Readonly<Record<string, RowAction>> = {
   "POST /api/push/status": { action: "push_subscribe" },
   "POST /api/push/test": { action: "push_subscribe" },
   "POST /api/account/records": { action: "records" },
+  // where the account's signed list stands, and its entries handed over: an entry proves itself, as a signed record does
+  "POST /api/account/list/head": { action: "records" },
+  "POST /api/account/list/page": { action: "records" },
+  // a device of the account names its list to this PC in its own session: the PC decides by what it holds itself
+  "POST /api/account/list/name": { action: "drive" },
+  // and a device that may add devices to that list asks this PC for its card, to sign the entry that gives it its keys
+  "POST /api/account/list/card": { action: "drive" },
   "POST /api/devices/pair": { action: "pair_start" },
   // a live member may mark a join seen for every window of this PC, as it may drive it
   "POST /api/devices/joins/seen": { action: "drive" },

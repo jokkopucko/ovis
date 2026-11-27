@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Browser, BrowserContext, Locator, Page } from "playwright-core";
 import { appFaces } from "./app-faces.ts";
 import panes from "../site/demo/fixtures/panes.json";
+import { appContext } from "./app-context.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 
@@ -361,9 +362,9 @@ async function viewerLoading(page: Page, pane: Locator, label: string, capture: 
 
 async function demoContext(browser: Browser, width: number, theme: string, language: string): Promise<BrowserContext> {
   const touch = width === 390;
-  const context = await browser.newContext(touch
-    ? { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: "en-US", permissions: ["clipboard-read", "clipboard-write"] }
-    : { viewport: { width: 1440, height: 900 }, locale: "en-US", permissions: ["clipboard-read", "clipboard-write"] });
+  const context = await appContext(browser, touch
+    ? { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, permissions: ["clipboard-read", "clipboard-write"] }
+    : { viewport: { width: 1440, height: 900 }, permissions: ["clipboard-read", "clipboard-write"] });
   await context.addInitScript(([settings, ids]) => {
     localStorage.setItem("ovis:settings", settings);
     for (const id of ids) localStorage.setItem(`ovis:view:${id}`, "chat");
@@ -468,7 +469,7 @@ async function mobileChecks(browser: Browser, base: string): Promise<void> {
 }
 
 async function bareChecks(browser: Browser, base: string): Promise<void> {
-  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: "en-US", permissions: ["clipboard-read", "clipboard-write"] });
+  const context = await appContext(browser, { viewport: { width: 1440, height: 900 }, permissions: ["clipboard-read", "clipboard-write"] });
   try {
     await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), settingsOf("dark", "en"));
     const page = await context.newPage();

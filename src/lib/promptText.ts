@@ -1,19 +1,23 @@
-import type { CardText, ConversationTurn, InteractivePrompt } from "../../shared/protocol.ts";
+import type { CardText, ConversationTurn, InteractivePrompt, InteractivePromptOption } from "../../shared/protocol.ts";
 import { askedQuestions } from "../../shared/askQuestions.ts";
 import { parseInline, shownText } from "../../shared/markdown.ts";
 import { t as inCurrentLanguage, type Translate } from "./i18n.ts";
 
 /**
  * An option's name as its card shows it, the one reading the card's rendering and a typed answer share
- * (#2220): an omp card in Markdown shows its label whole (InlineMarkdown), and `words` are the
- * characters that shows (shownText, which the server held to omp's screen); another card reads a
- * trailing "(Recommended)" off as the Recommended tag (Claude draws its own pick as "Redis (Recommended)").
- * A Markdown link to `recommended` is an omp option's words, never that tag.
+ * (#2220): an omp or gjc card in Markdown shows its label whole (InlineMarkdown) without stripping
+ * literal `(Recommended)` text — only options explicitly carrying `recommended: true` show the
+ * Recommended tag. Plain-text cards read a leading or trailing "(Recommended)" off as that tag
+ * (Claude draws its own pick as "Redis (Recommended)").
  */
-export function optionName(prompt: InteractivePrompt, label: string): { text: string; recommended: boolean; words: string } {
-  if (prompt.text_format === "markdown") return { text: label, recommended: false, words: shownText(parseInline(label, false)) ?? label };
+export function optionName(prompt: InteractivePrompt, option: string | InteractivePromptOption): { text: string; recommended: boolean; words: string } {
+  const label = typeof option === "string" ? option : option.label;
+  const marked = typeof option !== "string" && option.recommended === true;
+  if (prompt.text_format === "markdown") {
+    return { text: label, recommended: marked, words: shownText(parseInline(label, false)) ?? label };
+  }
   const text = label.replace(/^\(recommended\)\s+|\s*\(recommended\)$/i, "");
-  return { text, recommended: text !== label, words: text };
+  return { text, recommended: marked || text !== label, words: text };
 }
 
 /** What an approval's option grants: this one call, every call like it from now on, or nothing. */
@@ -29,9 +33,10 @@ const TRAILING_HINT = /\s*[([][^)\]]*[)\]]\s*$/u;
  */
 function statedScope(label: string): ApprovalScope | "yes" | null {
   const words = label.replace(TRAILING_HINT, "").trim().toLowerCase();
-  if (/^(?:no|deny|reject|block)\b/u.test(words)) return "deny";
+  if (/^(?:(?:no|deny|reject|block)\b|always\s+(?:deny|reject|block)\b)/u.test(words)) return "deny";
   if (!/^(?:yes|allow|approve|always)\b/u.test(words)) return null;
   if (/\balways\b|\b(?:don'?t|do not|never) ask(?: me)? again\b|\ballow all\b|\b(?:for|during) (?:the rest of )?this (?:session|project)\b|\bfrom now on\b/u.test(words)) return "always";
+  if (/\band\s+enable\b/u.test(words)) return null;
   if (/\bonce\b|\bone time\b|\bthis time\b|\bjust this\b/u.test(words)) return "once";
   return /^(?:yes|allow|approve)(?:,?\s+(?:proceed|allow|approve|run it))?$/u.test(words) ? "yes" : null;
 }
@@ -81,12 +86,12 @@ export function screenWordsToShow(prompt: InteractivePrompt, turns: readonly Con
 
 export function polledPrompt(current: InteractivePrompt | null, next: InteractivePrompt | null): InteractivePrompt | null {
   if (current === null || next === null || current.id !== next.id) return next;
-  const shown = (prompt: InteractivePrompt) => JSON.stringify([prompt.steps, prompt.can_step_back, prompt.own_text, prompt.question, prompt.options, prompt.text_format ?? null, prompt.screen_words ?? null, prompt.option_preview ?? null]);
+  const shown = (prompt: InteractivePrompt) => JSON.stringify([prompt.steps, prompt.can_step_back, prompt.own_text, prompt.question, prompt.body, prompt.options, prompt.text_format ?? null, prompt.screen_words ?? null, prompt.option_preview ?? null]);
   if (shown(current) === shown(next)) return current;
   const { text_format: _format, screen_words: _words, option_preview: _preview, ...kept } = current;
   return {
     ...kept, steps: next.steps, can_step_back: next.can_step_back, own_text: next.own_text,
-    question: next.question, options: next.options, ...(next.text_format ? { text_format: next.text_format } : {}),
+    question: next.question, body: next.body, options: next.options, ...(next.text_format ? { text_format: next.text_format } : {}),
     ...(next.screen_words !== undefined ? { screen_words: next.screen_words } : {}),
     ...(next.option_preview !== undefined ? { option_preview: next.option_preview } : {}),
   };

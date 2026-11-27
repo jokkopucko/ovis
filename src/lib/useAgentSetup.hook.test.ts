@@ -1,22 +1,18 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import { createElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, createElement } from "react";
 import { AGENT_CATALOG, catalogRow } from "../../shared/agent-catalog.ts";
+import { openPage, type Page } from "./page.fixture.ts";
 import { useAgentSetup } from "./useAgentSetup.ts";
 
 describe("an install watch that outlives its tile", () => {
-  let renderer: ReactTestRenderer | undefined;
-  const previous = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+  let page: Page;
 
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
-    if (previous) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", previous);
-    else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+    await page.close();
   });
 
   it("calls no onRow for an answer that arrives after the tile is gone", async () => {
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+    page = openPage();
     const agent = catalogRow(AGENT_CATALOG.find((entry) => entry.id === "claude")!, "linux", { installed: false, binary: null, on_path: null, version: null, version_error: null, meets_min_version: null });
     const answer = Promise.withResolvers<Response>();
     const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(() => answer.promise, { preconnect: globalThis.fetch.preconnect }));
@@ -26,10 +22,9 @@ describe("an install watch that outlives its tile", () => {
       return null;
     }
     try {
-      await act(async () => { renderer = create(createElement(Tile)); });
+      await page.render(createElement(Tile));
       expect(fetch).toHaveBeenCalledTimes(1);
-      await act(async () => { renderer?.unmount(); });
-      renderer = undefined;
+      await page.render(null);
       await act(async () => {
         answer.resolve(new Response(JSON.stringify({ agents: [{ id: "claude", installed: true, version: "2.1.312" }] }), { headers: { "content-type": "application/json" } }));
         await answer.promise;

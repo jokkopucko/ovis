@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { createElement, type RefObject } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, createElement, type RefObject } from "react";
+import { openPage, type Page } from "./page.fixture.ts";
 import type { AppLink } from "./deepLink.ts";
 import { INBOX_FROM_KEY, INBOX_LIST_KEY, useInbox, useInboxShell, wayInOpensThread } from "./useInbox.ts";
 import { QuestionReads } from "./useInboxQuestions.ts";
@@ -25,24 +25,40 @@ describe("wayInOpensThread", () => {
 });
 
 describe("useInboxShell", () => {
-  let renderer: ReactTestRenderer | undefined;
-  let reactAct: PropertyDescriptor | undefined;
+  let page: Page;
   let calls: string[];
   let shell: ReturnType<typeof useInboxShell>;
   interface Place { inMode: boolean; shown: boolean; selectedPaneId: string | null; linkLanded: boolean; thread?: string | null; here?: string | null; wide?: boolean; open?: () => void; focusInput?: () => void }
 
   beforeEach(() => {
-    reactAct = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+    page = openPage();
     calls = [];
+    Object.defineProperty(page.window, "requestAnimationFrame", { configurable: true, value: () => 0 });
   });
 
-  afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
-    if (reactAct) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", reactAct);
-    else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-  });
+  afterEach(async () => { await page.close(); });
+
+  function runFrameImmediately(): void {
+    Object.defineProperty(page.window, "requestAnimationFrame", { configurable: true, value: (run: () => void) => { run(); return 0; } });
+  }
+
+  function focusControl(className: string, call?: string) {
+    const { document } = page.window;
+    const header = document.createElement("header");
+    header.className = "app-header";
+    const button = document.createElement("button");
+    button.className = className;
+    if (call !== undefined) {
+      const focus = button.focus.bind(button);
+      Object.defineProperties(button, {
+        getClientRects: { configurable: true, value: () => [{}] },
+        focus: { configurable: true, value: () => { calls.push(call); focus(); } },
+      });
+    }
+    header.append(button);
+    document.body.append(header);
+    return button;
+  }
 
   const show = (): void => { calls.push("show"); };
   const enter = (): void => { calls.push("enter"); };
@@ -52,12 +68,7 @@ describe("useInboxShell", () => {
     shell = useInboxShell({ thread: null, ...place, here: () => place.here ?? null, show, enter, setDrawerOpen, hideFile });
     return null;
   }
-  const draw = async (place: Place): Promise<void> => {
-    await act(async () => {
-      if (renderer) renderer.update(createElement(Probe, place));
-      else renderer = create(createElement(Probe, place));
-    });
-  };
+  const draw = (place: Place) => page.render(createElement(Probe, place));
 
   it("leaves the classic app alone, and its way in closes the drawer, leaves an open file behind, enters the mode and shows the list", async () => {
     await draw({ inMode: false, shown: false, selectedPaneId: "p1", linkLanded: true });
@@ -84,34 +95,27 @@ describe("useInboxShell", () => {
   });
 
   it("enters a phone on its list, and on the thread it was left on while the classic app still shows that pane", async () => {
-    const saved = Object.getOwnPropertyDescriptor(globalThis, "window");
-    Object.defineProperty(globalThis, "window", { configurable: true, value: { requestAnimationFrame: () => 0 } });
     const classicOn = (pane: string): Place => ({ inMode: false, shown: false, selectedPaneId: pane, linkLanded: true, here: `local:${pane}`, open });
     const listOf = (pane: string): Place => ({ ...classicOn(pane), inMode: true, shown: true });
     const threadOf = (pane: string): Place => ({ ...classicOn(pane), inMode: true, thread: `local:${pane}` });
-    try {
-      await draw(classicOn("p1"));
-      await act(async () => { shell.enterInbox(); });
-      await draw(listOf("p1"));
-      expect(calls).not.toContain("open");
+    await draw(classicOn("p1"));
+    await act(async () => { shell.enterInbox(); });
+    await draw(listOf("p1"));
+    expect(calls).not.toContain("open");
 
-      await draw(threadOf("p1"));
-      await draw(classicOn("p1"));
-      calls = [];
-      await act(async () => { shell.enterInbox(); });
-      await draw(listOf("p1"));
-      expect(calls.filter((call) => call === "open")).toEqual(["open"]);
+    await draw(threadOf("p1"));
+    await draw(classicOn("p1"));
+    calls = [];
+    await act(async () => { shell.enterInbox(); });
+    await draw(listOf("p1"));
+    expect(calls.filter((call) => call === "open")).toEqual(["open"]);
 
-      await draw(threadOf("p1"));
-      await draw(classicOn("p2"));
-      calls = [];
-      await act(async () => { shell.enterInbox(); });
-      await draw(listOf("p2"));
-      expect(calls).not.toContain("open");
-    } finally {
-      if (saved) Object.defineProperty(globalThis, "window", saved);
-      else Reflect.deleteProperty(globalThis, "window");
-    }
+    await draw(threadOf("p1"));
+    await draw(classicOn("p2"));
+    calls = [];
+    await act(async () => { shell.enterInbox(); });
+    await draw(listOf("p2"));
+    expect(calls).not.toContain("open");
   });
 
   it("names the row a Back onto the list returns to: the thread that was shown, and none for a list opened any other way", async () => {
@@ -120,17 +124,10 @@ describe("useInboxShell", () => {
     await draw({ inMode: true, shown: true, selectedPaneId: "p1", linkLanded: true, thread: null });
     expect(shell.returnTo).toBe("local:p1");
 
-    const saved = Object.getOwnPropertyDescriptor(globalThis, "window");
-    Object.defineProperty(globalThis, "window", { configurable: true, value: { requestAnimationFrame: () => 0 } });
-    try {
-      await draw({ inMode: true, shown: false, selectedPaneId: "p2", linkLanded: true, thread: "local:p2" });
-      expect(shell.returnTo).toBeNull();
-      await draw({ inMode: false, shown: false, selectedPaneId: "p2", linkLanded: true, thread: null });
-      await draw({ inMode: true, shown: true, selectedPaneId: "p2", linkLanded: true, thread: null });
-    } finally {
-      if (saved) Object.defineProperty(globalThis, "window", saved);
-      else Reflect.deleteProperty(globalThis, "window");
-    }
+    await draw({ inMode: true, shown: false, selectedPaneId: "p2", linkLanded: true, thread: "local:p2" });
+    expect(shell.returnTo).toBeNull();
+    await draw({ inMode: false, shown: false, selectedPaneId: "p2", linkLanded: true, thread: null });
+    await draw({ inMode: true, shown: true, selectedPaneId: "p2", linkLanded: true, thread: null });
 
     expect(shell.returnTo).toBeNull();
   });
@@ -148,102 +145,61 @@ describe("useInboxShell", () => {
   });
 
   it("gives a focus that was lost with the mode's shell to the classic header's toggle, and leaves one that is somewhere", async () => {
-    const saved = { document: Object.getOwnPropertyDescriptor(globalThis, "document"), window: Object.getOwnPropertyDescriptor(globalThis, "window") };
-    const body = {};
-    const page = { activeElement: body as unknown, body, toggles: [{ getClientRects: () => [{}], focus: () => { calls.push("focus toggle"); } }] };
-    Object.defineProperty(globalThis, "document", { configurable: true, value: {
-      get activeElement() { return page.activeElement; }, body,
-      querySelector: () => null,
-      querySelectorAll: (selector: string) => selector.includes(".drawer-toggle") ? page.toggles : [],
-    } });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: { requestAnimationFrame: (run: () => void) => { run(); return 0; } } });
-    try {
-      await draw({ inMode: true, shown: true, selectedPaneId: "p1", linkLanded: true });
-      calls = [];
-      await draw({ inMode: false, shown: false, selectedPaneId: "p1", linkLanded: true });
-      expect(calls).toEqual(["focus toggle"]);
+    runFrameImmediately();
+    focusControl("drawer-toggle", "focus toggle");
+    const other = focusControl("other");
+    await draw({ inMode: true, shown: true, selectedPaneId: "p1", linkLanded: true });
+    calls = [];
+    await draw({ inMode: false, shown: false, selectedPaneId: "p1", linkLanded: true });
+    expect(calls).toEqual(["focus toggle"]);
 
-      await draw({ inMode: true, shown: false, selectedPaneId: "p1", linkLanded: true });
-      calls = [];
-      page.activeElement = {};
-      await draw({ inMode: false, shown: false, selectedPaneId: "p1", linkLanded: true });
-      expect(calls).toEqual([]);
-    } finally {
-      for (const [key, descriptor] of Object.entries(saved)) {
-        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-        else Reflect.deleteProperty(globalThis, key);
-      }
-    }
+    await draw({ inMode: true, shown: false, selectedPaneId: "p1", linkLanded: true });
+    calls = [];
+    await act(async () => { other.focus(); });
+    await draw({ inMode: false, shown: false, selectedPaneId: "p1", linkLanded: true });
+    expect(calls).toEqual([]);
   });
 
   it("gives a focus that a row's thread left nowhere to the thread's Back, and leaves one that is somewhere", async () => {
-    const saved = { document: Object.getOwnPropertyDescriptor(globalThis, "document"), window: Object.getOwnPropertyDescriptor(globalThis, "window") };
-    const body = {};
-    const page = { activeElement: body as unknown, body, back: [{ getClientRects: () => [{}], focus: () => { calls.push("focus back"); } }] };
-    Object.defineProperty(globalThis, "document", { configurable: true, value: {
-      get activeElement() { return page.activeElement; }, body,
-      querySelector: () => null,
-      querySelectorAll: (selector: string) => selector.includes(".inbox-back") ? page.back : [],
-    } });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: { requestAnimationFrame: (run: () => void) => { run(); return 0; } } });
-    try {
-      await draw({ inMode: true, shown: false, selectedPaneId: "p1", linkLanded: true, thread: "local:p1" });
-      expect(calls).toEqual(["drawer false"]);
+    runFrameImmediately();
+    focusControl("inbox-back", "focus back");
+    const other = focusControl("other");
+    await draw({ inMode: true, shown: false, selectedPaneId: "p1", linkLanded: true, thread: "local:p1" });
+    expect(calls).toEqual(["drawer false"]);
 
-      await draw({ inMode: true, shown: true, selectedPaneId: "p1", linkLanded: true, thread: null });
-      calls = [];
-      await draw({ inMode: true, shown: false, selectedPaneId: "p1", linkLanded: true, thread: "local:p1" });
-      expect(calls).toEqual(["focus back"]);
+    await draw({ inMode: true, shown: true, selectedPaneId: "p1", linkLanded: true, thread: null });
+    calls = [];
+    await draw({ inMode: true, shown: false, selectedPaneId: "p1", linkLanded: true, thread: "local:p1" });
+    expect(calls).toEqual(["focus back"]);
 
-      await draw({ inMode: true, shown: false, selectedPaneId: "p2", linkLanded: true, thread: "local:p2" });
-      expect(calls).toEqual(["focus back"]);
+    await draw({ inMode: true, shown: false, selectedPaneId: "p2", linkLanded: true, thread: "local:p2" });
+    expect(calls).toEqual(["focus back"]);
 
-      await draw({ inMode: true, shown: true, selectedPaneId: "p2", linkLanded: true, thread: null });
-      calls = [];
-      page.activeElement = {};
-      await draw({ inMode: true, shown: false, selectedPaneId: "p1", linkLanded: true, thread: "local:p1" });
-      expect(calls).toEqual([]);
-    } finally {
-      for (const [key, descriptor] of Object.entries(saved)) {
-        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-        else Reflect.deleteProperty(globalThis, key);
-      }
-    }
+    await draw({ inMode: true, shown: true, selectedPaneId: "p2", linkLanded: true, thread: null });
+    calls = [];
+    await act(async () => { other.focus(); });
+    await draw({ inMode: true, shown: false, selectedPaneId: "p1", linkLanded: true, thread: "local:p1" });
+    expect(calls).toEqual([]);
   });
 
   it("gives the focus to the thread's input under a fine pointer, and to Back under a coarse one, for a row whose pane classic was showing", async () => {
-    const saved = { document: Object.getOwnPropertyDescriptor(globalThis, "document"), window: Object.getOwnPropertyDescriptor(globalThis, "window") };
-    const body = {}, composer = {};
+    runFrameImmediately();
+    const back = focusControl("inbox-back", "focus back");
+    const composer = focusControl("composer");
     let coarse = false;
-    const page = { activeElement: body as unknown, back: [{ getClientRects: () => [{}], focus: () => { calls.push("focus back"); page.activeElement = {}; } }] };
-    Object.defineProperty(globalThis, "document", { configurable: true, value: {
-      get activeElement() { return page.activeElement; }, body,
-      querySelector: () => null,
-      querySelectorAll: (selector: string) => selector.includes(".inbox-back") ? page.back : [],
-    } });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      requestAnimationFrame: (run: () => void) => { run(); return 0; },
-      matchMedia: (query: string) => ({ matches: query === "(pointer: coarse)" && coarse }),
-    } });
-    const focusInput = (): void => { calls.push("focus input"); page.activeElement = composer; };
-    try {
-      for (const pointer of ["fine", "coarse"] as const) {
-        coarse = pointer === "coarse";
-        await draw({ inMode: false, shown: false, selectedPaneId: "p1", linkLanded: true, focusInput });
-        await draw({ inMode: true, shown: true, selectedPaneId: "p1", linkLanded: true, focusInput });
-        calls = [];
-        page.activeElement = body;
+    Object.defineProperty(page.window, "matchMedia", { configurable: true, value: (query: string) => ({ matches: query === "(pointer: coarse)" && coarse }) });
+    const focusInput = (): void => { calls.push("focus input"); composer.focus(); };
+    for (const pointer of ["fine", "coarse"] as const) {
+      coarse = pointer === "coarse";
+      await draw({ inMode: false, shown: false, selectedPaneId: "p1", linkLanded: true, focusInput });
+      await draw({ inMode: true, shown: true, selectedPaneId: "p1", linkLanded: true, focusInput });
+      calls = [];
+      await act(async () => { back.blur(); composer.blur(); });
 
-        await draw({ inMode: true, shown: false, selectedPaneId: "p1", linkLanded: true, thread: "local:p1", focusInput });
+      await draw({ inMode: true, shown: false, selectedPaneId: "p1", linkLanded: true, thread: "local:p1", focusInput });
 
-        expect(calls).toEqual(pointer === "fine" ? ["focus input"] : ["focus back"]);
-        await draw({ inMode: false, shown: false, selectedPaneId: "p1", linkLanded: true, focusInput });
-      }
-    } finally {
-      for (const [key, descriptor] of Object.entries(saved)) {
-        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-        else Reflect.deleteProperty(globalThis, key);
-      }
+      expect(calls).toEqual(pointer === "fine" ? ["focus input"] : ["focus back"]);
+      await draw({ inMode: false, shown: false, selectedPaneId: "p1", linkLanded: true, focusInput });
     }
   });
 
@@ -259,50 +215,29 @@ describe("useInboxShell", () => {
 });
 
 describe("useInbox", () => {
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
   let inbox: ReturnType<typeof useInbox>;
   let phone: boolean;
-  let historyState: unknown;
   let backs: number;
-  let events: EventTarget;
-  let session: Map<string, string>;
   const drawerOpenRef: RefObject<boolean> = { current: false };
 
   beforeEach(() => {
-    for (const key of ["window", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    page = openPage();
     phone = true;
-    historyState = null;
     backs = 0;
-    events = new EventTarget();
-    session = new Map();
     drawerOpenRef.current = false;
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      matchMedia: () => ({ matches: phone, addEventListener() {}, removeEventListener() {} }),
-      history: { get state() { return historyState; }, back: () => { backs += 1; } },
-      sessionStorage: { getItem: (key: string) => session.get(key) ?? null, setItem: (key: string, value: string) => { session.set(key, value); } },
-      addEventListener: events.addEventListener.bind(events),
-      removeEventListener: events.removeEventListener.bind(events),
-    } });
+    Object.defineProperty(page.window, "matchMedia", { configurable: true, value: () => ({ matches: phone, addEventListener() {}, removeEventListener() {} }) });
+    Object.defineProperty(page.window.history, "back", { configurable: true, value: () => { backs += 1; } });
   });
 
-  afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
-    for (const [key, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    descriptors.clear();
-  });
+  afterEach(async () => { await page.close(); });
 
   async function mount(on: boolean, initialLink: AppLink | null = null): Promise<void> {
     function Probe() {
       inbox = useInbox({ on, initialLink, drawerOpenRef });
       return null;
     }
-    await act(async () => { renderer = create(createElement(Probe)); });
+    await page.render(createElement(Probe));
   }
 
   const paneLink: AppLink = { machine: "local", workspace: "w1", pane: "p1", view: "chat", settings: null };
@@ -374,20 +309,20 @@ describe("useInbox", () => {
   });
 
   it("starts the list where the tab left it (its filter, search and scroll), and keeps each change for the tab", async () => {
-    session.set(INBOX_LIST_KEY, JSON.stringify({ filter: "blocked", query: "pay", scroll: 120 }));
+    page.window.sessionStorage.setItem(INBOX_LIST_KEY, JSON.stringify({ filter: "blocked", query: "pay", scroll: 120 }));
     await mount(true);
     expect([inbox.filter, inbox.query, inbox.scroll.current]).toEqual(["blocked", "pay", 120]);
 
     await act(async () => { inbox.setFilter("done"); });
-    expect(JSON.parse(session.get(INBOX_LIST_KEY) ?? "null")).toEqual({ filter: "done", query: "pay", scroll: 120 });
+    expect(JSON.parse(page.window.sessionStorage.getItem(INBOX_LIST_KEY) ?? "null")).toEqual({ filter: "done", query: "pay", scroll: 120 });
 
     inbox.scroll.current = 300;
-    await act(async () => { events.dispatchEvent(new Event("pagehide")); });
-    expect(JSON.parse(session.get(INBOX_LIST_KEY) ?? "null")).toEqual({ filter: "done", query: "pay", scroll: 300 });
+    await act(async () => { page.window.dispatchEvent(new page.window.Event("pagehide")); });
+    expect(JSON.parse(page.window.sessionStorage.getItem(INBOX_LIST_KEY) ?? "null")).toEqual({ filter: "done", query: "pay", scroll: 300 });
   });
 
   it("starts a fresh list from a stored value it cannot read", async () => {
-    session.set(INBOX_LIST_KEY, JSON.stringify({ filter: "everything", query: 4, scroll: -5 }));
+    page.window.sessionStorage.setItem(INBOX_LIST_KEY, JSON.stringify({ filter: "everything", query: 4, scroll: -5 }));
     await mount(true);
     expect([inbox.filter, inbox.query, inbox.scroll.current]).toEqual(["all", "", 0]);
   });
@@ -415,7 +350,7 @@ describe("useInbox", () => {
 
   it("opens the list in place when the history entry was not pushed by leaving it", async () => {
     await mount(true, paneLink);
-    historyState = { other: true };
+    page.window.history.replaceState({ other: true }, "");
 
     await act(async () => { inbox.back(); });
 
@@ -425,7 +360,7 @@ describe("useInbox", () => {
 
   it("goes back through the history from an entry pushed on leaving the list", async () => {
     await mount(true, paneLink);
-    historyState = { [INBOX_FROM_KEY]: true };
+    page.window.history.replaceState({ [INBOX_FROM_KEY]: true }, "");
 
     await act(async () => { inbox.back(); });
 
@@ -435,32 +370,32 @@ describe("useInbox", () => {
 
   it("steps back once for two presses in a row, and takes a press again once that step has landed", async () => {
     await mount(true, paneLink);
-    historyState = { [INBOX_FROM_KEY]: true };
+    page.window.history.replaceState({ [INBOX_FROM_KEY]: true }, "");
 
     await act(async () => { inbox.back(); inbox.back(); });
     expect(backs).toBe(1);
     await act(async () => { inbox.back(); });
     expect(backs).toBe(1);
 
-    await act(async () => { events.dispatchEvent(new Event("popstate")); });
+    await act(async () => { page.window.dispatchEvent(new page.window.Event("popstate")); });
     await act(async () => { inbox.back(); });
     expect(backs).toBe(2);
   });
 
   it("takes a press again once the page shows again with no popstate (a cancelled leave, a restore from the page cache)", async () => {
     await mount(true, paneLink);
-    historyState = { [INBOX_FROM_KEY]: true };
+    page.window.history.replaceState({ [INBOX_FROM_KEY]: true }, "");
 
     await act(async () => { inbox.back(); inbox.back(); });
     expect(backs).toBe(1);
-    await act(async () => { events.dispatchEvent(new Event("pageshow")); });
+    await act(async () => { page.window.dispatchEvent(new page.window.Event("pageshow")); });
     await act(async () => { inbox.back(); });
     expect(backs).toBe(2);
   });
 
   it("takes a press again once the list has shown", async () => {
     await mount(true, paneLink);
-    historyState = { [INBOX_FROM_KEY]: true };
+    page.window.history.replaceState({ [INBOX_FROM_KEY]: true }, "");
 
     await act(async () => { inbox.back(); });
     await act(async () => { inbox.show(); });

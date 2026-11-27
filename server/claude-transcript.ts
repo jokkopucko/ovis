@@ -8,6 +8,28 @@ import { trimOutput } from "./tool-output.ts";
 import { base64Size, inlineImageType, MAX_IMAGE_BYTES } from "./codex-images.ts";
 import { POLL_TOOL, REPL_TOOL, replDeliveries, replDispatched, replOutput, virtualCallOutput, type ReplOutput } from "./claude-code-mode.ts";
 
+/**
+ * Claude Code's mark of a stop (Esc), which it records in the person's seat: "for tool use" after the call it refused,
+ * plainly when it stopped an answer. Nobody typed it, and it starts no turn; the chat shows it as a quiet "Stopped" line.
+ */
+export function claudeStopMark(text: string): boolean {
+  return /^\[Request interrupted by user( for tool use)?\]$/.test(text.trim());
+}
+
+/**
+ * Whether a user entry is Claude Code's own stop mark (Esc), never a human-typed prompt:
+ * Claude Code records stops without `origin` or `permissionMode`, as a single text block
+ * (never a raw string prompt, human queued command, approval feedback beside a `tool_result`,
+ * or multi-block prompt with other text/images).
+ */
+export function isClaudeStopEntry(entry: { origin?: unknown; permissionMode?: unknown }, content: unknown): boolean {
+  if ("origin" in entry || "permissionMode" in entry) return false;
+  if (!Array.isArray(content) || content.length !== 1) return false;
+  const only = content[0];
+  return typeof only === "object" && only !== null && (only as { type?: unknown }).type === "text"
+    && typeof (only as { text?: unknown }).text === "string" && claudeStopMark((only as { text: string }).text);
+}
+
 export function isCommandEntry(text: string, entry: { origin?: unknown; permissionMode?: unknown }): boolean {
   if (claudeCommandEcho(text)) return false;
   return text.startsWith("<command-") || text.startsWith("<local-command") || text.startsWith("<task-")
@@ -505,6 +527,12 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
     part.state = part.error === true ? "error" : "ok";
   };
   const noticeAt = (): number => state.atWork && turns.at(-1)?.role === "assistant" ? turns.length - 1 : turns.length;
+  /** a stop ends the turn it cut short and stands as one notice where it was */
+  const stopped = (ts: string | null): void => {
+    state.atWork = false;
+    turnEnded();
+    turns.push({ role: "user", ts, parts: [{ kind: "notice", text: "Stopped", source: "stopped" }] });
+  };
   const notified = (block: string, ts: string | null): boolean => {
     const notice = taskNotification(block);
     if (notice === null) return false;
@@ -566,7 +594,7 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
       // A hand-back and its notification pair only within one turn, as the page reader parses a
       // settled turn on its own (transcript-turns.ts turnStarts): a record that starts a turn there (a
       // prompt, any other session's message) ends the wait, so a warm read and a cold one agree (#3658)
-      if (handback === null) handbacks.clear();
+      if (handback === null) { turnEnded(); handbacks.clear(); }
       const id = claudePeerId(entry);
       if (id !== null) { if (peersSeen.has(id)) return; peersSeen.add(id); }
       const held = handback === null ? undefined : handbacks.get(handback.taskId);
@@ -758,6 +786,7 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
         const pictures = Array.isArray(result.content) ? claudeImages(entry.uuid, result.content, index) : [];
         if (pictures.length > 0) tool.images = pictures;
       }
+      if (isClaudeStopEntry(entry, content)) { stopped(entry.timestamp ?? null); return; }
       const images = claudeImages(entry.uuid, blocks).map((image) => ({ kind: "image" as const, ...image }));
       if (prompt.trim() || images.length > 0) pushPrompt({ role: "user", ts: entry.timestamp ?? null, parts: [...images, ...(prompt.trim() ? [{ kind: "text" as const, text: unwrapPastes(prompt) }] : []), ...invocations] }, entry);
       return;

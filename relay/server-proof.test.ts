@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import nacl from "tweetnacl";
+import { x25519 } from "@noble/curves/ed25519.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { answerServerChallenge, deriveServerId, SERVER_PROOF_CLOSE } from "../shared/relay-server-proof.ts";
 import { startBunRelay } from "./bun.ts";
@@ -12,7 +12,7 @@ afterEach(async () => { for (const stop of cleanup.splice(0)) await stop(); });
 function fixture() {
   const relay = startBunRelay({ port: 0 });
   cleanup.push(() => relay.stop());
-  const keys = nacl.box.keyPair();
+  const keys = x25519.keygen();
   const id = deriveServerId(keys.publicKey);
   const urls = relayUrls(`ws://127.0.0.1:${relay.port}`, {
     serverId: id, publicKey: bytesToHex(keys.publicKey), secretKey: keys.secretKey,
@@ -35,7 +35,7 @@ test.each(["missing", "wrong key", "wrong answer", "replayed", "garbage", "binar
     const replay = await f.answer(live);
     live.socket.send(replay);
     expect((await live.json())["type"]).toBe("sync");
-    const other = nacl.box.keyPair();
+    const other = x25519.keygen();
     const query = attack === "missing" ? "" : attack === "wrong key"
       ? `&proof=1&public_key=${bytesToHex(other.publicKey)}` : f.query;
     const forged = await Peer.open(f.urls.control.replace(f.query, "") + query);
@@ -61,7 +61,7 @@ test("Bun forged data proof cannot close or steal an existing pair", async () =>
   client.socket.send("before attack");
   expect(await data.next()).toBe("before attack");
   const forged = await Peer.open(f.urls.data(id));
-  forged.socket.send(await f.answer(forged, nacl.box.keyPair().secretKey, id));
+  forged.socket.send(await f.answer(forged, x25519.keygen().secretKey, id));
   expect(await forged.closeCode()).toBe(SERVER_PROOF_CLOSE);
   client.socket.send("after attack");
   expect(await data.next()).toBe("after attack");

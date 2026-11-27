@@ -48,6 +48,7 @@ const LOGIN: Spec = {
     ["--qr", "After signing in, show a QR code for a device of your account to scan, instead of waiting for Add"],
     ["--print", "With --qr: write the QR code even where the output is not a terminal"],
     ["--approve", "After signing in, approve here the device that adds this PC, comparing six digits"],
+    ["--confirm <six digits>", "Say yes to the number this PC shows while it is added to an account that keeps a signed list, where nobody can type at the add that shows it"],
     ["--github, --google", "Sign in at GitHub's or Google's own device page"],
   ],
   // `link --code` is `pair --relay`; `--device-auth` is codex's name for --no-browser
@@ -56,7 +57,7 @@ const LOGIN: Spec = {
 };
 
 const SPECS: Readonly<Record<string, Spec>> = {
-  agent: { command: "agent", passThrough: true, summary: "Use this coding agent's local harness tools", usage: "ovis agent <machines|harnesses|ls|read|start|send|wait|result|ask|stop> [arguments] --json", more: HARNESS_SKILL },
+  agent: { command: "agent", passThrough: true, summary: "Use this coding agent's local harness tools", usage: "ovis agent <machines|harnesses|ls|read|start|send|wait|result|ask|answer|stop> [arguments] --json\n  ovis agent answer <session> --question-id <id> [--choice <index>] --json  (when waiting_parent)", more: HARNESS_SKILL },
   login: LOGIN,
   add: LOGIN,
   link: LOGIN,
@@ -113,7 +114,7 @@ const SPECS: Readonly<Record<string, Spec>> = {
   recover: {
     command: "recover", gated: true, passThrough: true,
     summary: "List the devices this PC holds back; release, admit or remove them",
-    usage: "ovis recover [--release <row id>... | --undo [<row id>...] | --admit <waiting id> | --remove <row id or key>... | --lift <block or freeze id>... | --revoke-all]",
+    usage: "ovis recover [--release <row id>... | --undo [<row id>...] | --admit <waiting id> | --remove <row id or key>... | --lift <block or freeze id>... | --revoke-all | --restamp]",
   },
   confirm: {
     command: "confirm", gated: true,

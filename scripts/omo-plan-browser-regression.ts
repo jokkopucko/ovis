@@ -13,6 +13,7 @@ import { startShellAgent } from "../server/shell-agent.ts";
 import { UsageService } from "../server/usage.ts";
 import type { HerdrPane, PlanSummary, ServerMessage } from "../shared/protocol.ts";
 import type { Page } from "playwright-core";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 const root = mkdtempSync(join(tmpdir(), "omo-plan-browser-"));
 const evidence = process.env.UI_EVIDENCE_DIR || join(root, "evidence");
@@ -148,6 +149,7 @@ try {
   assert.deepEqual(pane.plan, { done: 1, total: 3, current: "Implement OmO plans" });
   writeFileSync(join(evidence, "snapshot-pane.json"), JSON.stringify(pane, null, 2) + "\n");
 
+  checkChromeTmpdir();
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? "/opt/google/chrome/chrome", headless: true, args: ["--no-sandbox", "--no-proxy-server"] });
   const errors: string[] = [];
   for (const width of [1280, 390]) {

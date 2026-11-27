@@ -11,7 +11,7 @@ const listed = (n: number, seen = true): DirectoryPc =>
 const following = (pcs: readonly number[], standing: "in" | "out" = "in"): AccountListView => ({
   account: ACCOUNT, reached: true, devices: [],
   status: { at: "following", list: "5c".repeat(32), standing, head: 7, read_at: 1, trouble: null },
-  pcs: pcs.map((n) => ({ endpoint: n.toString(16).padStart(64, "0"), server_id: id(n), how: "added" as const, allows: true, name: { label: `Secret name ${n}`, os: null } })),
+  pcs: pcs.map((n) => ({ endpoint: n.toString(16).padStart(64, "0"), server_id: id(n), how: "added" as const, allows: true, name: { label: `Secret name ${n}`, os: null }, seq: n, by: null, new_at: null })),
 });
 
 const info = spyOn(console, "info").mockImplementation(() => {});

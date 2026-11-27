@@ -1,5 +1,7 @@
-import { afterEach, expect, it, jest } from "bun:test";
+import { afterEach, describe, expect, it, jest } from "bun:test";
 import { PENDING_MS } from "../../../server/account/pending.ts";
+import { LIST_ALLOW_MS } from "../../../server/account/list-follow.ts";
+import { PAIR_APPROVAL_MS } from "../../../shared/relay-pair-sas.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -11,15 +13,18 @@ import type { RelayOffer } from "../../../shared/relay-offer.ts";
 import { exportPublicKey, generateKeyPair, openDaemonSecureChannel } from "../../../shared/relay-e2ee.ts";
 import type { SecureChannel, Transport } from "../../../shared/relay-e2ee.ts";
 import { decodeFrame, encodeFrame, FrameType, LIMITS_V1, MuxProtocolError } from "../../../shared/relay-mux.ts";
+import { IDLE_MS, KEEPALIVE_PING, KEEPALIVE_PONG } from "../../../relay/core.ts";
 import type { MuxFrame } from "../../../shared/relay-mux.ts";
 import { MuxEngine } from "../../../shared/relay-mux-engine.ts";
 import type { RelayChannelOptions } from "../../../shared/relay-channel.ts";
 import { withAccountDevice } from "../account/accountDevice.ts";
 import type { RelayDevice, RelayDeviceStore } from "./device.ts";
-import { ACCOUNT_OPENS_ALL_FEATURE } from "../../../shared/relay-mux.ts";
+import { ACCOUNT_LIST_ALLOW, ACCOUNT_LIST_FEATURE, ACCOUNT_OPENS_ALL_FEATURE } from "../../../shared/relay-mux.ts";
 import { pairFingerprint, verifyPairProof } from "../../../shared/pair-fingerprint.ts";
 import { ADMISSION_MS, ASSIGNMENT_MS, openRelayChannel, PC_ANSWER_MS, RelayAdmissionTimeoutError, RelayNewSessionsRefusedError, RelayPcOfflineError, RelayUnreachableError } from "./channel.ts";
-import { probePc } from "../../../shared/relay-channel.ts";
+import { AccountListUnsupportedError, ListMismatchError, probePc } from "../../../shared/relay-channel.ts";
+import { deviceCard, deviceListKeys } from "../account/listKeys.ts";
+import { memoryAccountStore } from "../account/store.ts";
 import { isFatalRelayError } from "./transport.ts";
 import { RELAY_NEW_SESSIONS_CLOSE, RELAY_NEW_SESSIONS_REFUSED } from "../../../shared/relay-pass.ts";
 import type { RelaySocket } from "./channel.ts";
@@ -40,12 +45,19 @@ class FakeSocket implements RelaySocket {
   /** closing with no close event yet, as a browser socket the page closed while the relay has not answered */
   closing = false;
   get readyState(): number { return this.closed ? 3 : this.closing ? 2 : 1; }
+  /** when each frame was put on this socket, by `clock`, and how many were the relay's own keepalive */
+  readonly sentAt: number[] = [];
+  pings = 0;
+  clock: () => number = () => 0;
   constructor(readonly daemon: Transport) {}
   send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
     if (this.closed) throw new Error("Socket closed");
     // a browser socket in CLOSING drops what it is given, without an error
     if (this.closing) return;
     if (typeof data !== "string" && !(data instanceof ArrayBuffer)) throw new Error("Unexpected carrier type");
+    this.sentAt.push(this.clock());
+    // the relay answers its own keepalive (relay/core.ts), and the PC behind it never sees it
+    if (data === KEEPALIVE_PING) { this.pings += 1; queueMicrotask(() => this.deliver(KEEPALIVE_PONG)); return; }
     this.daemon.onmessage?.({ data, isBinary: typeof data !== "string" });
   }
   deliver(data: string | ArrayBuffer): void {
@@ -500,6 +512,33 @@ it("T34, G5: offers the account-opens-all mux feature in HELLO only when asked, 
   await asking.opening;
 });
 
+it("offers the account-list feature on every sign-in that is no pairing, so a pinned PC can say which key it wants", async () => {
+  const plain = await fixture(false);
+  await plain.authSeen.promise;
+  expect(plain.offered).toContain(ACCOUNT_LIST_FEATURE);
+  expect(plain.offered).not.toContain(ACCOUNT_OPENS_ALL_FEATURE);
+  plain.allowAuth.resolve();
+  await plain.opening;
+  // a pairing by code offers none of it: no device is named yet
+  const pairing = await fixture(true);
+  pairing.allowAuth.resolve();
+  await pairing.opening;
+  expect(pairing.offered).not.toContain(ACCOUNT_LIST_FEATURE);
+});
+
+it("signs in with the list key only to a PC whose final WELCOME says that it follows a list, and offers the account open beside it", async () => {
+  const pinned = await fixture(false, undefined, undefined, { provisional: true, features: [ACCOUNT_LIST_FEATURE] }, { accountListKey: true });
+  await pinned.authSeen.promise;
+  expect(pinned.offered).toEqual(expect.arrayContaining([ACCOUNT_LIST_FEATURE, ACCOUNT_OPENS_ALL_FEATURE]));
+  pinned.allowAuth.resolve();
+  await pinned.opening;
+  // a PC that follows no list selects nothing: no AUTH goes out, and the caller is told which it was
+  const plain = await fixture(false, undefined, undefined, {}, { accountListKey: true });
+  plain.allowAuth.resolve();
+  await expect(plain.opening).rejects.toBeInstanceOf(AccountListUnsupportedError);
+  expect(plain.trace).toEqual(["client:HELLO", "server:WELCOME"]);
+});
+
 it("T34: an account open after a provisional WELCOME acknowledges every PC setup frame", async () => {
   const f = await fixture(false, undefined, undefined, { provisional: true, features: [ACCOUNT_OPENS_ALL_FEATURE] }, { accountOpensAll: true });
   f.allowAuth.resolve();
@@ -683,6 +722,188 @@ it("tells the comparison which PC approves it on its own screen, any PC it canno
     expect(await bounded(shown.promise)).toBe(told);
     socket.close();
   }
+});
+
+/**
+ * A PC endpoint scripted for a join by digits: it selects `features`, answers the request with a challenge (with
+ * `list` where it names the list it follows), and lets the device in once it confirmed, naming `place` in AUTH_OK.
+ * `answers: false`: it never answers the confirmation, as a PC that waits for an entry of the list.
+ */
+function scriptedJoin(pc: { features: readonly string[]; list?: string; place?: { id: string; seq: number; hash: string }; answers?: false }) {
+  const keys = generateKeyPair();
+  let socket: FakeSocket;
+  const daemon: Transport = {
+    onmessage: null, onclose: null, onerror: null,
+    send: (data) => socket.deliver(data),
+    close: (code, reason) => { setImmediate(() => socket.close(code, reason)); },
+  };
+  socket = new FakeSocket(daemon);
+  const ready = Promise.withResolvers<SecureChannel>();
+  const send = (frame: MuxFrame) => ready.promise.then((channel) => channel.send(encodeFrame(frame).slice().buffer));
+  const hello = Promise.withResolvers<readonly string[]>();
+  const request = Promise.withResolvers<Record<string, unknown>>();
+  const confirmed = Promise.withResolvers<void>();
+  void openDaemonSecureChannel(daemon, { daemonKeyPair: keys, events: { onmessage: (data) => {
+    const frame = decodeFrame(new Uint8Array(data as ArrayBuffer));
+    if (frame.type === FrameType.HELLO) {
+      hello.resolve(frame.payload.features);
+      void send({ type: FrameType.WELCOME, flags: 0, stream_id: 0, payload: { protocol: "ovis-mux", version: 1,
+        features: pc.features.filter((feature) => frame.payload.features.includes(feature)), limits: LIMITS_V1, nonce: base64url(new Uint8Array(32)), server_version: "0.4.21", relay_protocol: 1, min_supported_client: "0.4.20" } });
+    }
+    if (frame.type === FrameType.PAIR_REQUEST) {
+      request.resolve(frame.payload as unknown as Record<string, unknown>);
+      void send({ type: FrameType.PAIR_CHALLENGE, flags: 0, stream_id: 0, payload: { nonce: base64url(new Uint8Array(32).fill(7)), ...(pc.list === undefined ? {} : { list: pc.list }) } });
+    }
+    if (frame.type === FrameType.PAIR_CONFIRM) {
+      confirmed.resolve();
+      if (pc.answers !== false) void send({ type: FrameType.AUTH_OK, flags: 0, stream_id: 0, payload: { session_id: "ab".repeat(16), device_id: "cd".repeat(8), role: "drive", ...(pc.place === undefined ? {} : { list: pc.place }) } });
+    }
+  } } }).then((channel) => ready.resolve(channel), () => {});
+  const offer = { v: 1 as const, server_id: "12".repeat(16), server_public_key: exportPublicKey(keys.publicKey), relay: "wss://relay.example" };
+  const store = new MemoryDeviceStore();
+  cleanups.push(() => socket.close());
+  const open = (options: Partial<Parameters<typeof openRelayChannel>[1]>) => {
+    const opening = openRelayChannel(offer, { store, intent: "account", compare: async () => {}, ...options,
+      socket: () => { queueMicrotask(() => socket.deliver(JSON.stringify({ type: "assigned", connection_id: "ab".repeat(16) }))); return socket; } });
+    void opening.catch(() => {});
+    return opening;
+  };
+  return { offer, store, open, socket, hello: bounded(hello.promise), request: bounded(request.promise), confirmed: confirmed.promise };
+}
+
+describe("a new device that joins through a PC pinned to its account's list", () => {
+  const LIST = "5c".repeat(32);
+  const OTHER = "6d".repeat(32);
+  const card = async () => {
+    const store = memoryAccountStore();
+    const keys = await deviceListKeys(store);
+    return { key: await store.key(), listCard: { list: LIST, enc: keys.enc.key, card: (await deviceCard(keys, LIST)).card } };
+  };
+
+  it("offers to bring its card only when it holds one, sends it only to a PC that took the offer, and is handed its place with no pairing saved", async () => {
+    const { key, listCard } = await card();
+    const place = { id: LIST, seq: 4, hash: "ab".repeat(32) };
+    const pinned = scriptedJoin({ features: ["pair-sas", ACCOUNT_LIST_ALLOW], list: LIST, place });
+    const channel = await bounded(pinned.open({ accountKey: key, listCard }));
+    cleanups.push(() => channel.close());
+    expect(await pinned.hello).toContain(ACCOUNT_LIST_ALLOW);
+    expect(await pinned.request).toMatchObject({ public_key: key.public_spki, list_enc: listCard.enc, list_card: listCard.card });
+    expect(channel.listPlace).toEqual(place);
+    // the key was let in by an entry of the list: no pairing of this device's own with the PC is kept
+    expect(await pinned.store.get(pinned.offer.server_id)).toBeUndefined();
+  });
+
+  it("sends no card to a PC that did not take the offer, and pairs there as before", async () => {
+    const { key, listCard } = await card();
+    const plain = scriptedJoin({ features: ["pair-sas"] });
+    const channel = await bounded(plain.open({ accountKey: key, listCard }));
+    cleanups.push(() => channel.close());
+    const request = await plain.request;
+    expect(["list_enc" in request, "list_card" in request, channel.listPlace]).toEqual([false, false, undefined]);
+    expect((await plain.store.get(plain.offer.server_id))?.device_id).toBe("cd".repeat(8));
+  });
+
+  it("offers nothing of a list where it holds no card, or asks for that PC only", async () => {
+    const { key, listCard } = await card();
+    const none = scriptedJoin({ features: ["pair-sas", ACCOUNT_LIST_ALLOW], list: LIST });
+    void none.open({ accountKey: key });
+    expect(await none.hello).not.toContain(ACCOUNT_LIST_ALLOW);
+    const pcOnly = scriptedJoin({ features: ["pair-sas", ACCOUNT_LIST_ALLOW], list: LIST });
+    void pcOnly.open({ accountKey: key, listCard, intent: "pc" });
+    expect(await pcOnly.hello).not.toContain(ACCOUNT_LIST_ALLOW);
+  });
+
+  it("stops before it shows any digits where the PC follows another list than the one its card names", async () => {
+    const { key, listCard } = await card();
+    const other = scriptedJoin({ features: ["pair-sas", ACCOUNT_LIST_ALLOW], list: OTHER });
+    let shown = false;
+    const error = await bounded(other.open({ accountKey: key, listCard, compare: async () => { shown = true; } }).then(() => null, (reason: unknown) => reason));
+    expect(error).toBeInstanceOf(ListMismatchError);
+    expect(shown).toBe(false);
+    expect(await other.store.get(other.offer.server_id)).toBeUndefined();
+  });
+
+  it("takes no place from a PC that did not take the offer, and none that names another list than its card's", async () => {
+    const { key, listCard } = await card();
+    const unasked = scriptedJoin({ features: ["pair-sas"], place: { id: LIST, seq: 4, hash: "ab".repeat(32) } });
+    const paired = await bounded(unasked.open({ accountKey: key, listCard }));
+    cleanups.push(() => paired.close());
+    expect(paired.listPlace).toBeUndefined();
+    const lying = scriptedJoin({ features: ["pair-sas", ACCOUNT_LIST_ALLOW], list: LIST, place: { id: OTHER, seq: 4, hash: "ab".repeat(32) } });
+    const error = await bounded(lying.open({ accountKey: key, listCard }).then(() => null, (reason: unknown) => reason));
+    expect(error).toBeInstanceOf(ListMismatchError);
+    expect(await lying.store.get(lying.offer.server_id)).toBeUndefined();
+  });
+
+  it("tells the comparison that a join the PC took the card for is one into the list, which only the person's own press confirms; any other join is told nothing new", async () => {
+    const { key, listCard } = await card();
+    const told: unknown[][] = [];
+    const pinned = scriptedJoin({ features: ["pair-sas", ACCOUNT_LIST_ALLOW], list: LIST, place: { id: LIST, seq: 4, hash: "ab".repeat(32) } });
+    const joined = await bounded(pinned.open({ accountKey: key, listCard, compare: async (...args) => { told.push(args); } }));
+    cleanups.push(() => joined.close());
+    const plain = scriptedJoin({ features: ["pair-sas"] });
+    const paired = await bounded(plain.open({ accountKey: key, listCard, compare: async (...args) => { told.push(args); } }));
+    cleanups.push(() => paired.close());
+    expect(told).toEqual([[expect.any(String), undefined, true], [expect.any(String), undefined, undefined]]);
+  });
+
+  it("is refused, with nothing saved, by a PC that took its card and lets it in naming no place in the list", async () => {
+    const { key, listCard } = await card();
+    const placeless = scriptedJoin({ features: ["pair-sas", ACCOUNT_LIST_ALLOW], list: LIST });
+    const error = await bounded(placeless.open({ accountKey: key, listCard }).then(() => null, (reason: unknown) => reason));
+    expect(error instanceof MuxProtocolError && [error.code, error.message]).toEqual(["auth_failed", "list_refused"]);
+    expect(failureOf(error, { code: false, paired: false, codeless: true, compared: true })).toBe("list-refused");
+    expect(await placeless.store.get(placeless.offer.server_id)).toBeUndefined();
+  });
+
+  it("waits for the PC's entry as long as the PC may take for it after the comparison, where a join without a card ends at the comparison's own time", async () => {
+    jest.useFakeTimers();
+    const { key, listCard } = await card();
+    const outcomes: { carded: boolean; error: unknown }[] = [];
+    const waits = scriptedJoin({ features: ["pair-sas", ACCOUNT_LIST_ALLOW], list: LIST, answers: false });
+    void waits.open({ accountKey: key, listCard }).then(() => null, (error: unknown) => { outcomes.push({ carded: true, error }); });
+    const plain = scriptedJoin({ features: ["pair-sas"], answers: false });
+    void plain.open({ accountKey: key, listCard }).then(() => null, (error: unknown) => { outcomes.push({ carded: false, error }); });
+    await Promise.all([waits.confirmed, plain.confirmed]);
+    const settle = async () => { for (let i = 0; i < 50; i++) await Promise.resolve(); };
+    jest.advanceTimersByTime(PAIR_APPROVAL_MS + 5_000);
+    await settle();
+    expect(outcomes.map((each) => [each.carded, each.error instanceof RelayAdmissionTimeoutError])).toEqual([[false, true]]);
+    // the comparison's time, and the PC's own wait for the entry after both said yes
+    jest.advanceTimersByTime(LIST_ALLOW_MS - 1);
+    await settle();
+    expect(outcomes).toHaveLength(1);
+    jest.advanceTimersByTime(1);
+    await settle();
+    expect(outcomes.map((each) => [each.carded, each.error instanceof RelayAdmissionTimeoutError])).toEqual([[false, true], [true, true]]);
+  });
+
+  it("keeps its relay socket from going idle for the whole wait with the relay's own keepalive, which no PC sees; a join without a card sends none", async () => {
+    jest.useFakeTimers();
+    let elapsed = 0;
+    const { key, listCard } = await card();
+    const outcomes: boolean[] = [];
+    const waits = scriptedJoin({ features: ["pair-sas", ACCOUNT_LIST_ALLOW], list: LIST, answers: false });
+    const plain = scriptedJoin({ features: ["pair-sas"], answers: false });
+    for (const each of [waits, plain]) each.socket.clock = () => elapsed;
+    void waits.open({ accountKey: key, listCard }).then(() => null, () => { outcomes.push(true); });
+    void plain.open({ accountKey: key, listCard }).then(() => null, () => { outcomes.push(false); });
+    await Promise.all([waits.confirmed, plain.confirmed]);
+    const settle = async () => { for (let i = 0; i < 50; i++) await Promise.resolve(); };
+    // the person pressed at once; the PC answers nothing until the join's own deadline
+    while (outcomes.length < 2) {
+      jest.advanceTimersByTime(5_000);
+      elapsed += 5_000;
+      await settle();
+    }
+    expect(outcomes).toEqual([false, true]);
+    expect(elapsed).toBeGreaterThan(IDLE_MS);
+    // never as long as the relay's idle limit without a frame, from the confirm to the end of the wait; and the PC was
+    // sent nothing it did not ask for
+    const gaps = [...waits.socket.sentAt, elapsed].map((at, index, all) => index === 0 ? 0 : at - all[index - 1]!);
+    expect(Math.max(...gaps)).toBeLessThan(IDLE_MS);
+    expect([waits.socket.pings > 0, plain.socket.pings]).toEqual([true, 0]);
+  });
 });
 
 it("does not take AUTH_OK from a PC before this phone said the digits match", async () => {

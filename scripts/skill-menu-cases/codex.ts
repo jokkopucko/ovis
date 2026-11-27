@@ -18,7 +18,7 @@ export const expect = async ({ page, width, box, menu, scenario, clear, rowLabel
   await scenario(`A: slash offers commands without skill rows (${width}px)`, `a-slash-${width}.png`, async (capture) => {
     await box.fill("/");
     await menu.locator(".menu-item").first().waitFor();
-    assert.deepEqual((await rowNames()).sort(), commands.filter((command) => command.source !== "skill" && command.visibility !== "agent-hidden").map((command) => command.name).sort());
+    assert.deepEqual((await rowNames()).sort(), commands.filter((command) => command.source !== "skill" && command.visibility !== "agent-hidden" && command.name !== "plan").map((command) => command.name).sort());
     await menuFits("A");
     await rowsBrief("A");
     await menu.evaluate((node) => { node.scrollTop = node.scrollHeight; });

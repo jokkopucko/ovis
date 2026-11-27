@@ -17,6 +17,8 @@ export interface LauncherPlaces {
   stateDir: string;
   /** the command line's own settings dir, so a plugin install's ~/.config/ovis never names the port or the token */
   configDir: string;
+  /** the core session the desktop app started; the terminal screen runs on macOS and Linux */
+  coreSession: string;
   /** OVIS_ACCOUNT_SERVICE_URL the app was started with (a staging app), which `ovis login` and `ovis logout` read themselves */
   accountService: string | null;
 }
@@ -37,7 +39,7 @@ export function launcherText(platform: NodeJS.Platform, places: LauncherPlaces):
       "rem The Ovis desktop app's command line (ovis login, ovis status, ovis approve). The app writes this file each time it starts.",
       "setlocal",
       'set "PORT="',
-      // desktop.json is one line, {"port":<port>,"server":...}: the second field between : , and } is the port, or null
+      // desktop.json is one line, {"port":<port>,"server":...}; the plugin checks the server record before using the port
       `if exist "${cmdQuote(places.desktopJson)}" for /f "usebackq tokens=2 delims=:,}" %%p in ("${cmdQuote(places.desktopJson)}") do if not defined PORT set "PORT=%%p"`,
       "if not defined PORT goto closed",
       'if "%PORT%"=="null" goto closed',
@@ -45,6 +47,7 @@ export function launcherText(platform: NodeJS.Platform, places: LauncherPlaces):
       `set "OVIS_STATE_DIR=${cmdQuote(places.stateDir)}"`,
       'set "HC_SESSION=ovis"',
       'set "OVIS_DESKTOP_COMMAND=1"',
+      `set "OVIS_DESKTOP_COMMAND_RECORD=${cmdQuote(places.desktopJson)}"`,
       `set "HERDR_PLUGIN_CONFIG_DIR=${cmdQuote(places.configDir)}"`,
       'set "HOST=127.0.0.1"',
       'set "HC_SOCKET="',
@@ -64,17 +67,18 @@ export function launcherText(platform: NodeJS.Platform, places: LauncherPlaces):
     "# The Ovis desktop app's command line (ovis login, ovis status, ovis approve). The app writes this file each time it starts.",
     `port=$(sed -n 's/.*"port":\\([0-9][0-9]*\\).*/\\1/p' ${shQuote(places.desktopJson)} 2>/dev/null)`,
     // an AppImage's server is in its mount, which is there only while the app runs
-    `if [ -z "$port" ] || [ ! -x ${shQuote(places.serverBinary)} ]; then echo ${shQuote(NOT_RUNNING)} >&2; exit 1; fi`,
+    `if [ ! -x ${shQuote(places.serverBinary)} ]; then echo ${shQuote(NOT_RUNNING)} >&2; exit 1; fi`,
     // a herdr pane's or another core's settings must not turn the command to them
     "unset HC_SOCKET HERDR_PLUGIN_ROOT HERDR_PLUGIN_STATE_DIR",
     `OVIS_STATE_DIR=${shQuote(places.stateDir)}`,
-    "HC_SESSION=ovis",
+    `HC_SESSION=${shQuote(places.coreSession)}`,
     // `ovis start` and `ovis stop` say the app runs its server (scripts/plugin.ts)
     "OVIS_DESKTOP_COMMAND=1",
+    `OVIS_DESKTOP_COMMAND_RECORD=${shQuote(places.desktopJson)}`,
     `HERDR_PLUGIN_CONFIG_DIR=${shQuote(places.configDir)}`,
     "HOST=127.0.0.1",
     'PORT="$port"',
-    "export OVIS_STATE_DIR HC_SESSION OVIS_DESKTOP_COMMAND HERDR_PLUGIN_CONFIG_DIR HOST PORT",
+    "export OVIS_STATE_DIR HC_SESSION OVIS_DESKTOP_COMMAND OVIS_DESKTOP_COMMAND_RECORD HERDR_PLUGIN_CONFIG_DIR HOST PORT",
     ...(places.accountService === null ? [] : [`OVIS_ACCOUNT_SERVICE_URL=${shQuote(places.accountService)}`, "export OVIS_ACCOUNT_SERVICE_URL"]),
     `exec ${shQuote(places.serverBinary)} plugin "$@"`,
   ];

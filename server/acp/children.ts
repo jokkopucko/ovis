@@ -14,10 +14,11 @@ import { PANE_NAME_LABEL, TAB_NAME_LABEL } from "../herdr-core/snapshot.ts";
 import { coreConnection, hcMachine } from "../herdr-core/runtime.ts";
 import { capabilities } from "../runtime/capabilities.ts";
 import { KeeperClient } from "./client.ts";
+import { hasQuestionForms } from "./question-form.ts";
 import { keeperRunning } from "./keeper-process.ts";
 import { acpKeeperBin } from "./keeper-bin.ts";
 
-type AcpHcMethod = "terminal.run" | "terminal.kill" | "terminal.list" | "terminal.label";
+type AcpHcMethod = "terminal.run" | "terminal.kill" | "terminal.list" | "terminal.label" | "machine.exec";
 /** The hc calls the registry makes (HcConnection, or a test's stand-in). */
 export interface AcpHc {
   call<M extends AcpHcMethod>(method: M, params: HcMethods[M]["params"]): Promise<HcMethods[M]["result"]>;
@@ -35,6 +36,8 @@ export interface AcpStart {
   name?: string;
   /** `_meta` of the keeper's `session/new` (the Claude adapter takes its model and settings this way) */
   sessionMeta?: unknown;
+  /** `configOptions` of the keeper's `session/new`, set before the agent answers it */
+  configOptions?: readonly unknown[];
   /** the terminal's environment over the core's */
   env?: Record<string, string>;
   runId?: string;
@@ -113,10 +116,13 @@ function socketAppears(root: string, ms: number): Promise<boolean> {
   return promise;
 }
 
-/** Waits, bounded, for the agent's session, or for the agent to end first. */
+/**
+ * Waits, bounded, for the agent's session and the end of the client's replay (a child whose client still replays is
+ * "unknown" and takes no prompt), or for the agent to end first: an end the replay already shows wins over its session.
+ */
 type Opening = "open" | "exited" | "late" | "refused";
 function sessionOpens(client: KeeperClient, ms: number): Promise<Opening> {
-  const state = () => client.session !== null ? "open" : client.sessionError ? "refused" : client.agentGone || client.keeperGone ? "exited" : null;
+  const state = () => client.sessionError ? "refused" : client.agentGone || client.keeperGone ? "exited" : client.session !== null && client.connected ? "open" : null;
   const now = state();
   if (now !== null) return Promise.resolve(now);
   const { promise, resolve } = Promise.withResolvers<Opening>();
@@ -136,11 +142,13 @@ function owned(path: string, kind: "directory" | "file"): boolean {
   return stat !== undefined && (process.getuid === undefined || stat.uid === process.getuid()) && (kind === "directory" ? stat.isDirectory() : stat.isFile());
 }
 
-function harnessOf(root: string): string | null {
+function childInfo(root: string): { harness: string; questionHarness?: string } | null {
   try {
     if (!owned(root, "directory") || !owned(join(root, CHILD_FILE), "file")) return null;
-    const harness = (JSON.parse(readFileSync(join(root, CHILD_FILE), "utf8")) as { harness?: unknown }).harness;
-    return typeof harness === "string" && harness !== "" ? harness : null;
+    const info: unknown = JSON.parse(readFileSync(join(root, CHILD_FILE), "utf8"));
+    if (!info || typeof info !== "object" || !("harness" in info)) return null;
+    const harness = info.harness, questionForms = "questionForms" in info && info.questionForms === true;
+    return typeof harness === "string" && harness !== "" ? { harness, ...(questionForms === true ? { questionHarness: harness } : {}) } : null;
   } catch {
     return null;
   }
@@ -155,6 +163,7 @@ export class AcpChildren {
   }
 
   private readonly children = new Map<string, AcpChild>();
+  private readonly opening = new Map<string, string | undefined>();
 
   constructor(private readonly dir: string, private readonly options: AcpChildrenOptions = {}) {}
 
@@ -185,15 +194,24 @@ export class AcpChildren {
     this.folder();
     mkdirSync(root, { mode: 0o700 });
     chmodSync(root, 0o700);
-    writeFileSync(join(root, CHILD_FILE), JSON.stringify({ harness: start.harness }), { mode: 0o600 });
+    const questionForms = !!start.runId && hasQuestionForms(start.harness);
+    writeFileSync(join(root, CHILD_FILE), JSON.stringify({ harness: start.harness, ...(questionForms ? { questionForms } : {}) }), { mode: 0o600 });
     const argv = [
       bin, root, "--cwd", start.cwd, "--name", start.name ?? start.harness,
       ...(start.sessionMeta === undefined ? [] : ["--session-meta", JSON.stringify(start.sessionMeta)]),
       ...(start.mcpServers === undefined ? [] : ["--mcp-servers", JSON.stringify(start.mcpServers)]),
+      ...(start.configOptions === undefined ? [] : ["--config-options", JSON.stringify(start.configOptions)]),
       ...(start.announceSubagents ? ["--announce-subagents"] : []),
       ...(start.askEveryTime ? ["--ask-every-time"] : []),
+      ...(questionForms ? ["--question-forms"] : []),
       "--", ...start.argv,
     ];
+    this.opening.set(id, start.parentPane);
+    try { return await this.open(start, id, root, argv, questionForms); }
+    finally { this.opening.delete(id); }
+  }
+
+  private async open(start: AcpStart, id: string, root: string, argv: string[], questionForms: boolean): Promise<AcpChild> {
     const displayName = start.name?.trim();
     let terminal: string;
     try {
@@ -201,7 +219,7 @@ export class AcpChildren {
         argv, cwd: start.cwd,
         ...(start.parentPane === undefined ? { no_parent: true } : { parent: start.parentPane }),
         labels: { [LABEL]: id, ...(start.runId ? { "ovis.run": start.runId } : {}), ...(displayName ? { [PANE_NAME_LABEL]: displayName, [TAB_NAME_LABEL]: displayName } : {}) },
-        ...(start.askEveryTime ? { env: { ...start.env, OPENCODE_DB: join(root, "opencode.db") } } : start.env === undefined ? {} : { env: start.env }),
+        ...(start.env === undefined ? {} : { env: start.env }),
       }));
     } catch (error) {
       const live = await this.liveTerminals().catch((lookupError: unknown) => {
@@ -221,7 +239,7 @@ export class AcpChildren {
       throw new AcpStartFailed(reason, message, client?.sessionError?.code);
     };
     if (!(await socketAppears(root, this.options.socketMs ?? SOCKET_MS))) return failed("no_socket", "the ACP keeper did not open its socket");
-    const client = new KeeperClient(root);
+    const client = new KeeperClient(root, { questionHarness: questionForms ? start.harness : undefined });
     const opened = await sessionOpens(client, this.options.sessionMs ?? SESSION_MS);
     if (opened === "refused") return failed("refused", "the agent refused to open the ACP session", client);
     if (opened === "late") return failed("no_session", "the agent did not open a session (no answer to initialize or session/new)", client);
@@ -245,6 +263,13 @@ export class AcpChildren {
   }
 
   async terminals() { return (await this.hc().call("terminal.list", {})).terminals; }
+
+  /** Run alongside the keeper, using the same core environment plus the same launch overrides. */
+  async versionOutput(executable: string, { cwd, env }: Pick<AcpStart, "cwd" | "env">): Promise<string | null> {
+    if (this.refusal() !== null) return null;
+    const result = await this.hc().call("machine.exec", { argv: [executable, "--version"], cwd, env, timeout: 5 }).catch(() => null);
+    return result?.code === 0 && !result.timed_out && !result.truncated ? Buffer.from(result.stdout, "base64").toString("utf8") : null;
+  }
 
   private add(child: AcpChild): AcpChild {
     this.children.set(child.id, child);
@@ -275,10 +300,23 @@ export class AcpChildren {
     return undefined;
   }
 
-  /** This server's children whose keeper's terminal hc runs under `parentPane`. */
-  async childrenOf(parentPane: string): Promise<AcpChild[]> {
+  /** This server's children under `parentPane`, including live terminals not yet able to take a hold. */
+  async childrenOf(parentPane: string): Promise<{ ready: AcpChild[]; opening: string[] }> {
+    // A child can open and receive its first task while we wait for the core's list.
+    const openingAtStart = new Map(this.opening);
     const under = (await this.terminals()).filter(terminal => terminal.state === "live" && terminal.parent === parentPane);
-    return [...this.children.values()].filter(child => under.some(terminal => terminal.address === child.terminal && terminal.labels[LABEL] === child.id));
+    const ready: AcpChild[] = [], opening: string[] = [];
+    for (const terminal of under) {
+      const id = terminal.labels[LABEL];
+      if (id === undefined) continue;
+      if (openingAtStart.get(id) === parentPane) {
+        opening.push(terminal.address);
+        continue;
+      }
+      const child = this.children.get(id);
+      if (child?.terminal === terminal.address) ready.push(child);
+    }
+    return { ready, opening };
   }
 
   cancelTurn(id: string): void {
@@ -331,12 +369,12 @@ export class AcpChildren {
     for (const id of readdirSync(this.dir)) {
       const root = join(this.dir, id);
       if (!/^[a-f0-9]{12}$/.test(id)) continue;
-      const harness = harnessOf(root);
-      if (harness === null) continue;
+      const info = childInfo(root);
+      if (info === null) continue;
       const terminal = live.get(id);
       if (terminal === null) continue;
       if (terminal !== undefined) {
-        if (!this.children.has(id)) this.add({ id, harness, root, terminal, client: new KeeperClient(root) });
+        if (!this.children.has(id)) this.add({ id, harness: info.harness, root, terminal, client: new KeeperClient(root, info) });
       } else if (!keeperRunning(root)) {
         rmSync(root, { recursive: true, force: true });
       }

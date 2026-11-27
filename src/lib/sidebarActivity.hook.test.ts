@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, jest, spyOn } from "bun:test";
-import { createElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, createElement, type ReactNode } from "react";
+import { openPage, type Page } from "./page.fixture.ts";
 import type { Machine } from "../../shared/machines.ts";
 import type { AgentStatus, HerdrPane } from "../../shared/protocol.ts";
 import machinesFixture from "../../site/demo/fixtures/machines.json";
@@ -25,43 +25,36 @@ function roster(finishes: Record<string, number>, statuses: Record<string, Agent
 
 describe("sidebar finish acknowledgement through React effects", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let renderers: ReactTestRenderer[];
+  let page: Page;
+  const probes = new Map<number, ReactNode>();
+  let nextProbe: number;
   let visibility: DocumentVisibilityState;
-  let events: EventTarget;
-  let storageEvents: EventTarget;
-  let data: Map<string, string>;
   let storageAdds: number;
   let storageRemoves: number;
 
   beforeEach(() => {
-    for (const key of ["document", "window", "localStorage", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    renderers = []; visibility = "visible"; events = new EventTarget(); storageEvents = new EventTarget(); data = new Map();
+    page = openPage();
+    probes.clear(); nextProbe = 0; visibility = "visible";
     storageAdds = 0; storageRemoves = 0;
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: {
-      get visibilityState() { return visibility; },
-      addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events),
-    } });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      addEventListener: (type: string, listener: EventListenerOrEventListenerObject) => {
-        if (type === "storage") storageAdds++;
-        storageEvents.addEventListener(type, listener);
-      },
-      removeEventListener: (type: string, listener: EventListenerOrEventListenerObject) => {
-        if (type === "storage") storageRemoves++;
-        storageEvents.removeEventListener(type, listener);
-      },
-    } });
-    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
-      get length() { return data.size; }, key: (index: number) => [...data.keys()][index] ?? null,
-      getItem: (key: string) => data.get(key) ?? null,
-      setItem: (key: string, value: string) => { data.set(key, value); },
-      removeItem: (key: string) => { data.delete(key); },
-    } });
+    Object.defineProperty(page.window.document, "visibilityState", { configurable: true, get: () => visibility });
+    const { window } = page;
+    const add = window.addEventListener.bind(window), remove = window.removeEventListener.bind(window);
+    Object.defineProperties(window, {
+      addEventListener: { configurable: true, value: (...args: Parameters<typeof add>) => {
+        if (args[0] === "storage") storageAdds++;
+        add(...args);
+      } },
+      removeEventListener: { configurable: true, value: (...args: Parameters<typeof remove>) => {
+        if (args[0] === "storage") storageRemoves++;
+        remove(...args);
+      } },
+    });
+    descriptors.set("localStorage", Object.getOwnPropertyDescriptor(globalThis, "localStorage"));
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: window.localStorage });
   });
   afterEach(async () => {
-    await act(async () => { for (const renderer of renderers) renderer.unmount(); });
     jest.useRealTimers();
+    await page.close();
     for (const [key, descriptor] of descriptors) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
       else Reflect.deleteProperty(globalThis, key);
@@ -71,9 +64,9 @@ describe("sidebar finish acknowledgement through React effects", () => {
 
   async function storage(key: string | null, newValue: string | null, storageArea?: Storage): Promise<void> {
     await act(async () => {
-      const event = new Event("storage");
+      const event = new page.window.Event("storage");
       Object.defineProperties(event, { key: { value: key }, newValue: { value: newValue }, storageArea: { value: storageArea } });
-      storageEvents.dispatchEvent(event);
+      page.window.dispatchEvent(event);
     });
   }
 
@@ -86,10 +79,9 @@ describe("sidebar finish acknowledgement through React effects", () => {
       activity = useSidebarActivityState(machines, "local", selected, covered ? coveredView : loading.current ? loadingView : frontView, share);
       return null;
     }
-    let renderer: ReactTestRenderer | undefined;
-    await act(async () => { renderer = create(createElement(Probe, { machines, selected, covered })); });
-    if (!renderer) throw new Error("probe did not mount");
-    const mounted = renderer; renderers.push(mounted);
+    const key = nextProbe++;
+    probes.set(key, createElement(Probe, { key, machines, selected, covered }));
+    await page.render([...probes.values()]);
     return {
       status(id: string, override?: Partial<HerdrPane>): AgentStatus | undefined {
         const pane = current[0]?.snapshot?.panes.find((pane) => pane.pane_id === id);
@@ -103,13 +95,11 @@ describe("sidebar finish acknowledgement through React effects", () => {
       },
       async update(next: Machine[], selected: string | null = null, covered = false): Promise<void> {
         current = next;
-        await act(async () => { mounted.update(createElement(Probe, { machines: next, selected, covered })); });
+        probes.set(key, createElement(Probe, { key, machines: next, selected, covered }));
+        await page.render([...probes.values()]);
       },
       async unmount(): Promise<void> {
-        const index = renderers.indexOf(mounted);
-        if (index < 0) return;
-        await act(async () => { mounted.unmount(); });
-        renderers.splice(index, 1);
+        if (probes.delete(key)) await page.render([...probes.values()]);
       },
       get renders() { return renders; },
     };
@@ -137,15 +127,22 @@ describe("sidebar finish acknowledgement through React effects", () => {
     const remoteA: Machine = { ...structuredClone(local), id: "remote-a" };
     const remoteB: Machine = { ...structuredClone(local), id: "remote-b" };
     for (const machine of [local, remoteA, remoteB]) {
-      data.set(seenKey(machine.id, "server-a", "a"), JSON.stringify({ id: 1, at: 1 }));
-      data.set(seenKey(machine.id, "server-a", "b"), JSON.stringify({ id: 1, at: 2 }));
+      page.window.localStorage.setItem(seenKey(machine.id, "server-a", "a"), JSON.stringify({ id: 1, at: 1 }));
+      page.window.localStorage.setItem(seenKey(machine.id, "server-a", "b"), JSON.stringify({ id: 1, at: 2 }));
     }
     const client = await open([local, remoteA, remoteB], "a");
     let keyCalls = 0, readCalls = 0;
     const storage = localStorage;
     const key = storage.key.bind(storage), getItem = storage.getItem.bind(storage);
-    storage.key = (index) => { keyCalls++; return key(index); };
-    storage.getItem = (name) => { readCalls++; return getItem(name); };
+    // happy-dom's Storage ignores an assignment to a method it has: install the counters as own properties
+    Object.defineProperties(storage, {
+      key: { configurable: true, value: (index: number) => { keyCalls++; return key(index); } },
+      getItem: { configurable: true, value: (name: string) => { readCalls++; return getItem(name); } },
+    });
+    storage.key(0);
+    storage.getItem("probe");
+    expect([keyCalls, readCalls]).toEqual([1, 1]);
+    keyCalls = readCalls = 0;
 
     const changed = roster({ a: 1, b: 1 }, { a: "working" })[0]!;
     await client.update([changed, remoteA, remoteB], "b");
@@ -157,7 +154,7 @@ describe("sidebar finish acknowledgement through React effects", () => {
   });
 
   it("keeps the seen map identity when a repeated acknowledgement changes no value", async () => {
-    data.set(seenKey("local", "server-a", "a"), JSON.stringify({ id: 1, at: 1 }));
+    page.window.localStorage.setItem(seenKey("local", "server-a", "a"), JSON.stringify({ id: 1, at: 1 }));
     const client = await open(roster({ a: 1 }), "a");
     const before = client.renders;
     await client.update(roster({ a: 1 }), "a");
@@ -181,25 +178,25 @@ describe("sidebar finish acknowledgement through React effects", () => {
 
   it("keeps the global record cap without restoring evicted history on roster updates", async () => {
     for (let index = 0; index < 1900; index++) {
-      data.set(seenKey("local", "server-a", `p${index}`), JSON.stringify({ id: 1, at: index }));
+      page.window.localStorage.setItem(seenKey("local", "server-a", `p${index}`), JSON.stringify({ id: 1, at: index }));
     }
     const client = await open(roster({ p0: 1 }));
     await act(async () => {
       for (let index = 1900; index < 2200; index++) saveSeen("remote", "server-b", `p${index}`, 1);
     });
 
-    expect(data.size).toBe(SEEN_LIMIT);
-    expect(data.has(seenKey("local", "server-a", "p0"))).toBe(false);
+    expect(page.window.localStorage.length).toBe(SEEN_LIMIT);
+    expect(page.window.localStorage.getItem(seenKey("local", "server-a", "p0")) !== null).toBe(false);
     expect(loadSeen("local", "server-a").p0).toBeUndefined();
     await client.update(roster({ p0: 1 }, { p0: "working" }));
-    expect(data.size).toBe(SEEN_LIMIT);
-    expect(data.has(seenKey("local", "server-a", "p0"))).toBe(false);
+    expect(page.window.localStorage.length).toBe(SEEN_LIMIT);
+    expect(page.window.localStorage.getItem(seenKey("local", "server-a", "p0")) !== null).toBe(false);
     expect(loadSeen("local", "server-a").p0).toBeUndefined();
   });
 
   it("publishes records after a later PC acknowledgement evicts an earlier PC", async () => {
     for (let index = 0; index < SEEN_LIMIT; index++) {
-      data.set(seenKey("remote", "server-a", `p${index}`), JSON.stringify({ id: 1, at: index }));
+      page.window.localStorage.setItem(seenKey("remote", "server-a", `p${index}`), JSON.stringify({ id: 1, at: index }));
     }
     const remote = { ...roster({ p0: 1 })[0]!, id: "remote" };
     const local = roster({ newest: 1 })[0]!;
@@ -208,7 +205,7 @@ describe("sidebar finish acknowledgement through React effects", () => {
 
     await client.update([remote, local], "newest");
     expect(client.statusAt("remote", "p0")).toBe("done");
-    expect(data.has(seenKey("remote", "server-a", "p0"))).toBe(false);
+    expect(page.window.localStorage.getItem(seenKey("remote", "server-a", "p0")) !== null).toBe(false);
   });
 
   it("updates the mounted epoch when one same-page batch contains mixed epochs for a PC", async () => {
@@ -225,12 +222,12 @@ describe("sidebar finish acknowledgement through React effects", () => {
   it("forgets deleted and cleared marks until their content is presented again", async () => {
     const client = await open(roster({ a: 1 }), "a");
     const key = seenKey("local", "server-a", "a");
-    data.delete(key);
+    page.window.localStorage.removeItem(key);
     await storage(key, null);
     expect(client.status("a")).toBe("done");
     expect(loadSeen("local", "server-a")).toEqual({});
 
-    data.clear();
+    page.window.localStorage.clear();
     await storage(null, null);
     expect(client.status("a")).toBe("done");
     expect(loadSeen("local", "server-a")).toEqual({});
@@ -255,12 +252,12 @@ describe("sidebar finish acknowledgement through React effects", () => {
       Object.defineProperty(globalThis, "localStorage", { configurable: true, value: available });
     }
     expect(loadSeen("local", "server-a")).toEqual({ a: 2 });
-    expect(JSON.parse(data.get(seenKey("local", "server-a", "a"))!)).toMatchObject({ id: 2 });
+    expect(JSON.parse(page.window.localStorage.getItem(seenKey("local", "server-a", "a"))!)).toMatchObject({ id: 2 });
   });
 
   it("keeps a newer persisted finish when an older clear event arrives", async () => {
     const client = await open(roster({ a: 1, b: 2 }), "a");
-    data.clear();
+    page.window.localStorage.clear();
     await act(async () => { saveSeen("local", "server-a", "b", 2); });
     await storage(null, null, localStorage);
     expect(client.status("a")).toBe("done");
@@ -278,16 +275,18 @@ describe("sidebar finish acknowledgement through React effects", () => {
   it("persists a session-only finish when the same storage methods recover", async () => {
     const storage = localStorage;
     const getItem = storage.getItem, setItem = storage.setItem;
-    storage.getItem = () => { throw new Error("blocked"); };
-    storage.setItem = () => { throw new Error("blocked"); };
+    const blocked = () => { throw new Error("blocked"); };
+    const useMethods = (getItem: Storage["getItem"], setItem: Storage["setItem"]) => Object.defineProperties(storage, {
+      getItem: { configurable: true, value: getItem }, setItem: { configurable: true, value: setItem },
+    });
+    useMethods(blocked, blocked);
     const client = await open(roster({ a: 1 }), "a");
     expect(client.status("a")).toBe("idle");
-    expect(data.has(seenKey("local", "server-a", "a"))).toBe(false);
+    expect(getItem(seenKey("local", "server-a", "a")) !== null).toBe(false);
 
-    storage.getItem = getItem;
-    storage.setItem = setItem;
+    useMethods(getItem, setItem);
     await client.update(roster({ a: 1 }), "a");
-    expect(data.get(seenKey("local", "server-a", "a"))).toMatch(/"id":1/);
+    expect(page.window.localStorage.getItem(seenKey("local", "server-a", "a"))).toMatch(/"id":1/);
   });
 
   it("tells the other browsers of a presented finish once, and again after a failed attempt", async () => {
@@ -818,7 +817,7 @@ describe("sidebar finish acknowledgement through React effects", () => {
     expect([client.status("a"), client.status("b")]).toEqual(["idle", "done"]);
     await act(async () => { receiveSeen([{ pc: "local", epoch: "server-a", pane: "a", id: 1 }, { pc: "local", epoch: "server-b", pane: "b", id: 1 }]); });
     expect([client.status("a"), client.status("b")]).toEqual(["idle", "done"]);
-    expect(JSON.parse(data.get(seenKey("local", "server-a", "a"))!)).toMatchObject({ id: 2, answer: "proof" });
+    expect(JSON.parse(page.window.localStorage.getItem(seenKey("local", "server-a", "a"))!)).toMatchObject({ id: 2, answer: "proof" });
   });
 
   it("does not scan unrelated storage on repeated or new acknowledgement", async () => {
@@ -826,8 +825,11 @@ describe("sidebar finish acknowledgement through React effects", () => {
     let unrelatedReads = 0;
     const read = localStorage.getItem;
     const key = seenKey("remote", "server-b", "other");
-    data.set(key, JSON.stringify({ id: 4, at: 1 }));
-    localStorage.getItem = (name) => { if (name === key) unrelatedReads++; return read(name); };
+    page.window.localStorage.setItem(key, JSON.stringify({ id: 4, at: 1 }));
+    Object.defineProperty(localStorage, "getItem", { configurable: true, value: (name: string) => { if (name === key) unrelatedReads++; return Reflect.apply(read, localStorage, [name]); } });
+    localStorage.getItem(key);
+    expect(unrelatedReads).toBe(1);
+    unrelatedReads = 0;
     await client.update(roster({ a: 1 }), "a");
     expect(unrelatedReads).toBe(0);
     await client.update(roster({ a: 2 }), "a");
@@ -934,8 +936,8 @@ describe("sidebar finish acknowledgement through React effects", () => {
   it("updates another mounted tab on storage events and repairs a lower same-pane race", async () => {
     const client = await open(roster({ a: 4 }));
     const key = seenKey("local", "server-a", "a");
-    data.set(key, JSON.stringify({ id: 4, at: 1 }));
-    data.set(key, JSON.stringify({ id: 2, at: 2 }));
+    page.window.localStorage.setItem(key, JSON.stringify({ id: 4, at: 1 }));
+    page.window.localStorage.setItem(key, JSON.stringify({ id: 2, at: 2 }));
     await storage(key, JSON.stringify({ id: 4, at: 1 }));
     expect(loadSeen("local", "server-a")).toEqual({ a: 4 });
     expect(client.status("a")).toBe("idle");
@@ -945,7 +947,7 @@ describe("sidebar finish acknowledgement through React effects", () => {
     visibility = "hidden";
     const client = await open(roster({ a: 1 }), "a");
     expect(client.status("a")).toBe("done");
-    await act(async () => { visibility = "visible"; events.dispatchEvent(new Event("visibilitychange")); });
+    await act(async () => { visibility = "visible"; page.window.document.dispatchEvent(new page.window.Event("visibilitychange")); });
     expect(client.status("a")).toBe("idle");
     const absent = await open(roster({ b: 1 }), "not-rendered");
     expect(absent.status("b")).toBe("done");
@@ -957,9 +959,9 @@ describe("sidebar finish acknowledgement through React effects", () => {
     const client = await open(roster({ a: 1 }), "a");
     await client.update(roster({ a: 1 }));
     const key = seenKey("local", "server-a", "a");
-    data.delete(key);
+    page.window.localStorage.removeItem(key);
     await storage(key, JSON.stringify({ id: 1, at: 1 }));
-    expect(data.has(key)).toBe(false);
+    expect(page.window.localStorage.getItem(key) !== null).toBe(false);
     expect(client.status("a")).toBe("done");
     expect(loadSeen("local", "server-a")).toEqual({});
   });
@@ -976,13 +978,13 @@ describe("sidebar finish acknowledgement through React effects", () => {
   });
 
   it("removes old-format records and caps keys oldest first, never by a roster", () => {
-    data.set("ovis:seen:local", '{"a":5}');
-    data.set("ovis:settings", "{}");
-    for (let i = 0; i <= SEEN_LIMIT; i++) data.set(seenKey("local", "server-a", `p${i}`), JSON.stringify({ id: 1, at: i }));
+    page.window.localStorage.setItem("ovis:seen:local", '{"a":5}');
+    page.window.localStorage.setItem("ovis:settings", "{}");
+    for (let i = 0; i <= SEEN_LIMIT; i++) page.window.localStorage.setItem(seenKey("local", "server-a", `p${i}`), JSON.stringify({ id: 1, at: i }));
     loadSeen("local", "server-a");
-    expect(data.has("ovis:seen:local")).toBe(false);
-    expect(data.has(seenKey("local", "server-a", "p0"))).toBe(false);
-    expect(data.has(seenKey("local", "server-a", `p${SEEN_LIMIT}`))).toBe(true);
-    expect(data.get("ovis:settings")).toBe("{}");
+    expect(page.window.localStorage.getItem("ovis:seen:local") !== null).toBe(false);
+    expect(page.window.localStorage.getItem(seenKey("local", "server-a", "p0")) !== null).toBe(false);
+    expect(page.window.localStorage.getItem(seenKey("local", "server-a", `p${SEEN_LIMIT}`)) !== null).toBe(true);
+    expect(page.window.localStorage.getItem("ovis:settings")).toBe("{}");
   });
 });

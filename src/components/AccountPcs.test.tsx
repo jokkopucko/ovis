@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { createElement } from "react";
+import { act, createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, reactProps, type Page } from "../lib/page.fixture.ts";
 
 import type { MyPc } from "../lib/account/myPcs.ts";
 import type { PcStatus } from "../lib/relay/pcStatus.ts";
@@ -20,40 +20,9 @@ const render = (node: ReturnType<typeof createElement>): string => {
 };
 
 describe("AccountSignIn", () => {
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  beforeEach(() => {
-    for (const key of ["window", "document", "navigator", "localStorage", "getComputedStyle", "matchMedia", "IS_REACT_ACT_ENVIRONMENT"]) {
-      descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    }
-    const events = new EventTarget();
-    const store = new Map<string, string>();
-    const storage = { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value); }, removeItem: (key: string) => { store.delete(key); }, key: () => null, length: 0, clear: () => store.clear() };
-    const matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
-    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Mozilla/5.0", maxTouchPoints: 0 } });
-    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage });
-    Object.defineProperty(globalThis, "matchMedia", { configurable: true, value: matchMedia });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      localStorage: storage, matchMedia,
-      addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), dispatchEvent: events.dispatchEvent.bind(events),
-      requestAnimationFrame: () => 1, cancelAnimationFrame() {},
-      setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout,
-    } });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: {
-      documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
-      querySelector: () => null,
-      querySelectorAll: () => [],
-      addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events),
-    } });
-  });
-  afterEach(() => {
-    for (const [key, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    descriptors.clear();
-  });
+  let page: Page;
+  beforeEach(() => { page = openPage(); });
+  afterEach(async () => { await page.close(); });
 
   it("renders only the configured providers in order and marks the busy provider without unmounting the stack", () => {
     const idle = render(
@@ -87,31 +56,28 @@ describe("AccountSignIn", () => {
 
   it("ignores a second provider click while busy", async () => {
     const tapped: string[] = [];
-    let renderer: ReactTestRenderer | undefined;
-    try {
-      await act(async () => {
-        renderer = create(
-          createElement(SettingsProvider, {
-            children: createElement(AccountSignIn, {
-              onSignIn: (p) => tapped.push(p),
-              error: null,
-              providers: ["github", "google"],
-              busy: true,
-              busyProvider: "github",
-            }),
-          }),
-        );
-      });
-      const buttons = renderer!.root.findAll((n) => n.type === "button");
-      expect(buttons).toHaveLength(2);
-      for (const btn of buttons) {
-        expect(btn.props.disabled).toBe(true);
-        await act(async () => { btn.props.onClick(); });
-      }
-      expect(tapped).toEqual([]);
-    } finally {
-      await act(async () => { renderer?.unmount(); });
+    await page.render(
+      createElement(SettingsProvider, {
+        children: createElement(AccountSignIn, {
+          onSignIn: (p) => tapped.push(p),
+          error: null,
+          providers: ["github", "google"],
+          busy: true,
+          busyProvider: "github",
+        }),
+      }),
+    );
+    const buttons = page.container.querySelectorAll("button");
+    expect(buttons).toHaveLength(2);
+    for (const btn of buttons) {
+      expect(btn.disabled).toBe(true);
+      await act(async () => { btn.click(); });
+      const { onClick } = reactProps(btn);
+      if (typeof onClick !== "function") throw new Error("Missing provider click handler");
+      await act(async () => { onClick(); });
     }
+    expect(tapped).toEqual([]);
+    await page.render(null);
   });
 
   it("renders an explicit Try again action and saved-pairings reassurance when sign-in fails", async () => {
@@ -127,48 +93,37 @@ describe("AccountSignIn", () => {
     expect(html).toContain(">Try again</button>");
 
     const retried: string[] = [];
-    let renderer: ReactTestRenderer | undefined;
-    try {
-      await act(async () => {
-        renderer = create(
-          createElement(SettingsProvider, {
-            children: createElement(AccountSignIn, {
-              onSignIn: (p) => retried.push(p),
-              error: "The sign-in did not finish.",
-              providers: ["github", "google"],
-            }),
-          }),
-        );
-      });
-      const googleBtn = renderer!.root.find((n) => n.type === "button" && n.props["data-provider"] === "google");
-      await act(async () => { googleBtn.props.onClick(); });
-      const retryBtn = renderer!.root.find((n) => n.type === "button" && n.props["data-action"] === "retry-signin");
-      await act(async () => { retryBtn.props.onClick(); });
-      expect(retried).toEqual(["google", "google"]);
-    } finally {
-      await act(async () => { renderer?.unmount(); });
-    }
+    await page.render(
+      createElement(SettingsProvider, {
+        children: createElement(AccountSignIn, {
+          onSignIn: (p) => retried.push(p),
+          error: "The sign-in did not finish.",
+          providers: ["github", "google"],
+        }),
+      }),
+    );
+    const googleBtn = page.one('button[data-provider="google"]');
+    await act(async () => { googleBtn.click(); });
+    const retryBtn = page.one('button[data-action="retry-signin"]');
+    await act(async () => { retryBtn.click(); });
+    expect(retried).toEqual(["google", "google"]);
+    await page.render(null);
 
     const redirectRetried: string[] = [];
-    try {
-      await act(async () => {
-        renderer = create(
-          createElement(SettingsProvider, {
-            children: createElement(AccountSignIn, {
-              onSignIn: (p) => redirectRetried.push(p),
-              error: "The sign-in did not finish. Try again.",
-              providers: ["github", "google"],
-              failedProvider: "google",
-            }),
-          }),
-        );
-      });
-      const retryBtn = renderer!.root.find((n) => n.type === "button" && n.props["data-action"] === "retry-signin");
-      await act(async () => { retryBtn.props.onClick(); });
-      expect(redirectRetried).toEqual(["google"]);
-    } finally {
-      await act(async () => { renderer?.unmount(); });
-    }
+    await page.render(
+      createElement(SettingsProvider, {
+        children: createElement(AccountSignIn, {
+          onSignIn: (p) => redirectRetried.push(p),
+          error: "The sign-in did not finish. Try again.",
+          providers: ["github", "google"],
+          failedProvider: "google",
+        }),
+      }),
+    );
+    const redirectRetryBtn = page.one('button[data-action="retry-signin"]');
+    await act(async () => { redirectRetryBtn.click(); });
+    expect(redirectRetried).toEqual(["google"]);
+    await page.render(null);
   });
 
 });

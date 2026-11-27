@@ -336,6 +336,7 @@ enum PCStore {
     }
 
     static func forget(_ key: String) {
+        OvisPushPlugin.forgetEndpoint(key)
         saved = saved.filter { $0 != key }
         names[key] = nil
         ids[key] = nil
@@ -723,7 +724,17 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     /// Whether a PC's own page is what this view controller shows (Home.pcShown): the PC whose push subscription the
     /// page may read, and where an SSH tunnel's failure may put its error page. While the person chooses another way
     /// that PC is still current, but what is on screen is the hosted screen or the app's own page.
-    var showsPc: Bool { Home.pcShown(screen: screen, phase: phase) }
+    var showsPc: Bool { !replaced && Home.pcShown(screen: screen, phase: phase) }
+
+    /// The app is replacing this view controller (leave): it is on its way out, though it may stay a moment longer.
+    private var replaced = false
+
+    /// The address of a PC's page this view controller shows when it is up: its cover lifted, and the app not on its
+    /// way to another screen. Nil for any other (the error page, the hosted screen, the app's own page).
+    private var pcPageUp: URL? {
+        guard showsPc, openingView == nil, let url = webView?.url, !Home.bundledPage(url) else { return nil }
+        return url
+    }
 
     /// For the page's own back control (HerdrShell getState `back`): "current", "home" or "".
     var backWay: String {
@@ -771,11 +782,15 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     }
 
     /// The app is going to another screen (reopen): what the hosted screen's page still does counts for nothing, and
-    /// its clock stops.
+    /// its clock stops. Whatever the page, it is handed no alert from here on.
     private func leave() {
+        replaced = true
+        failureProxy?.left = true
+        ticker?.invalidate()
+        ownPageWatch?.invalidate()
+        urlWatch?.invalidate()
         guard let phase else { return }
         self.phase = Home.after(phase, .left)
-        if self.phase == .left { ticker?.invalidate() }
     }
 
     /// What the navigation delegate reports about a main-frame load, while the hosted screen is up: true when it was
@@ -1280,7 +1295,7 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     /// this phone has no internet (Home.failureKind), which error.html says instead of blaming the PC.
     private func showFailure(in webView: WKWebView, reason: String?, kind: String? = nil) {
         // the hosted screen's failures went to Home first (homeSignal): never the error page of a PC over it
-        guard phase == nil || phase == .pc, let local = bridge?.config.localURL else { return }
+        guard !replaced, phase == nil || phase == .pc, let local = bridge?.config.localURL else { return }
         // the timeout stays armed: if WebKit does not get the error page up either, the cover says it
         if let reason { PCStore.fail(reason, kind: kind) }
         webView.load(URLRequest(url: local.appendingPathComponent("error.html")))
@@ -1301,12 +1316,85 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         return (scene?.delegate as? SceneDelegate)?.window
     }
 
+    /// Run in a PC's page the app is about to replace: the client keeps the pane state it holds in memory alone in
+    /// storage for the next page of its address (src/lib/paneLifetime.ts carry), never sending it.
+    private static let leavingScript = "window.dispatchEvent(new Event('ovis-page-leaving'))"
+    private static let leavingWait: TimeInterval = 1
+
+    /// The alert whose PC opens once the page on screen has kept what it holds in memory alone (carryThenOpen): a later
+    /// tap meanwhile takes its place.
+    private static var carrying: Alert.Link?
+
+    /// Only the most recent tap may fall back to loading an address if its JavaScript did not run.
+    private static var alertAttempt: UUID?
+
+    /// A tapped alert (OvisPushPlugin.tapped, `stored` the key its endpoint was kept under): its pane on the saved PC
+    /// that sent it (Alert.link). The page of that PC on screen and up is handed the pane, nothing loaded; otherwise that
+    /// PC opens at the alert's address, as a PC picked does, after a PC's page on screen kept what it holds in memory
+    /// alone. Nothing happens for an alert that names no pane or no saved PC, nor while a sheet is over the page (an
+    /// SSH setup, the scanner), which stays as the person left it. Before the app's first screen is made (a tap that
+    /// launched the app) that PC is only made the one it opens.
+    static func openAlert(_ alert: Alert.Payload, stored: String?) {
+        guard let link = Alert.link(saved: PCStore.saved, stored: stored, alert: alert, shell: PCStore.shellOrigin,
+                                    knownServerId: stored.flatMap { PCStore.ids[$0] }) else { return }
+        guard let root = window?.rootViewController else {
+            PCStore.open(link.pc, start: link.address)
+            return
+        }
+        if root.presentedViewController != nil { return }
+        let attempt = UUID()
+        alertAttempt = attempt
+        if carrying != nil {
+            carrying = link
+            return
+        }
+        let shown = root as? HerdrBridgeViewController
+        let page = shown?.pcPageUp
+        if let shown, let webView = shown.webView, let page,
+           Alert.handsToPage(link, shown: page.absoluteString, belongs: PCStore.belongs(page, to: link.pc)) {
+            webView.evaluateJavaScript(Alert.selectionScript(link.selection)) { [weak shown] ran, _ in
+                // a page that could not run it (its web content process gone): the alert's address
+                guard (ran as? Bool) != true, alertAttempt == attempt, let shown, !shown.replaced,
+                      shown.presentedViewController == nil, PCStore.saved.contains(link.pc) else { return }
+                PCStore.open(link.pc, start: link.address)
+                reopen()
+            }
+            return
+        }
+        guard let shown, let webView = shown.webView, page != nil else {
+            PCStore.open(link.pc, start: link.address)
+            reopen()
+            return
+        }
+        shown.carryThenOpen(link, from: webView)
+    }
+
+    /// Opens `link`'s PC once the page in `webView` kept what it holds in memory alone, or a second on, whichever comes
+    /// first: a page that does not answer keeps the alert waiting no longer.
+    private func carryThenOpen(_ link: Alert.Link, from webView: WKWebView) {
+        Self.carrying = link
+        var done = false
+        let open = { [weak self] in
+            guard !done else { return }
+            done = true
+            guard let self, !self.replaced, let link = Self.carrying else { return }
+            Self.carrying = nil
+            guard self.presentedViewController == nil, PCStore.saved.contains(link.pc) else { return }
+            PCStore.open(link.pc, start: link.address)
+            Self.reopen()
+        }
+        webView.evaluateJavaScript(Self.leavingScript) { _, _ in open() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.leavingWait, execute: open)
+    }
+
     /// Replaces the app's view controller, so the next page (a PC, or the connect screen) is a
     /// first load. The old one goes with its web view and the page in it (the barcode scanner
     /// plugin, which kept it alive, is patched in app/patches). An SSH PC first listens on its
     /// address on this phone with its gate in the cookie store (OvisSsh.prepare); one whose address
     /// another app holds is not opened, and the connect screen says why.
     static func reopen() {
+        carrying = nil
+        alertAttempt = nil
         guard let window else { return }
         // the screen that says the shell moved (ShellMovedViewController) stays until its button is pressed
         if PCStore.moveNotice, window.rootViewController is ShellMovedViewController { return }
@@ -1319,6 +1407,9 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     /// The rule list in force for the next web view (OvisSsh.loopbackRules), made before it is built.
     private static var loopbackRules: WKContentRuleList?
 
+    /// An SSH preparation may finish after another PC has been chosen.
+    private static var openingID = UUID()
+
     /// The app's first view controller: the PC or the connect screen at once, or, for an SSH PC, a blank one of the
     /// app's colour until its tunnel listens (reopen).
     static func first() -> UIViewController {
@@ -1328,8 +1419,9 @@ class HerdrBridgeViewController: CAPBridgeViewController {
         let pc = OvisSsh.pc(PCStore.shown)
         let waiting = UIViewController()
         waiting.view.backgroundColor = pageColor
+        let previous = openingID
         DispatchQueue.main.async {
-            guard let window = waiting.view.window else { return }
+            guard let window = waiting.view.window, window.rootViewController === waiting, openingID == previous else { return }
             open(pc, in: window)
         }
         return waiting
@@ -1338,14 +1430,31 @@ class HerdrBridgeViewController: CAPBridgeViewController {
     /// Builds the next web view once the loopback rule for the saved SSH PCs is made and, for an SSH PC, once its
     /// tunnel listens with its gate in the cookie store.
     private static func open(_ pc: SshPcs.Pc?, in window: UIWindow) {
+        let attempt = UUID()
+        openingID = attempt
         guard OvisSsh.supported, !OvisSsh.store.list().isEmpty else {
             loopbackRules = nil
             window.rootViewController = HerdrBridgeViewController()
             return
         }
         Task { @MainActor in
-            loopbackRules = await OvisSsh.loopbackRules()
-            if let pc, !(await OvisSsh.prepare(pc)) { PCStore.current = nil }
+            let rules = await OvisSsh.loopbackRules()
+            guard openingID == attempt else { return }
+            if let pc {
+                do {
+                    try await OvisSsh.prepare(pc)
+                } catch {
+                    guard openingID == attempt else { return }
+                    if let failure = error as? SshFailure {
+                        PCStore.fail("\(failure.kind): \(failure.message)", kind: "ssh-\(failure.kind)", command: failure.command)
+                    } else {
+                        PCStore.fail("127.0.0.1:\(pc.localPort): \(error)", kind: "ssh-port")
+                    }
+                    PCStore.current = nil
+                }
+            }
+            guard openingID == attempt else { return }
+            loopbackRules = rules
             window.rootViewController = HerdrBridgeViewController()
         }
     }
@@ -1388,6 +1497,7 @@ final class NavigationFailureProxy: NSObject, WKNavigationDelegate {
     var onCommitted: ((WKWebView) -> Void)?
     /// The key of what the view controller opened: a PC's, or the hosted app's origin for the hosted Connect a PC screen.
     var opened: String?
+    var left = false
     /// What a main-frame load came to, offered first to the hosted screen (Home.Signal): true when it took it, and
     /// the PC's own handling below is skipped.
     var onSignal: ((Home.Signal) -> Bool)?
@@ -1507,7 +1617,7 @@ final class NavigationFailureProxy: NSObject, WKNavigationDelegate {
             let probe: (ovis: String?, path: [String]) = tooMany ? (nil, []) : await PCStore.ovisOrigin(leadingTo: target)
             let ovis = probe.ovis
             // a web view no longer on screen (the user changed PC meanwhile) decides nothing
-            guard let self, let webView, webView.window != nil else { return }
+            guard let self, !self.left, let webView, webView.window != nil else { return }
             if let ovis, let insecure = PCStore.insecureHop(from: from, path: probe.path) {
                 self.onFailure(webView, "It redirected over plain http to \(insecure), which the app does not follow on its own. If \(ovis) is your PC, open it itself.", nil)
             } else if let ovis {
@@ -1539,6 +1649,7 @@ final class NavigationFailureProxy: NSObject, WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         inner?.webView?(webView, didFinish: navigation)
+        guard !left else { return }
         onLoaded?()
         // the PC's page is up: a pairing link has done its work, and the PC is one worth keeping
         if let url = webView.url, let current = PCStore.current, PCStore.belongs(url, to: current) {

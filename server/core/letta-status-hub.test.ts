@@ -200,6 +200,69 @@ describe("a Letta pane's status in the hub, where no report gives one", () => {
     expect(failed).toEqual(["w1:p1"]);
   });
 
+  it.each(["live report", "unbound replacement", "unbound peer", "different transcript", "overlapping reads"] as const)("routes an aborted Letta approval correctly after %s", async (replacement) => {
+    core();
+    const store = join(root, "letta-store-abandoned");
+    const agent = "agent-local-g";
+    const messages = lettaMessagesPath(store, agent, "default");
+    if (!messages) throw new Error("missing fixture path");
+    mkdirSync(join(messages, ".."), { recursive: true });
+    writeFileSync(messages, `${turn.slice(0, 2).join("\n")}\n`);
+    const h = hub();
+    const failed: string[] = [];
+    spyOn(h.status.push, "onFailed").mockImplementation(async (paneId: string) => { failed.push(paneId); });
+    const bound = { path: join(root, "t7.jsonl"), session: `default:${agent}`, agent, conversation: "default", store, startedAt: 0 };
+    const resolve = resolving().mockResolvedValue(bound);
+    h.herdrSays(letta("[ ! ] Action Required | Tutor"));
+    await h.snapshot();
+    expect(h.last().status).toBe("blocked");
+    expect(h.status.letta.tracks("w1:p1")).toBe(true);
+    const aborted = JSON.parse(turn.at(-1) ?? "");
+    aborted.message.stopReason = "aborted";
+    aborted.timestamp = new Date().toISOString();
+    appendFileSync(messages, `${JSON.stringify(aborted)}\n`);
+    await h.status.letta.poll();
+
+    const sameTitle = replacement === "unbound peer" || replacement === "different transcript";
+    const peer = { ...letta("Peer"), pane_id: "w1:p2" };
+    if (replacement === "live report") handlers.onStatus("w1:p1", "idle", "letta");
+    if (replacement === "different transcript") resolve.mockImplementation(async (pane) => pane.pane_id === "w1:p1"
+      ? { ...bound, store: join(root, "other-store") } : null);
+    else resolve.mockResolvedValue(null);
+    if (replacement === "overlapping reads") {
+      const begun = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      resolve.mockImplementationOnce(async () => { begun.resolve(); await release.promise; return bound; });
+      h.herdrSays({ ...letta("[ ! ] Action Required | Tutor"), cwd: join(root, "tutor") });
+      const held = h.snapshot();
+      await begun.promise;
+      const bothEntered = Promise.withResolvers<void>();
+      const refresh = h.status.letta.refresh.bind(h.status.letta);
+      let entered = 0;
+      spyOn(h.status.letta, "refresh").mockImplementation((panes) => {
+        const result = refresh(panes);
+        if (++entered === 2) bothEntered.resolve();
+        return result;
+      });
+      h.herdrSays(letta("[ ! ] Action Required | Remote"));
+      const remoteWait = h.snapshot();
+      h.herdrSays(letta("Remote"));
+      const remoteRest = h.snapshot();
+      await bothEntered.promise;
+      release.resolve();
+      await Promise.all([held, remoteWait, remoteRest]);
+    } else {
+      const title = sameTitle ? "Tutor" : "Remote";
+      const peers = sameTitle ? [peer] : [];
+      h.herdrSays(letta(`[ ! ] Action Required | ${title}`), ...peers);
+      expect((await h.snapshot()).panes[0]?.agent_status).toBe("blocked");
+      h.herdrSays(letta(title), ...peers);
+      await h.snapshot();
+    }
+
+    expect(failed).toEqual(replacement === "unbound peer" ? ["w1:p1"] : []);
+  });
+
   it("works through a turn in Letta's local messages and finishes once, and gives the pane back to a report", async () => {
     core();
     const store = join(root, "letta-store");

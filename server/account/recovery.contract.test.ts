@@ -117,6 +117,14 @@ test.if(unix)("T69: a lift recorded in the safety log is reported even if its jo
   expect(result).toMatchObject({ lifted: [id], error: expect.stringContaining("could not be journalled") });
 });
 
+test.if(unix)("the owner's recovery socket reports the account and member count without changing them", async () => {
+  const member = await memberRow("acct_1");
+  const made = await pairingPc({ rows: [member.row], startRelay: false, server: { accountOpensAll: true } });
+  pcs.push(made);
+  expect(await bounded(askRecovery(made.stateDir, { act: "account_status" }))).toEqual({ account: "acct_1", members: 1 });
+  expect(made.stored().map((row) => row.id)).toEqual([member.row.id]);
+});
+
 test.if(unix)("T70: revoke-all over the socket ends every row", async () => {
   const member = await memberRow("acct_1");
   const made = await pairingPc({ rows: [member.row], server: { accountOpensAll: true } });

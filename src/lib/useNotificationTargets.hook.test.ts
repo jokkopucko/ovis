@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { createElement, useRef, useState } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, createElement, useRef, useState } from "react";
+import { openPage, type Page } from "./page.fixture.ts";
 import type { Machine } from "../../shared/machines.ts";
 import type { AppLink, LinkNote } from "./deepLink.ts";
 import { linkTarget, type NotificationTarget } from "./notificationTarget.ts";
@@ -8,8 +8,7 @@ import { getTransport, setTransport } from "./transport.ts";
 import { useNotificationTargets, useSelectTarget } from "./useSelection.ts";
 
 describe("a desktop link's landing", () => {
-  let saved: PropertyDescriptor | undefined;
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
   let take: (target: NotificationTarget) => void;
   let pending: { current: AppLink | null };
   let selected: [string, string | null, string | undefined][];
@@ -26,17 +25,13 @@ describe("a desktop link's landing", () => {
   }] as unknown as Machine[];
 
   beforeEach(() => {
-    saved = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+    page = openPage();
     selected = [];
     waits = 0;
   });
 
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
-    if (saved) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", saved);
-    else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+    await page.close();
   });
 
   async function mount(machines: Machine[]): Promise<void> {
@@ -57,7 +52,7 @@ describe("a desktop link's landing", () => {
       } as Parameters<typeof useNotificationTargets>[0]).takeNotificationTarget;
       return null;
     }
-    await act(async () => { renderer = create(createElement(Probe)); });
+    await page.render(createElement(Probe));
   }
 
   it("selects a pane the roster lists in the link's workspace", async () => {
@@ -109,8 +104,7 @@ describe("a desktop link's landing", () => {
 
 describe("a desktop link to a pane the cached roster lacks", () => {
   const transport = getTransport();
-  let saved: PropertyDescriptor | undefined;
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
   let take: (target: NotificationTarget) => void;
   let pick: (machineId: string, paneId: string | null) => void;
   let shown: { pane: string | null; note: LinkNote | "copied" | null };
@@ -138,18 +132,14 @@ describe("a desktop link to a pane the cached roster lacks", () => {
   }
 
   beforeEach(() => {
-    saved = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+    page = openPage();
     misses = 0;
     reads = 0;
   });
 
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
+    await page.close();
     setTransport(transport);
-    if (saved) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", saved);
-    else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
   });
 
   async function mount(): Promise<void> {
@@ -190,7 +180,7 @@ describe("a desktop link to a pane the cached roster lacks", () => {
       shown = { pane: selectedPaneId, note: headerNote };
       return null;
     }
-    await act(async () => { renderer = create(createElement(Probe)); });
+    await page.render(createElement(Probe));
   }
 
   async function open(query: string): Promise<void> {

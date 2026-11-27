@@ -51,7 +51,7 @@ interface InstallRecord {
   command: string;
 }
 
-const shellQuote = (value: string): string => (/^[\w./:@%+=,-]+$/.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`);
+export const shellQuote = (value: string): string => (/^[\w./:@%+=,-]+$/.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`);
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const commandOf = (value: unknown): string | null => (isObject(value) && typeof value["command"] === "string" ? value["command"] : null);
 
@@ -127,6 +127,38 @@ function namesAWrapper(command: string, tee: string, home: string): boolean {
     if (!path.startsWith("/")) return path.includes("statusline-tee.sh");
     return basename(path) === "statusline-tee.sh" && ownFile(path);
   });
+}
+
+/** Claude Code's settings sources, as its `--setting-sources` names them. */
+export type SettingSource = "user" | "project" | "local";
+
+/**
+ * The status line Claude Code draws from its settings files, without a `--settings` of its own: the first of the
+ * project's local settings, its shared settings and the user's settings (in `configDir`) that sets one with a command,
+ * as Claude ranks them, of the `sources` it reads. Null when none does, or for a file that cannot be read as JSON (Claude
+ * would not run it either). Managed settings rank above a `--settings`, so what they set is drawn whatever this says.
+ * The wrapper the Settings switch installs stands for the line it wraps (its install record's), or none: the switch
+ * deletes the wrapper when turned off, which a Claude started with it named would then draw no line from.
+ */
+export function configuredStatusLine(configDir: string, projectDir: string, sources: readonly SettingSource[], home: string): Record<string, unknown> | null {
+  const where = locations({ home, configDir });
+  const files = ([["local", join(projectDir, ".claude", "settings.local.json")], ["project", join(projectDir, ".claude", "settings.json")], ["user", join(configDir, "settings.json")]] as const)
+    .filter(([source]) => sources.includes(source)).map(([, file]) => file);
+  for (const file of files) {
+    let value: unknown;
+    try { value = JSON.parse(readFileSync(file, "utf8")); } catch { continue; }
+    const line = isObject(value) ? value[KEY] : undefined;
+    const command = commandOf(line);
+    if (command === null || command.trim() === "") continue;
+    if (!namesAWrapper(command, where.tee, home)) return line as Record<string, unknown>;
+    try {
+      const recorded = ownFile(where.record) ? (JSON.parse(readFileSync(where.record, "utf8")) as InstallRecord).statusLine : null;
+      const original: unknown = recorded === null ? null : JSON.parse(recorded);
+      const wrapped = commandOf(original);
+      return wrapped !== null && wrapped.trim() !== "" ? original as Record<string, unknown> : null;
+    } catch { return null; }
+  }
+  return null;
 }
 
 export interface StatuslineInstallOptions {

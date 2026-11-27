@@ -7,6 +7,7 @@ import { chromium } from "playwright-core";
 import { createServer } from "../server/index.ts";
 import { herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { SLEEP } from "./fixtures/sleep.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 if (process.platform !== "linux") { console.log("SKIP fictional agent processes require Linux"); process.exit(0); }
 const root = mkdtempSync(join(tmpdir(), "herdr-chat-unavailable-"));
@@ -19,6 +20,7 @@ let server: ReturnType<typeof createServer> | undefined;
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 try {
   server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state"), tailscaleOwner: null });
+  checkChromeTmpdir();
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
   for (const { agent, words } of cases) {
     const folder = join(root, agent);

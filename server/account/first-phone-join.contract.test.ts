@@ -6,6 +6,7 @@
  */
 import { afterEach, expect, test } from "bun:test";
 import { bytesToHex } from "@noble/hashes/utils.js";
+import { newRecordId, signSafetyRecord } from "../../shared/account-records.ts";
 import { channelBinding, importPublicKey } from "../../shared/relay-e2ee.ts";
 import { FrameType, PAIR_INTENT_ACCOUNT, PAIR_SAS_FEATURE, type MuxFrame } from "../../shared/relay-mux.ts";
 import { fromBase64Url, pairCommitment, pairDigits, randomPairNonce, toBase64Url } from "../../shared/relay-pair-sas.ts";
@@ -92,7 +93,7 @@ async function http(pc: Pc, path: string, headers: Record<string, string>, body?
     method: "POST", headers: { origin: base, "x-herdr-update": "1", "content-type": "application/json", ...headers }, body: JSON.stringify(body),
   });
   const text = await response.text();
-  return { status: response.status, text, body: text === "" ? {} : JSON.parse(text) as { joins?: { id: string; label: string; digits?: string }[]; error?: { code: string } } };
+  return { status: response.status, text, body: text === "" ? {} : JSON.parse(text) as { joins?: { id: string; label: string; digits?: string; held_why?: string; list_held?: boolean }[]; held_why?: string | null; error?: { code: string } } };
 }
 
 for (const [platform, os] of [["darwin", "mac"], ["win32", "windows"]] as const) {
@@ -110,7 +111,8 @@ for (const [platform, os] of [["darwin", "mac"], ["win32", "windows"]] as const)
     // no account member hears of it
     expect(pc.app.context.services.relay.approvals.remoteList()).toEqual([]);
     const allowed = await http(pc, "/api/relay/join", own, { id: listed.body.joins![0]!.id, decision: "approve" });
-    expect(allowed.status).toBe(200);
+    // the answer says that nothing keeps the phone out as the approval is taken
+    expect([allowed.status, allowed.body.held_why]).toEqual([200, null]);
     link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
     expect((await next(FrameType.AUTH_OK)).type).toBe(FrameType.AUTH_OK);
     expect(pc.devices.hasKey(device.spki)).toBe(true);
@@ -224,4 +226,94 @@ test("a PC with an account member keeps the member's approval: its own window ge
   const tapped = await http(pc, "/api/relay/join", own, { id: listed.body.joins![0]!.id, decision: "approve" });
   expect(tapped.status).not.toBe(200);
   expect(pc.app.context.services.relay.approvals.ownJoins()).toHaveLength(1);
+});
+
+/**
+ * What keeps a first join's key out on this PC, made while the join waits for its approval: each is named to this PC's
+ * own window and `ovis approve` (`held_why`; `list_held` too for a block, as older readers know it), an approval
+ * here lets nobody in, and the device hears why rather than that nobody approved it.
+ */
+const keptOut: readonly { why: string; heard: string; make: (pc: Pc, device: Phone) => Promise<void> }[] = [
+  { why: "block", heard: "list_held_here", make: async (pc) => {
+    // a block in force on this PC closes it to every key that came after its target (devices.ts admissionVerdict)
+    const [signer, target] = await Promise.all([phone(), phone()]);
+    const record = await signSafetyRecord({ v: 1, kind: "block", account: "acct_1", target: target.spki, target_no: 2, signer: signer.spki, signer_no: 1, signed_at: new Date().toISOString(), nonce: newRecordId() }, signer.keys.privateKey);
+    expect(pc.app.context.services.safetyLog!.append({ record, got: "handed", asof: { signer_no: 1, target_no: 2, after: 2, joined: 2, signer_removed: false } }).outcome).toBe("applied");
+  } },
+  { why: "freeze", heard: "list_held_here", make: async (pc) => {
+    // the account service's freeze that follows a member's block: every key the account did not number up to it is out
+    const target = await phone();
+    expect(pc.app.context.services.safetyLog!.append({ got: "snapshot", record: { v: 1, kind: "freeze", id: `f:${"a".repeat(64)}`, account: "acct_1", target: target.spki, after: 1, signer: "service", signed_at: new Date().toISOString(), signature: "" } }).outcome).toBe("applied");
+  } },
+  { why: "account_hold", heard: "kept_out_account_hold", make: async (pc, device) => { pc.app.context.services.accountHolds.hold([device.spki]); } },
+  { why: "account_removed", heard: "kept_out_account_removed", make: async (pc, device) => {
+    pc.devices.removeAccountKey(device.spki, "acct_1", { id: newRecordId(), issuedAt: new Date().toISOString() });
+  } },
+];
+
+for (const { why, heard, make } of keptOut) {
+  test(`a first join of a key this PC keeps out (${why}) is named so to ovis approve, and the device approved anyway hears why`, async () => {
+    const pc = await boundPc("darwin");
+    const device = await phone();
+    const waiting = ownJoinWaiting(pc);
+    const { link, next, digits } = await join(pc, device);
+    await waiting;
+    await make(pc, device);
+    const listed = await http(pc, "/api/relay/joins", terminal(pc));
+    expect(listed.body.joins).toEqual([expect.objectContaining({ digits, held_why: why })]);
+    expect(listed.body.joins![0]!.list_held).toBe(why === "block" || why === "freeze" ? true : undefined);
+    expect((await http(pc, "/api/relay/join", terminal(pc), { id: listed.body.joins![0]!.id, digits })).status).toBe(200);
+    link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+    expect(await next(FrameType.AUTH_OK)).toMatchObject({ type: FrameType.SESSION_ERROR, payload: { code: "auth_failed", message: heard } });
+    expect(pc.devices.hasKey(device.spki)).toBe(false);
+  });
+}
+
+test("a hold that comes after ovis approve read the joins is named in the approval's own answer, and the device hears it", async () => {
+  const pc = await boundPc("darwin");
+  const device = await phone();
+  const waiting = ownJoinWaiting(pc);
+  const { link, next, digits } = await join(pc, device);
+  await waiting;
+  const listed = await http(pc, "/api/relay/joins", terminal(pc));
+  expect(listed.body.joins![0]!.held_why).toBeUndefined();
+  pc.app.context.services.accountHolds.hold([device.spki]);
+  const approved = await http(pc, "/api/relay/join", terminal(pc), { id: listed.body.joins![0]!.id, digits });
+  expect([approved.status, approved.body.held_why]).toEqual([200, "account_hold"]);
+  link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+  expect(await next(FrameType.AUTH_OK)).toMatchObject({ type: FrameType.SESSION_ERROR, payload: { code: "auth_failed", message: "kept_out_account_hold" } });
+  expect(pc.devices.hasKey(device.spki)).toBe(false);
+});
+
+test("a key both frozen and held is named by its freeze, as older readers know it, and the device hears list_held_here", async () => {
+  const pc = await boundPc("darwin");
+  const device = await phone();
+  const waiting = ownJoinWaiting(pc);
+  const { link, next, digits } = await join(pc, device);
+  await waiting;
+  await keptOut.find(({ why }) => why === "freeze")!.make(pc, device);
+  pc.app.context.services.accountHolds.hold([device.spki]);
+  const listed = await http(pc, "/api/relay/joins", terminal(pc));
+  expect(listed.body.joins).toEqual([expect.objectContaining({ held_why: "freeze", list_held: true })]);
+  expect((await http(pc, "/api/relay/join", terminal(pc), { id: listed.body.joins![0]!.id, digits })).status).toBe(200);
+  link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+  expect(await next(FrameType.AUTH_OK)).toMatchObject({ type: FrameType.SESSION_ERROR, payload: { code: "auth_failed", message: "list_held_here" } });
+  expect(pc.devices.hasKey(device.spki)).toBe(false);
+});
+
+test("a members join a member approved from afar, whose key the account holds before it confirms, hears that hold", async () => {
+  const member = await memberRow("acct_1");
+  const pc = await startedPc("darwin", [member.row]);
+  await firstPairingRead(pc);
+  const device = await phone();
+  const waiting = ownJoinWaiting(pc);
+  const { link, next, digits } = await join(pc, device);
+  await waiting;
+  const approvals = pc.app.context.services.relay.approvals;
+  const [card] = approvals.remoteList();
+  expect(approvals.decideRemote(card!.id, true, digits, { id: member.row.id, label: "Account phone", role: "drive" }).outcome).toBe("decided");
+  pc.app.context.services.accountHolds.hold([device.spki]);
+  link.mux.sendSession({ type: FrameType.PAIR_CONFIRM, flags: 0, stream_id: 0, payload: { confirmed: true } });
+  expect(await next(FrameType.AUTH_OK)).toMatchObject({ type: FrameType.SESSION_ERROR, payload: { code: "auth_failed", message: "kept_out_account_hold" } });
+  expect(pc.devices.hasKey(device.spki)).toBe(false);
 });

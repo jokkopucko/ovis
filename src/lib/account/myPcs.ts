@@ -57,13 +57,19 @@ export interface MyPc {
   readonly listed: boolean;
   /**
    * The PC took its place in the account: it completed its add (the directory's `completed_at`) or has pulled the
-   * account's mailbox (`last_seen_at`), which only a PC in the account does. A listing or an admission alone is neither
-   * (docs/account.md, "Adding a PC over SSH").
+   * account's mailbox (`last_seen_at`), which only a PC in the account does, or the signed list holds it.
+   * A directory listing or an admission alone is neither (docs/account.md, "Adding a PC over SSH").
    */
   readonly joined?: true;
+  /** The signed list holds it, but the target PC has not reported completing its add or pulling its mailbox. */
+  readonly awaitingCheckIn?: true;
   /** this device holds an admitted key for it, so it can open; whatever its state says */
   readonly paired: boolean;
   readonly accountOpen?: true;
+  /** this device's verified list holds the PC (listPcs.ts): the account service only said how to reach it */
+  readonly byList?: true;
+  /** the account has a list and this device does not find the PC in it (listPcs.ts): the row says so, and only a tap opens it */
+  readonly notInList?: true;
   /**
    * this device signs in to it with the account key, so removing the device through the account
    * reaches it; a pairing from before the account is not covered until it is linked
@@ -80,7 +86,13 @@ export interface MyPc {
 
 const ORDER: Record<MyPcState, number> = { paired: 0, "needs-update": 1, "needs-approval": 2, offline: 3 };
 
-const joinedOf = (pc: DirectoryPc | undefined): { joined?: true } => pc !== undefined && (typeof pc.completed_at === "string" || pc.last_seen_at !== null) ? { joined: true } : {};
+function joinedOf(pc: DirectoryPc | undefined): Pick<MyPc, "joined" | "byList" | "awaitingCheckIn"> {
+  if (pc === undefined) return {};
+  const checkedIn = pc.completed_at != null || pc.last_seen_at !== null;
+  if (pc.by_list === true) return checkedIn ? { joined: true, byList: true } : { joined: true, byList: true, awaitingCheckIn: true };
+  return checkedIn ? { joined: true } : {};
+}
+const outsideOf = (pc: DirectoryPc): { notInList?: true } => pc.not_in_list === true ? { notInList: true } : {};
 
 export function myPcs(directory: readonly DirectoryPc[], paired: readonly RelayDevice[], options: { now: number; outdated?: ReadonlySet<string>; accountKey?: string; account?: string; registered?: boolean }): MyPc[] {
   const listed = new Map(directory.map((pc) => [pc.server_id, pc]));
@@ -100,7 +112,7 @@ export function myPcs(directory: readonly DirectoryPc[], paired: readonly RelayD
   }
   for (const pc of listed.values()) {
     const join = joinRoute(pc);
-    rows.push({ server_id: pc.server_id, name: pc.label, state: stateOf(pc.server_id, false, pc.last_seen_at), last_seen_at: pc.last_seen_at, added_at: pc.added_at, ...(pc.invited_at === undefined ? {} : { invited_at: pc.invited_at }), new_until: pc.new_until, ...(pc.new_until_unreadable ? { new_until_unreadable: true as const } : {}), ...(pc.admitted_at == null ? {} : { admitted_at: pc.admitted_at }), ...(pc.admitted_before_you ? { admitted_before_you: true as const } : {}), listed: true, ...joinedOf(pc), paired: false, linked: false, ...(join ? { join, ...(options.registered ? { accountOpen: true as const } : {}) } : {}) });
+    rows.push({ server_id: pc.server_id, name: pc.label, state: stateOf(pc.server_id, false, pc.last_seen_at), last_seen_at: pc.last_seen_at, added_at: pc.added_at, ...(pc.invited_at === undefined ? {} : { invited_at: pc.invited_at }), new_until: pc.new_until, ...(pc.new_until_unreadable ? { new_until_unreadable: true as const } : {}), ...(pc.admitted_at == null ? {} : { admitted_at: pc.admitted_at }), ...(pc.admitted_before_you ? { admitted_before_you: true as const } : {}), listed: true, ...joinedOf(pc), ...outsideOf(pc), paired: false, linked: false, ...(join ? { join, ...(options.registered || pc.by_list === true ? { accountOpen: true as const } : {}) } : {}) });
   }
   return rows.sort((a, b) => ORDER[a.state] - ORDER[b.state] || a.name.localeCompare(b.name));
 }

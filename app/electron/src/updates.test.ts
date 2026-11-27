@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 // not the package itself: it sets up an updater for this platform as its exports are read, which needs Electron
 import { DebUpdater } from "electron-updater/out/DebUpdater";
-import { appUpdateState, BETA_FEED, checkForUpdates, debInstallCommand, downloadsUpdate, nextOffer, NO_OFFER, readUpdateNotices, stillHeld, UPDATE_CHECK_INTERVAL_MS, updateChannel, updateNotice, updatePlan, writeUpdateNotices, type AppCheck, type UpdateOffer } from "./updates.ts";
+import { appUpdateState, BETA_FEED, checkFeeds, checkForUpdates, STABLE_FEED, debInstallCommand, downloadsUpdate, nextOffer, NO_OFFER, readUpdateNotices, stillHeld, UPDATE_CHECK_INTERVAL_MS, updateChannel, updateNotice, updatePlan, writeUpdateNotices, type AppCheck, type UpdateOffer } from "./updates.ts";
 
 const packaged = { packaged: true, platform: "darwin", builtWithFeed: true, env: {} };
 
@@ -71,6 +71,70 @@ describe("updatePlan", () => {
     expect(updatePlan({ ...packaged, builtWithFeed: false, channel: "beta" }).enabled).toBe(false);
     expect(updatePlan({ ...packaged, platform: "win32", channel: "beta" })).toEqual({ enabled: true, feed: null, channel: "stable", installer: "default" });
     expect(updatePlan({ ...packaged, channel: "beta", env: { OVIS_UPDATE_URL: "https://updates.example/desktop" } })).toEqual({ enabled: true, feed: "https://updates.example/desktop", channel: "beta", installer: "default" });
+  });
+});
+
+describe("checkFeeds", () => {
+  const enabled = (plan: ReturnType<typeof updatePlan>) => {
+    if (!plan.enabled) throw new Error(plan.reason);
+    return plan;
+  };
+
+  it("reads the stable feed after the beta feed on the beta channel, and only the stable one otherwise", () => {
+    expect(checkFeeds(enabled(updatePlan({ ...packaged, channel: "beta" })))).toEqual([
+      { feed: BETA_FEED, channel: "beta", prerelease: true },
+      { feed: STABLE_FEED, channel: "latest", prerelease: false },
+    ]);
+    expect(checkFeeds(enabled(updatePlan(packaged)))).toEqual([{ feed: null, channel: "latest", prerelease: false }]);
+    // Windows has no beta builds: its beta channel is the stable one
+    expect(checkFeeds(enabled(updatePlan({ ...packaged, platform: "win32", channel: "beta" })))).toEqual([{ feed: null, channel: "latest", prerelease: false }]);
+    // OVIS_UPDATE_URL names the one feed
+    expect(checkFeeds(enabled(updatePlan({ ...packaged, channel: "beta", env: { OVIS_UPDATE_URL: "https://updates.example/desktop" } })))).toEqual([
+      { feed: "https://updates.example/desktop", channel: "beta", prerelease: true },
+    ]);
+  });
+
+  it("lets a beta that is behind the stable release take the release, and keeps a beta that is ahead of it", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ovis-desktop-feeds-"));
+    try {
+      mkdirSync(join(root, "resources"));
+      const config = join(root, "resources", "app-update.yml");
+      writeFileSync(config, `provider: generic\nurl: ${STABLE_FEED}\nupdaterCacheDirName: ovis-desktop-updater\n`);
+      const feedFile = (version: string) => `version: ${version}\nfiles:\n  - url: Ovis-linux-x64.deb\n    sha512: c2hhNTEy\n    size: 12\npath: Ovis-linux-x64.deb\nsha512: c2hhNTEy\n`;
+      // what each check finds, by the feed it asks: the beta feed's last beta, the stable feed's release
+      // (the channel file's name depends on the platform the test runs on: beta-linux.yml, beta.yml on Windows)
+      const offered = async (running: string, beta: string, stable: string) => {
+        const app = { version: running, name: "Ovis", isPackaged: true, appUpdateConfigPath: config, userDataPath: join(root, "user-data"),
+          baseCachePath: join(root, "cache"), whenReady: () => Promise.resolve(), quit() {}, relaunch() {}, onQuit() {} };
+        const httpExecutor = {
+          request: async (options: { path?: string; hostname?: string }) => {
+            const path = options.path ?? "";
+            if (/\/desktop-beta\/beta[\w-]*\.yml/.test(path)) return feedFile(beta);
+            if (/\/latest\/download\/latest[\w-]*\.yml/.test(path)) return feedFile(stable);
+            throw new Error(`no such feed file: ${path}`);
+          },
+          download: async () => { throw new Error("not downloaded here"); },
+        };
+        const updater = Object.assign(new DebUpdater(null, app), { httpExecutor, logger: null, autoInstallOnAppQuit: false, autoDownload: false });
+        const found: (string | null)[] = [];
+        for (const source of checkFeeds(enabled(updatePlan({ ...packaged, channel: "beta" })))) {
+          if (source.feed) updater.setFeedURL({ provider: "generic", url: source.feed });
+          updater.channel = source.channel;
+          updater.allowPrerelease = source.prerelease;
+          updater.allowDowngrade = false;
+          const result = await updater.checkForUpdates();
+          found.push(result?.isUpdateAvailable ? result.updateInfo.version : null);
+        }
+        return found;
+      };
+      // release day: the beta feed still holds the beta the release came from
+      expect(await offered("0.5.10-beta.7", "0.5.10-beta.7", "0.5.10")).toEqual([null, "0.5.10"]);
+      // the next beta is ahead of the release: the stable feed offers nothing older
+      expect(await offered("0.5.12-beta.1", "0.5.12-beta.1", "0.5.11")).toEqual([null, null]);
+      expect(await offered("0.5.11", "0.5.12-beta.1", "0.5.11")).toEqual(["0.5.12-beta.1", null]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

@@ -3,7 +3,8 @@ import { agySteeringPending, codexSteeringPending, interruptCodexSteering, type 
 
 const hint = "Messages to be submitted after next tool call (press esc to interrupt and send immediately)";
 const frame = (header = hint, composer = "› Ask Codex to do anything") => `› earlier input\n• Working (2s • esc to interrupt)\n• ${header}\n  ↳ send this now\n${composer}\n  gpt-6.1 default · /workspace\n`;
-const working: CodexSteeringContext = { agent: "codex", working: true, screen: frame() };
+const working: CodexSteeringContext = { agent: "codex", working: true, screen: "• Working (2s • esc to interrupt)\n› send this now\n" };
+const pending = { ...working, screen: frame() };
 
 describe("Codex's live steering buffer", () => {
   it("recognizes the native pending-steering panel beside an empty composer", () => {
@@ -81,7 +82,7 @@ describe("Codex's live steering buffer", () => {
   });
 });
 
-function fixture(contexts: CodexSteeringContext[] = [working]) {
+function fixture(contexts: CodexSteeringContext[] = [pending]) {
   let now = 0; let reads = 0;
   const effects: string[] = [];
   const io = {
@@ -96,7 +97,8 @@ function fixture(contexts: CodexSteeringContext[] = [working]) {
 
 describe("explicit Codex Send now", () => {
   it("arms the restart gate before one Escape on a freshly checked native panel", async () => {
-    const f = fixture(); await interruptCodexSteering(true, "send this now", working, f.io);
+    const f = fixture();
+    expect(await interruptCodexSteering(true, "send this now", working, f.io)).toBe("unconfirmed");
     expect(f.effects).toEqual(["restart gate", "Escape"]);
     expect(f.reads()).toBe(1);
   });
@@ -105,31 +107,103 @@ describe("explicit Codex Send now", () => {
     for (const composer of ["»", "» Ask Codex to do anything"]) {
       const ultra = { ...working, screen: frame(hint, composer).replace("default ·", "ultra ·") };
       const f = fixture([ultra]);
-      await interruptCodexSteering(true, "send this now", ultra, f.io);
+      expect(await interruptCodexSteering(true, "send this now", working, f.io)).toBe("unconfirmed");
       expect(f.effects).toEqual(["restart gate", "Escape"]);
       expect(f.reads()).toBe(1);
     }
   });
 
+  it("does not infer delivery from a panel under the background-terminal status", async () => {
+    const background = { ...working, screen: frame().replace(
+      "• Working (2s • esc to interrupt)",
+      "Working (2s • esc to interrupt) · 1 background terminal running · /ps to view · /stop to close",
+    ) };
+    const f = fixture([background]);
+    await expect(interruptCodexSteering(true, "send this now", working, f.io)).rejects.toThrow("not confirmed");
+    expect(f.effects).toEqual([]);
+
+    const unrelated = fixture([{ ...background, screen: background.screen.replace("↳ send this now", "↳ something else") }]);
+    await expect(interruptCodexSteering(true, "send this now", working, unrelated.io)).rejects.toThrow("not confirmed");
+    expect(unrelated.effects).toEqual([]);
+  });
+
+  const liveStatus = "Working (5s • esc to interrupt) · 1 background terminal running · /ps to view · /stop to close";
+  it.each([liveStatus, "• Working (2s • esc to interrupt)"])("never interrupts an older identical entry under %s", async (status) => {
+    const queued = { ...working, screen: frame().replace("• Working (2s • esc to interrupt)", status) };
+    const submitted = { ...queued, screen: queued.screen.replace("› Ask Codex to do anything", "› send this now") };
+    const f = fixture([queued]);
+    await expect(interruptCodexSteering(true, "send this now", submitted, f.io)).rejects.toThrow("not confirmed");
+    expect(f.effects).toEqual([]);
+  });
+  const liveComposer = "› Ask Codex to do anything\n  GPT-6.2-Sol default · /workspace\n  ← for agents · ? for shortcuts";
+  const live = (history: string, composer = liveComposer): CodexSteeringContext => ({
+    agent: "codex", working: true, screen: `\n${history}\n\n${liveStatus}\n\n${composer}\n`,
+  });
+
+  it("cannot confirm an active-turn message from terminal scrollback alone", async () => {
+    const submitted = live("› earlier input", liveComposer.replace("Ask Codex to do anything", "send this now"));
+    const f = fixture([live("› earlier input\n\n› send this now")]);
+    await expect(interruptCodexSteering(true, "send this now", submitted, f.io)).rejects.toThrow("not confirmed");
+    expect(f.effects).toEqual([]);
+  });
+
+  it("does not credit an earlier terminal submission drawn after Chat pressed Enter", async () => {
+    const terminalQueue = "• Messages to be submitted at end of turn\n  ↳ repeat\n";
+    const submitted = live("› earlier input", terminalQueue + liveComposer.replace("Ask Codex to do anything", "repeat"));
+    const f = fixture([live("› earlier input\n\n› repeat", terminalQueue + liveComposer)]);
+    await expect(interruptCodexSteering(true, "repeat", submitted, f.io)).rejects.toThrow("not confirmed");
+    expect(f.effects).toEqual([]);
+  });
+
+  it("does not confirm the draft or an unchanged earlier occurrence of the same message", async () => {
+    const submitted = live("› send this now", liveComposer.replace("Ask Codex to do anything", "send this now"));
+    const otherDraft = liveComposer.replace("Ask Codex to do anything", "another draft");
+    for (const current of [
+      submitted,
+      live("› send this now"),
+      live("› send this now\n\n  › send this now"),
+      live("› send this now\n\n› send this now", otherDraft),
+      live("› send this now\n\n› send this now\n\n› send this now"),
+    ]) {
+      const f = fixture([current]);
+      await expect(interruptCodexSteering(true, "send this now", submitted, f.io)).rejects.toThrow("not confirmed");
+      expect(f.effects).toEqual([]);
+    }
+  });
+
   for (const [name, explicit, context] of [
     ["ordinary Send racing with work", false, working],
-    ["idle Codex", true, { ...working, working: false }],
     ["another working agent", true, { ...working, agent: "claude" }],
   ] as const) it(`never interrupts ${name}`, async () => {
     const f = fixture(); await interruptCodexSteering(explicit, "send this now", context, f.io);
     expect(f.effects).toEqual([]); expect(f.reads()).toBe(0);
   });
 
+  it("checks after Enter when Codex was idle before it, without interrupting a newly visible turn", async () => {
+    const idle = { ...working, working: false };
+    const turned = fixture([pending]);
+    expect(await interruptCodexSteering(true, "send this now", idle, turned.io)).toBe("unconfirmed");
+    expect(turned.effects).toEqual([]);
+    expect(turned.reads()).toBe(1);
+    const stillIdle = fixture([idle]);
+    expect(await interruptCodexSteering(true, "send this now", idle, stillIdle.io)).toBeUndefined();
+    expect(stillIdle.effects).toEqual([]);
+    expect(stillIdle.reads()).toBe(1);
+  });
+
   it("waits for the native panel instead of appending Escape blindly", async () => {
-    const f = fixture([{ ...working, screen: "• Working (2s • esc to interrupt)\n› send this now\n" }, working]);
-    await interruptCodexSteering(true, "send this now", working, f.io);
+    const f = fixture([working, pending]);
+    expect(await interruptCodexSteering(true, "send this now", working, f.io)).toBe("unconfirmed");
     expect(f.reads()).toBe(2); expect(f.elapsed()).toBeGreaterThan(0);
     expect(f.effects).toEqual(["restart gate", "Escape"]);
   });
 
   it("does not interrupt a turn that already finished after Enter", async () => {
     const f = fixture([{ ...working, working: false }]);
-    await interruptCodexSteering(true, "send this now", working, f.io); expect(f.effects).toEqual([]);
+    expect(await interruptCodexSteering(true, "send this now", working, f.io)).toBe("unconfirmed");
+    expect(f.effects).toEqual([]);
+    expect(f.reads()).toBe(1);
+    expect(f.elapsed()).toBe(0);
   });
 
   for (const cause of ["disconnected", "read_only", "agent_blocked", "pending_target_changed", "input_not_ready"]) it(`keeps additional input cancelled after ${cause}`, async () => {

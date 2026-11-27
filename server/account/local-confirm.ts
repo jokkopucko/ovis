@@ -199,6 +199,24 @@ export function dropDesktopOwnerFd(argv: string[]): void {
   } catch {}
 }
 
+/**
+ * The first argument `serve` does not take, or undefined: it takes only the desktop app's `--desktop-owner-fd <n>` (or
+ * `=<n>`), and is otherwise set up by its environment. server/main.ts refuses the rest, so a word meant for a command
+ * (`serve --port 8080`) is not ignored by a server that starts anyway.
+ */
+export function unknownServeArgument(args: readonly string[]): string | undefined {
+  for (let index = 0; index < args.length; index++) {
+    const argument = args[index]!;
+    if (argument.startsWith(`${DESKTOP_OWNER_ARGUMENT}=`)) continue;
+    if (argument === DESKTOP_OWNER_ARGUMENT) {
+      if (/^\d+$/.test(args[index + 1] ?? "")) index++;
+      continue;
+    }
+    return argument;
+  }
+  return undefined;
+}
+
 function desktopOwnerArgument(argv: string[]): number | null {
   let value: string | undefined;
   for (let index = argv.length - 1; index >= 0; index--) {
@@ -289,13 +307,27 @@ function heard(confirms: LocalConfirms, line: string): void {
 }
 
 /**
- * The uid that holds the client end of a TCP connection on loopback, from the kernel's socket table: the row whose
- * local port is the peer's and whose remote port is the listener's. Null when no such row is found.
+ * How many times the socket table is read for one connection. The kernel hands /proc/net/tcp out a page per read and
+ * resumes by position, so while other sockets come and go one read can miss a live row or show it twice; reading
+ * again only asks the kernel again, and a row that is not there is never found.
  */
-export function peerUidOnLinux(listenerPort: number, peerPort: number): number | null {
-  let text: string;
-  try { text = readFileSync("/proc/net/tcp", "utf8"); } catch { return null; }
-  return peerUidInTable(text, listenerPort, peerPort);
+const TABLE_READS = 3;
+
+/**
+ * The uid that holds the client end of a TCP connection on loopback, from the kernel's socket table: the row whose
+ * local port is the peer's and whose remote port is the listener's. Null when no read of the table finds it, and as
+ * soon as one read shows rows on those ends that do not all name the same user: that read is an answer, nobody.
+ */
+export function peerUidOnLinux(listenerPort: number, peerPort: number,
+  readTable: () => string = () => readFileSync("/proc/net/tcp", "utf8")): number | null {
+  for (let read = 0; read < TABLE_READS; read++) {
+    let text: string;
+    try { text = readTable(); } catch { return null; }
+    const uids = peerRowUids(text, listenerPort, peerPort);
+    if (uids.length === 1) return uids[0]!;
+    if (new Set(uids).size > 1) return null;
+  }
+  return null;
 }
 
 /** 127.0.0.1 as /proc/net/tcp writes it, in host (little-endian) order. */
@@ -309,8 +341,14 @@ const ESTABLISHED = "01";
  * else, and two such rows name nobody.
  */
 export function peerUidInTable(table: string, listenerPort: number, peerPort: number): number | null {
-  let found: number | null = null;
-  let matches = 0;
+  const uids = peerRowUids(table, listenerPort, peerPort);
+  // more than one connection on the same exact ends cannot be told apart: nobody
+  return uids.length === 1 ? uids[0]! : null;
+}
+
+/** The uid of each established 127.0.0.1 row on exactly these ends (null where the uid is not a number). */
+function peerRowUids(table: string, listenerPort: number, peerPort: number): (number | null)[] {
+  const uids: (number | null)[] = [];
   for (const row of table.split("\n").slice(1)) {
     const fields = row.trim().split(/\s+/);
     if (fields.length < 8 || fields[3] !== ESTABLISHED) continue;
@@ -318,12 +356,10 @@ export function peerUidInTable(table: string, listenerPort: number, peerPort: nu
     const [remoteAddress, remotePort] = fields[2]!.split(":");
     if (localAddress !== LOOPBACK_HEX || remoteAddress !== LOOPBACK_HEX) continue;
     if (Number.parseInt(localPort!, 16) !== peerPort || Number.parseInt(remotePort!, 16) !== listenerPort) continue;
-    matches++;
     const uid = Number(fields[7]);
-    found = Number.isSafeInteger(uid) ? uid : null;
+    uids.push(Number.isSafeInteger(uid) ? uid : null);
   }
-  // more than one connection on the same exact ends cannot be told apart: nobody
-  return matches === 1 ? found : null;
+  return uids;
 }
 
 const PAGE_HEADERS = {

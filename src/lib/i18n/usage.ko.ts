@@ -61,6 +61,11 @@ export const USAGE_KO: Record<string, string> = {
   "Sign in again to {name}": "{name}에 다시 로그인",
   "{name} asked to slow down. These are the last numbers.": "{name}에서 요청 속도 제한을 걸었습니다. 마지막으로 읽은 값입니다.",
   "{name} could not be reached.": "{name}에 연결하지 못했습니다.",
+  "{name} is busy or down. Try again later.": "{name} 서버가 바쁘거나 멈췄습니다. 잠시 뒤 다시 시도하세요.",
+  "{name} took too long to answer.": "{name} 응답 시간이 초과되었습니다.",
+  "{name} sent an answer Ovis cannot read.": "{name}에서 Ovis가 읽을 수 없는 응답이 왔습니다.",
+  "This PC could not connect to {name}.": "이 PC에서 {name}에 연결하지 못했습니다.",
+  "Hub could not read this account.": "허브에서 이 계정을 읽지 못했습니다.",
   "The server cannot open the keychain holding this sign-in.": "서버가 이 로그인 정보가 든 키체인을 열 수 없습니다.",
   "Read from Claude's status line instead": "대신 Claude 상태 줄에서 읽기",
   "Could not change Claude's status line": "Claude 상태 줄을 바꾸지 못했어요",
@@ -99,4 +104,5 @@ export const USAGE_KO: Record<string, string> = {
   "Recorded by {tool}": "{tool} 기록",
   "Recorded by {tool}, {when}": "{tool} 기록, {when}",
   "It may have changed since.": "그 뒤로 달라졌을 수 있어요.",
+  "Open terminal": "터미널 열기",
 };

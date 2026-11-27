@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { authorizeKiroTranscript, isKiroChatProcess, kiroConversation, kiroSessionsDirectory, kiroToolOutput, projectKiro, resolveKiroTranscript } from "./kiro.ts";
+import { authorizeKiroTranscript, authorizeKiroV3Messages, isKiroChatProcess, isKiroV3AcpProcess, kiroConversation, kiroHomeDirectory, kiroRecordStillOpenInFile, kiroSessionsDirectory, kiroToolOutput, projectKiro, readKiroV3MessagesTail, resolveKiroTranscript, resolveKiroV3MessagesPath } from "./kiro.ts";
 import { ConversationUnavailable, HistoryChanged } from "./conversation-shared.ts";
 import { forgetPaneTranscriptState, forgetTranscriptState } from "./conversation.ts";
 import * as herdr from "./herdr/client.ts";
@@ -147,19 +147,156 @@ describe("Kiro session binding", () => {
   });
 
   test("recognizes Kiro's chat processes only", () => {
+    expect(isKiroChatProcess(["kiro-cli"])).toBe(true);
     expect(isKiroChatProcess(["kiro-cli", "chat"])).toBe(true);
+    expect(isKiroChatProcess(["kiro-cli", "chat", "--trust-workspace"])).toBe(true);
     expect(isKiroChatProcess(["kiro-cli-chat", "chat"])).toBe(true);
     expect(isKiroChatProcess(TUI_ARGV)).toBe(true);
+    expect(isKiroChatProcess([...TUI_ARGV, "--v3", "--trust-workspace"])).toBe(true);
+    expect(isKiroChatProcess(TUI_ARGV.slice(0, -1))).toBe(true);
+    expect(isKiroChatProcess([...TUI_ARGV.slice(0, -1), "--v3"])).toBe(true);
+    expect(isKiroChatProcess([...TUI_ARGV.slice(0, -1), "theme"])).toBe(false);
+    expect(isKiroChatProcess([...TUI_ARGV.slice(0, -1), "--help"])).toBe(false);
     expect(isKiroChatProcess(["kiro-cli", "login"])).toBe(false);
     expect(isKiroChatProcess(["kiro-cli-chat", "acp"])).toBe(false);
     expect(isKiroChatProcess(["node", "/tmp/tui.js", "chat"])).toBe(false);
   });
 
+  test("recognizes Kiro V3's stdio ACP server process only", () => {
+    const v3Acp = [
+      "/home/user/.local/share/kiro-cli/node",
+      "--experimental-wasm-modules",
+      "/home/user/.local/share/kiro-cli/kas/3.6.2-hash/node_modules/@kiro/agent/dist/server/acp-server.js",
+      "--transport=stdio",
+      "--auth=acp-callback",
+    ];
+    expect(isKiroV3AcpProcess(v3Acp)).toBe(true);
+    expect(isKiroV3AcpProcess(v3Acp.filter((arg) => arg !== "--transport=stdio"))).toBe(false);
+    expect(isKiroV3AcpProcess(["/usr/bin/python3", v3Acp[2]!, "--transport=stdio"])).toBe(false);
+    expect(isKiroV3AcpProcess(["node", "/tmp/other.js", "--transport=stdio"])).toBe(false);
+  });
+
   test("finds the store from KIRO_HOME, else HOME", () => {
+    expect(kiroHomeDirectory(["HOME=/home/user"])).toBe("/home/user/.kiro");
+    expect(kiroHomeDirectory(["HOME=/home/user", "KIRO_HOME=/opt/kiro"])).toBe("/opt/kiro");
+    expect(kiroHomeDirectory(["HOME=/home/user", "KIRO_HOME=relative"])).toBeNull();
     expect(kiroSessionsDirectory(["HOME=/home/user"])).toBe("/home/user/.kiro/sessions/cli");
     expect(kiroSessionsDirectory(["HOME=/home/user", "KIRO_HOME=/opt/kiro"])).toBe("/opt/kiro/sessions/cli");
     expect(kiroSessionsDirectory(["HOME=/home/user", "KIRO_HOME=relative"])).toBeNull();
     expect(kiroSessionsDirectory([])).toBeNull();
+  });
+});
+
+describe("Kiro V3 session lease binding", () => {
+  const V3_ID = `sess_${ID}`;
+  const V3_OTHER = `sess_${OTHER}`;
+  const V3_TUI_ARGV = [...TUI_ARGV, "--trust-workspace"];
+
+  async function kiroV3Pane(): Promise<{ tui: number; acp: number }> {
+    const dir = await mkdtemp(join(home, "pane-v3-"));
+    const acpDir = join(dir, "node_modules", "@kiro", "agent", "dist", "server");
+    await mkdir(acpDir, { recursive: true });
+    // Keep a long-lived child whose argv matches `node …/@kiro/agent/dist/server/acp-server.js --transport=stdio`
+    await writeFile(join(acpDir, "acp-server.js"), "console.log('ready'); setInterval(() => {}, 60_000);\n");
+    await writeFile(join(dir, "chat"), `(exec -a node ${process.execPath} ${join(acpDir, "acp-server.js")} --transport=stdio) & wait\n`);
+    const tui = Bun.spawn(["bash", "chat"], { argv0: "kiro-cli", cwd: dir, stdout: "pipe", stderr: "ignore" });
+    standIns.push(tui.pid);
+    const reader = tui.stdout.getReader();
+    let seen = "";
+    while (!seen.includes("ready")) {
+      const { value, done } = await reader.read();
+      if (done) throw new Error("the V3 stand-in exited");
+      seen += new TextDecoder().decode(value);
+    }
+    reader.releaseLock();
+    const [acp] = (await readFile(`/proc/${tui.pid}/task/${tui.pid}/children`, "utf8")).trim().split(" ").map(Number);
+    standIns.push(acp!);
+    return { tui: tui.pid, acp: acp! };
+  }
+
+  async function writeV3Session(group: string, id: string, content = ""): Promise<string> {
+    const dir = join(home, ".kiro", "sessions", group, id);
+    await mkdir(dir, { recursive: true });
+    const file = join(dir, "messages.jsonl");
+    await writeFile(file, content);
+    return file;
+  }
+
+  async function writeV3Lease(id: string, pid: number, parentPid: number, acquiredAt = new Date(Date.now() + 1000)): Promise<string> {
+    const leases = join(home, ".kiro", "session-leases");
+    await mkdir(leases, { recursive: true });
+    const file = join(leases, `${id}.lease`);
+    await writeFile(file, JSON.stringify({ v: 1, pid, parentPid, acquiredAt: acquiredAt.toISOString(), clientName: "kiro-cli" }));
+    return file;
+  }
+
+  linuxTest("binds the messages.jsonl named by the pane's active V3 lease and detects inode replacement", async () => {
+    const pane = await kiroV3Pane();
+    const expected = await writeV3Session("b2b0ac144d5dc5d7", V3_ID, "{\"id\":\"a\"}\n");
+    await writeV3Lease(V3_ID, pane.acp, pane.tui);
+    const tail = await readKiroV3MessagesTail(foreground(pane.tui, V3_TUI_ARGV));
+    expect(tail?.path).toBe(expected);
+    expect(tail?.text).toBe("{\"id\":\"a\"}\n");
+    expect(await resolveKiroV3MessagesPath(foreground(pane.tui, V3_TUI_ARGV))).toBe(expected);
+    const boundId = `${tail!.path}\0${tail!.identity}\0req-1`;
+    expect(kiroRecordStillOpenInFile(boundId, () => ({ id: "req-1" }))).toBe(true);
+    // Replacing the file with a new inode at the same pathname (atomic rename while old inode stays live) must fail
+    await writeFile(`${expected}.new`, "{\"id\":\"a\"}\n");
+    await rename(`${expected}.new`, expected);
+    expect(kiroRecordStillOpenInFile(boundId, () => ({ id: "req-1" }))).toBe(false);
+  });
+
+  linuxTest("two V3 panes in one workspace each resolve their own messages.jsonl", async () => {
+    const first = await kiroV3Pane();
+    const second = await kiroV3Pane();
+    const firstFile = await writeV3Session("b2b0ac144d5dc5d7", V3_ID);
+    const secondFile = await writeV3Session("b2b0ac144d5dc5d7", V3_OTHER);
+    await writeV3Lease(V3_ID, first.acp, first.tui);
+    await writeV3Lease(V3_OTHER, second.acp, second.tui);
+    expect(await resolveKiroV3MessagesPath(foreground(first.tui, V3_TUI_ARGV))).toBe(firstFile);
+    expect(await resolveKiroV3MessagesPath(foreground(second.tui, V3_TUI_ARGV))).toBe(secondFile);
+  });
+
+  linuxTest("rejects stale leases, mismatched parentPid, multiple leases, symlinks, FIFOs, and ambiguous duplicates", async () => {
+    const pane = await kiroV3Pane();
+    const file = await writeV3Session("b2b0ac144d5dc5d7", V3_ID);
+    // stale lease (no later than process start)
+    await writeV3Lease(V3_ID, pane.acp, pane.tui, new Date(processStartedAt(pane.acp)!));
+    expect(await resolveKiroV3MessagesPath(foreground(pane.tui, V3_TUI_ARGV))).toBeNull();
+    // mismatched parentPid
+    await writeV3Lease(V3_ID, pane.acp, pane.tui + 1);
+    expect(await resolveKiroV3MessagesPath(foreground(pane.tui, V3_TUI_ARGV))).toBeNull();
+    // valid lease + second lease for same process -> ambiguous
+    await writeV3Lease(V3_ID, pane.acp, pane.tui);
+    await writeV3Session("b2b0ac144d5dc5d7", V3_OTHER);
+    await writeV3Lease(V3_OTHER, pane.acp, pane.tui);
+    expect(await resolveKiroV3MessagesPath(foreground(pane.tui, V3_TUI_ARGV))).toBeNull();
+    await rm(join(home, ".kiro", "session-leases", `${V3_OTHER}.lease`));
+    // duplicate session id across two workspace groups -> ambiguous
+    await writeV3Session("0cde2b429b773ff2", V3_ID);
+    expect(await resolveKiroV3MessagesPath(foreground(pane.tui, V3_TUI_ARGV))).toBeNull();
+    await rm(join(home, ".kiro", "sessions", "0cde2b429b773ff2"), { recursive: true, force: true });
+    // symlinked messages.jsonl outside store
+    await rm(file);
+    await writeFile(join(home, "outside.jsonl"), "");
+    await symlink(join(home, "outside.jsonl"), file);
+    expect(await resolveKiroV3MessagesPath(foreground(pane.tui, V3_TUI_ARGV))).toBeNull();
+    expect(await authorizeKiroV3Messages(join(home, ".kiro", "sessions"), V3_ID)).toBeNull();
+    // restore messages.jsonl, replace lease with symlink and FIFO
+    await rm(file);
+    await writeFile(file, "");
+    const leasePath = join(home, ".kiro", "session-leases", `${V3_ID}.lease`);
+    await writeFile(join(home, "elsewhere.lease"), JSON.stringify({ v: 1, pid: pane.acp, parentPid: pane.tui, acquiredAt: new Date(Date.now() + 1000).toISOString() }));
+    await rm(leasePath);
+    await symlink(join(home, "elsewhere.lease"), leasePath);
+    expect(await resolveKiroV3MessagesPath(foreground(pane.tui, V3_TUI_ARGV))).toBeNull();
+    await rm(leasePath);
+    expect(spawnSync("mkfifo", [leasePath]).status).toBe(0);
+    expect(await resolveKiroV3MessagesPath(foreground(pane.tui, V3_TUI_ARGV))).toBeNull();
+    // non-Kiro foreground process
+    await rm(leasePath);
+    await writeV3Lease(V3_ID, pane.acp, pane.tui);
+    expect(await resolveKiroV3MessagesPath(foreground(pane.tui, ["bash"]))).toBeNull();
   });
 });
 

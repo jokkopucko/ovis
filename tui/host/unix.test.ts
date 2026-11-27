@@ -17,7 +17,7 @@ class Emitter {
   count(event: string) { return this.listeners.get(event)?.size ?? 0; }
 }
 
-function standIns(options: { stdinTTY?: boolean; stdoutTTY?: boolean; env?: Record<string, string> } = {}) {
+function standIns(options: { stdinTTY?: boolean; stdoutTTY?: boolean; env?: Record<string, string>; parentStopping?: boolean | boolean[] } = {}) {
   const log: string[] = [];
   const waiting: Buffer[] = [];
   const stdin = Object.assign(new Emitter(), {
@@ -28,7 +28,7 @@ function standIns(options: { stdinTTY?: boolean; stdoutTTY?: boolean; env?: Reco
     unref: () => { log.push("unref"); },
   });
   const stdout = Object.assign(new Emitter(), { isTTY: options.stdoutTTY ?? true, fd: 1, columns: 120, rows: 40 });
-  const proc = Object.assign(new Emitter(), { exit: (code: number) => { log.push(`exit ${code}`); }, pid: 4242, kill: (pid: number, signal: string) => { log.push(`kill ${pid} ${signal}`); } });
+  const proc = Object.assign(new Emitter(), { exit: (code: number) => { log.push(`exit ${code}`); }, pid: 4242, ppid: 4241, kill: (pid: number, signal: string) => { log.push(`kill ${pid} ${signal}`); } });
   const failures: string[] = [];
   const refuse = { always: false, pauses: 0 };
   const writeSync = (fd: number, buffer: Uint8Array, offset: number, length: number) => {
@@ -38,9 +38,19 @@ function standIns(options: { stdinTTY?: boolean; stdoutTTY?: boolean; env?: Reco
     log.push(`write ${fd} ${new TextDecoder().decode(buffer.subarray(offset, offset + part))}`);
     return part;
   };
-  const host = createUnixHost({ stdin, stdout, process: proc, env: options.env ?? {}, writeSync, pause: () => { refuse.pauses++; } });
+  // the stop as the system's would do it, logged: given back, then stopped or not once it is settled
+  let settled: () => void = () => {};
+  const settledOnce = () => new Promise<void>((resolve) => { settled = resolve; });
+  const stop = (giveBack: () => void, decide: (settle: (continued: boolean) => void) => void) => {
+    giveBack();
+    decide((continued) => { log.push(continued ? "not stopped" : "stopped"); settled(); });
+  };
+  // the launcher's states, read in turn; the last one stays
+  const readings = [options.parentStopping ?? true].flat();
+  const stopping = (pid: number) => { log.push(`stopping ${pid}?`); return readings.length > 1 ? readings.shift()! : readings[0]!; };
+  const host = createUnixHost({ stdin, stdout, process: proc, env: options.env ?? {}, writeSync, pause: () => { refuse.pauses++; }, stop, stopping });
   const written = () => log.filter((entry) => entry.startsWith("write ")).map((entry) => entry.slice(8)).join("");
-  return { host, log, waiting, stdin, stdout, proc, failures, refuse, written };
+  return { host, log, waiting, stdin, stdout, proc, failures, refuse, written, settledOnce };
 }
 
 describe("the unix host", () => {
@@ -53,12 +63,86 @@ describe("the unix host", () => {
     proc.emit("SIGTSTP");
     const atStop = log.slice();
     expect(written().slice(entered.length)).toBe(LEAVE);
-    expect(atStop.at(-1)).toBe("kill 4242 SIGSTOP");
+    expect(atStop.at(-1)).toBe("stopped");
+    expect(atStop).not.toContain("stopping 4241?");
     expect(atStop.filter((entry: string) => entry.startsWith("raw")).at(-1)).toBe("raw off");
     proc.emit("SIGCONT");
     expect(written().slice(entered.length + LEAVE.length)).toBe(ENTER);
     expect(log.filter((entry: string) => entry.startsWith("raw")).at(-1)).toBe("raw on");
     expect(sizes).toEqual([{ cols: 120, rows: 40 }]);
+  });
+
+  it("started by a launcher, gives the terminal back at SIGTSTP, then asks whether the launcher, the job's first process, stopped at the same signal: stopped with it, it stops", () => {
+    const { host, log, proc, stdin, written } = standIns({ env: { OVIS_TUI_HOLD: "/nonexistent/held" }, parentStopping: true });
+    host.enter();
+    const entered = written();
+    const from = log.length;
+    proc.emit("SIGTSTP");
+    expect(log.slice(from).filter((entry) => entry.startsWith("stopping") || entry.includes("stopped"))).toEqual(["stopping 4241?", "stopped"]);
+    expect(written().slice(entered.length)).toBe(LEAVE);
+    proc.emit("SIGCONT");
+    expect(written().slice(entered.length + LEAVE.length)).toBe(ENTER);
+    expect(stdin.count("readable")).toBe(1);
+  });
+
+  it("started by a launcher seen running at SIGTSTP (the shell continued the job before this stop was heard), holds the stop until the continue is heard, enters again at it and does not stop", () => {
+    const { host, log, proc, stdin, written } = standIns({ env: { OVIS_TUI_HOLD: "/nonexistent/held" }, parentStopping: false });
+    host.enter();
+    const entered = written();
+    const from = log.length;
+    proc.emit("SIGTSTP");
+    expect(written().slice(entered.length)).toBe(LEAVE);
+    expect(log.slice(from).filter((entry) => entry.includes("stopped"))).toEqual([]);
+    proc.emit("SIGCONT");
+    expect(written().slice(entered.length + LEAVE.length)).toBe(ENTER);
+    expect(log.slice(from).filter((entry) => entry.includes("stopped"))).toEqual(["not stopped"]);
+    expect([proc.count("SIGCONT"), stdin.count("readable")]).toEqual([1, 1]);
+  });
+
+  it("started by a launcher seen running at SIGTSTP that stops a moment later (it took the signal and had not acted on it yet), stops with it", async () => {
+    const { host, log, proc, stdin, written, settledOnce } = standIns({ env: { OVIS_TUI_HOLD: "/nonexistent/held" }, parentStopping: [false, true] });
+    host.enter();
+    const entered = written();
+    const from = log.length;
+    const settled = settledOnce();
+    proc.emit("SIGTSTP");
+    await settled;
+    expect(log.slice(from).filter((entry) => entry.startsWith("stopping") || entry.includes("stopped"))).toEqual(["stopping 4241?", "stopping 4241?", "stopped"]);
+    expect(written().slice(entered.length)).toBe(LEAVE);
+    // only the guard's own continue listener is left
+    expect(proc.count("SIGCONT")).toBe(1);
+    proc.emit("SIGCONT");
+    expect(written().slice(entered.length + LEAVE.length)).toBe(ENTER);
+    expect(stdin.count("readable")).toBe(1);
+  });
+
+  it("does not stop at a SIGTERM that comes while it holds the stop for a launcher seen running: it ends", () => {
+    const { host, log, proc } = standIns({ env: { OVIS_TUI_HOLD: "/nonexistent/held" }, parentStopping: false });
+    host.enter();
+    const from = log.length;
+    proc.emit("SIGTSTP");
+    proc.emit("SIGTERM");
+    expect(log.slice(from).filter((entry) => entry.includes("stopped") || entry.startsWith("exit"))).toEqual(["exit 143", "not stopped"]);
+    expect([proc.count("SIGCONT"), proc.count("SIGTERM")]).toEqual([1, 1]);
+  });
+
+  it("writes nothing to the terminal between the stop and the continue, a frame, a resize and the colour-scheme watch included; the continue enters again with them", () => {
+    const { host, proc, stdout, written } = standIns({ env: { OVIS_TUI_HOLD: "/nonexistent/held" }, parentStopping: false });
+    const sizes: unknown[] = [];
+    host.onResize((size: unknown) => sizes.push(size));
+    host.enter();
+    proc.emit("SIGTSTP");
+    const givenBack = written();
+    expect(givenBack.endsWith(LEAVE)).toBe(true);
+    expect(host.write("frame")).toBe(false);
+    stdout.emit("resize");
+    host.watchDisplay();
+    host.refreshDisplay();
+    expect({ after: written().slice(givenBack.length), sizes }).toEqual({ after: "", sizes: [] });
+    proc.emit("SIGCONT");
+    expect(written().slice(givenBack.length)).toBe(`${ENTER}${ESC}[?2031h`);
+    expect(sizes).toEqual([{ cols: 120, rows: 40 }]);
+    expect(host.write("frame")).toBe(true);
   });
 
   it("enters nothing when stdin or stdout is not a terminal", () => {

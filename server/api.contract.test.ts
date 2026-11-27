@@ -15,6 +15,7 @@ import * as appModule from "./index.ts";
 import * as herdrClient from "./herdr/client.ts";
 import type { AgentKind, AgentStatus, ApiError, HealthAuth, IntegrationsResponse, LanExposure, PortalStatus, SecuritySummary, PushKey, RemoteAccess, SessionSnapshot, TabMoved, TabMovedToWorkspace, PaneFindResponse, PaneReadResult, UsageReport, WorkspaceCreated, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../shared/protocol.ts";
 import { SUPPORTED_AGENT_KINDS } from "../shared/supported-agents.ts";
+import { HARNESS_TOOL_DEFAULT } from "../shared/harness-tool.ts";
 import { HerdrUpdater } from "./herdr-update.ts";
 import { PortalService } from "./portal.ts";
 import { noInstalledNotes, noUpdateNotes, unmanagedUpdateStatus, type HerdrUpdateStatus, type InstalledNotes, type UpdateNotes, type UpdateStatus } from "../shared/update.ts";
@@ -2243,6 +2244,34 @@ describe("workspace and discovery endpoints", () => {
       rmSync(repo, { recursive: true, force: true });
     }
   }, 30_000);
+
+  it("hands the checkout the browser confirmed to the delete, so a core refuses one its workspace no longer names (#4211)", async () => {
+    const asked: unknown[][] = [];
+    const removing = spyOn(herdrClient, "worktreeRemove").mockImplementation(async (...args) => {
+      asked.push(args);
+      return { type: "worktree_removed", workspace_id: args[0], path: "/confirmed", forced: args[1] };
+    });
+    const post = (body: unknown) => fetch(`${base()}/api/worktree/remove`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    try {
+      expect((await post({ workspace_id: "w1", expected_checkout: "/confirmed" })).status).toBe(200);
+      expect((await post({ workspace_id: "w1", force: true, expected_checkout: "/confirmed", expected_git_id: "1:2:3" })).status).toBe(200);
+      // an older client confirms no path: its delete goes as before
+      expect((await post({ workspace_id: "w1" })).status).toBe(200);
+      for (const wrong of ["relative/path", "", 7]) {
+        const refused = await post({ workspace_id: "w1", expected_checkout: wrong });
+        expect(refused.status).toBe(400);
+        expect(((await refused.json()) as ApiError).error.code).toBe("invalid_expected_checkout");
+      }
+      for (const wrong of ["", 7]) {
+        const refused = await post({ workspace_id: "w1", expected_checkout: "/confirmed", expected_git_id: wrong });
+        expect(refused.status).toBe(400);
+        expect(((await refused.json()) as ApiError).error.code).toBe("invalid_expected_git_id");
+      }
+      expect(asked).toEqual([["w1", false, undefined, { expected_checkout: "/confirmed" }], ["w1", true, undefined, { expected_checkout: "/confirmed", expected_git_id: "1:2:3" }], ["w1", false, undefined, undefined]]);
+    } finally {
+      removing.mockRestore();
+    }
+  });
 
   it("starts a worktree asked from a workspace on a linked checkout at the repository's own workspace", async () => {
     const repo = mkdtempSync(join(tmpdir(), "ovis-worktree-linked-"));
@@ -4997,10 +5026,12 @@ describe("GET /api/sessions/history", () => {
           if (phase === "server creation") throw failure;
           const app = createApp(...args);
           stop = app.stop;
+          const appStop = app.stop;
           const stopping = spyOn(app, "stop").mockImplementation(() => {
-            stop!();
+            const drained = appStop();
             stopped = true;
             if (phase === "server stop") throw failure;
+            return drained;
           });
           restores.push(() => stopping.mockRestore());
           return app;
@@ -5297,7 +5328,7 @@ describe("POST /api/sessions/resume", () => {
 
   beforeAll(async () => {
     if (!NATIVE) return;
-    config = mkdtempSync("/tmp/hwr-");
+    config = mkdtempSync(join(tmpdir(), "hwr-"));
     root = mkdtempSync(join(tmpdir(), "ovis-claude-resume-"));
     home = join(root, "home");
     alternate = join(root, "alternate-store");
@@ -5455,10 +5486,25 @@ setInterval(() => {}, 1 << 30);
     expect(JSON.stringify(refusals)).not.toMatch(/alternate|prompt|missing-store/);
   }, 90_000);
 
+  it.skipIf(!NATIVE)("refuses wrapped Resume with a valid store key without creating a tab", async () => {
+    const store = join(root, "wrapped-store");
+    writeSession(store, ID, "wrapped store prompt");
+    const plain = await sourcePane(store, undefined, "env HERDR_AGENT=claude claude");
+    const [, original] = await list(plain.pane);
+    const key = original.sessions.find((row) => row.id === ID)!.resume!.source!.store_key;
+    const wrapped = await sourcePane(store, undefined,
+      `env HERDR_AGENT=claude bash -c 'exec -a claude "$@"' bash node ${JSON.stringify(join(root, "claude.cjs"))}`);
+    const tabs = await tabsOf(workspaceId);
+    const [status, answer] = await resume({ workspace_id: workspaceId, pane_id: wrapped.pane, agent: "claude", session_id: ID, store_key: key });
+    expect([status, answer.error?.code, await tabsOf(workspaceId)]).toEqual([409, "launch_wrapped", tabs]);
+    const [listed, history] = await list(wrapped.pane);
+    expect([listed, history.sessions.find((row) => row.id === ID)?.resume]).toEqual([200, null]);
+  }, 30_000);
+
   it.skipIf(!NATIVE)("a source shell without the override is no proof: herdr exporting one withholds Resume before any tab", async () => {
     const implicitKey = (await list((await sourcePane(null)).pane))[1].sessions[0]!.resume!.source!.store_key;
     const exportedSession = "resume-exported";
-    const exportedConfig = mkdtempSync("/tmp/hwr-");
+    const exportedConfig = mkdtempSync(join(tmpdir(), "hwr-"));
     const exportedSocket = join(exportedConfig, "herdr", "sessions", exportedSession, "herdr.sock");
     const exportedRpc = <T,>(method: string, params: Record<string, unknown>) => herdrRpc<T>(method, params, exportedSocket);
     const defaultBefore = readFileSync(transcript(join(home, ".claude"), ID), "utf8");
@@ -5520,7 +5566,7 @@ setInterval(() => {}, 1 << 30);
 // The shared preferences (shared/preferences.ts) over HTTP and the event stream: the muted panes
 // are always in the document, the first mute is a change of the empty list, a watching device
 // reads and cannot write, and two tabs' changes land as two revisions with both kept.
-const namedPreferences = <T extends object>(doc: T) => ({ ...doc, state_id: expect.stringMatching(/^[0-9a-f]{32}$/) });
+const namedPreferences = (doc: SharedPreferences) => ({ ...doc, settings: { ...doc.settings, agentHarnessTool: HARNESS_TOOL_DEFAULT }, state_id: expect.stringMatching(/^[0-9a-f]{32}$/) });
 
 describe("shared preferences API", () => {
   const guard = { "x-herdr-machine": "1", "content-type": "application/json" };
@@ -5563,9 +5609,9 @@ describe("shared preferences API", () => {
     const put = (body: unknown, extra: Record<string, string> = {}) => fetch(`${base}/api/preferences`, { method: "PUT", headers: { ...headers, ...extra }, body: typeof body === "string" ? body : JSON.stringify(body) });
     const abort = new AbortController();
     try {
-      expect(await (await fetch(`${base}/api/preferences`, { headers })).json()).toEqual({ revision: 0, settings: {}, muted_panes: [] });
+      expect(await (await fetch(`${base}/api/preferences`, { headers })).json()).toEqual({ revision: 0, settings: { agentHarnessTool: HARNESS_TOOL_DEFAULT }, muted_panes: [] });
       const events = await openEvents(base, headers, abort);
-      expect(await events.next("the opening document", (document) => document.revision === 0)).toEqual({ revision: 0, settings: {}, muted_panes: [] });
+      expect(await events.next("the opening document", (document) => document.revision === 0)).toEqual({ revision: 0, settings: { agentHarnessTool: HARNESS_TOOL_DEFAULT }, muted_panes: [] });
       const first = await put({ settings: {}, muted_panes: ["w1:p1"] });
       expect(first.status).toBe(200);
       expect(await first.json()).toEqual(namedPreferences({ revision: 1, settings: {}, muted_panes: ["w1:p1"] }));
@@ -5597,10 +5643,11 @@ describe("shared preferences API", () => {
     const headers = { ...guard, authorization: "Bearer test-preferences" };
     const abort = new AbortController();
     try {
-      expect(await (await fetch(`${base}/api/preferences`, { headers })).json()).toEqual({ ...stored, muted_panes: [] });
+      const advertised = { ...stored, settings: { ...stored.settings, agentHarnessTool: HARNESS_TOOL_DEFAULT }, muted_panes: [] };
+      expect(await (await fetch(`${base}/api/preferences`, { headers })).json()).toEqual(advertised);
       expect(JSON.parse(readFileSync(join(root, "preferences.json"), "utf8"))).toEqual(stored);
       const events = await openEvents(base, headers, abort);
-      expect(await events.next("the opening document", (document) => document.revision === 4)).toEqual({ ...stored, muted_panes: [] });
+      expect(await events.next("the opening document", (document) => document.revision === 4)).toEqual(advertised);
       const first = await fetch(`${base}/api/preferences`, { method: "PUT", headers, body: JSON.stringify({ settings: {}, muted_panes: ["w1:p1"] }) });
       expect(await first.json()).toEqual(namedPreferences({ revision: 5, settings: { theme: "dark" }, pins: ["local:w1:p1"], muted_panes: ["w1:p1"] }));
       expect(JSON.parse(readFileSync(join(root, "preferences.json"), "utf8"))).toEqual({ revision: 5, settings: { theme: "dark" }, pins: ["local:w1:p1"] });

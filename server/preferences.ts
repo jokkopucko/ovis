@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { MAX_PREFERENCES_BYTES, nextTabLabels, normalizeThemeChange, sharedPreferencesBody, type PreferencesChange, type SharedPreferences } from "../shared/preferences.ts";
+import { MAX_PREFERENCES_BYTES, nextTabLabels, normalizeThemeChange, preferencesConflict, preferencesPutBody, sharedPreferencesBody, type PreferencesChange, type SharedPreferences } from "../shared/preferences.ts";
 import { badRequest, isJsonObject, jsonResponse } from "./http.ts";
 import { damagedCopy, readStateDocument, writeStateDocument } from "./state-document.ts";
-import { HARNESS_TOOL_OFF, harnessToolSetting, parseHarnessSetting } from "../shared/harness-tool.ts";
+import { harnessToolSetting, parseHarnessSetting } from "../shared/harness-tool.ts";
+import { AgentToolPolicyFile } from "./agent-tools/policy-file.ts";
 
 export const STATE_ID_FILE = "preferences-id.json";
 const STATE_ID = /^[0-9a-f]{32}$/;
@@ -23,6 +24,8 @@ const byteLength = (text: string): number => new TextEncoder().encode(text).leng
 export class PreferencesTooLarge extends Error {
   constructor() { super(`Shared preferences are at most ${MAX_PREFERENCES_BYTES / 1024} KB`); }
 }
+
+class PreferencesRevisionConflict extends Error {}
 
 /**
  * The muted panes are always in the document, empty while nothing is muted: a server with none
@@ -44,6 +47,7 @@ export class PreferenceStore {
   private readonly labelsPath: string;
   private readonly stateDir: string;
   private stateId: string | null | undefined;
+  private readonly agentPolicy: AgentToolPolicyFile;
   private readonly listeners = new Set<(preferences: SharedPreferences) => void>();
   private unsettled = true;
   private mutesUnsettled = true;
@@ -54,6 +58,7 @@ export class PreferenceStore {
     this.mutesPath = join(stateDir, "muted-panes.json");
     this.labelsPath = join(stateDir, "tab-labels.json");
     this.stateDir = stateDir;
+    this.agentPolicy = new AgentToolPolicyFile(stateDir);
     try {
       this.stateId = readStateId(stateDir);
       if (this.stateId === null) console.error(`${join(stateDir, STATE_ID_FILE)} is not a state folder id; none is sent until it is repaired or removed and the server restarts`);
@@ -68,17 +73,8 @@ export class PreferenceStore {
       console.error(`Cannot read ${this.path} (${(error as NodeJS.ErrnoException).code ?? "error"}); shared preferences start empty and are not saved until it can be read`);
     }
     if (typeof this.stateId === "string") this.current = { ...this.current, state_id: this.stateId };
-    // Like muted panes, a security policy cannot live only in preferences.json: an older
-    // server rewrites that document without keys it does not recognize.
-    const policyPath = join(stateDir, "agent-harness-policy.json");
-    try {
-      const read = readStateDocument(policyPath);
-      if (read.kind !== "missing") this.current.settings.agentHarnessTool = read.kind === "json" ? parseHarnessSetting(read.value) ?? HARNESS_TOOL_OFF : HARNESS_TOOL_OFF;
-      else if (this.current.settings.agentHarnessTool !== undefined) writeStateDocument(policyPath, JSON.stringify(harnessToolSetting(this.current.settings.agentHarnessTool)), false);
-    } catch (error) {
-      // A non-directory cannot contain a policy (or a hub); the preference store remains empty.
-      if (!(error instanceof Error && "code" in error && error.code === "ENOTDIR")) this.current.settings.agentHarnessTool = HARNESS_TOOL_OFF;
-    }
+    const policy = this.agentPolicy.read(this.current.settings.agentHarnessTool);
+    if (policy !== undefined) this.current.settings.agentHarnessTool = policy;
     try {
       this.current = { ...this.current, muted_panes: this.readMutes() ?? [] };
     } catch (error) {
@@ -129,8 +125,9 @@ export class PreferenceStore {
   }
 
   get(): SharedPreferences { return this.current; }
+  get paneRunEpoch(): string | null { return this.agentPolicy.paneRunEpoch; }
 
-  set(change: PreferencesChange): SharedPreferences {
+  set(change: PreferencesChange, expectedRevision?: number): SharedPreferences {
     const changingPolicy = Object.hasOwn(change.settings, "agentHarnessTool");
     const policy = changingPolicy ? parseHarnessSetting(change.settings.agentHarnessTool) : undefined;
     if (policy === null) throw new Error("Invalid agent harness policy.");
@@ -140,6 +137,13 @@ export class PreferenceStore {
       const held = this.readDisk();
       if (held) base = held;
       keepDamaged = held === null;
+    }
+    if (expectedRevision !== undefined && expectedRevision !== base.revision) {
+      if (base.revision !== this.current.revision) {
+        const policy = this.current.settings.agentHarnessTool;
+        this.current = { ...base, settings: { ...base.settings, ...(policy === undefined ? {} : { agentHarnessTool: policy }) } };
+      }
+      throw new PreferencesRevisionConflict();
     }
     let labelsUnreadable = false;
     const wasOff = base.settings.autoTabNames === false;
@@ -229,7 +233,7 @@ export class PreferenceStore {
       this.mutesUnsettled = false;
     }
     this.unsettled = false;
-    if (policy) writeStateDocument(join(this.stateDir, "agent-harness-policy.json"), JSON.stringify(policy), false);
+    if (policy) this.agentPolicy.save(policy, harnessToolSetting(this.current.settings.agentHarnessTool).level);
     this.current = next;
     // every listener hears of the saved change; the first one that fails then fails the save's caller, so a
     // change that could not be followed through (a Hub account's hide not saved, #3428) is not taken as done
@@ -247,11 +251,15 @@ export class PreferenceStore {
   }
 }
 
+/** Tell clients the effective policy without storing it as an explicit choice. */
+export const preferencesForClient = (doc: SharedPreferences): SharedPreferences =>
+  ({ ...doc, settings: { ...doc.settings, agentHarnessTool: harnessToolSetting(doc.settings.agentHarnessTool) } });
+
 /** /api/preferences: GET the shared document, PUT a change to it. A watching device's PUT is refused before this (index.ts). */
 export async function handlePreferencesRequest(request: Request, store: PreferenceStore): Promise<Response> {
   const reply = (body: unknown, status = 200) => jsonResponse(body, status, { "cache-control": "no-store" });
   const tooLarge = () => reply({ error: { code: "too_large", message: new PreferencesTooLarge().message } }, 413);
-  if (request.method === "GET") return reply(store.get());
+  if (request.method === "GET") return reply(preferencesForClient(store.get()));
   if (request.method !== "PUT") return reply({ error: { code: "method_not_allowed", message: "Use GET or PUT /api/preferences" } }, 405);
   // a body announced over the limit is refused unread; one that lies about its length is measured
   const announced = Number(request.headers.get("content-length"));
@@ -260,11 +268,13 @@ export async function handlePreferencesRequest(request: Request, store: Preferen
   if (byteLength(text) > MAX_PREFERENCES_BYTES) return tooLarge();
   let raw: unknown;
   try { raw = JSON.parse(text); } catch { return badRequest("invalid_json", "The body is not JSON"); }
-  const body = sharedPreferencesBody(raw);
-  if (body === null) return badRequest("invalid_body", "Send { settings: object, pins?: string[], muted_panes?: string[], tab_labels?: { [pane|terminal]: string }, tab_labels_removed?: string[] }");
+  const body = preferencesPutBody(raw);
+  if (body === null) return badRequest("invalid_body", "Send { settings: object, pins?: string[], muted_panes?: string[], tab_labels?: { [pane|terminal]: string }, tab_labels_removed?: string[], expected_revision?: non-negative safe integer }");
   if (Object.hasOwn(body.settings, "agentHarnessTool") && !parseHarnessSetting(body.settings.agentHarnessTool)) return badRequest("invalid_policy", "Invalid agent harness policy.");
-  try { return reply(store.set(body)); }
+  const { expected_revision: expectedRevision, ...change } = body;
+  try { return reply(preferencesForClient(store.set(change, expectedRevision))); }
   catch (error) {
+    if (error instanceof PreferencesRevisionConflict) return reply(preferencesConflict(preferencesForClient(store.get())), 409);
     if (error instanceof PreferencesTooLarge) return tooLarge();
     return reply({ error: { code: "preferences_unwritable", message: error instanceof Error ? error.message : String(error) } }, 500);
   }

@@ -3,8 +3,12 @@
 // front and one page, as in pending-left-lease.test.ts: the real createPendingDelivery, PendingInputs and
 // interruptCodexSteering, with herdr's client faked. `on.keys` is what herdr and the agent do as a key lands.
 import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import type { Server, ServerWebSocket } from "bun";
+import { CodexServers, onServedStatus, servedStatus } from "../approvals/codex.ts";
+import { ApprovalHub } from "../approvals/hub.ts";
 import type { StatusCollectorDeps } from "../collector.ts";
 import * as gjc from "../gjc-status.ts";
 import * as herdr from "../herdr/client.ts";
@@ -20,26 +24,27 @@ afterEach(() => { mock.restore(); });
 type Row = { id: string; state: string; text: string; error?: { code: string } };
 const steeringPanel = (entry: string) => `• Working (2s • esc to interrupt)\n• Messages to be submitted after next tool call (press esc to interrupt and send immediately)\n  ↳ ${entry}\n› Ask Codex to do anything\n  gpt-6.1 default · /workspace\n`;
 
-function pane() {
+/** `argv`: the Codex process herdr reports in front; `options`: added to createPendingDelivery's options. */
+function pane(argv: string[] = ["codex"], options: Record<string, unknown> = {}) {
   const typed: string[] = [];
   const now = { status: "working", screen: "" };
-  const on: { keys?: (keys: string[]) => void; read?: (count: number) => void } = {};
+  const on: { keys?: (keys: string[]) => void; read?: (count: number) => void; frame?: () => void; submit?: () => { over: Promise<boolean> } } = {};
   let reads = 0;
   spyOn(processStart, "processStartedAtAsync").mockImplementation(async () => 1000);
-  spyOn(herdr, "paneProcessInfo").mockImplementation(async () => ({ pane_id: "p", shell_pid: 41000, foreground_processes: [{ pid: 41001, name: "codex", argv: ["codex"] }] }) as Awaited<ReturnType<typeof herdr.paneProcessInfo>>);
+  spyOn(herdr, "paneProcessInfo").mockImplementation(async () => ({ pane_id: "p", shell_pid: 41000, foreground_processes: [{ pid: 41001, name: "codex", argv }] }) as Awaited<ReturnType<typeof herdr.paneProcessInfo>>);
   spyOn(herdr, "paneRead").mockImplementation(async () => { on.read?.(++reads); return { text: now.screen } as Awaited<ReturnType<typeof herdr.paneRead>>; });
   // as herdrRpc does: the guard is asked right before the write, and a refused write sends nothing
   const refused = (guard?: () => boolean): void => { if (guard && !guard()) throw new herdr.HerdrError("cancelled", "the write was withheld"); };
   spyOn(herdr, "paneSendText").mockImplementation(async (_pane, text, _socket, guard) => { refused(guard); typed.push(text.replace("\u001b[200~", "paste:").replace("\u001b[201~", "")); });
   spyOn(herdr, "paneSendKeys").mockImplementation(async (_pane, keys, _socket, guard) => { refused(guard); typed.push(keys.join(",")); on.keys?.(keys); });
-  const page = { data: connectionData({ deviceId: undefined, readOnly: false }), getBufferedAmount: () => 0, send: () => 1 };
+  const page = { data: connectionData({ deviceId: undefined, readOnly: false }), getBufferedAmount: () => 0, send: () => { queueMicrotask(() => on.frame?.()); return 1; } };
   let tail: Promise<unknown> = Promise.resolve();
   const serialize = <T,>(_pane: string, run: () => T | Promise<T>): Promise<T> => { const next = tail.catch(() => {}).then(run); tail = next; return next; };
   const delivery = createPendingDelivery({
-    options: { submitDelayMs: 0 }, clients: new Set<unknown>([page]), attachments: new Map(), serialize, lastTyped: new Map(),
+    options: { submitDelayMs: 0, ...options }, clients: new Set<unknown>([page]), attachments: new Map(), serialize, lastTyped: new Map(),
     sight: () => ({ facts: () => ({ attached: true, origin: true, sameAttachment: true, samePty: true, sameClaim: true, claimed: true, member: true,
       ready: true, held: false, currentHeld: false, mirror: false, cols: 80 }), write: () => {} }),
-    submitText: async () => { typed.push("immediate"); },
+    submitText: async () => { typed.push("immediate"); return on.submit?.(); },
     authorizeSocket: () => {},
     clientSnapshot: async () => ({ panes: [{ pane_id: "p", terminal_id: "p", workspace_id: "w", tab_id: "t", agent: "codex", agent_status: now.status, focused: false, revision: 0 }] }),
     omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
@@ -70,7 +75,9 @@ function pane() {
     now.status = "idle"; event("idle");
     await settled();
   };
-  return { delivery, typed, now, on, settled, event, queue, rows, sendNow, turnSeen };
+  /** a chat message sent at once: pendingFrames.submit with no delivery */
+  const send = async (text: string): Promise<void> => { await delivery.pendingFrames.submit(page as never, { type: "submit", id: ++id, pane_id: "p", text, payload: text } as never); };
+  return { delivery, typed, now, on, settled, event, queue, send, rows, sendNow, turnSeen };
 }
 
 describe("the queue's turn gate (#4118)", () => {
@@ -88,7 +95,7 @@ describe("the queue's turn gate (#4118)", () => {
     await d.sendNow("X");
     await d.settled();
     expect(d.typed).toEqual(["paste:X", "Enter"]);
-    expect(d.rows()).toEqual(["Y queued"]);
+    expect(d.rows()).toEqual(["X uncertain", "Y queued"]);
     await d.turnSeen();
     expect(d.typed).toEqual(["paste:X", "Enter", "paste:Y", "Enter"]);
   });
@@ -108,7 +115,12 @@ describe("the queue's turn gate (#4118)", () => {
     await d.queue("Z");
     await d.settled();
     expect(d.typed).toEqual(["paste:X", "Enter"]);
-    expect(d.rows()).toEqual(["Y queued", "Z queued"]);
+    expect(d.rows()).toEqual(["X uncertain", "Y queued", "Z queued"]);
+    await d.turnSeen();
+    expect(d.typed).toEqual(["paste:X", "Enter", "paste:Y", "Enter"]);
+    await d.turnSeen();
+    expect(d.typed).toEqual(["paste:X", "Enter", "paste:Y", "Enter", "paste:Z", "Enter"]);
+    expect(d.rows()).toEqual(["X uncertain"]);
   });
 
   // B stays open (#4118): no herdr event carries its order against a snapshot, and every rule that takes an event as older
@@ -154,7 +166,7 @@ describe("the queue's turn gate (#4118)", () => {
     await d.sendNow("Y");
     await d.settled();
     expect(d.typed).toEqual(["paste:X", "Enter", "Escape", "paste:Y", "Enter"]);
-    expect(d.rows()).toEqual(["Z queued"]);
+    expect(d.rows()).toEqual(["X uncertain", "Y uncertain", "Z queued"]);
     await d.turnSeen();
     expect(d.typed).toEqual(["paste:X", "Enter", "Escape", "paste:Y", "Enter", "paste:Z", "Enter"]);
   });
@@ -174,7 +186,7 @@ describe("the queue's turn gate (#4118)", () => {
     d.event("idle");
     await d.settled();
     expect(d.typed).toEqual(["paste:X", "Enter", "Escape"]);
-    expect(d.rows()).toEqual(["Y queued"]);
+    expect(d.rows()).toEqual(["X uncertain", "Y queued"]);
   });
 
   it("E: a message sent to the queue right behind the queue's Enter waits behind that Enter's turn", async () => {
@@ -766,4 +778,325 @@ it("takes no tracker's remembered working from a reconcile that reads no status 
   onBaseline([shown("unknown")], new Set(), now + 2000);
   onBaseline([shown("idle")], new Set(), now + 3000);
   expect(pending.next(PANE)).toBeNull();
+});
+
+it("keeps a Codex restart's wait when a second Send now steers through Codex's app server after the interruption's idle", async () => {
+  let useServer = false;
+  const d: ReturnType<typeof pane> = pane(["codex", "--remote", "unix:///tmp/codex.sock"], {
+    pendingStartTimeoutMs: 0,
+    codexServers: {
+      steerTarget: () => !useServer ? null : {
+        threadId: "th-1",
+        send: async (_input: string, _clientId: string, checkPane: () => Promise<void>, writing: () => void) => {
+          await checkPane();
+          // Between checkPane's working read and turn/steer, Escape's interruption reaches the queue as idle.
+          d.now.status = "idle";
+          d.delivery.pending.status("p", "idle");
+          writing();
+          d.typed.push("rpc:Y");
+          return "accepted";
+        },
+      },
+    },
+  });
+  d.delivery.pending.status("p", "working");
+  await d.queue("X");
+  await d.queue("Y");
+  await d.queue("Z");
+  d.on.keys = (keys) => {
+    if (keys.includes("Enter")) d.now.screen = steeringPanel("X");
+    if (keys.includes("Escape")) d.now.screen = "";
+  };
+  await d.sendNow("X");
+  await d.settled();
+  expect(d.typed).toEqual(["paste:X", "Enter", "Escape"]);
+  useServer = true;
+  await d.sendNow("Y");
+  await d.settled();
+  expect(d.typed).toEqual(["paste:X", "Enter", "Escape", "rpc:Y"]);
+  // With pendingStartTimeoutMs: 0, the joined window has already passed: a bare idle still cannot release Z before the restarted turn was seen at work.
+  d.event("idle");
+  await d.settled();
+  expect(d.typed).toEqual(["paste:X", "Enter", "Escape", "rpc:Y"]);
+  d.now.status = "working";
+  d.event("working");
+  d.now.status = "idle";
+  d.event("idle");
+  await d.settled();
+  expect(d.typed).toEqual(["paste:X", "Enter", "Escape", "rpc:Y", "paste:Z", "Enter"]);
+});
+
+it("treats an uncertain row as waiting so a queued submit is refused instead of typed at once", async () => {
+  const typed: string[] = [];
+  const sentFrames: unknown[] = [];
+  let failPasteAfterWrite = false;
+  spyOn(processStart, "processStartedAtAsync").mockImplementation(async () => 1000);
+  spyOn(herdr, "paneProcessInfo").mockImplementation(async () => ({ pane_id: "p", shell_pid: 41000, foreground_processes: [{ pid: 41001, name: "claude", argv: ["claude"] }] }) as Awaited<ReturnType<typeof herdr.paneProcessInfo>>);
+  spyOn(herdr, "paneRead").mockImplementation(async () => ({ text: "" }) as Awaited<ReturnType<typeof herdr.paneRead>>);
+  const refused = (guard?: () => boolean): void => { if (guard && !guard()) throw new herdr.HerdrError("cancelled", "the write was withheld"); };
+  spyOn(herdr, "paneSendText").mockImplementation(async (_pane, text, _socket, guard) => {
+    refused(guard);
+    typed.push(text.replace("\u001b[200~", "paste:").replace("\u001b[201~", ""));
+    if (failPasteAfterWrite) throw new herdr.HerdrError("socket_error", "lost reply after paste");
+  });
+  spyOn(herdr, "paneSendKeys").mockImplementation(async (_pane, keys, _socket, guard) => { refused(guard); typed.push(keys.join(",")); });
+  const page = { data: connectionData({ deviceId: undefined, readOnly: false }), getBufferedAmount: () => 0, send: (raw: string) => { sentFrames.push(JSON.parse(raw)); return 1; } };
+  let tail: Promise<unknown> = Promise.resolve();
+  const serialize = <T,>(_pane: string, run: () => T | Promise<T>): Promise<T> => { const next = tail.catch(() => {}).then(run); tail = next; return next; };
+  const delivery = createPendingDelivery({
+    options: { submitDelayMs: 0 },
+    clients: new Set<unknown>([page]), attachments: new Map(), serialize, lastTyped: new Map(),
+    sight: () => ({ facts: () => ({ attached: true, origin: true, sameAttachment: true, samePty: true, sameClaim: true, claimed: true, member: true,
+      ready: true, held: false, currentHeld: false, mirror: false, cols: 80 }), write: () => {} }),
+    submitText: async () => { typed.push("immediate"); },
+    authorizeSocket: () => {},
+    clientSnapshot: async () => ({ panes: [{ pane_id: "p", terminal_id: "p", workspace_id: "w", tab_id: "t", agent: "claude", agent_status: "idle", focused: false, revision: 0 }] }),
+    omo: { sessionOf: () => null }, SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
+  } as unknown as Parameters<typeof createPendingDelivery>[0]);
+  page.data.attached.set("p", { keepSize: false });
+  // Queue X while held, then Send now fails right after paste (before committing), leaving X uncertain with no committed gate.
+  await delivery.pendingFrames.submit(page as never, { type: "submit", id: 1, pane_id: "p", text: "X", payload: "X", delivery: "hold" } as never);
+  const xRow = (delivery.pending.list(page as never, "p") as Row[])[0]!;
+  failPasteAfterWrite = true;
+  await delivery.pendingFrames["pending-action"](page as never, { type: "pending-action", id: 2, pane_id: "p", pending_id: xRow.id, action: "steer" } as never);
+  expect((delivery.pending.list(page as never, "p") as Row[])[0]?.state).toBe("uncertain");
+  expect(delivery.pending.waiting("p")).toBe(true);
+  expect(typed).toEqual(["paste:X"]);
+
+  failPasteAfterWrite = false;
+  await delivery.pendingFrames.submit(page as never, { type: "submit", id: 3, pane_id: "p", text: "Y", payload: "Y", delivery: "queue" } as never);
+  // Y must be refused with pending_uncertain, never typed at once onto the half-pasted terminal.
+  expect(typed).toEqual(["paste:X"]);
+  expect(sentFrames.find((frame) => (frame as { type?: string; id?: number }).type === "submit-result" && (frame as { id?: number }).id === 3))
+    .toMatchObject({ ok: false, code: "pending_uncertain" });
+});
+
+it("keeps a committed turn gate when an uncertain send is confirmed from the native transcript", () => {
+  const pending = new PendingInputs<string, null>(() => {}, () => 1_000, 10_000);
+  const identity = { agent: "codex", terminalId: "p", session: null };
+  pending.status("p", "idle");
+  const x = pending.enqueue("a", "p", 1, "X", null, identity);
+  expect(pending.claim(x, true)).toBe(true);
+  pending.committing(x);
+  pending.settle(x, { code: "submit_changed", message: "Outcome not confirmed" }, true, false);
+  expect(x.message.state).toBe("uncertain");
+  expect(pending.confirmRecorded(x, () => true)).toBe(true);
+  // X's turn has not been seen to start and finish yet: Y queued afterwards must wait for X's turn evidence.
+  expect(pending.waiting("p")).toBe(true);
+  const y = pending.enqueue("a", "p", 2, "Y", null, identity);
+  expect(pending.next("p")).toBeNull();
+  pending.status("p", "working");
+  expect(pending.next("p")).toBeNull();
+  pending.status("p", "idle");
+  expect(pending.next("p")).toBe(y);
+});
+
+// A Codex on the server Ovis started for it tells its turns itself (server/approvals/codex.ts). Where that server took a
+// message as a turn, the queue goes by that turn's own end, and it types nothing into a turn the server says runs.
+// The real CodexServers and its connection, on a stand-in for Codex's server that answers as 0.171.0 does.
+describe("a Codex whose own server tells its turns", () => {
+  type Message = Record<string, unknown>;
+  const stops: (() => void)[] = [];
+  afterEach(() => { for (const stop of stops.splice(0)) stop(); });
+
+  const thread = (method: string, params: Message): Message => ({ method, params: { threadId: "t1", ...params } });
+  const status = (type: "active" | "idle"): Message => thread("thread/status/changed", { status: type === "active" ? { type, activeFlags: [] } : { type } });
+  const started = (id: string): Message => thread("turn/started", { turn: { id, rootTurnId: id } });
+  const completed = (id: string): Message => thread("turn/completed", { turn: { id, status: "completed", error: null } });
+
+  /** Codex's app server on the socket of `program` (a CodexServers launch), with thread `t1` loaded: the test sends as Codex. */
+  function codexServer(program: string) {
+    const received: Message[] = [];
+    const waiting: { match: (message: Message) => boolean; resolve: (message: Message) => void }[] = [];
+    let client: ServerWebSocket<undefined> | null = null;
+    let barriers = 0;
+    const server: Server<undefined> = Bun.serve({
+      unix: join(dirname(program), "codex.sock"),
+      fetch: (request, bun) => bun.upgrade(request) ? undefined : new Response("no", { status: 400 }),
+      websocket: {
+        open(socket) { client = socket; },
+        message(socket, data) {
+          const message = JSON.parse(String(data)) as Message;
+          received.push(message);
+          for (const wait of [...waiting]) if (wait.match(message)) { waiting.splice(waiting.indexOf(wait), 1); wait.resolve(message); }
+          const answer = (result: Message): void => { socket.send(JSON.stringify({ id: message["id"], result })); };
+          if (message["method"] === "initialize") answer({ userAgent: "ovis/0.171.0 (Ubuntu; x86_64) xterm (ovis; 0)" });
+          if (message["method"] === "thread/loaded/list") answer({ data: ["t1"], nextCursor: null });
+          if (message["method"] === "thread/resume") answer({});
+        },
+      },
+    });
+    const send = (message: Message): void => { client!.send(JSON.stringify(message)); };
+    const next = (match: (message: Message) => boolean): Promise<Message> => new Promise<Message>((resolve) => {
+      const found = received.find(match);
+      if (found) resolve(found);
+      else waiting.push({ match, resolve });
+    });
+    return {
+      received, send, next, drop: () => client!.close(), stop: () => server.stop(true),
+      /** Resolves once Ovis has read everything sent before: it subscribes to a subagent's thread only after reading it. */
+      async read(): Promise<void> {
+        const id = `b${++barriers}`;
+        send({ method: "thread/started", params: { thread: { id, parentThreadId: "x", ephemeral: false } } });
+        send({ method: "thread/status/changed", params: { threadId: id, status: { type: "active", activeFlags: [] } } });
+        await next((message) => message["method"] === "thread/resume" && (message["params"] as Message)["threadId"] === id);
+      },
+    };
+  }
+
+  /** Pane "p" with Codex on the server Ovis started for it: its own thread `t1` at rest, Ovis subscribed to it. */
+  async function served(options: Record<string, unknown> = {}) {
+    const tmp = realpathSync(mkdtempSync(join(tmpdir(), "cq-")));
+    const hub = new ApprovalHub(join(tmp, "h"), [], {});
+    const servers = new CodexServers(hub, { tmp });
+    const codex = codexServer(servers.launch("p", [], "0.171.0")!);
+    stops.push(() => { codex.stop(); servers.stop(); hub.stop(); rmSync(tmp, { recursive: true, force: true }); });
+    const d = pane(["codex"], { codexHome: join(tmp, "codex"), ...options });
+    spyOn(herdr, "paneGet").mockImplementation(async () => ({ pane_id: "p", terminal_id: "p", agent: "codex", agent_status: d.now.status, agent_session: null }) as unknown as HerdrPane);
+    await codex.next((message) => message["method"] === "thread/loaded/list");
+    codex.send({ method: "thread/started", params: { thread: { id: "t1", parentThreadId: null, ephemeral: false } } });
+    await codex.next((message) => message["method"] === "thread/resume");
+    codex.send(status("idle"));
+    await codex.read();
+    const starts = (): Message[] => codex.received.filter((message) => message["method"] === "turn/start");
+    /** Codex takes its next turn/start as turn `id`; resolves with what it was sent. */
+    const takes = async (id: string): Promise<{ clientUserMessageId: string; input: { text: string }[] }> => {
+      const before = starts().length;
+      const request = await codex.next((message) => message["method"] === "turn/start" && starts().indexOf(message) >= before);
+      codex.send({ id: request["id"], result: { turn: { id, rootTurnId: id, status: "inProgress" } } });
+      return request["params"] as { clientUserMessageId: string; input: { text: string }[] };
+    };
+    /** What the queue asked of Codex's server, in order. */
+    const asked = (): unknown[] => codex.received.map((message) => message["method"]).filter((method) => method === "thread/loaded/list" || method === "turn/start");
+    /** Resolves once the page's rows are `expected`: now, or as a later frame tells them. */
+    const rowsBecome = (expected: string[], later = false): Promise<void> => new Promise<void>((resolve) => {
+      const look = (): void => { if (JSON.stringify(d.rows()) === JSON.stringify(expected)) { d.on.frame = undefined; resolve(); } };
+      d.on.frame = look;
+      if (!later) look();
+    });
+    return { ...d, codex, starts, takes, asked, rowsBecome };
+  }
+
+  it.each(["statuses of the turn before that pass for it (#4118 case B)", "a start no status showed in time"])("sends a queued message with its number as a turn, and keeps the next one behind that turn until its own end is told: %s", async (order) => {
+    const stale = order !== "a start no status showed in time";
+    const d = await served({ pendingStartTimeoutMs: 0 });
+    d.event("working");
+    await d.queue("X");
+    await d.queue("Y");
+    // herdr reads the pane at rest and the queue sends X as a turn of the thread
+    const first = d.takes("u1");
+    d.now.status = "idle";
+    d.event("idle");
+    // status events of the turn before arrive behind X's commit
+    if (stale) void d.codex.next((message) => message["method"] === "turn/start").then(() => { d.event("working"); d.event("idle"); });
+    const sent = await first;
+    expect(sent.input[0]!.text).toBe("X");
+    expect(sent.clientUserMessageId).toMatch(/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u);
+    await d.rowsBecome(["Y queued"]);
+    // the start timeout has passed: nothing of the pane is held for a start herdr did not read
+    d.delivery.pending.expire();
+    expect(d.rows()).toEqual(["Y queued"]);
+    // and the queue takes nothing up: once Codex's server has read all it was sent, it was asked for X alone
+    await d.codex.read();
+    expect(d.asked()).toEqual(["thread/loaded/list", "thread/loaded/list", "turn/start"]);
+    const second = d.takes("u2");
+    d.codex.send(started("u1"));
+    d.codex.send(status("idle"));
+    d.codex.send(completed("u1"));
+    expect((await second).input[0]!.text).toBe("Y");
+    // between X's turn and its end the queue took nothing up: it asked Codex's server once for X and once for Y
+    expect(d.asked()).toEqual(["thread/loaded/list", "thread/loaded/list", "turn/start", "thread/loaded/list", "turn/start"]);
+    await d.rowsBecome([]);
+    expect(d.typed).toEqual([]);
+  });
+
+  it.each(["a queued message the queue takes up", "a message sent to the queue"])("types nothing into a turn the TUI started that herdr has not read yet: %s waits for that turn's end", async (kind) => {
+    const d = await served();
+    if (kind === "a queued message the queue takes up") { d.event("working"); await d.queue("Y"); }
+    // a turn runs, as Codex's server says; herdr reads the pane at rest
+    d.codex.send(status("active"));
+    d.codex.send(started("u1"));
+    await d.codex.read();
+    d.now.status = "idle";
+    if (kind === "a message sent to the queue") { d.event("idle"); await d.queue("Y"); }
+    else {
+      // taken up, it asks the server, and is put off behind the turn the server names
+      const taken = d.rowsBecome(["Y sending"], true);
+      d.event("idle");
+      await taken;
+      await d.rowsBecome(["Y queued"], true);
+    }
+    expect(d.typed).toEqual([]);
+    expect(d.rows()).toEqual(["Y queued"]);
+    expect(d.starts()).toEqual([]);
+    expect(d.delivery.pending.next("p")).toBeNull();
+    const sent = d.takes("u2");
+    d.codex.send(status("idle"));
+    d.codex.send(completed("u1"));
+    expect((await sent).input[0]!.text).toBe("Y");
+    await d.rowsBecome([]);
+    expect(d.typed).toEqual([]);
+  });
+
+  it("keeps a message sent to the queue behind the turn a message sent at once became, until that turn's own end is told", async () => {
+    const d = await served();
+    d.now.status = "idle";
+    d.event("idle");
+    const over = Promise.withResolvers<boolean>();
+    // the composer's answer for a message Codex's server took as a turn (composer.ts submitText)
+    d.on.submit = () => ({ over: over.promise });
+    await d.send("X");
+    expect(d.typed).toEqual(["immediate"]);
+    await d.queue("Y");
+    expect(d.rows()).toEqual(["Y queued"]);
+    expect(d.delivery.pending.next("p")).toBeNull();
+    expect(d.starts()).toEqual([]);
+    const sent = d.takes("u2");
+    over.resolve(true);
+    expect((await sent).input[0]!.text).toBe("Y");
+    await d.rowsBecome([]);
+    expect(d.typed).toEqual(["immediate"]);
+  });
+
+  it("holds what waits when Codex's server can no longer tell the turn's end and no status showed that turn to start", async () => {
+    const d = await served({ pendingStartTimeoutMs: 0 });
+    d.event("working");
+    await d.queue("X");
+    await d.queue("Y");
+    const first = d.takes("u1");
+    d.now.status = "idle";
+    d.event("idle");
+    await first;
+    await d.rowsBecome(["Y queued"]);
+    d.delivery.pending.expire();
+    expect(d.rows()).toEqual(["Y queued"]);
+    // the connection to Codex's server ends: the turn's wait is by herdr's readings again, with their start timeout
+    const ended = Promise.withResolvers<void>();
+    stops.push(onServedStatus((paneId) => { if (paneId === "p" && servedStatus("p") === null) ended.resolve(); }));
+    d.codex.drop();
+    await ended.promise;
+    expect(d.delivery.pending.next("p")).toBeNull();
+    d.delivery.pending.expire();
+    expect(d.rows()).toEqual(["Y held"]);
+    expect(d.typed).toEqual([]);
+  });
+
+  it("keeps a message Codex's server did not answer, types it never, and holds what waits behind it", async () => {
+    const d = await served();
+    d.event("working");
+    await d.queue("X");
+    await d.queue("Y");
+    d.now.status = "idle";
+    const kept = d.rowsBecome(["X uncertain", "Y held"], true);
+    d.event("idle");
+    // the connection ends with the request sent and no answer to it
+    await d.codex.next((message) => message["method"] === "turn/start");
+    d.codex.drop();
+    await kept;
+    // whatever herdr reads of the pane from here on, the queue gives out nothing
+    d.event("working");
+    d.event("idle");
+    expect(d.delivery.pending.next("p")).toBeNull();
+    expect(d.typed).toEqual([]);
+  });
 });

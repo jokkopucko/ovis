@@ -250,6 +250,28 @@
   white-space: nowrap;
 }
 
+/* plan mode after the level, in words on a desktop and as an icon on a phone: it never shrinks, the model's name gives
+   way instead */
+.composer-mode {
+  display: inline-flex;
+  flex: none;
+}
+
+.composer-mode.is-text {
+  align-items: baseline;
+  white-space: nowrap;
+}
+
+.composer-mode svg {
+  width: var(--icon-size-xs);
+  height: var(--icon-size-xs);
+}
+
+/* where the row has no room for that icon, the plan chip's step gives way to it (fitStatus) */
+.composer-surface[data-step-out] .bg-tasks-current {
+  display: none;
+}
+
 .composer-reasoning-dot {
   margin-right: var(--space-2);
 }

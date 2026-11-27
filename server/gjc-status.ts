@@ -23,7 +23,7 @@
  * a failed rest, never a finish.
  */
 import type { HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
-import { herdrRpc } from "./herdr/client.ts";
+import { paneProcessInfo } from "./herdr/client.ts";
 import { gjcPidUnderShell, gjcTranscriptForPane, isGjcProcess, type GjcProcess } from "./gjc-runtime.ts";
 import type { OmoAsks } from "./omo-ask.ts";
 import { processStartedAtAsync } from "./process-start.ts";
@@ -102,7 +102,7 @@ export interface GjcDiscovery {
  * foreground process runs in now, not where the pane started — the same cwd the chat binds by.
  */
 export async function gjcPanes(panes: HerdrPane[], deps: GjcDiscovery = {}): Promise<Map<string, OmoPane>> {
-  const processInfo = deps.processInfo ?? ((paneId: string) => herdrRpc<NonNullable<ProcessInfo>>("pane.process_info", { pane_id: paneId }).catch(() => null));
+  const processInfo = deps.processInfo ?? ((paneId: string) => paneProcessInfo(paneId).then((process_info) => ({ process_info }), () => null));
   const transcript = deps.transcript ?? ((paneId: string, cwd: string) => gjcTranscriptForPane(paneId, cwd).catch(() => null));
   // awaited: every snapshot a pending message is checked against runs this, and macOS reads a start with `ps` (#1545)
   const startedAt = deps.startedAt ?? processStartedAtAsync;

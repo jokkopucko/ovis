@@ -277,7 +277,12 @@ async function heldPaths(pid: number): Promise<string[] | null> {
       let count = 0;
       for (let entry = dir.readSync(); entry; entry = dir.readSync()) {
         if (++count > 4096) return null;
-        try { paths.push(readlinkSync(`/proc/${pid}/fd/${entry.name}`)); } catch { /* closed during enumeration */ }
+        let path: string;
+        try { path = readlinkSync(`/proc/${pid}/fd/${entry.name}`); } catch { continue; /* closed during enumeration */ }
+        // The process still holds this lock, but its old path cannot name the held inode anymore.
+        if (path.endsWith(" (deleted)") && basename(dirname(path)) === "presence"
+          && LOCK.test(basename(path, " (deleted)"))) return null;
+        paths.push(path);
       }
     } finally { dir.closeSync(); }
     return paths;

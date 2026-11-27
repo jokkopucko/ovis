@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { Terminal } from "@xterm/xterm";
+import { testTerminal } from "../src/lib/ghostty/testTerminal.test-support.ts";
 import { DemoHistory } from "../site/demo/history.ts";
-import { matchHerdrWidths } from "../src/lib/terminalWidths.ts";
 import type { PaneFindRequest, PaneFindResponse } from "../shared/protocol.ts";
 
 const request = (query: string, patch: Partial<PaneFindRequest> = {}): PaneFindRequest => ({ pane_id: "demo", query, direction: "forward", jump: false, ...patch });
@@ -20,13 +19,12 @@ describe("demo terminal history", () => {
     expect(history.scroll().max_offset_from_bottom).toBeGreaterThan(before.max_offset_from_bottom);
   });
   it("uses complete Unicode cells and crosses soft wraps but never hard rows", async () => {
+    const term = await testTerminal({ cols: 5, rows: 5 });
     const history = new DemoHistory(5, 5, ["abcd界éZ", "ERROR", "ready"]);
     const found = history.find(request("d界é"));
     expect(found.matches).toEqual([{ start: { row: 0, col: 3 }, end: { row: 1, col: 2 } }]);
     expect(history.find(request("́")).total).toBe(0);
     expect(history.find(request("ERRORready")).total).toBe(0);
-    const term = new Terminal({ cols: 5, rows: 5, allowProposedApi: true, scrollback: 0 });
-    matchHerdrWidths(term);
     await new Promise<void>((resolve) => term.write(history.render(), resolve));
     expect(term.buffer.active.getLine(0)?.getCell(3)?.getChars()).toBe("d");
     expect(term.buffer.active.getLine(1)?.getCell(0)?.getChars()).toBe("界");

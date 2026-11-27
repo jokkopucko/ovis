@@ -215,6 +215,16 @@ describe("adding another PC over SSH, on the account service since key proofs", 
     expect(challenges()).toBe(0);
   });
 
+  it("a sign-in older than an add takes, with no key of its own to prove it by, asks to sign in again before anything is sent", async () => {
+    // this window's own sign-in, 17 minutes old: the account service would refuse the admission (session_not_fresh), and
+    // each call before that refusal can take long on a slow service, so the person is asked at once
+    const { fake, service, take, takes } = await signedIn(17 * 60_000);
+    const before = fake.requests.length;
+    expect(await addOverSsh(service, { id: "job-1", account_add: pcFields() }, { account: ACCOUNT, running: () => true, take })).toBe("sign-in-again");
+    expect(fake.requests.slice(before)).toEqual([]);
+    expect(takes).toEqual([]);
+  });
+
   it("a sign-in days old asks to sign in again, and nothing is handed over", async () => {
     const { fake, service, take, takes } = await signedIn(3 * 86_400_000);
     expect(await addOverSsh(service, { id: "job-1", account_add: pcFields() }, { account: ACCOUNT, running: () => true, take })).toBe("sign-in-again");
@@ -240,3 +250,83 @@ describe("where Add a connection's relay tab lists the PCs to add over SSH", () 
   });
 });
 
+
+describe("what this device keeps as its own evidence of an add over SSH, and when (astra-sshapp)", () => {
+  /** The browser's storage for the record of this device's PCs, for the length of `run`. */
+  async function withStorage<T>(run: () => Promise<T>): Promise<T> {
+    const kept = new Map<string, string>();
+    const saved = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: { getItem: (key: string) => kept.get(key) ?? null, setItem: (key: string, value: string) => { kept.set(key, value); }, removeItem: (key: string) => { kept.delete(key); } } });
+    try { return await run(); } finally { if (saved) Object.defineProperty(globalThis, "localStorage", saved); else Reflect.deleteProperty(globalThis, "localStorage"); }
+  }
+  const endpointOf = (target: AccountAddTarget) => Array.from(importPublicKey(target.public_key), (byte) => byte.toString(16).padStart(2, "0")).join("");
+
+  it("a take that refused, or whose end is not known, keeps no evidence: nothing is written before the take, nor for a refusal", async () => {
+    for (const code of ["list_cannot_add", "that_pc_old", "list_removed", "list_unbound", "list_not_added", "take_unanswered", "account_changed", "refused"]) {
+      await withStorage(async () => {
+        const { service } = await window({ twoStep: true });
+        const target = pcFields();
+        let seenAtTake: unknown = "not asked";
+        const take = async (): Promise<SshTake> => { seenAtTake = readSeenPcs(ACCOUNT).pcs[endpointOf(target)]; return { refused: code }; };
+        await addOverSsh(service, { id: "job-1", account_add: target }, { account: ACCOUNT, running: () => true, take });
+        expect([code, seenAtTake]).toEqual([code, undefined]);
+        expect([code, readSeenPcs(ACCOUNT).pcs[endpointOf(target)]]).toEqual([code, undefined]);
+      });
+    }
+  });
+
+  it("a take that confirmed the add of that PC to that account keeps `ssh`, written only after it answered", async () => {
+    await withStorage(async () => {
+      const { service } = await window({ twoStep: true });
+      const target = pcFields();
+      let seenAtTake: unknown = "not asked";
+      const take = async (): Promise<SshTake> => { seenAtTake = readSeenPcs(ACCOUNT).pcs[endpointOf(target)]; return ONLINE; };
+      expect(await addOverSsh(service, { id: "job-1", account_add: target }, { account: ACCOUNT, running: () => true, take })).toBe("added");
+      expect(seenAtTake).toBeUndefined();
+      expect(readSeenPcs(ACCOUNT).pcs[endpointOf(target)]).toEqual({ how: "ssh" });
+    });
+  });
+
+  it("a PC in the account already: the sign-in is read before the take, and a take that found it there keeps nothing", async () => {
+    await withStorage(async () => {
+      const { service, store, take, takes } = await window({ twoStep: true });
+      const target = pcFields(ACCOUNT);
+      expect(await addOverSsh(service, { id: "job-1", account_add: target }, { account: ACCOUNT, running: () => true, take })).toBe("already");
+      expect(readSeenPcs(ACCOUNT).pcs[endpointOf(target)]).toBeUndefined();
+      // signed out in another tab after the add was offered: this take may sign, so it is not sent
+      await store.set("session", undefined);
+      expect(await addOverSsh(service, { id: "job-2", account_add: target }, { account: ACCOUNT, running: () => true, take })).toBe("refused");
+      expect(takes).toEqual([`job-1 ${target.server_id}`]);
+    });
+  });
+
+  it("a PC in the account from before its list that this take put in the list: added, and kept as this device's add", async () => {
+    await withStorage(async () => {
+      const { service } = await window({ twoStep: true, said: { ...ONLINE, listJoined: true } });
+      const target = pcFields(ACCOUNT);
+      const take = async (): Promise<SshTake> => ({ ...ONLINE, listJoined: true });
+      expect(await addOverSsh(service, { id: "job-1", account_add: target }, { account: ACCOUNT, running: () => true, take })).toBe("added");
+      expect(readSeenPcs(ACCOUNT).pcs[endpointOf(target)]).toEqual({ how: "ssh" });
+    });
+  });
+
+  it("an attempt that ended while its take was out (the dialog closed, or another attempt took its place) writes no record (PR #4649 review)", async () => {
+    await withStorage(async () => {
+      const { service } = await window({ twoStep: true });
+      const target = pcFields();
+      let running = true;
+      const take = async (): Promise<SshTake> => { running = false; return ONLINE; };
+      await addOverSsh(service, { id: "job-1", account_add: target }, { account: ACCOUNT, running: () => running, take });
+      expect(readSeenPcs(ACCOUNT).pcs[endpointOf(target)]).toBeUndefined();
+    });
+  });
+
+  it("a sign-in store that fails to read ends the add as not added, with nothing taken", async () => {
+    const { service, take, takes } = await window({ twoStep: true });
+    let reads = 0;
+    const session = service.session.bind(service);
+    service.session = async () => { reads += 1; if (reads > 1) throw new DOMException("The store went away", "UnknownError"); return await session(); };
+    expect(await addOverSsh(service, { id: "job-1", account_add: pcFields() }, { account: ACCOUNT, running: () => true, take })).toBe("refused");
+    expect(takes).toEqual([]);
+  });
+});

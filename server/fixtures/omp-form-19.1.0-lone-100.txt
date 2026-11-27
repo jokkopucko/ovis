@@ -1,0 +1,40 @@
+                                     ▒▒  ██                  █
+                                         ██       v19.1.0
+
+              Tip: Press ←← to drill into a running or finished agent and inspect its
+                                     tool calls and transcript
+
+                                                                                                    
+ Run the form fixture.                                                                              
+                                                                                                    
+╭─ Ask · 5 of 6 answered ──────────────────────────────────────────────────────────────────────────╮
+│ Sessions live in memory and are lost on restart.                                                 │
+│                                                                                                  │
+│ ✓ Where should sessions persist?                                                                 │
+│    ✓ SQLite: one file, n…   Redis: shared acros…                                                 │
+│                                                                                                  │
+│ ✓ Q2 · Targets                                                                                   │
+│    ✓ Desktop   Phone   Tablet                                                                    │
+│                                                                                                  │
+│ ✓ Q3 · Region                                                                                    │
+│    Europe   ✓ United States                                                                      │
+│                                                                                                  │
+│ ✓ Session lifetime (days)                                                                        │
+│   7                                                                                              │
+│                                                                                                  │
+│ ✓ Notes                                                                                          │
+│   line1                                                                                          │
+│                                                                                                  │
+│ ❯ ☐ Ship it today                                                                                │
+│                                                                                                  │
+│   Submit                                                                                         │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+  ⎋ Working…                                                                                        
+ ❓ 4s > ⬢ Form fixture > 📁 …7d_78nzzhq00000gn/T/omp-form-qO08yw/cwd ▶─6%───────────────╎─┃───131K─
+╰─                                                                                                  

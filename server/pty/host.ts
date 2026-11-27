@@ -18,7 +18,6 @@ export type RustHostVerdict = BinaryVerdict;
 
 const verdicts = new Map<string, RustHostVerdict>();
 const said = new Set<string>();
-let disabled = false;
 
 function once(message: string, print: (message: string) => void = console.error): void {
   if (said.has(message)) return;
@@ -45,19 +44,16 @@ export function probeRustHost(binary: string, env: Record<string, string | undef
   return run.exitCode === 0 ? { ok: true } : { ok: false, reason: exitText(run) };
 }
 
+/** What to do about a host that cannot run, said with the reason it fails for. */
+export const RUST_HOST_FIX = "run bun scripts/pty-sidecar.ts install for the release's host in bin/, build one with cargo build --release --manifest-path crates/pty-sidecar/Cargo.toml, or set OVIS_PTY_SIDECAR_BIN to a built binary's absolute path, in a folder that lets programs run (not mounted noexec)";
+
 /**
- * It is the default on Linux and macOS once it passes its
- * check; OVIS_PTY_SIDECAR=node asks for the Node sidecar, which is also the fallback.
+ * The PTY host of every terminal this server runs itself, on Linux and macOS, once it passes its check.
+ * Without one, herdr's terminals are mirrored and a private sign-in is refused.
  */
 export function rustSidecar(env: Record<string, string | undefined> = process.env): string | null {
   if (process.platform === "win32") return null;
-  const choice = env["OVIS_PTY_SIDECAR"];
-  if (choice === "node") return null;
-  if (choice && choice !== "rust") {
-    once(`OVIS_PTY_SIDECAR=${choice}: expected "node" or "rust"; using the Node PTY sidecar`);
-    return null;
-  }
-  if (disabled) return null;
+  if (env["OVIS_PTY_SIDECAR"] === "node") once("OVIS_PTY_SIDECAR=node: the Node PTY sidecar was removed, so the Rust PTY host runs every terminal");
   const binary = rustSidecarPath(env);
   let verdict = verdicts.get(binary);
   if (!verdict) {
@@ -65,25 +61,14 @@ export function rustSidecar(env: Record<string, string | undefined> = process.en
     verdicts.set(binary, verdict);
   }
   if (!verdict.ok) {
-    if (!choice) {
-      once(`Rust PTY host unavailable (${binary}: ${verdict.reason})`, console.log);
-      return null;
-    }
-    once(`OVIS_PTY_SIDECAR=rust: ${binary}: ${verdict.reason}; using the Node PTY sidecar (run bun scripts/pty-sidecar.ts install for the release's host in bin/, build it with cargo build --release --manifest-path crates/pty-sidecar/Cargo.toml, or set OVIS_PTY_SIDECAR_BIN to a built binary's absolute path)`);
+    once(`No PTY host: the Rust PTY host cannot run (${binary}: ${verdict.reason}), so herdr's terminals are mirrored; to fix it, ${RUST_HOST_FIX}`);
     return null;
   }
   once(`PTY host: Rust (${binary})`, console.log);
   return binary;
 }
 
-export function disableRustHost(reason: string): void {
-  if (disabled) return;
-  disabled = true;
-  once(`Rust PTY host: ${reason}; using the Node PTY sidecar until this server restarts`);
-}
-
 export function resetPtyHostForTests(): void {
   verdicts.clear();
   said.clear();
-  disabled = false;
 }

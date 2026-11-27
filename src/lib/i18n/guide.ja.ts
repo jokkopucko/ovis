@@ -99,4 +99,5 @@ export const GUIDE_JA: Record<string, string> = {
   "Set up later": "あとで設定",
   "Keep SSH or a screen working on this PC: reached only through the relay, one stolen older device could lock you out of it.": "この PC で SSH か画面を使える状態にしておいてください。リレー経由でしか届かないと、古いデバイスが 1 台盗まれただけで入れなくなることがあります。",
   "Run this once on this PC.": "この PC で一度実行します。",
+  "{agent} is ready": "{agent} の準備ができました",
 };

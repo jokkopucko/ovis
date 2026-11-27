@@ -2,7 +2,7 @@ import type { DialogReader } from "./registry.ts";
 import { pickerPlan } from "./interaction-plan.ts";
 import { piActiveTab } from "./pi-ask-tabs.ts";
 import { type InteractivePromptAnswer } from "../../shared/protocol.ts";
-import { ANSI_RE, KEY, type MenuRow, type ParsedPrompt, type TypedEditorAnswer, cleanLine, editorRowsMatch, findLastIndex, finishPrompt, isDivider, own, keySteps, navigationKeys, nearestQuestion, normalizeText, wrapped } from "./shared.ts";
+import { ANSI_RE, KEY, type MenuRow, type ParsedPrompt, type TypedEditorAnswer, cleanLine, editorRowsMatch, findLastIndex, finishPrompt, isDivider, own, keySteps, navigationKeys, nearestQuestion, normalizeText, toggleMultiSelectKeys, wrapped } from "./shared.ts";
 
 /** the option markers: unicode, and the Nerd Font preset's icons (checkbox \uf096/\uf14a, radio \uf10c/\uf192, cursor \uf054) (#3282) */
 const OMP_MARKERS = "○●◉◯☐☑☒✓\uf096\uf14a\uf10c\uf192";
@@ -305,15 +305,8 @@ function parseOmpQuestion(screen: string): ParsedPrompt | null {
       ...keySteps([KEY.enter]), { text }, ...keySteps([KEY.enter]),
     ] } : {}),
     ...(currentMulti ? { multiSteps: (choices: number[]) => {
-      const desired = new Set(choices);
-      const checked = new Set(optionRows.flatMap((row, index) => row.checked ? [index] : []));
-      const toggles = optionRows.flatMap((_, index) => desired.has(index) !== checked.has(index) ? [index] : []);
-      let cursor = selectedIndex;
-      const keys: string[] = [];
-      for (const index of toggles) {
-        keys.push(...navigationKeys(index - cursor), KEY.space);
-        cursor = index;
-      }
+      const checked = optionRows.flatMap((row, index) => row.checked ? [index] : []);
+      const { keys, cursor } = toggleMultiSelectKeys(optionRows.length, selectedIndex, checked, choices);
       // Current OMP advances/finishes the active question on Enter. Tab changes
       // the active question and would make that Enter answer a different row.
       // Enter on the Other row opens its text editor instead of advancing.

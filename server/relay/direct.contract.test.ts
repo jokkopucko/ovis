@@ -453,15 +453,27 @@ describe("signed-in sessions over every way in", () => {
     expect(sessions.connections().get("phone")?.route).toBe("relay");
   });
 
-  it("hold never-used carriers past every place to one device's racing ones", () => {
+  it("let each device at its share race its own carriers past every place, so one device's never shut another out (#3243)", () => {
+    // Given every place taken by two devices at their share, and one of them holding three carriers it never uses
     const sessions = new SignedInSessions(8, 4, 3);
     const closed: string[] = [];
     for (const device of ["a", "b"]) for (let index = 1; index <= 4; index++) sessions.admit(device, () => closed.push(`${device}${index}`));
-    // When both sign in three carriers each and never use them
-    for (const device of ["a", "b"]) for (let index = 1; index <= 3; index++) sessions.candidate(device, () => closed.push(`${device}-c${index}`));
-    // Then only three get past every place
+    for (let index = 1; index <= 3; index++) sessions.candidate("a", () => closed.push(`a-c${index}`));
+    // When the other signs in a carrier and uses it
+    sessions.candidate("b", () => closed.push("b-new")).chosen();
+    // Then it replaces its own oldest session, and nothing of the first device's is closed
+    expect(closed).toEqual(["b1"]);
     expect(sessions.size).toBe(11);
-    expect(closed).toEqual(["b-c1", "b-c2", "b-c3"]);
+  });
+
+  it("hold past every place at most each device's own racing carriers, for each device at its share", () => {
+    const sessions = new SignedInSessions(8, 4, 3);
+    const closed: string[] = [];
+    for (const device of ["a", "b"]) for (let index = 1; index <= 4; index++) sessions.admit(device, () => closed.push(`${device}${index}`));
+    for (const device of ["a", "b"]) for (let index = 1; index <= 4; index++) sessions.candidate(device, () => closed.push(`${device}-c${index}`));
+    // eight places, and three carriers for each of the two devices at its share: a fourth closes its own oldest
+    expect(sessions.size).toBe(14);
+    expect(closed).toEqual(["a-c1", "b-c1"]);
   });
 
   it("name each device's connection: its nearest way in, with the latest round trip, until released", () => {

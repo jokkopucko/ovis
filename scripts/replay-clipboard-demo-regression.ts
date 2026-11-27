@@ -1,23 +1,21 @@
 /**
  * OSC 52 in replayed output (the screen a new attach is handed, `pty-data` with `replay: true`)
  * never writes the clipboard; live copies still do, once each. Runs the real client and its
- * patched xterm on the demo's fixture transport: no herdr, no user state, loopback only.
+ * GhosttyTerminal on the demo's fixture transport: no herdr, no user state, loopback only.
  * Every frame carries an ACK offset, and each step waits for its frame's ACK, which the client
- * sends from that frame's xterm write callback: the fixture records the clipboard calls and the
+ * sends from that frame's write callback: the fixture records the clipboard calls and the
  * terminal's parse state at that moment (the test-hook build's `outputProbe`). For a write still
- * pending at a reconnect, reset or dispose, the fixture holds xterm's own parse of it (`hold`) and
- * releases it once the new output has begun.
+ * pending at a reconnect, reset or dispose, the fixture holds the terminal's own parse of it (`hold`)
+ * and releases it once the new output has begun.
  */
 /** UI_EVIDENCE_DIR=<dir> also saves screenshots; REPLAY_CLIPBOARD_REPORT=<file> writes the results. */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { chromium, devices, type Browser, type BrowserContext, type Page } from "playwright-core";
+import { devices, type Browser, type BrowserContext, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
-import { serveDemo } from "./demo-server.ts";
+import { appContext } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 
 interface Step { data: string; replay?: true }
 interface Probe { open: boolean; id: number; idComplete: boolean; parsingReplay: boolean; replayOscOpen: boolean; retired: boolean; queued: number; inFlight: number; peakInFlight: number; writes: number; written: string; frameSettled: boolean }
@@ -68,19 +66,20 @@ function installReplayFixture(): void {
     for (const machine of body.machines) if (machine.snapshot) machine.snapshot.panes = machine.snapshot.panes.map((pane) => pane.pane_id === state.unrestored ? { ...pane, restore_error: "held by the fixture" } : pane);
     return new Response(JSON.stringify(body), { status: response.status, headers: response.headers });
   };
-  // xterm parses each write from a setTimeout(_innerWrite) of its own: the gate keeps that one callback
+  // GhosttyTerminal (ghostty/terminal.ts) parses each write from a setTimeout(drainWrites) of its own:
+  // the gate keeps that one callback
   state.hold = (paneId, steps) => {
     const schedule = window.setTimeout;
     let held: (() => void) | null = null;
     window.setTimeout = ((callback: TimerHandler, delay?: number, ...args: unknown[]) => {
-      if (!held && typeof callback === "function" && callback.toString().includes("._innerWrite(")) {
+      if (!held && typeof callback === "function" && /\.drainWrites\(/.test(callback.toString())) {
         held = () => callback(...args);
         return 0;
       }
       return schedule(callback, delay, ...args);
     }) as typeof window.setTimeout;
     try { void state.frames(paneId, steps, false); } finally { window.setTimeout = schedule; }
-    if (!held) throw new Error("xterm scheduled no parse for the held frames");
+    if (!held) throw new Error("the terminal scheduled no parse for the held frames");
     state.release = held;
   };
   const probe = (): Probe | null => (document.querySelector(".pane-frame.is-current .pane-terminal") as unknown as { outputProbe?: () => Probe } | null)?.outputProbe?.() ?? null;
@@ -228,9 +227,11 @@ const pageErrors = (page: Page): string[] => (page as unknown as { errors: strin
 
 async function newContext(browser: Browser, url: string, options: { phone?: boolean; theme?: "light" | "dark"; language?: string; extra?: Record<string, unknown> } = {}): Promise<BrowserContext> {
   const base = options.phone ? devices["iPhone 14"] : { viewport: { width: 1440, height: 900 } };
-  const context = await browser.newContext({ ...base, locale: options.language === "ko" ? "ko-KR" : "en-US" });
+  const context = await appContext(browser, { ...base, locale: options.language === "ko" ? "ko-KR" : "en-US" });
   await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: new URL(url).origin });
   await context.addInitScript((value) => { if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", value); }, settings({ theme: options.theme ?? "dark", language: options.language ?? "en", ...options.extra }));
+  // these cases read GhosttyTerminal.oscStringState, so every OSC reaches libghostty's parser hooks
+  // (src/lib/ghostty/hooks.ts) here: the clipboard guard is applied at that boundary
   return context;
 }
 
@@ -245,18 +246,7 @@ async function shot(page: Page, name: string): Promise<string | null> {
   return file;
 }
 
-const app = mkdtempSync(join(tmpdir(), "herdr-replay-clipboard-demo-"));
-let server: ReturnType<typeof Bun.serve> | null = null;
-let browser: Browser | null = null;
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n<script>(${installReplayFixture.toString()})()</script>\n<script type="module"`));
-  const prefix = "/herdr-web-ui/demo/app/";
-  server = serveDemo(app, { prefix });
-  const url = `http://127.0.0.1:${server.port}${prefix}`;
-  if (evidence) mkdirSync(evidence, { recursive: true });
-  browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
+await withDemoBrowser({ tempPrefix: "herdr-replay-clipboard-demo-", afterTransport: `\n<script>(${installReplayFixture.toString()})()</script>` }, async ({ browser, baseUrl: url }) => {
 
   {
     const context = await newContext(browser, url);
@@ -623,8 +613,4 @@ try {
   }
   if (reportPath) writeFileSync(reportPath, JSON.stringify(report, null, 1));
   console.log("PASS replay clipboard: corpus, permission, denial, reconnect, second tab, pane switch, observer");
-} finally {
-  await browser?.close();
-  await server?.stop(true);
-  rmSync(app, { recursive: true, force: true });
-}
+});

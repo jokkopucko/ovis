@@ -5,6 +5,31 @@ import { themeFor } from "./themeFor.ts";
 
 export type ThemeSetting = "dark" | "light" | "system";
 export type ResolvedTheme = "dark" | "light";
+export const MARKDOWN_STYLES = ["editorial", "tinted", "colorful", "plain"] as const;
+export type MarkdownStyle = (typeof MARKDOWN_STYLES)[number];
+export const DEFAULT_MARKDOWN_STYLE: MarkdownStyle = "editorial";
+export const MARKDOWN_STYLE_STORAGE_KEY = "ovis:markdown-style";
+
+export function sanitizeMarkdownStyle(raw: unknown): MarkdownStyle {
+  return MARKDOWN_STYLES.includes(raw as MarkdownStyle) ? (raw as MarkdownStyle) : DEFAULT_MARKDOWN_STYLE;
+}
+
+export function savedMarkdownStyle(storage: () => Pick<Storage, "getItem">): MarkdownStyle {
+  try {
+    const raw = storage().getItem(MARKDOWN_STYLE_STORAGE_KEY);
+    if (raw !== null) return sanitizeMarkdownStyle(JSON.parse(raw));
+  } catch {}
+  try {
+    const raw = storage().getItem(SETTINGS_STORAGE_KEY);
+    if (raw !== null) {
+      const parsed: unknown = JSON.parse(raw);
+      if (typeof parsed === "object" && parsed !== null && "markdownStyle" in parsed) {
+        return sanitizeMarkdownStyle((parsed as Record<string, unknown>)["markdownStyle"]);
+      }
+    }
+  } catch {}
+  return DEFAULT_MARKDOWN_STYLE;
+}
 
 export interface Appearance {
   theme: ThemeSetting;

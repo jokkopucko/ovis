@@ -42,7 +42,7 @@
 
 import { createServer, type Socket } from "node:net";
 import { AUTOMATIC_INPUT_FEATURE, encodeFrame, type Frame, FRAME_AUTOMATIC_INPUT, FRAME_CLOSE, FRAME_CREDIT, FRAME_DATA, FRAME_FACTS, FRAME_FOCUS, FRAME_RESIZE, type HcTransport, makeFrameReader } from "./connection.ts";
-import type { AttachResult, CoreInfo, DocGetParams, DocSetParams, EventsSubscribeParams, HcMethod, HcMethods, MachineView, Status, Terminal, TerminalAttachParams, TerminalLabelParams, TerminalListParams, TerminalRunParams } from "./hc-api.generated.ts";
+import type { AttachResult, CoreInfo, DocGetParams, DocSetParams, EventsSubscribeParams, ExecResult, HcMethod, HcMethods, MachineExecParams, MachineView, Status, Terminal, TerminalAttachParams, TerminalLabelParams, TerminalListParams, TerminalRunParams } from "./hc-api.generated.ts";
 
 /** where a terminal nobody views runs */
 export const HEADLESS = { cols: 200, rows: 120 } as const;
@@ -55,7 +55,7 @@ export const FEATURES_0_1_18: readonly string[] = [...FEATURES_0_1_17, AUTOMATIC
 /** the frames a viewer sends as its user's (or its terminal's) input: what "nothing was sent" counts */
 export const INPUT_KINDS: readonly number[] = [FRAME_DATA, FRAME_RESIZE, FRAME_FOCUS, FRAME_FACTS, FRAME_AUTOMATIC_INPUT];
 
-const ANSWERED = ["hello", "terminal.list", "terminal.get", "terminal.run", "terminal.kill", "terminal.rm", "terminal.label", "terminal.attach", "doc.get", "doc.set", "events.subscribe", "machine.list"] as const satisfies readonly HcMethod[];
+const ANSWERED = ["hello", "terminal.list", "terminal.get", "terminal.run", "terminal.kill", "terminal.rm", "terminal.label", "terminal.attach", "doc.get", "doc.set", "events.subscribe", "machine.list", "machine.exec"] as const satisfies readonly HcMethod[];
 type Answered = Exclude<(typeof ANSWERED)[number], "hello">;
 /** what the fake answers a method with: hc's result type, except that a 0.1.17-like core leaves `automatic_input` out of the attach reply, as 0.1.17 does */
 type Reply<M extends HcMethod> = M extends "terminal.attach" ? Omit<AttachResult, "automatic_input"> & { automatic_input?: boolean } : HcMethods[M]["result"];
@@ -71,6 +71,8 @@ export interface FakeCoreOptions {
   methods?: readonly string[];
   core?: CoreInfo;
   machines?: MachineView[];
+  /** Opt-in process execution, owned by the test. */
+  readonly exec?: (params: MachineExecParams) => ExecResult;
   /**
    * Asked once for each `size` event and line that hears it (default: never): true holds the event back on that line until the
    * event loop turns or the line sends a frame. An attach the line asks meanwhile gets its reply and first bytes ahead of the held
@@ -277,6 +279,7 @@ export class FakeHcCore {
   readonly docs = new Map<string, { value: unknown; version: number }>();
   /** called for every program the fake starts (`terminal.run`, a restart): the test scripts it here */
   onStart: ((program: FakeProgram) => void) | null = null;
+  private readonly exec?: (params: MachineExecParams) => ExecResult;
   private readonly version: string;
   private readonly features: readonly string[];
   private readonly methods: readonly string[];
@@ -296,7 +299,8 @@ export class FakeHcCore {
   constructor(options: FakeCoreOptions = {}) {
     this.version = options.version ?? "0.1.18";
     this.features = options.features ?? FEATURES_0_1_18;
-    this.methods = options.methods ?? [...ANSWERED];
+    this.exec = options.exec;
+    this.methods = options.methods ?? ANSWERED.filter(method => method !== "machine.exec" || this.exec !== undefined);
     this.info = options.core ?? { id: "fake0000", name: "fake" };
     this.machines = options.machines ?? [];
     this.late = options.late ?? null;
@@ -655,6 +659,10 @@ export class FakeHcCore {
     };
     // one handler per method, each checked against hc's result type for that method
     const handlers: { [M in Answered]: () => Answer<M> } = {
+      "machine.exec": () => {
+        if (this.exec === undefined) throw new CallError(-32601, "unknown_method", 'unknown method "machine.exec"', "see `hc schema`");
+        return { result: this.exec(params) };
+      },
       "terminal.list": () => {
         const { all, labels } = params as TerminalListParams;
         const matching = [...this.terminals.values()].map((held) => held.terminal).filter((record) => matches(record, labels));

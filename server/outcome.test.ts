@@ -7,7 +7,7 @@ import type { HerdrPane, PanePromptResponse, SlashCommand } from "../shared/prot
 import { commandInvocations, commandOutcome, CommandReservations, ownsCommandDialog, WINDOW_MS, type CommandSend } from "./outcome.ts";
 import { parsePrompt } from "./dialogs/live.ts";
 import { finishPrompt, type DialogReader } from "./dialogs/shared.ts";
-import { bindCommandProcess, commandSendFrom, handlePromptRequest, noteCommandEvidence, noteSubmitted } from "./prompt.ts";
+import { bindCommandProcess, commandSendFrom, handlePromptRequest, noteCommandEvidence, noteHookCommand, noteSubmitted } from "./prompt.ts";
 import { socketAddress } from "./herdr/client.ts";
 import { readCommandTranscript } from "./conversation.ts";
 import * as processStart from "./process-start.ts";
@@ -842,6 +842,65 @@ describe("session-scoped command outcomes", () => {
       expect((await served(paneId)).outcomes).toMatchObject([{ id: current.id, state: "result-observed", evidence: [{ kind: "native" }] }]);
       const next = await submit(paneId, pane, "/context");
       expect((await served(paneId)).outcomes?.map((item) => item.id)).toEqual([current.id, next.id]);
+    });
+  });
+
+  it("takes a Claude hook's word that a sent command ran, for the oldest open send of it alone", async () => {
+    const pane = target();
+    await withFakeHerdr(pane, async (paneId) => {
+      const skill = commandSendFrom(pane, "claude", [{ ...row("hello"), source: "skill" }], "/hello")!;
+      noteSubmitted(paneId, skill.text, skill);
+      const context = await submit(paneId, pane, "/context");
+      // told after the next send went: the hook named this one
+      const told = context.at + 1;
+      noteHookCommand(paneId, "claude", { name: "hello", builtin: false }, told);
+      // another agent's hook, a builtin of the same name and a command not sent say nothing of these sends
+      noteHookCommand(paneId, "codex", { name: "context", builtin: true }, told);
+      noteHookCommand(paneId, "claude", { name: "compact", builtin: true }, told);
+      expect((await served(paneId)).outcomes).toMatchObject([
+        { id: skill.id, state: "result-observed", evidence: [{ kind: "native" }] },
+        { id: context.id, state: "accepted", evidence: [] },
+      ]);
+    });
+  });
+
+  it("does not take a skill named clear for Claude's /clear, nor the other way round", async () => {
+    const pane = target();
+    await withFakeHerdr(pane, async (paneId) => {
+      const clear = await submit(paneId, pane, "/clear");
+      noteHookCommand(paneId, "claude", { name: "clear", builtin: false }, clear.at + 1);
+      expect((await served(paneId)).outcomes).toMatchObject([{ id: clear.id, state: "accepted" }]);
+      noteHookCommand(paneId, "claude", { name: "clear", builtin: true }, clear.at + 1);
+      expect((await served(paneId)).outcomes).toMatchObject([{ id: clear.id, state: "result-observed", evidence: [{ kind: "native" }] }]);
+    });
+  });
+
+  it("takes a hook for the send with its argument, not an expired one, and one told before the send was noted", async () => {
+    const pane = target();
+    await withFakeHerdr(pane, async (paneId) => {
+      const skill = (text: string, at: number) => ({ ...commandSendFrom(pane, "claude", [{ ...row("hello"), source: "skill" }], text)!, at });
+      const expired = skill("/hello", Date.now() - WINDOW_MS - 10);
+      noteSubmitted(paneId, expired.text, expired);
+      const other = skill("/hello first", Date.now());
+      noteSubmitted(paneId, other.text, other);
+      const fresh = skill("/hello second", other.at + 1);
+      // Claude ran it before herdr answered the keys, so before the send was noted
+      noteHookCommand(paneId, "claude", { name: "hello", builtin: false, args: "second" }, fresh.at + 2);
+      noteSubmitted(paneId, fresh.text, fresh);
+      noteHookCommand(paneId, "claude", { name: "hello", builtin: false, args: "" }, fresh.at + 3);
+      const shown = (await served(paneId)).outcomes ?? [];
+      expect(shown.find(({ id }) => id === fresh.id)).toMatchObject({ state: "result-observed", evidence: [{ kind: "native" }] });
+      expect(shown.find(({ id }) => id === other.id)?.state).not.toBe("result-observed");
+      expect(shown.find(({ id }) => id === expired.id)?.state).not.toBe("result-observed");
+    });
+  });
+
+  it("takes Claude's clear for a sent /new, which starts the next session as one", async () => {
+    const pane = target();
+    await withFakeHerdr(pane, async (paneId) => {
+      const fresh = await submit(paneId, pane, "/new");
+      noteHookCommand(paneId, "claude", { name: "clear", builtin: true }, fresh.at + 1);
+      expect((await served(paneId)).outcomes).toMatchObject([{ id: fresh.id, state: "result-observed" }]);
     });
   });
 

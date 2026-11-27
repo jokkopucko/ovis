@@ -16,17 +16,14 @@ function matches(fileList: string[], pattern: RegExp): { file: string; at: strin
 }
 
 describe("PTY sidecar boundary", () => {
-  // node-pty panics Bun (oven-sh/bun#18546): only the Node sidecar loads it. `Bun.resolveSync`
-  // in server/pty/sidecar.ts only finds the package for Node and is not a load.
-  const NODE_SIDE = new Set(["server/pty/pty-host.mjs", "server/pty/smoke.mjs"]);
+  // node-pty panics Bun (oven-sh/bun#18546); terminals run on the Rust PTY host instead
   const LOAD = /\bfrom\s*["'](?:@lydell\/)?node-pty[^"']*["']|\bimport\s*\(?\s*["'](?:@lydell\/)?node-pty[^"']*["']|\b(?:require|createRequire\s*\([^()]*(?:\([^()]*\))?[^()]*\))\s*\(\s*["'](?:@lydell\/)?node-pty[^"']*["']/;
 
-  it("loads node-pty only in the Node sidecar", () => {
+  it("never loads node-pty", () => {
     const code = [...files("{server,src,shared,scripts,site,telemetry,tui}/**/*.{ts,tsx,mjs,cjs,js}"), "vite.config.ts"].filter((file) => file !== "server/conventions.test.ts");
     const loads = matches(code, LOAD);
-    fail(loads.filter((load) => !NODE_SIDE.has(load.file)).map((load) => load.at),
-      "node-pty must never load inside Bun: it panics the runtime (oven-sh/bun#18546). PTY work goes through PtySession (server/pty/session.ts): the Rust PTY host (crates/pty-sidecar), or the Node sidecar server/pty/pty-host.mjs as its fallback.");
-    expect(loads.map((load) => load.file)).toContain("server/pty/pty-host.mjs");
+    fail(loads.map((load) => load.at),
+      "node-pty must never load inside Bun: it panics the runtime (oven-sh/bun#18546). PTY work goes through PtySession (server/pty/session.ts) on the Rust PTY host (crates/pty-sidecar).");
   });
 
   it("knows an import from a mention", () => {
@@ -248,6 +245,7 @@ describe("herdr socket", () => {
     "server/herdr-core/adapter.ts": "a liveness probe of the core adapter's own socket before startup: sends no request",
     "server/herdr-core/runtime.ts": "a liveness probe of herdr-core's socket, not herdr's: connects and closes, sends nothing",
     "server/runtime-move-lock.ts": "the herdr-core move's own lock socket, not herdr's: asks which Ovis server holds it",
+    "server/omo-control.ts": "OmO's own terminal-control socket, the one the pane's OmO process listens on, not herdr's: one request per connection",
     "server/acp/client.ts": "an ACP keeper's own socket in this server's state folder (crates/acp-keeper), not herdr's: one connection the keeper streams its log on",
   };
 
@@ -269,25 +267,10 @@ describe("herdr socket", () => {
     expect(found("import { connect as tcpConnect, createServer } from \"node:net\";\ntcpConnect({ host, port });\ntcpConnect(port, host);")).toBe(0);
   });
 
-  const HERDR_RPC_ALLOWED: Record<string, string> = {
-    "server/conversation.ts": "open PRs #869 #912 #923 change it",
-    "server/gjc-runtime.ts": "open PR #912 changes it",
-    "server/hermes.ts": "open PR #910 changes it",
-    "server/omo.ts": "open PR #923 changes it",
-    "server/shell-agent.ts": "open PRs #885 #923 change it",
-  };
-  const HERDR_RPC_PENDING: Record<string, string> = {
-    "server/gjc-status.ts": "open PR #928 adds a call",
-    "server/index.ts": "open PR #859 adds a call",
-  };
-
   it("calls herdrRpc only inside server/herdr/", () => {
     const uses = matches(serverCode().filter((file) => !file.startsWith("server/herdr/")), /\bherdrRpc\b/);
-    fail(uses.filter((use) => !(use.file in HERDR_RPC_ALLOWED) && !(use.file in HERDR_RPC_PENDING)).map((use) => use.at),
-      "Do not call herdrRpc outside server/herdr/: add a typed wrapper in server/herdr/client.ts (its method in HerdrMethods, server/herdr/methods.ts) and call that; for pane status use the server/collector.ts listeners. Files waiting on open PRs are listed in HERDR_RPC_ALLOWED in server/conventions.test.ts; do not add new ones.");
-    const users = new Set(uses.map((use) => use.file));
-    fail(Object.keys(HERDR_RPC_ALLOWED).filter((file) => !users.has(file)),
-      "These files no longer call herdrRpc: remove them from HERDR_RPC_ALLOWED in server/conventions.test.ts.");
+    fail(uses.map((use) => use.at),
+      "Do not call herdrRpc outside server/herdr/: add a typed wrapper in server/herdr/client.ts (its method in HerdrMethods, server/herdr/methods.ts) and call that; for pane status use the server/collector.ts listeners.");
   });
 
   it("subscribes to status only in server/collector.ts", () => {
@@ -342,6 +325,28 @@ describe("runtime gates", () => {
       'const command = process.env["OVIS_HERDR_BIN"] || "herdr";',
       'if (capabilities().attach === "pty-cli") watch();',
     ]) expect(NAMED.test(other)).toBe(false);
+  });
+});
+
+describe("conversations told by their text", () => {
+  // a pane's conversation chosen by matching what it shows (codexTranscriptPath's `inferred`) is a guess: these may
+  // be named where they are now, and fewer times, never more or anywhere else. Every mention counts (a definition, an
+  // import, an alias, `?.(`, `["..."]`), so none reaches a new caller unseen
+  const TEXT_MATCHED = /\b(?:matchCodexTranscript|matchCodexFirstExchange|loadedConversation|matchShortCodexAnswers|lastTurnConversation|opencodeTitled|opencodeSessionsTitled)\b/;
+  const NAMED: Record<string, number> = {
+    "server/codex.ts": 21,
+    "server/herdr-core/adapter.ts": 3,
+    "server/herdr-core/runtime.ts": 3,
+    "server/opencode.ts": 1,
+  };
+
+  it("names the text matchers no more often and nowhere new", () => {
+    const found = matches(serverCode(), TEXT_MATCHED);
+    const count = (file: string) => found.filter((use) => use.file === file).length;
+    fail(found.filter((use) => count(use.file) > (NAMED[use.file] ?? 0)).map((use) => use.at),
+      "Do not tie a pane to a conversation by its text: take what the agent or the pane's own process tells (served or held in codexTranscriptPath), or open the terminal.");
+    fail(Object.entries(NAMED).filter(([file, pinned]) => count(file) < pinned).map(([file]) => file),
+      "These files name the text matchers less often now: lower their count in NAMED in server/conventions.test.ts.");
   });
 });
 

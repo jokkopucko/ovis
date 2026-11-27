@@ -14,7 +14,8 @@ export interface AwakeSettings {
   onBattery: boolean;
 }
 
-const OFF: AwakeSettings = { whileWorking: false, onBattery: false };
+/** Until the user chooses: hold the computer awake while an agent works, on power only. */
+const DEFAULTS: AwakeSettings = { whileWorking: true, onBattery: false };
 
 function readJson(path: string): unknown {
   try { return JSON.parse(readFileSync(path, "utf8")); } catch { return null; }
@@ -22,8 +23,10 @@ function readJson(path: string): unknown {
 
 export function readAwakeSettings(path: string): AwakeSettings {
   const saved = readJson(path) as Partial<Record<keyof AwakeSettings, unknown>> | null;
-  if (typeof saved?.whileWorking !== "boolean" || typeof saved.onBattery !== "boolean") return { ...OFF };
-  return { whileWorking: saved.whileWorking, onBattery: saved.onBattery };
+  return {
+    whileWorking: typeof saved?.whileWorking === "boolean" ? saved.whileWorking : DEFAULTS.whileWorking,
+    onBattery: typeof saved?.onBattery === "boolean" ? saved.onBattery : DEFAULTS.onBattery,
+  };
 }
 
 export function writeAwakeSettings(path: string, settings: AwakeSettings): void {

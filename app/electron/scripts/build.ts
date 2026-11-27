@@ -4,7 +4,7 @@ import { mergeFeeds } from "./feed.ts";
 import { installedHelpers, releaseHelpers } from "./native.ts";
 import { stageServerArtifact } from "../../../scripts/server-artifact.ts";
 import { BUN, BUN_LICENSE, BUN_VERSION, download, HC, HC_VERSION, hostTarget, sha256, type Pinned } from "./runtimes.ts";
-import { writeStagingMarker } from "../src/stagingProfile.ts";
+import { updateFeed, writeStagingMarker } from "../src/stagingProfile.ts";
 
 const here = resolve(import.meta.dir, "..");
 const repo = resolve(here, "..", "..");
@@ -85,12 +85,11 @@ async function stageAll(): Promise<void> {
   if (tag && tag !== "v" + version) throw new Error("Release tag does not match package version");
   if (!tag && !windows) await sh(["bun", "scripts/pty-sidecar.ts", "install"], repo);
   const helpers = windows ? {} : tag ? await releaseHelpers(cache, target, { version, at: "https://github.com/devswha/ovis/releases/download/" + tag }) : installedHelpers(join(repo, "bin"));
-  if (!helpers.ptySidecar) console.log("no Rust PTY host for this version: the app's server falls back to Node, where the PC has it");
+  // the app's terminals run in hc; only a private sign-in terminal needs a PTY host of the server's own
+  if (!helpers.ptySidecar && !windows) console.log("no Rust PTY host for this version: a sign-in from Settings offers a terminal tab instead of a private one");
   await stageServerArtifact({
     platform: windows ? "windows-x64" : target,
     dir: join(stage, "server"),
-    nodePty: true,
-    downloads: join(cache, "server-downloads"),
     ...helpers,
   });
   for (const file of ["LICENSE", "THIRD_PARTY_NOTICES.md"]) cpSync(join(repo, file), join(stage, file));
@@ -176,12 +175,13 @@ async function dist(): Promise<void> {
   const platform = os === "darwin" ? "mac" : windows ? "win" : "linux";
   // the CPU written out, since electron-builder's ${arch} says x86_64 in an AppImage's name and amd64 in a deb's
   const args = [join(here, "node_modules", ".bin", `electron-builder${windows ? ".exe" : ""}`), `--${platform}`, `--${arch}`, "--publish", "never", `-c.extraMetadata.version=${version}`, `-c.${platform}.artifactName=Ovis-${platform}-${arch}.\${ext}`];
-  const feed = process.env["OVIS_UPDATE_FEED"]?.trim();
+  const staging = platform === "mac" && process.env["OVIS_BUILD_STAGING"] === "1";
+  const feed = updateFeed(process.env, staging);
   if (feed) {
-    if (new URL(feed).protocol !== "https:") throw new Error("OVIS_UPDATE_FEED must be an https address");
+    if (new URL(feed).protocol !== "https:") throw new Error(`${staging ? "OVIS_PREVIEW_FEED" : "OVIS_UPDATE_FEED"} must be an https address`);
     args.push("-c.publish.provider=generic", `-c.publish.url=${feed}`);
   }
-  writeStagingMarker(stage, platform === "mac" && process.env["OVIS_BUILD_STAGING"] === "1");
+  writeStagingMarker(stage, staging);
   const child = Bun.spawn(args, { cwd: here, stdout: "inherit", stderr: "inherit" });
   if (await child.exited !== 0) throw new Error("electron-builder failed");
 }

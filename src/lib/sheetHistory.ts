@@ -17,8 +17,9 @@
  * and has none (before 102), the ones this module keeps in each entry's state (`places`).
  */
 import { useEffect, useRef } from "react";
-import { PLACE_KEY, SHEET_HISTORY_KEY, SHEET_UNDER_KEY, overCopiedEntry, sheetStep } from "./historyKeys.ts";
+import { PLACE_KEY, SHEET_HISTORY_KEY, SHEET_UNDER_KEY, overCopiedEntry, sheetStep, silentSheetLandings } from "./historyKeys.ts";
 import { SHEET_QUERY } from "./sheets.ts";
+import { shellMode } from "./shellMode.ts";
 import { useMediaQuery } from "./useMediaQuery.ts";
 
 const KEY = SHEET_HISTORY_KEY;
@@ -100,6 +101,16 @@ function where(): { key: string; index: number } | null {
   const entry = navigation()?.currentEntry;
   return entry ? { key: entry.key, index: entry.index } : null;
 }
+function settleUnheardBack(): void {
+  if (stepping === null || stepOnto === null) return;
+  const at = where();
+  if (at?.key !== stepOnto) return;
+  stepping = null;
+  stepOnto = null;
+  here = at;
+  seen = sheetOf(window.history.state);
+  for (const listener of silentSheetLandings) listener();
+}
 let ahead: string | null = null;
 let climbing: { key: string; owner: string; state: unknown; href: string } | null = null;
 let took = false;
@@ -126,9 +137,9 @@ function cover(state: unknown): void {
 let pushing = false;
 let stepping: Set<string> | null = null;
 /**
- * Where the browser tells its entries (the Navigation API), the key of the one the step on its way lands on: the entry
- * under the one it leaves, named as the step is asked, as the browser names it then. A sheet that makes its entry
- * meanwhile changes neither.
+ * Where the entries have keys (the Navigation API's, or the ones this module keeps), the key of the one the step on its
+ * way lands on: the entry under the one it leaves, named as the step is asked, as it is named then. A sheet that makes
+ * its entry meanwhile changes neither.
  */
 let stepOnto: string | null = null;
 let steppedOff = false;
@@ -176,6 +187,18 @@ function tellTraversalOver(): void {
   for (const listener of [...traversalOver]) listener();
 }
 
+const entriesMade = new Set<(over: string | undefined) => void>();
+
+/**
+ * Calls `listener` when the page made a history entry, whoever pushed it (a sheet, Settings, a file,
+ * a move to another pane): the history is on an entry no traversal landed on, so no popstate tells of it.
+ * `over` is the key of the entry it was made over, where the browser or this module tells one.
+ */
+export function onHistoryEntryMade(listener: (over: string | undefined) => void): () => void {
+  entriesMade.add(listener);
+  return () => { entriesMade.delete(listener); };
+}
+
 /** The page a sheet's item leaves for (leavePageFromSheet), loaded once no step of a closing sheet is to come or on its way. */
 let departure: string | null = null;
 
@@ -202,11 +225,15 @@ export function leavePageFromSheet(url: string): void {
 }
 
 function stepBack(): void {
-  const api = (window as unknown as { navigation?: NavigationApi }).navigation;
+  const api = navigation();
   const at = api?.currentEntry;
   stepOnto = api && at ? api.entries().find((entry) => entry.index === at.index - 1)?.key ?? null : null;
   stepping = new Set();
   window.history.back();
+  if (stepOnto !== null) {
+    const step = stepping;
+    setTimeout(() => { if (stepping === step) settleUnheardBack(); }, LANDING_MS);
+  }
 }
 
 function sheetOf(state: unknown): string | null {
@@ -231,6 +258,20 @@ function owned(state: unknown): boolean {
   return id !== null && (open.has(id) || leaving.has(id));
 }
 
+function sheetAddress(href: string): string {
+  const url = new URL(href, "https://ovis.invalid");
+  // Folding the sidebar changes its presentation, not the place covered by the sheet.
+  url.searchParams.delete("sidebar");
+  if (shellMode() === "relay" && !url.hash.startsWith("#offer=")) {
+    const fields = new URLSearchParams(url.hash.slice(1));
+    if (fields.has("sidebar")) {
+      fields.delete("sidebar");
+      url.hash = fields.toString();
+    }
+  }
+  return url.href;
+}
+
 export function enterSheet(onBack: () => boolean | void, reuse: string | null, stays = false, returns = false): string {
   // StrictMode's second mount, or a sheet reopened before its entry went: the same entry, or the same way onto one
   const timer = reuse === null ? undefined : leaving.get(reuse);
@@ -242,6 +283,8 @@ export function enterSheet(onBack: () => boolean | void, reuse: string | null, s
     return reuse;
   }
   const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  // An automatic sheet can open after the silent landing, before another tap.
+  settleUnheardBack();
   open.set(id, onBack);
   if (stays) staying.add(id);
   stepping?.add(id);
@@ -318,7 +361,9 @@ export function leaveSheet(id: string): void {
     const key = entryKeys.get(id);
     entryKeys.delete(id);
     if (sheetOf(window.history.state) !== id) { depart(); return; }
-    if (window.location.href !== address) { window.history.replaceState(ordinary(window.history.state, true), ""); seen = null; }
+    if (window.location.href !== address && (address === undefined || sheetAddress(window.location.href) !== sheetAddress(address))) {
+      window.history.replaceState(ordinary(window.history.state, true), ""); seen = null;
+    }
     else if (heir !== undefined && open.has(heir) && covered.delete(heir)) {
       window.history.replaceState({ ...(window.history.state as Record<string, unknown>), [KEY]: heir }, "");
       addresses.set(heir, window.location.href);
@@ -358,21 +403,30 @@ if (typeof window !== "undefined") {
   history.replaceState = ((state: unknown, ...rest: [string, (string | URL | null)?]) =>
     replace(counting() ? placed(state, placeIn(history.state)) : state, ...rest)) as History["replaceState"];
   history.pushState = ((state: unknown, ...rest: [string, (string | URL | null)?]) => {
+    let made = false;
     try {
-      if (pushing) return pushEntry(state, ...rest);
-      seen = null;
-      if (owned(history.state)) { cover(history.state); return history.replaceState(without(state), ...rest); }
-      return pushEntry(without(state), ...rest);
+      if (!pushing) {
+        seen = null;
+        if (owned(history.state)) { cover(history.state); return history.replaceState(without(state), ...rest); }
+      }
+      pushEntry(pushing ? state : without(state), ...rest);
+      made = true;
     } finally {
       here = where();
       ahead = null;
       stood = null;
+      if (made) {
+        const at = here;
+        const over = at === null ? undefined : navigation()?.entries().find((entry) => entry.index === at.index - 1)?.key;
+        for (const listener of [...entriesMade]) listener(over);
+      }
     }
   }) as History["pushState"];
   here = where();
   // a tap the browser counts as one (a scroll, or Escape, is none)
   const onTap = (): void => {
     if (navigator.userActivation?.isActive !== true) return;
+    settleUnheardBack();
     tapped = true;
     if (asked === null) makeWaiting();
   };
@@ -405,8 +459,16 @@ if (typeof window !== "undefined") {
     if (event === heard) return;
     heard = event;
     holding = false;
-    const was = here;
+    let was = here;
     here = where();
+    // A closed sheet's step lands on the entry it named. One that landed there unheard leaves this
+    // traversal, onto another entry, the user's own, from the entry that step landed on.
+    if (stepping !== null && stepOnto !== null && here !== null && here.key !== stepOnto) {
+      was = navigation()?.entries().find((entry) => entry.key === stepOnto) ?? was;
+      stepping = null;
+      stepOnto = null;
+      seen = null;
+    }
     settle(here);
     ahead = null;
     took = climbing !== null && here?.key === climbing.key;
@@ -529,6 +591,10 @@ if (typeof window !== "undefined") {
   window.addEventListener("popstate", depart);
   sheetStep.holds = (event) => { hear(event as PopStateEvent); return holding; };
   if (sheetOf(window.history.state) !== null) window.history.replaceState(ordinary(window.history.state, true), "");
+}
+
+export function sheetHistoryEntryKey(): string | undefined {
+  return navigation()?.currentEntry?.key;
 }
 
 export function useSheetHistory(active: boolean, onBack: () => boolean | void, stays = false, returns = false): void {

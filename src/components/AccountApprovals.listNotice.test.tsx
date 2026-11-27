@@ -4,13 +4,17 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import type { AllowRefusal } from "../lib/account/listAllow.ts";
 import { SettingsProvider } from "../lib/settings.ts";
-import { keepStalled, ListAllowNotice } from "./AccountApprovals.tsx";
+import { translate, type Language } from "../lib/i18n.ts";
+import type { AccountList, WaitingRequest } from "../lib/account/accountList.ts";
+import { approvalPcName, unconfirmedReason, waitingOf } from "./AccountApprovals.tsx";
+import { keepStalled, ListAllowNotice } from "./ListChangeNotice.tsx";
 
-function render(why: AllowRefusal, retryAfterMs: number | null = null): string {
+/** `pairedAtPc`: the PC let the device in by a pairing of its own (one that does not follow the list), as every case here but the last */
+function render(why: AllowRefusal, retryAfterMs: number | null = null, pairedAtPc = true, placed = false): string {
   const saved = Object.getOwnPropertyDescriptor(navigator, "languages");
   Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
   try {
-    return renderToStaticMarkup(createElement(SettingsProvider, null, createElement(ListAllowNotice, { stalled: { key: "tablet-key", device: "Dana's tablet", pc: "Desk", why, retryAfterMs, retry: async () => {} }, onClose: () => {} })));
+    return renderToStaticMarkup(createElement(SettingsProvider, null, createElement(ListAllowNotice, { stalled: { key: "tablet-key", device: "Dana's tablet", pc: "Desk", pairedAtPc, placed, why, retryAfterMs, retry: async () => {} }, onClose: () => {} })));
   } finally {
     if (saved) Object.defineProperty(navigator, "languages", saved);
     else Reflect.deleteProperty(navigator, "languages");
@@ -56,8 +60,54 @@ describe("a device a PC let in that the account's list did not take", () => {
   });
 });
 
+describe("a device a PC that lets devices in by the list did not let in", () => {
+  it("says that the device is not in the account, never that it was added to that PC: such a PC made no pairing of its own", () => {
+    for (const why of ["not_claimed", "stopped", "removed", "refused"] as const) {
+      const html = render(why, null, false);
+      expect(html).toContain("Dana&#x27;s tablet is not in your account");
+      expect(html).not.toContain("only");
+    }
+    expect(render("unknown", null, false)).toContain("Not known yet: is Dana&#x27;s tablet in your account?");
+  });
+});
+
+describe("a device the list took, where what was to follow its entry stopped", () => {
+  it("says that the device was added to the list, never that it is not in the account or was added to the PC only", () => {
+    for (const pairedAtPc of [true, false]) {
+      const html = render("changed", null, pairedAtPc, true);
+      expect(html).toContain("Dana&#x27;s tablet was added to your account&#x27;s list");
+      expect(html).not.toContain("is not in your account");
+      expect(html).not.toContain("only");
+      expect(html).toContain("The sign-in on this device changed since you approved it.");
+    }
+  });
+});
+
+describe("a change that still waits", () => {
+  it("offers Cancel beside Try again where a signed request waits, and none where nothing waits", () => {
+    const waits = (why: AllowRefusal, cancel: boolean): string => {
+      const saved = Object.getOwnPropertyDescriptor(navigator, "languages");
+      Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
+      try {
+        return renderToStaticMarkup(createElement(SettingsProvider, null, createElement(ListAllowNotice, { stalled: { key: "k", device: "Dana's tablet", pc: "Desk", pairedAtPc: true, why, retry: async () => {}, ...(cancel ? { cancel: async () => {} } : {}) }, onClose: () => {} })));
+      } finally {
+        if (saved) Object.defineProperty(navigator, "languages", saved);
+        else Reflect.deleteProperty(navigator, "languages");
+      }
+    };
+    expect(waits("unknown", true)).toContain(">Cancel<");
+    expect(waits("not_claimed", false)).not.toContain(">Cancel<");
+    // another change was refused because this one waits: the card says so, whatever page made the first
+    const other = waits("waiting", true);
+    expect(other).toContain("An earlier change is still waiting");
+    expect(other).toContain("Try it again, or cancel it.");
+    expect(other).toContain(">Try again<");
+    expect(other).not.toContain("was added to Desk only");
+  });
+});
+
 describe("the devices the list did not take, kept until each is closed or let in", () => {
-  const stalled = (key: string, why: AllowRefusal) => ({ key, device: key, pc: "Desk", why, retry: async () => {} });
+  const stalled = (key: string, why: AllowRefusal) => ({ key, device: key, pc: "Desk", pairedAtPc: true, why, retry: async () => {} });
 
   it("keeps one card for each device, the first refused first, and takes a device's card away when it is let in or closed", () => {
     let kept = keepStalled([], "tablet", stalled("tablet", "budget"));
@@ -69,5 +119,48 @@ describe("the devices the list did not take, kept until each is closed or let in
     kept = keepStalled(kept, "tablet", null);
     expect(kept.map((each) => each.key)).toEqual(["laptop"]);
     expect(keepStalled(kept, "phone", null)).toBe(kept);
+  });
+});
+
+describe("an approval a PC that lets devices in by the list has not seen confirmed", () => {
+  const join = { id: "r1", label: "Tablet", intent: "account" as const, choices: ["111111", "222222", "333333"] as [string, string, string], expires_at: "", key: "k" };
+  const said = (language: Language, request: Parameters<typeof unconfirmedReason>[1]) => unconfirmedReason((key, vars) => translate(language, key, vars), request, "Dana's tablet", "Desk");
+
+  it("asks the new device's person to press The numbers match where the join brought its card", () => {
+    expect(said("en", { ...join, list: true })).toBe("First press “The numbers match” on Dana's tablet");
+  });
+
+  it("says to approve a join that brought no card on that PC's own screen: no device is ever told it confirmed, in every language", () => {
+    expect(said("en", join)).toBe("Approve Dana's tablet on Desk's own screen");
+    for (const language of ["ko", "ja", "zh"] as const) {
+      const words = said(language, join);
+      expect(words).not.toBe("Approve Dana's tablet on Desk's own screen");
+      expect(words).toContain("Dana's tablet");
+      expect(words).toContain("Desk");
+    }
+  });
+});
+
+describe("the request a stalled approval's card acts on", () => {
+  const waits = (account: string): WaitingRequest => ({ account, list: "5c".repeat(32), key: "member", on: { seq: 1, hash: "ab".repeat(32) }, place: { seq: 2, hash: "cd".repeat(32) }, for: "allow:k", at: 1 });
+  const listOf = (request: WaitingRequest | null) => ({ waiting: async () => request }) as unknown as AccountList;
+
+  it("is the request that waits for the account the approval began under, and none that waits for another account", async () => {
+    expect(await waitingOf(listOf(waits("acct_a")), "acct_a")).toEqual(waits("acct_a"));
+    // the sign-in moved to another account while the approval waited: its request is not this card's to send or let go
+    expect(await waitingOf(listOf(waits("acct_b")), "acct_a")).toBeNull();
+    expect(await waitingOf(listOf(null), "acct_a")).toBeNull();
+    expect(await waitingOf(null, "acct_a")).toBeNull();
+  });
+});
+
+describe("the PC an approval card says the request came through", () => {
+  const id = "57011c1f".padEnd(32, "0");
+  it("is named as this device's pairing names it, else as the account names it, and by the start of its id only when neither does", () => {
+    expect(approvalPcName(id, [{ server_id: id, name: "Desk" }], [{ server_id: id, label: "slqa-pc1" }])).toBe("Desk");
+    // a PC this device opens through the account (or its list) has no pairing here: the account's name for it
+    expect(approvalPcName(id, [], [{ server_id: "f".repeat(32), label: "other" }, { server_id: id, label: "slqa-pc1" }])).toBe("slqa-pc1");
+    expect(approvalPcName(id, [{ server_id: id }], [{ server_id: id, label: "slqa-pc1" }])).toBe("slqa-pc1");
+    expect(approvalPcName(id, [], [])).toBe("57011c1f");
   });
 });

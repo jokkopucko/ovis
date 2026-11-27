@@ -8,6 +8,7 @@ export const WORKSPACE_ZH: Record<string, string> = {
   "Open": "打开",
   "Use folder {path}": "使用文件夹 {path}",
   "{n} more recent folders": "另外 {n} 个最近的文件夹",
+  "Show {n} more": "再显示 {n} 个",
   "New worktree · {name}": "新建工作树 · {name}",
   "Open worktree · {name}": "打开工作树 · {name}",
   "Install an agent · {name}": "安装代理 · {name}",

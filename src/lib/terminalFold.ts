@@ -1,5 +1,8 @@
-import type { IBufferCell, IBufferLine, ITheme, Terminal } from "@xterm/xterm";
+import type { GhosttyTerminal } from "./ghostty/terminal.ts";
+import type { RendererTheme } from "./ghostty/renderer.ts";
 import { canPanTerminalGrid, forwardWheel } from "./terminalWheel.ts";
+import { viewRows, type ScreenCell, type ScreenLine, type ScreenRows } from "./terminalScreen.ts";
+import { GHOSTTY_DREW_EVENT } from "./ghostty/viewMoved.ts";
 
 /*
  * The folded view of a grid wider than its screen that this browser does not size. A Windows PC's
@@ -44,7 +47,7 @@ const CUBE = [0, 95, 135, 175, 215, 255];
 const hex = (value: number): string => value.toString(16).padStart(2, "0");
 
 /** A 256-colour palette index as CSS: the theme's sixteen colours (xterm's where it names none), then xterm's 6x6x6 cube and grey ramp. */
-export function paletteColor(index: number, theme: ITheme): string {
+export function paletteColor(index: number, theme: RendererTheme): string {
   if (index < 16) return theme[ANSI[index]!] ?? XTERM_ANSI[index]!;
   if (index < 232) {
     const cube = index - 16;
@@ -56,7 +59,7 @@ export function paletteColor(index: number, theme: ITheme): string {
 type CellColor = { index: number } | { css: string } | null;
 const colorOf = (isDefault: boolean, isRgb: boolean, value: number): CellColor =>
   isDefault ? null : isRgb ? { css: `#${value.toString(16).padStart(6, "0")}` } : { index: value };
-const cssOf = (color: CellColor, theme: ITheme): string | null => color === null ? null : "css" in color ? color.css : paletteColor(color.index, theme);
+const cssOf = (color: CellColor, theme: RendererTheme): string | null => color === null ? null : "css" in color ? color.css : paletteColor(color.index, theme);
 
 type Rgb = [number, number, number];
 const rgbOf = (color: string): Rgb | null => {
@@ -115,7 +118,7 @@ export function dimmedColor(fg: string, bg: string, ratio = 4.5): string {
   return readableColor(mixed, bg, ratio);
 }
 
-export function cellStyle(cell: IBufferCell, theme: ITheme, minimumContrast = 4.5): string {
+export function cellStyle(cell: ScreenCell, theme: RendererTheme, minimumContrast = 4.5, decorated = true): string {
   const bold = cell.isBold() !== 0;
   let fgColor = colorOf(cell.isFgDefault(), cell.isFgRGB(), cell.getFgColor());
   let bgColor = colorOf(cell.isBgDefault(), cell.isBgRGB(), cell.getBgColor());
@@ -149,24 +152,28 @@ export function cellStyle(cell: IBufferCell, theme: ITheme, minimumContrast = 4.
   if (bold) style += "font-weight:bold;";
   if (cell.isItalic() !== 0) style += "font-style:italic;";
   const lines = [cell.isUnderline() !== 0 ? "underline" : "", cell.isStrikethrough() !== 0 ? "line-through" : "", cell.isOverline() !== 0 ? "overline" : ""].filter(Boolean);
-  if (lines.length > 0) style += `text-decoration:${lines.join(" ")};`;
+  if (decorated && lines.length > 0) style += `text-decoration:${lines.join(" ")};`;
   return style;
 }
 
 const escapeHtml = (text: string): string => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const isKittyPlaceholder = (text: string): boolean => text.startsWith("\u{10eeee}");
+/** a cell's text as a folded row draws it: a Kitty graphics placeholder is the image layer's, a blank here */
+const drawnText = (cell: ScreenCell): string => {
+  const chars = cell.getChars();
+  return isKittyPlaceholder(chars) ? " " : chars || " ";
+};
 const run = (text: string, style: string): string => !text ? "" : style ? `<span style="${style}">${escapeHtml(text)}</span>` : escapeHtml(text);
-const blank = (cell: IBufferCell): boolean => (cell.getChars() === "" || cell.getChars() === " ") && cell.isBgDefault() && cell.isInverse() === 0;
+const blank = (cell: ScreenCell): boolean => {
+  const ch = cell.getChars();
+  return (ch === "" || ch === " " || isKittyPlaceholder(ch)) && cell.isBgDefault() && cell.isInverse() === 0;
+};
 
 export interface FoldCursor { x: number; shape: "block" | "outline" | "bar" | "underline" | "none" }
 
 export const FOLD_CURSOR_CLASS = "terminal-fold-cursor";
 
-export function cursorShape(cell: Element): FoldCursor["shape"] {
-  for (const shape of ["block", "outline", "bar", "underline"] as const) if (cell.classList.contains(`xterm-cursor-${shape}`)) return shape;
-  return "none";
-}
-
-const cursorStyle = (shape: FoldCursor["shape"], theme: ITheme): string => {
+const cursorStyle = (shape: FoldCursor["shape"], theme: RendererTheme): string => {
   const color = theme.cursor ?? theme.foreground ?? "currentColor";
   if (shape === "block") return `background:${color};color:${theme.cursorAccent ?? theme.background ?? "inherit"};`;
   if (shape === "outline") return `box-shadow:inset 0 0 0 1px ${color};`;
@@ -182,7 +189,7 @@ const cursorStyle = (shape: FoldCursor["shape"], theme: ITheme): string => {
  * its cell is drawn on its own (FOLD_CURSOR_CLASS), the blank cells up to it included; past the last
  * column (a write that filled the row, waiting to wrap) it stands on the last cell, as xterm draws it.
  */
-export function rowHtml(line: IBufferLine, cols: number, theme: ITheme, scratch: IBufferCell, minimumContrast = 1, cursor: FoldCursor | null = null): string {
+export function rowHtml(line: ScreenLine, cols: number, theme: RendererTheme, scratch: ScreenCell, minimumContrast = 1, cursor: FoldCursor | null = null): string {
   let end = 0;
   for (let x = 0; x < cols; x++) {
     const cell = line.getCell(x, scratch);
@@ -198,11 +205,12 @@ export function rowHtml(line: IBufferLine, cols: number, theme: ITheme, scratch:
     const cell = line.getCell(x, scratch);
     if (!cell) break;
     if (cell.getWidth() === 0) continue;
-    const next = cellStyle(cell, theme, minimumContrast);
+    const drawn = drawnText(cell);
+    const next = cellStyle(cell, theme, minimumContrast, !isKittyPlaceholder(cell.getChars()));
     if (cursor !== null && x <= at && at < x + Math.max(1, cell.getWidth())) {
       html += run(text, style);
       const drawnStyle = next + cursorStyle(cursor.shape, theme);
-      html += `<span class="${FOLD_CURSOR_CLASS}"${drawnStyle ? ` style="${drawnStyle}"` : ""}>${escapeHtml(cell.getChars() || " ")}</span>`;
+      html += `<span class="${FOLD_CURSOR_CLASS}"${drawnStyle ? ` style="${drawnStyle}"` : ""}>${escapeHtml(drawn)}</span>`;
       text = "";
       style = next;
       continue;
@@ -212,7 +220,7 @@ export function rowHtml(line: IBufferLine, cols: number, theme: ITheme, scratch:
       text = "";
       style = next;
     }
-    text += cell.getChars() || " ";
+    text += drawn;
   }
   return html + run(text, style);
 }
@@ -234,27 +242,13 @@ export function webLinkAt(text: string, offset: number): { url: string; start: n
   return null;
 }
 
-/**
- * The OSC 8 target (`ESC ] 8 ; ; uri`) of grid cell `x` on buffer row `y`, or null. xterm (5.5 and 6.0) keeps it in its own link
- * service with no public way to read it, so this reads its internals and finds nothing where they are not there; the
- * caller applies the grid's own link policy (http(s) or file only) to what it finds.
- */
-export function hyperlinkAt(term: Terminal, y: number, x: number): string | null {
-  const cell = term.buffer.active.getLine(y)?.getCell(x) as (IBufferCell & { extended?: { urlId?: number } }) | undefined;
-  const id = cell?.extended?.urlId;
-  if (!id) return null;
-  const links = (term as unknown as { _core?: { _oscLinkService?: { getLinkData?: (id: number) => { uri?: string } | undefined } } })._core?._oscLinkService;
-  const uri = links?.getLinkData?.(id)?.uri;
-  return typeof uri === "string" && uri !== "" ? uri : null;
-}
-
-export function columnAt(line: IBufferLine, cols: number, offset: number, scratch: IBufferCell): number {
+export function columnAt(line: ScreenLine, cols: number, offset: number, scratch: ScreenCell): number {
   let at = 0;
   for (let x = 0; x < cols; x++) {
     const cell = line.getCell(x, scratch);
     if (!cell) break;
     if (cell.getWidth() === 0) continue;
-    at += (cell.getChars() || " ").length;
+    at += drawnText(cell).length;
     if (offset < at) return x;
   }
   return -1;
@@ -291,13 +285,14 @@ const caretAt = (x: number, y: number): { node: Node; offset: number } | null =>
   return range ? { node: range.startContainer, offset: range.startOffset } : null;
 };
 
-export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign, wrap, onWide, onDrawn, onTap, onLink, onPan }: TerminalFoldOptions): TerminalFold {
+export function createTerminalFold(term: GhosttyTerminal, host: HTMLElement, { foreign, wrap, onWide, onDrawn, onTap, onLink, onPan }: TerminalFoldOptions): TerminalFold {
   const view = document.createElement("div");
   view.className = "terminal-fold";
   view.setAttribute("aria-hidden", "true");
   const rows: HTMLDivElement[] = [];
   const drawn: string[] = [];
-  const scratch = term.buffer.active.getNullCell();
+  // the rows drawn: libghostty's while it holds the screen (terminalScreen.ts viewRows)
+  const reader = (): ScreenRows => viewRows(term);
   let active = false;
 
   const screen = (): HTMLElement | null => term.element?.querySelector<HTMLElement>(".xterm-screen") ?? null;
@@ -307,7 +302,7 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
     const style = getComputedStyle(term.element);
     return grid.offsetWidth + parseFloat(style.paddingLeft) + parseFloat(style.paddingRight) > host.clientWidth + 1;
   };
-  const cursorRow = (): HTMLDivElement | undefined => rows[Math.min(term.buffer.active.cursorY, rows.length - 1)];
+  const cursorRow = (): HTMLDivElement | undefined => rows[Math.min(reader().cursorY, rows.length - 1)];
   const cursorBottom = (): number | null => {
     const row = cursorRow();
     return active && row ? view.offsetTop + row.offsetTop + row.offsetHeight : null;
@@ -330,6 +325,7 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
     if (!xterm || !grid || !row || term.rows === 0 || term.cols === 0) return;
     const gridRect = grid.getBoundingClientRect();
     const line = grid.offsetHeight / term.rows;
+    // the preedit and xterm's helper textarea stand at xterm's own cursor
     const gridCursorBottom = gridRect.top - xterm.getBoundingClientRect().top + (term.buffer.active.cursorY + 1) * line;
     let target = view.offsetTop + row.offsetTop + row.offsetHeight;
     let scroll = 0;
@@ -341,6 +337,7 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
       const segment = Math.max(0, Math.floor((rect.top + rect.height / 2 - row.getBoundingClientRect().top) / foldLine));
       target = view.offsetTop + row.offsetTop + Math.min(row.offsetHeight, (segment + 1) * foldLine);
       // xterm's input stands on the last column while the cursor waits to wrap past it
+      // xterm's input stands at xterm's cursor
       const column = Math.min(term.buffer.active.cursorX, term.cols - 1);
       const needed = gridRect.left - (parseFloat(xterm.style.left) || 0) + xterm.scrollLeft + column * grid.offsetWidth / term.cols - rect.left;
       scroll = Math.max(0, Math.min(needed, xterm.scrollWidth - xterm.clientWidth));
@@ -372,12 +369,13 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
       rows.pop()!.remove();
       drawn.pop();
     }
-    const buffer = term.buffer.active;
-    const shown = term.element?.querySelector(".xterm-rows .xterm-cursor");
+    const buffer = reader();
+    const scratch = buffer.getNullCell();
+    const shape = term.cursorShape();
     const cursorY = buffer.baseY + buffer.cursorY - buffer.viewportY;
     for (let y = Math.max(0, start); y <= Math.min(end, term.rows - 1); y++) {
       const line = buffer.getLine(buffer.viewportY + y);
-      const cursor = shown && y === cursorY ? { x: buffer.cursorX, shape: cursorShape(shown) } : null;
+      const cursor = shape !== null && y === cursorY ? { x: buffer.cursorX, shape } : null;
       const html = line ? rowHtml(line, term.cols, theme, scratch, term.options.minimumContrastRatio ?? 1, cursor) : "";
       if (html === drawn[y]) continue;
       drawn[y] = html;
@@ -414,6 +412,10 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
     if (!foreign() || !wrap()) sync();
     else draw(start, end);
   });
+  // libghostty's rows change where it says, not where xterm's write did (a resize lays the two out apart): the fold
+  // draws every row again after a frame of libghostty's, writing only those whose HTML changed
+  const ghosttyDrew = (): void => { if (active && foreign() && wrap()) draw(0, term.rows - 1); };
+  host.addEventListener(GHOSTTY_DREW_EVENT, ghosttyDrew);
   const resized = term.onResize(() => sync());
   const measured = new ResizeObserver(() => sync());
   const grid = screen();
@@ -455,7 +457,8 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
     if (selection && !selection.isCollapsed && selection.anchorNode && view.contains(selection.anchorNode)) return;
     const hit = textAt(event.clientX, event.clientY);
     if (hit) {
-      const buffer = term.buffer.active;
+      const buffer = reader();
+      const scratch = buffer.getNullCell();
       const line = buffer.getLine(buffer.viewportY + hit.row);
       const col = line ? columnAt(line, term.cols, hit.offset, scratch) : -1;
       if (col >= 0 && onText(hit.row, hit.offset, hit.offset + 1, event.clientX, event.clientY) && onLink({ row: hit.row, col }, event)) return;
@@ -482,6 +485,7 @@ export function createTerminalFold(term: Terminal, host: HTMLElement, { foreign,
     cursorBottom,
     dispose() {
       rendered.dispose();
+      host.removeEventListener(GHOSTTY_DREW_EVENT, ghosttyDrew);
       resized.dispose();
       measured.disconnect();
       view.removeEventListener("click", tap);

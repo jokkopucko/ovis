@@ -8,7 +8,8 @@
  */
 import { chmodSync, linkSync, readFileSync, statSync, unlinkSync, type BigIntStats } from "node:fs";
 import { dirname, join } from "node:path";
-import nacl from "tweetnacl";
+import { x25519 } from "@noble/curves/ed25519.js";
+import { equalBytes } from "@noble/curves/utils.js";
 import { exportPublicKey, exportSecretKey, generateKeyPair, importPublicKey, importSecretKey } from "../../shared/relay-e2ee.ts";
 import { SERVER_ID_PATTERN } from "../../shared/relay-offer.ts";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
@@ -137,8 +138,7 @@ function parseIdentity(text: string): RelayIdentity {
     }
     const publicKey = importPublicKey(o.public_key);
     const secretKey = importSecretKey(o.secret_key);
-    const derived = nacl.box.keyPair.fromSecretKey(secretKey).publicKey;
-    if (!nacl.verify(derived, publicKey)) throw new Error("mismatch");
+    if (!equalBytes(x25519.getPublicKey(secretKey), publicKey)) throw new Error("mismatch");
   } catch { throw new RelayIdentityError("the key pair is invalid"); }
   // the relay admits only the PC whose key derives its server_id
   if (deriveServerId(importPublicKey(o.public_key)) !== o.server_id) throw new RelayIdentityError("the server_id is not derived from the public key");

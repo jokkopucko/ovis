@@ -5,7 +5,7 @@ import type { AccountListView } from "./accountList.ts";
 import { askingPc, listWorld, postPcKeys, type WorldDevice } from "./accountList.test-helpers.ts";
 import { ALLOW_RESENDS, allowDevice, type AllowOutcome } from "./listAllow.ts";
 import { deviceListKeys } from "./listKeys.ts";
-import { memoryAccountStore } from "./store.ts";
+import { memoryAccountStore, newKey, type AccountKey } from "./store.ts";
 
 type World = ReturnType<typeof listWorld>;
 
@@ -68,6 +68,35 @@ describe("a device that is in the list lets another in", () => {
     const offer = allowed(await allowDevice(second.list, { key: (await third.keys()).key, label: "Laptop", os: "android" }, noWait));
     expect(following(await third.list.adopt(offer))).toMatchObject({ standing: "in", head: 2 });
     expect((await first.list.sync()).devices).toHaveLength(3);
+  });
+
+  it("lets a newcomer whose sign-in ended while it took its place follow the list once it signs in again, under the account it was handed the place for", async () => {
+    const { w, first, second, newcomer } = await twoDevices();
+    const offer = allowed(await allowDevice(first.list, newcomer, noWait));
+    const signedIn = (await second.store.get("session"))!;
+    // the sign-in ended in another tab, or ran out, between the PC's answer and the place being taken
+    await second.store.set("session", undefined);
+    await second.list.adopt(offer, w.account);
+    // signed in to the same account again, the device reads its list and is in it: it waits to be let in no more
+    await second.store.set("session", { ...signedIn, access_token: w.fake.issueToken(w.account), sign_in_id: "signed-in-again" });
+    expect(following(await second.list.sync())).toMatchObject({ list: offer.list, standing: "in", trouble: null });
+    // a place kept for one account is no place in another's list
+    const other = listWorld("acct_other");
+    const stranger = await other.device({ label: "Stranger" });
+    await stranger.store.set("session", undefined);
+    await stranger.list.adopt(offer, w.account);
+    expect(await stranger.lists.get("offer", "acct_other")).toBeUndefined();
+  });
+
+  it("claims again for a new key of this device within the time a claim for its old key is kept", async () => {
+    const { second } = await twoDevices();
+    const claims = () => routes(second).filter((route) => route.startsWith("POST") && route.endsWith("/claims")).length;
+    expect(claims()).toBe(1);
+    // another page left the account and signed in again: the store all pages share holds a new account key
+    const renewed = await newKey();
+    (second.store as { key: () => Promise<AccountKey> }).key = async () => renewed;
+    await second.list.sync();
+    expect(claims()).toBe(2);
   });
 
   it("answers the same for a key the list already holds, and signs nothing more", async () => {
@@ -348,6 +377,11 @@ describe("an invite whose time is over, still in the list", () => {
       const placed = await signListEntry(w.held().state, { kind: "invite", key: invite.key, exp: at + 900, uses: 1, auto: true, sealed: null }, { key: keys.key, privateKey: keys.signs }, at);
       await first.service.placeEntries(w.held().id, [placed.text], []);
       invites.push(invite.key);
+      // the account service holds five open invites at a time: its own invite of each is revoked here, which leaves the
+      // list's entry as it is (the signed-list formats, D11.5)
+      const auth = { authorization: `Bearer ${first.session.access_token}` };
+      const open = await (await w.fake.fetch(`${w.origin}/v1/pc-invites`, { headers: auth })).json() as { invites: { id: string }[] };
+      for (const { id } of open.invites) expect((await w.fake.fetch(`${w.origin}/v1/pc-invites/${id}`, { method: "DELETE", headers: auth })).status).toBe(204);
     }
     w.clock.now += 16 * 60_000;
     await second.list.sync();
@@ -432,7 +466,7 @@ describe("what an Allow answers for a key the list holds no more, and what it ke
       const claim = (await writer.service.listClaims(writer.list)).find((each) => each.key === newcomer.key)!;
       const entry = await signListEntry(writer.state, { kind: "device", key: claim.key, power: "full", role: "drive", until: null, enc: claim.enc, card: claim.card, sealed: null, rotates: false }, { key: writer.keys.key, privateKey: writer.keys.signs }, writer.issued_at + (label === "second" ? 1 : 0));
       signed.push(entry.text);
-      return first.list.keep(writer, { entries: [entry.text], wraps: [], place: { seq: entry.state.footing.seq, hash: entry.state.footing.hash } });
+      return first.list.keep(writer, { entries: [entry.text], wraps: [], place: { seq: entry.state.footing.seq, hash: entry.state.footing.hash }, for: `allow:${newcomer.key}` });
     };
     const [one, two] = [await sign("first"), await sign("second")];
     expect(signed[0]).not.toBe(signed[1]);

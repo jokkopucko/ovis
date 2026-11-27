@@ -1,0 +1,10 @@
+{
+  "server/pending-input.ts#TurnGate": "19f8e9349decbbf9e12213f44d15fc56f3dced25ed17d774c07ae9fbb6aadd85",
+  "server/codex-steering.ts#SEND_NOW": "24b410622b881e477c5b462740d89b2912205acd4e789ddbc7e2a0257feda1a5",
+  "server/completion.ts#readSnapshot": "1a06d6f189de376b17fb2b52b1683c2898a4daac15966288152f4c8b5cf6e874",
+  "server/core/input.ts#serialize": "5a19063395476d450f7b0db6b26979c7bf50fa1be2a3b733d1f54dcf5d345504",
+  "server/core/pending.ts#gate-calls": "38895b72b95ae988be0e57d7d868f78d7869a8c9350c1ad6cf609b16f9d69cdf",
+  "server/core/status.ts#gate-calls": "1210234676ad036f920a53e4ecaecc16227f556d453b9b9cf48d5a544138bdad",
+  "server/core/server-core.ts#gate-calls": "94b72807137d4d360b2d8e9607dfb7145bd991bef9e0c404e47672e7f3263a18",
+  "server/collector.ts#gate-calls": "21f6594fde2e3ba78552ced09079624edd1e9ed761f20c083eb77e325469ed9b"
+}

@@ -6,11 +6,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HerdrPane, InteractivePrompt } from "../shared/protocol.ts";
 
-import { answerKeys, hermesInputDraft, isHermesForeground, claudeClearableDraft, claudeInputBoxText, claudeInputDraft, claudeInputEmpty, historyEndShowsLive, viewportShowsLive, removedInvisible, noteSubmitted, codexQuestionsCollapsed, codexQueuedPrompt, handlePromptRequest, openOmoAsks, parseClaudeSuggestion, parseFallbackPrompt, parseInteractivePrompt, pendingOmoAsk, promptWaitEnded, claudeRestoredDraft, lastChatSubmitted, piListsTemplate, piRunsCommand, OpenCodePromptState, shownPromptText, onPromptAnswering } from "./prompt.ts";
+import { answerKeys, claudeBoxRows, hermesInputDraft, isHermesForeground, claudeClearableDraft, claudeInputBoxText, claudeInputDraft, claudeInputEmpty, historyEndShowsLive, viewportShowsLive, removedInvisible, noteSubmitted, codexQuestionsCollapsed, codexQueuedPrompt, handlePromptRequest, openOmoAsks, parseClaudeSuggestion, parseFallbackPrompt, parseInteractivePrompt, pendingOmoAsk, promptWaitEnded, claudeRestoredDraft, lastChatSubmitted, piListsTemplate, piRunsCommand, OpenCodePromptState, shownPromptText, onPromptAnswering, waitingKindOf } from "./prompt.ts";
 import { rememberPaneCommands } from "./commands.ts";
-import { registry } from "./dialogs/registry.ts";
+import { agentPickerWaits, registry } from "./dialogs/registry.ts";
 import { gjcCustomEditorMatches } from "./dialogs/fallback.ts";
 import { ANSI_RE, parsedByPublicPrompt } from "./dialogs/shared.ts";
+import { hermesLauncherArgv } from "./fixtures/hermes-installed-launcher.ts";
 
 const EARLIER_BRIDGE_CARD_ID = "cb779b7d598a";
 
@@ -1012,6 +1013,308 @@ Press enter to confirm or esc to cancel
 • Command completed successfully.
 › Ask Codex to do something
 `)).toBeNull();
+  });
+});
+
+describe("kiro-cli's tool-approval menu", () => {
+  // the real screen kiro-cli 2.32 draws for a shell tool awaiting approval (captured live)
+  const kiroApproval = (cursor = "Allow") => `
+ Print a test string requires approval
+ shell → echo hello-permission-test
+
+ ${cursor === "Allow" ? "❯" : " "} Allow
+ ${cursor === "Always allow" ? "❯" : " "} Always allow
+ ${cursor === "Deny" ? "❯" : " "} Deny
+ ${cursor === "Always deny" ? "❯" : " "} Always deny
+────────────────────────────────────────────────────────────
+ esc to close · ↑↓ to navigate · ↵ to select · Tab to edit
+`;
+
+  test("parses the approval into a 4-option card with the command as the body", () => {
+    const prompt = parseInteractivePrompt("kiro", kiroApproval());
+    expect(prompt?.kind).toBe("approval");
+    expect(prompt?.title).toBe("Print a test string requires approval");
+    expect(prompt?.body).toContain("echo hello-permission-test");
+    expect(labels(prompt)).toEqual(["Allow", "Always allow", "Deny", "Always deny"]);
+    expect(prompt?.multi_select).toBe(false);
+    expect(prompt?.custom_option_index).toBeNull();
+  });
+
+  test("answers by navigating from the cursor row and pressing Enter, never a guessed key", () => {
+    const prompt = parseInteractivePrompt("kiro", kiroApproval("Allow"))!;
+    // Allow is already selected: just Enter
+    expect(answerKeys(prompt, { option_index: 0 })).toEqual([{ keys: ["enter"] }]);
+    // Deny is two rows down from Allow
+    expect(answerKeys(prompt, { option_index: 2 })).toEqual([
+      { keys: ["down"] }, { keys: ["down"] }, { keys: ["enter"] },
+    ]);
+    // Always deny is three rows down
+    expect(answerKeys(prompt, { option_index: 3 })).toEqual([
+      { keys: ["down"] }, { keys: ["down"] }, { keys: ["down"] }, { keys: ["enter"] },
+    ]);
+  });
+
+  test("navigates up when the cursor starts lower", () => {
+    const prompt = parseInteractivePrompt("kiro", kiroApproval("Deny"))!;
+    // from Deny (index 2) to Allow (index 0): two ups
+    expect(answerKeys(prompt, { option_index: 0 })).toEqual([
+      { keys: ["up"] }, { keys: ["up"] }, { keys: ["enter"] },
+    ]);
+  });
+
+  test("is not matched when the approval menu is no longer at the screen's end", () => {
+    const answered = kiroApproval() + "\n• Shell echo hello-permission-test\n  ╰ done\n› Kiro is working · 1s · Type to steer\n";
+    expect(parseInteractivePrompt("kiro", answered)).toBeNull();
+  });
+
+  test("keeps every line of a long wrapped command in the body", () => {
+    const screen = kiroApproval().replace(" shell → echo hello-permission-test\n",
+      " shell → curl -fsSL https://example.invalid/install.sh -o /tmp/i.sh && sh /tmp/i.sh\n   && rm -rf ~/.cache/something-long-enough-to-wrap\n");
+    const prompt = parseInteractivePrompt("kiro", screen)!;
+    expect(prompt.body).toContain("curl -fsSL https://example.invalid/install.sh");
+    expect(prompt.body).toContain("&& rm -rf ~/.cache/something-long-enough-to-wrap");
+    expect(labels(prompt)).toEqual(["Allow", "Always allow", "Deny", "Always deny"]);
+  });
+
+  test("never offers a command's own line as a choice", () => {
+    // a line of the command that reads like a row, right above the real rows: no card rather than a wrong one
+    const spoofed = kiroApproval().replace("\n\n ❯ Allow", "\n   Always allow\n ❯ Allow");
+    expect(parseInteractivePrompt("kiro", spoofed)).toBeNull();
+    // one under the header with a blank line before the rows stays in the body
+    const quoted = kiroApproval().replace(" shell → echo hello-permission-test\n", " shell → printf '%s\\n'\n   Deny\n");
+    const prompt = parseInteractivePrompt("kiro", quoted)!;
+    expect(prompt.body).toContain("Deny");
+    expect(labels(prompt)).toEqual(["Allow", "Always allow", "Deny", "Always deny"]);
+  });
+
+  test("gives no card when a command draws a second header over its own detail", () => {
+    const forged = kiroApproval().replace(" shell → echo hello-permission-test\n",
+      " shell → cat notes.txt\n Read notes requires approval\n shell → echo harmless\n");
+    expect(parseInteractivePrompt("kiro", forged)).toBeNull();
+  });
+
+  test("looks for a forged header however far above the rows the real one is", () => {
+    const filler = Array.from({ length: 60 }, (_, at) => `   line ${at} of a long heredoc`).join("\n");
+    const forged = kiroApproval().replace(" shell → echo hello-permission-test\n",
+      ` shell → cat <<'EOF'\n${filler}\n Read notes requires approval\n shell → echo harmless\n`);
+    expect(parseInteractivePrompt("kiro", forged)).toBeNull();
+  });
+
+  test("gives no card while an earlier approval is still on the screen", () => {
+    // which of the two headers is Kiro's own cannot be told from the screen alone
+    const earlier = kiroApproval() + "\n• Shell echo hello-permission-test\n  ╰ done\n";
+    expect(parseInteractivePrompt("kiro", earlier + kiroApproval().replace("echo hello-permission-test", "echo second"))).toBeNull();
+  });
+
+  test("takes only Kiro's own footer as the menu's end", () => {
+    const loose = kiroApproval().replace(" esc to close · ↑↓ to navigate · ↵ to select · Tab to edit", " use ↑↓ to navigate and ↵ to select");
+    expect(parseInteractivePrompt("kiro", loose)).toBeNull();
+  });
+
+  test("ignores a non-kiro agent and a screen with no approval", () => {
+    expect(parseInteractivePrompt("kiro", "› Kiro is working · 2s · Type to steer · Ctrl+S to queue\n")).toBeNull();
+    expect(parseInteractivePrompt("claude", kiroApproval())).toBeNull();
+  });
+
+  // real screens captured live from kiro-cli 3.6.2 (V3 default)
+  const kiro36Approval = (cursor = "Allow once", promo = false) => `
+───────────────────────────────────────────────────────────────────────
+ Echo KIRO_DENY_TEST requires approval
+ shell → echo KIRO_DENY_TEST
+
+ ${cursor === "Allow once" ? "❯" : " "} Allow once
+ ${cursor === "Deny once" ? "❯" : " "} Deny once
+ ${cursor === "Create allow rule to approve future similar actions" ? "❯" : " "} Create allow rule to approve future similar actions
+ ${cursor === "Create deny rule to block future similar actions" ? "❯" : " "} Create deny rule to block future similar actions${promo ? `
+ ─────────────────────────────────────────────────────────────────────
+ ${cursor === "Allow once and enable Approve for me" ? "❯" : " "} Allow once and enable Approve for me
+   Approve for me lets Kiro approve routine actions, block risky ones, and ask when unsure.` : ""}
+───────────────────────────────────────────────────────────────────────
+ esc to close · ↑↓ to navigate · ↵ to select · Tab to edit
+`;
+
+  test("parses kiro-cli 3.6.2's 4-option approval and navigates from the cursor row", () => {
+    const prompt = parseInteractivePrompt("kiro", kiro36Approval("Allow once"))!;
+    expect(prompt.kind).toBe("approval");
+    expect(prompt.title).toBe("Echo KIRO_DENY_TEST requires approval");
+    expect(prompt.body).toBe("shell → echo KIRO_DENY_TEST");
+    expect(labels(prompt)).toEqual([
+      "Allow once",
+      "Deny once",
+      "Create allow rule to approve future similar actions",
+      "Create deny rule to block future similar actions",
+    ]);
+    expect(answerKeys(prompt, { option_index: 0 })).toEqual([{ keys: ["enter"] }]);
+    expect(answerKeys(prompt, { option_index: 1 })).toEqual([{ keys: ["down"] }, { keys: ["enter"] }]);
+
+    const onDeny = parseInteractivePrompt("kiro", kiro36Approval("Deny once"))!;
+    expect(answerKeys(onDeny, { option_index: 0 })).toEqual([{ keys: ["up"] }, { keys: ["enter"] }]);
+  });
+
+  test("parses kiro-cli 3.6.2's 5-option Approve for me promo menu (including a wrapped note)", () => {
+    const prompt = parseInteractivePrompt("kiro", kiro36Approval("Allow once", true))!;
+    expect(labels(prompt)).toEqual([
+      "Allow once",
+      "Deny once",
+      "Create allow rule to approve future similar actions",
+      "Create deny rule to block future similar actions",
+      "Allow once and enable Approve for me",
+    ]);
+    // separatorBefore is visual only: 4 downs move from Allow once (0) straight to index 4
+    expect(answerKeys(prompt, { option_index: 4 })).toEqual([
+      { keys: ["down"] }, { keys: ["down"] }, { keys: ["down"] }, { keys: ["down"] }, { keys: ["enter"] },
+    ]);
+
+    const wrappedNote = kiro36Approval("Allow once and enable Approve for me", true).replace(
+      "   Approve for me lets Kiro approve routine actions, block risky ones, and ask when unsure.",
+      "   Approve for me lets Kiro approve routine actions,\n   block risky ones, and ask when unsure.",
+    );
+    const wrapped = parseInteractivePrompt("kiro", wrappedNote)!;
+    expect(labels(wrapped)).toHaveLength(5);
+    expect(answerKeys(wrapped, { option_index: 1 })).toEqual([
+      { keys: ["up"] }, { keys: ["up"] }, { keys: ["up"] }, { keys: ["enter"] },
+    ]);
+  });
+
+  test("parses kiro-cli 3.6.2 non-shell tool approvals (fs_write)", () => {
+    const screen = kiro36Approval()
+      .replace("Echo KIRO_DENY_TEST requires approval", "Write File requires approval")
+      .replace("shell → echo KIRO_DENY_TEST", "fs_write → /tmp/outside.txt");
+    const prompt = parseInteractivePrompt("kiro", screen)!;
+    expect(prompt.kind).toBe("approval");
+    expect(prompt.title).toBe("Write File requires approval");
+    expect(prompt.body).toBe("fs_write → /tmp/outside.txt");
+    expect(labels(prompt)).toHaveLength(4);
+  });
+
+  test("rejects mixed 2.32/3.6.2 labels, orphan Approve-for-me notes, missing blank lines, and truncated commands", () => {
+    const mixed = kiro36Approval().replace("   Deny once", "   Deny");
+    expect(parseInteractivePrompt("kiro", mixed)).toBeNull();
+
+    const orphanNote = kiro36Approval().replace(
+      "   Create deny rule to block future similar actions",
+      "   Create deny rule to block future similar actions\n   Approve for me lets Kiro approve routine actions, block risky ones, and ask when unsure.",
+    );
+    expect(parseInteractivePrompt("kiro", orphanNote)).toBeNull();
+
+    const noBlank = kiro36Approval().replace("shell → echo KIRO_DENY_TEST\n\n ❯ Allow once", "shell → echo KIRO_DENY_TEST\n ❯ Allow once");
+    expect(parseInteractivePrompt("kiro", noBlank)).toBeNull();
+
+    const truncated = kiro36Approval().replace("shell → echo KIRO_DENY_TEST", "shell → echo aaaa... [42 more characters not shown]");
+    expect(parseInteractivePrompt("kiro", truncated)).toBeNull();
+    expect(registry.waits("kiro", truncated)).toBe(true);
+    expect(registry.waits("kiro", kiro36Approval())).toBe(false);
+
+    // Kiro 3.6.2 folds multiline command previews by default with `...+N lines`: no card and no fallback
+    const folded = kiro36Approval().replace("shell → echo KIRO_DENY_TEST", "shell → echo safe ...+3 lines");
+    expect(parseInteractivePrompt("kiro", folded)).toBeNull();
+    expect(registry.waits("kiro", folded)).toBe(true);
+
+    // Truncated or folded preview followed by a classifier reason paragraph must still be refused
+    const truncatedWithReason = kiro36Approval().replace(
+      "shell → echo KIRO_DENY_TEST",
+      "shell → echo sample [73 more characters not shown]\n\n Action requires additional review",
+    );
+    expect(parseInteractivePrompt("kiro", truncatedWithReason)).toBeNull();
+    expect(registry.waits("kiro", truncatedWithReason)).toBe(true);
+
+    // Ambiguous header above a truncated command must still suppress fallback
+    const ambiguousTruncated = kiro36Approval().replace(
+      "shell → echo KIRO_DENY_TEST",
+      "shell → echo first\n Fake requires approval\n shell → echo second [12 more characters not shown]",
+    );
+    expect(parseInteractivePrompt("kiro", ambiguousTruncated)).toBeNull();
+    expect(registry.waits("kiro", ambiguousTruncated)).toBe(true);
+
+    // A preview exceeding CARD_BODY_MAX (12,000 chars) would silently clip the body: refuse it too
+    const oversized = kiro36Approval().replace("shell → echo KIRO_DENY_TEST", `shell → echo ${"a".repeat(12_500)}`);
+    expect(parseInteractivePrompt("kiro", oversized)).toBeNull();
+    expect(registry.waits("kiro", oversized)).toBe(true);
+  });
+
+  test("keeps parsing when focusing a Create-rule row or compact narrow footer changes Kiro 3.6.2's footer", () => {
+    const onRule = kiro36Approval("Create allow rule to approve future similar actions")
+      .replace("esc to close · ↑↓ to navigate · ↵ to select · Tab to edit", "esc to close · Enter to see more options");
+    const prompt = parseInteractivePrompt("kiro", onRule)!;
+    expect(prompt.kind).toBe("approval");
+    expect(waitingKindOf(prompt)).toBe("permission");
+    expect(labels(prompt)).toHaveLength(4);
+    expect(answerKeys(prompt, { option_index: 2 })).toEqual([{ keys: ["enter"] }]);
+    expect(answerKeys(prompt, { option_index: 0 })).toEqual([{ keys: ["up"] }, { keys: ["up"] }, { keys: ["enter"] }]);
+
+    // Compact narrow footer (`ari()` strips `to ` and drops `·` across wrapped lines)
+    const compactWrapped = kiro36Approval().replace(
+      "esc to close · ↑↓ to navigate · ↵ to select · Tab to edit",
+      "esc close · ↑↓ navigate\n ↵ select · Tab edit",
+    );
+    const compact = parseInteractivePrompt("kiro", compactWrapped)!;
+    expect(compact.kind).toBe("approval");
+    expect(labels(compact)).toHaveLength(4);
+  });
+
+  test("holds chat messages under any Kiro footer and leaves a menu it cannot read with a hidden command to the terminal", () => {
+    // a narrow pane wraps a rule row's label: no card, but a chat message must not press Enter into the menu
+    const wrappedRule = kiro36Approval("Create allow rule to approve future similar actions")
+      .replace("Create allow rule to approve future similar actions", "Create allow rule to approve future\n   similar actions")
+      .replace("esc to close · ↑↓ to navigate · ↵ to select · Tab to edit", "esc to close · Enter to see more options");
+    expect(parseInteractivePrompt("kiro", wrappedRule)).toBeNull();
+    expect(agentPickerWaits("kiro", wrappedRule)).toBe(true);
+
+    // the same unreadable menu over a folded command: no fallback card whose Enter would approve what is hidden
+    const foldedWrapped = wrappedRule.replace("shell → echo KIRO_DENY_TEST", "shell → echo safe ...+3 lines");
+    expect(registry.waits("kiro", foldedWrapped)).toBe(true);
+    expect(registry.waits("kiro", wrappedRule)).toBe(false);
+
+    // two header/detail pairs: the terminal answers, not a fallback card
+    const ambiguous = kiro36Approval().replace("shell → echo KIRO_DENY_TEST", "shell → echo first\n Fake requires approval\n shell → echo second");
+    expect(registry.waits("kiro", ambiguous)).toBe(true);
+
+    // an answered menu above Kiro's composer is no menu waiting
+    const answered = `${kiro36Approval()}\n• Shell echo KIRO_DENY_TEST\n  ╰ KIRO_DENY_TEST\n\n• Done.\n\nkiro_default · ◔ 3%\n\n›  ask a question or describe a task ↵\n`;
+    expect(agentPickerWaits("kiro", answered)).toBe(false);
+    expect(registry.waits("kiro", answered.replace("shell → echo KIRO_DENY_TEST", "shell → echo safe ...+3 lines"))).toBe(false);
+  });
+
+  test("accepts valid shorter 2.32 menus, rejects clipped tails, and preserves body indentation and literal box chars", () => {
+    // Valid shorter 2.32 menus (Allow / Deny / Always deny, and Allow / Deny)
+    const threeRow232 = kiroApproval("Allow").replace("   Always allow\n", "");
+    expect(labels(parseInteractivePrompt("kiro", threeRow232))).toEqual(["Allow", "Deny", "Always deny"]);
+    const twoRow232 = threeRow232.replace("   Always deny\n", "");
+    expect(labels(parseInteractivePrompt("kiro", twoRow232))).toEqual(["Allow", "Deny"]);
+
+    // Missing "Allow" and "Always allow" in 2.32 menu (e.g. clipped top) must fail closed
+    const clipped232 = kiroApproval("Deny")
+      .replace("   Allow\n", "")
+      .replace("   Always allow\n", "");
+    expect(parseInteractivePrompt("kiro", clipped232)).toBeNull();
+
+    // Missing "Allow once" in 3.6.2 menu must fail closed
+    const clipped36 = kiro36Approval("Deny once").replace("   Allow once\n", "");
+    expect(parseInteractivePrompt("kiro", clipped36)).toBeNull();
+
+    // Preserves indentation inside heredoc / Python bodies and gives distinct prompt ids
+    const indented = kiro36Approval().replace(
+      " shell → echo KIRO_DENY_TEST\n",
+      " shell → python3 - <<'EOF'\n if False:\n     print('guarded')\n EOF\n",
+    );
+    const unindented = kiro36Approval().replace(
+      " shell → echo KIRO_DENY_TEST\n",
+      " shell → python3 - <<'EOF'\n if False:\n print('guarded')\n EOF\n",
+    );
+    const indentedPrompt = parseInteractivePrompt("kiro", indented)!;
+    const unindentedPrompt = parseInteractivePrompt("kiro", unindented)!;
+    expect(indentedPrompt.body).toBe("shell → python3 - <<'EOF'\nif False:\n    print('guarded')\nEOF");
+    expect(unindentedPrompt.body).toBe("shell → python3 - <<'EOF'\nif False:\nprint('guarded')\nEOF");
+    expect(indentedPrompt.id).not.toBe(unindentedPrompt.id);
+
+    // Preserves literal `│` and box-drawing lines inside command bodies so distinct commands keep distinct ids
+    const withBar = parseInteractivePrompt("kiro", kiro36Approval().replace("echo KIRO_DENY_TEST", "cat report│"))!;
+    const withoutBar = parseInteractivePrompt("kiro", kiro36Approval().replace("echo KIRO_DENY_TEST", "cat report"))!;
+    expect(withBar.body).toBe("shell → cat report│");
+    expect(withoutBar.body).toBe("shell → cat report");
+    expect(withBar.id).not.toBe(withoutBar.id);
+    const withRuleLine = parseInteractivePrompt("kiro", kiro36Approval().replace(" shell → echo KIRO_DENY_TEST\n", " shell → cat <<'EOF'\n ────────\n EOF\n"))!;
+    expect(withRuleLine.body).toContain("────────");
   });
 });
 
@@ -2628,6 +2931,24 @@ describe("Claude's suggested next prompt", () => {
     expect(viewportShowsLive(null, null, colors, live, live)).toBe(true);
     expect(viewportShowsLive(null, null, "● older output\r\n" + colors, live, live)).toBe(false);
     expect(viewportShowsLive(bottom, bottom, colors, live.replace("run the tests", "run the test"), live)).toBe(false);
+  });
+
+  test("without scroll from herdr, Claude's box counts from its top rule down when the reads lay out older rows apart (#4321)", () => {
+    const box = screen("❯ \u001b[2mrun the tests\u001b[0m");
+    // the colored read and the text read put the rows above the box a row apart after a redraw, the same height
+    const colors = ["  - a caption row", "❯ an older prompt", box].join("\r\n");
+    const live = ["    a caption row:", "", box.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")].join("\r\n");
+    expect(claudeBoxRows(live)).not.toBeNull();
+    expect(viewportShowsLive(null, null, colors, live, live)).toBe(false);
+    expect(viewportShowsLive(null, null, colors, live, live, claudeBoxRows(live))).toBe(true);
+    // a different height is another view, and a different box is another box
+    expect(viewportShowsLive(null, null, "● older output\r\n" + colors, live, live, claudeBoxRows(live))).toBe(false);
+    expect(viewportShowsLive(null, null, colors.replace("run the tests", "run the test"), live, live, claudeBoxRows(live))).toBe(false);
+    // the box's top rule is compared too: a named session's rule on one read only is another box
+    const rule = "\u2500".repeat(10);
+    const named = colors.replace(rule, "\u2500\u2500 main " + "\u2500".repeat(4));
+    expect(named).not.toBe(colors);
+    expect(viewportShowsLive(null, null, named, live, live, claudeBoxRows(live))).toBe(false);
   });
 
   test("the history's last rows lend their colors only when they are the unchanged live screen, colors included", () => {
@@ -4461,6 +4782,7 @@ describe("an answer and the menu it was made for", () => {
     piGone?: boolean;
     /** a Hermes pane's Hermes is suspended behind its shell (Ctrl+Z): herdr still names the pane hermes, its foreground is the shell */
     hermesStopped?: boolean;
+    hermesArgv?: readonly string[];
   }
 
   async function withPane(agent: string, status: string, screen: string, run: (pane: Pane) => Promise<void>): Promise<void> {
@@ -4502,7 +4824,7 @@ describe("an answer and the menu it was made for", () => {
         if (request.method === "pane.process_info") return answer({ process_info: { foreground_processes: pane.omo?.live ? [{ pid: pane.omo.pid, argv: ["omo"] }]
           : pane.agent === "omp" ? [pane.ompStopped ? { pid: 4100, argv: ["/bin/bash"] } : { pid: 4242, argv: ["omp"] }]
           : pane.agent === "pi" ? [pane.piGone ? { pid: 4100, argv: ["/bin/bash"] } : { pid: 4343, argv: ["node", "/usr/local/bin/pi"] }]
-          : pane.agent === "hermes" ? [pane.hermesStopped ? { pid: 4100, argv: ["/bin/zsh"] } : { pid: 4444, argv: ["/usr/local/bin/hermes"] }]
+          : pane.agent === "hermes" ? [pane.hermesStopped ? { pid: 4100, argv: ["/bin/zsh"] } : { pid: 4444, argv: pane.hermesArgv ?? ["/usr/local/bin/hermes"] }]
           // a Codex pane runs Codex: its rollout is read only while one does
           : pane.agent === "codex" ? [{ pid: 2147483647, argv: ["/usr/bin/codex"] }] : [] } });
         if (request.method === "pane.get") return answer({ pane: { pane_id: "p_1" } });
@@ -4545,6 +4867,56 @@ describe("an answer and the menu it was made for", () => {
     const body = await response.json() as { error?: { code: string } };
     return { status: response.status, code: body.error?.code };
   }
+
+  test.each([false, true])("a late Claude screen read cannot replace the refreshed approval (live scope changed: %s)", async (changed) => {
+    const screen = (scope: string) => `\n${"─".repeat(80)}\n Bash command\n   touch probe.txt\n Do you want to proceed?\n ❯ 1. Yes\n   2. Yes, and always allow access to ${scope} from this project\n   3. No\n Esc to cancel · Tab to amend\n`;
+    await withPane("claude", "blocked", screen("/projects/demo"), async (pane) => {
+      const initial = await card();
+      expect(initial?.kind).toBe("approval");
+      const held = Promise.withResolvers<void>();
+      const started = Promise.withResolvers<void>();
+      pane.holdRead = held.promise;
+      pane.onReadHeld = started.resolve;
+      const url = new URL("http://127.0.0.1/api/pane/prompt?pane_id=p_1");
+      const older = handlePromptRequest(new Request(url), url);
+      try {
+        await started.promise;
+        pane.screen = screen("/projects/ demo");
+        const refreshed = await card();
+        if (!refreshed) throw new Error("Expected a redrawn approval");
+        expect(refreshed.id).not.toBe(initial?.id);
+        held.resolve();
+        const stale = await older;
+        expect(stale?.status).toBe(409);
+        expect(await stale?.json()).toMatchObject({ error: { code: "prompt_changed" } });
+        if (changed) pane.screen = screen("/projects/different");
+        const result = await answer(refreshed.id, { option_index: 0 });
+        expect(result.status).toBe(changed ? 409 : 200);
+        expect(pane.sent).toEqual(changed ? [] : ["enter"]);
+      } finally {
+        held.resolve();
+        await older;
+      }
+    });
+  });
+
+  test("a newer read of the same Claude approval does not interrupt an answer", async () => {
+    await withPane("claude", "blocked", claudeBackgroundApproval(0), async (pane) => {
+      const shown = await card();
+      if (!shown) throw new Error("Expected a Claude approval");
+      const held = Promise.withResolvers<void>();
+      const started = Promise.withResolvers<void>();
+      pane.holdRead = held.promise;
+      pane.onReadHeld = started.resolve;
+      const answering = answer(shown.id, { option_index: 0 });
+      try {
+        await started.promise;
+        expect((await card())?.id).toBe(shown.id);
+      } finally { held.resolve(); }
+      expect((await answering).status).toBe(200);
+      expect(pane.sent).toEqual(["enter"]);
+    });
+  });
 
   // #2106 review: omp 18.13's approval menu on a terminal without extended key reporting, where Ctrl+J and Ctrl+M arrive
   // as LF and CR and Ctrl+Enter and Shift+Enter as CR, all read as Enter, which takes the highlighted row (Approve when the
@@ -5023,23 +5395,37 @@ ${omoRule}
     });
   });
 
-  test.each(["editor stays open", "editor closes during the look"])("Antigravity submits a write-in only if the %s", async (state) => {
+  test.each([
+    ["editor stays open", "notes.txt", "notes.txt", true],
+    ["editor closes during the look", "notes.txt", "notes.txt", false],
+    ["editor redraws a read late", "notes.txt", "", true],
+    ["editor redraws a prefix first", "notes.txt", "not", true],
+    ["editor changes whitespace", "notes.txt", "notes .txt", false],
+    ["editor adds a nonbreaking space at a wrap", "notes.txt", "notes.\u00a0\ntxt", false],
+    ["editor adds plain spaces at a wrap", "notes.txt", "notes.  \ntxt", false],
+    ["editor wraps at a word", "new notes.txt", "new\nnotes.txt", true],
+    ["editor wraps inside a word", "notes.txt", "notes.\ntxt", true],
+  ] as const)("Antigravity write-in: %s", async (state, draft, drawn, submits) => {
     const initial = readFileSync(new URL("./fixtures/agy-1.5.6-ask.txt", import.meta.url), "utf8");
     const selected = initial.replace("> 1. (Recommended) hello.txt", "  1. (Recommended) hello.txt").replace("  3. Write-in...", "> 3. Write-in...");
     const editor = (text: string) => selected.replace(/  ↑\/↓ Navigate[\s\S]*$/, `  Your answer:\n  > ${text}\n\nenter Submit · esc Back\n`);
     await withPane("agy", "blocked", initial, async (pane) => {
       const prompt = (await card())!;
+      const text = `text:${draft}`;
+      let reads = 0;
+      if (state.startsWith("editor redraws")) {
+        pane.onRead = () => { if (pane.sent.at(-1) === text && ++reads === 3) pane.screen = editor(draft); };
+      }
       pane.onSent = (sent) => {
         if (sent === "down") pane.screen = pane.sent.length === 1
           ? initial.replace("> 1. (Recommended) hello.txt", "  1. (Recommended) hello.txt").replace("  2. bye.txt", "> 2. bye.txt") : selected;
         if (sent === "enter" && pane.sent.length === 3) pane.screen = editor("");
-        if (sent === "text:notes.txt") pane.screen = editor("notes.txt");
+        if (sent === text) pane.screen = editor(drawn);
       };
-      const closes = state === "editor closes during the look";
-      const beforeKey = async () => { if (closes && pane.sent.at(-1) === "text:notes.txt") pane.screen = "❯ unsent draft"; };
-      expect(await answer(prompt.id, { custom_text: "notes.txt" }, { beforeKey })).toEqual(closes
-        ? { status: 409, code: "prompt_changed" } : { status: 200, code: undefined });
-      expect(pane.sent).toEqual(["down", "down", "enter", "text:notes.txt", ...(closes ? [] : ["enter"])]);
+      const beforeKey = async () => { if (state === "editor closes during the look" && pane.sent.at(-1) === text) pane.screen = "❯ unsent draft"; };
+      expect(await answer(prompt.id, { custom_text: draft }, { beforeKey })).toEqual(submits
+        ? { status: 200, code: undefined } : { status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual(["down", "down", "enter", text, ...(submits ? ["enter"] : [])]);
     });
   });
 
@@ -6641,6 +7027,32 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
       expect(under).toEqual(["device", "symptoms"]);
       expect((await card())!.title).toBe("Review your answers");
     });
+    await withPane("claude", "blocked", "", async (pane) => {
+      show(pane, "review");
+      const review = (await card())!;
+      const held = Promise.withResolvers<void>();
+      const started = Promise.withResolvers<void>();
+      pane.onSent = (sent) => {
+        if (sent !== "left") return;
+        if (pane.sent.length === 1) {
+          show(pane, "symptoms");
+          pane.holdRead = held.promise;
+          pane.onReadHeld = started.resolve;
+        } else {
+          show(pane, "device");
+        }
+      };
+      const navigating = answer(review.id, { step_index: 0 });
+      try {
+        await started.promise;
+        expect(await card()).toMatchObject({ question: "Which problems do you see?" });
+      } finally {
+        held.resolve();
+      }
+      expect(await navigating).toEqual({ status: 200, code: undefined });
+      expect(pane.sent).toEqual(["left", "left"]);
+      expect(await card()).toMatchObject({ question: "Which device do you use?" });
+    });
     // a poll while a step is on its way reads the tab it moves to: that card's id still answers once
     // the step is done, so the next tap on a step is not refused (#2503 review by @jpcarranza94)
     await withPane("claude", "blocked", "", async (pane) => {
@@ -7124,12 +7536,22 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     });
   });
 
+  test.skipIf(process.platform === "win32")("serves the installer-launched Hermes approval through the prompt route (#4572)", async () => {
+    const screen = readFileSync(new URL("./fixtures/hermes-approval/once-120.txt", import.meta.url), "utf8");
+    await withPane("hermes", "blocked", screen, async (pane) => {
+      pane.hermesArgv = hermesLauncherArgv;
+      const prompt = await card();
+      expect(prompt?.kind).toBe("approval");
+      expect(labels(prompt)).toEqual(["Allow once", "Allow for this session", "Add to permanent allowlist", "Deny"]);
+    });
+  });
+
   test("takes only Hermes itself as the foreground that may take an approval's keys", () => {
     for (const argv of [["/usr/local/bin/hermes"], ["hermes"], ["/usr/bin/python3", "/home/u/.local/bin/hermes", "chat"], ["python3.14", "-u", "/opt/hermes/bin/hermes"],
       ["python3", "-X", "utf8", "/opt/hermes/bin/hermes"], ["python3", "-IsX", "utf8", "/opt/hermes/bin/hermes"]]) {
       expect([argv, isHermesForeground({ argv })]).toEqual([argv, true]);
     }
-    for (const argv of [["python3", "-c", "print(1)", "/tmp/hermes"], ["python3", "-m", "http.server", "hermes"], ["python3", "/tmp/forge.py", "/tmp/hermes"], ["/bin/zsh"], ["node", "/tmp/hermes"],
+    for (const argv of [[...hermesLauncherArgv, "--run-module", "http.server"], ["python3", "-c", "print(1)", "/tmp/hermes"], ["python3", "-m", "http.server", "hermes"], ["python3", "/tmp/forge.py", "/tmp/hermes"], ["/bin/zsh"], ["node", "/tmp/hermes"],
       // combined flags: /tmp/hermes is -X's value, and -c's code runs
       ["python3", "-uX", "/tmp/hermes", "-c", "print(1)"], ["python3", "-uc", "print(1)", "/tmp/hermes"], ["python3", "--check-hash-based-pycs", "always", "/tmp/hermes"]]) {
       expect([argv, isHermesForeground({ argv })]).toEqual([argv, false]);

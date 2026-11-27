@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { chromium } from "playwright-core";
 import type { SetupJob, SetupRequest } from "../shared/machines.ts";
 import { sheetEntryLeft } from "./sheets-settled.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 const repo = join(import.meta.dir, "..");
 const root = mkdtempSync(join(tmpdir(), "herdr-machine-dialog-"));
@@ -34,6 +35,7 @@ try {
     return new Response(Bun.file(join(out, path === "/" ? "index.html" : path.slice(1))));
   } });
   try {
+    checkChromeTmpdir();
     const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
     try {
       for (const width of [1280, 390]) {
@@ -334,9 +336,9 @@ try {
           const page = await context.newPage();
           const errors: string[] = [];
           page.on("pageerror", (error) => errors.push(error.message));
-          // the first answer is a step on its way, the polls after it the failure: each is worded from its code
-          let answers = 0;
-          await page.route("**/api/machines/setup**", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(answers++ === 0 ? {
+          // a step on its way until the test saw it, then the failure: each is worded from its code
+          let seen = false;
+          await page.route("**/api/machines/setup**", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(!seen ? {
             id: "older", machine_id: "fixture", target: { destination: "old-desktop" }, phase: "installing", step: "Installing verified linux-x64 bundle…",
             step_code: { code: "install_bundle", platform: "linux-x64" }, error: null, action_required: null, installations: [], challenge: null, ssh_output: null, progress: null,
           } satisfies SetupJob : {
@@ -352,8 +354,11 @@ try {
           await destination.fill("old-desktop");
           await destination.press("Enter");
           const card = dialog.locator(".machine-progress");
-          await card.locator("strong", { hasText: "검증된 linux-x64 번들을 설치하는 중…" }).waitFor();
+          // the step on its way is a stage of four, with its bar; the failure is words alone
+          await card.locator('[role="progressbar"][aria-label="검증된 linux-x64 번들을 설치하는 중…"][aria-valuenow="63"][aria-valuetext="4단계 중 3"]').waitFor();
+          seen = true;
           await card.locator("strong", { hasText: "연결 실패" }).waitFor();
+          assert.equal(await card.getByRole("progressbar").count(), 0, "a failed setup shows no bar");
           assert.deepEqual(await card.locator("p").allTextContents(), [
             "이 PC에서 도는 자체 Ovis(v0.5.1)가 이 앱보다 오래됐습니다. 다시 연결하려면 미리보기 버전(v0.5.10-beta.2)으로 업데이트하세요.",
             "미리보기 버전은 정식 출시 전의 테스트 빌드입니다.",

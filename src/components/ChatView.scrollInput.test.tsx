@@ -1,83 +1,106 @@
-import { LegendList } from "@legendapp/list/react";
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { act, createElement, type ComponentProps } from "react";
-import { create, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 
+import * as i18n from "../lib/i18n.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { ChatView } from "./ChatView.tsx";
 import { loadChatTimeline } from "./chatTimelineLoader.ts";
 
-class Scroller extends EventTarget {
+class Scroller {
   clientHeight = 758;
   clientWidth = 600;
   scrollHeight = 2000;
   top = 0;
-  readonly children: never[] = [];
-  readonly offsetHeight = 0;
-  readonly style = { setProperty() {} };
-  firstElementChild = null;
   get scrollTop(): number { return this.top; }
   set scrollTop(value: number) { this.top = Math.max(0, Math.min(value, this.scrollHeight - this.clientHeight)); }
-  scrollTo({ top }: { top: number }): void { this.scrollTop = top; }
-  getBoundingClientRect() { return { top: 0, left: 0, bottom: this.clientHeight, right: this.clientWidth, width: this.clientWidth, height: this.clientHeight }; }
-  contains(target: unknown): boolean { return target === this; }
-  closest(): null { return null; }
-  querySelector(): null { return null; }
-  querySelectorAll(): never[] { return []; }
-}
-
-class Wheel extends Event { readonly deltaY = -190; }
-class Key extends Event { readonly key = "PageUp"; readonly isComposing = false; readonly keyCode = 33; }
-class TouchInput extends Event {
-  readonly touches: readonly { readonly clientY: number }[];
-  constructor(type: string, y: number) { super(type); this.touches = [{ clientY: y }]; }
-}
-class Pointer extends Event {
-  readonly buttons = 1;
-  readonly button = 0;
-  readonly pointerType = "mouse";
-  constructor(type: string, readonly clientY: number, readonly clientX = 601) { super(type); }
 }
 
 const descriptors = new Map<string, PropertyDescriptor | undefined>();
-let renderer: ReactTestRenderer | undefined;
+let page: Page;
 let scroller: Scroller;
-let events: EventTarget;
-let resize: () => void;
 let fetchSpy: ReturnType<typeof spyOn<typeof globalThis, "fetch">>;
+let translationSpy: ReturnType<typeof spyOn<typeof i18n, "useT">>;
+const translateEnglish: i18n.Translate = (key, vars) => i18n.translate("en", key, vars);
+const observers = new Set<TestResizeObserver>();
+const listResize = Symbol.for("ovis.test.legendListResize");
+class TestResizeObserver {
+  readonly targets = new Set<Element>();
+  constructor(readonly callback: (entries: readonly ResizeObserverEntry[]) => void) {}
+  observe(target: Element) { this.targets.add(target); observers.add(this); }
+  unobserve(target: Element) {
+    this.targets.delete(target);
+    if (this.targets.size === 0) observers.delete(this);
+  }
+  disconnect() { this.targets.clear(); observers.delete(this); }
+}
+const resize = (target: Element, height: number) => {
+  const contentRect = new DOMRect(0, 0, 600, height);
+  const size = [{ blockSize: height, inlineSize: 600 }];
+  const entries = [{ target, contentRect, borderBoxSize: size, contentBoxSize: size, devicePixelContentBoxSize: size }];
+  for (const observer of observers) {
+    if (observer.targets.has(target)) observer.callback(entries);
+  }
+  const notify: unknown = Object.getOwnPropertyDescriptor(target, listResize)?.value;
+  if (typeof notify === "function") notify(entries);
+};
+const box = () => page.one<HTMLDivElement>(".chat-view");
+const scroll = () => {
+  box().dispatchEvent(new page.window.Event("scroll") as unknown as Event);
+  box().dispatchEvent(new page.window.Event("scrollend") as unknown as Event);
+};
+const jumps = () => page.container.querySelectorAll('[aria-label="Jump to latest"]');
+const measure = (height: number) => {
+  const row = page.one("[data-chat-row]");
+  const targets = new Set([...observers].flatMap((observer) => [...observer.targets]));
+  let target = row.parentElement;
+  while (target !== null && target !== box() && !targets.has(target) && !Object.hasOwn(target, listResize)) target = target.parentElement;
+  if (!target || target === box()) throw new Error("The list did not observe its item");
+  resize(target, height);
+};
 
 beforeEach(() => {
+  page = openPage();
+  // Keep the translator stable across renders, even after suites that mock useT.
+  translationSpy = spyOn(i18n, "useT").mockReturnValue(translateEnglish);
   scroller = new Scroller();
-  events = new EventTarget();
-  resize = () => {};
-  const storage = { getItem: () => null, setItem() {}, removeItem() {}, key: () => null, length: 0 };
-  const listen = { addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events) };
-  const style = { lineHeight: "20px", setProperty() {}, removeProperty() {}, getPropertyValue: () => "" };
-  const values: Record<string, unknown> = {
-    IS_REACT_ACT_ENVIRONMENT: true,
-    Node: Scroller, Element: Scroller, HTMLElement: Scroller, HTMLDivElement: Scroller,
+  const proto = page.window.HTMLElement.prototype;
+  const bounds = proto.getBoundingClientRect;
+  const query = proto.querySelector;
+  const isScroller = (element: HTMLElement) => element.classList.contains("chat-view");
+  const px = (dimension: "clientHeight" | "clientWidth" | "scrollHeight") => ({
+    configurable: true, get(this: HTMLElement) { return isScroller(this) || (dimension === "scrollHeight" && this.classList.contains("chat-transcript-virtual")) ? scroller[dimension] : 0; },
+  });
+  const nativeScrollTo = proto.scrollTo;
+  Object.defineProperties(proto, {
+    scrollTo: { configurable: true, value(this: HTMLElement, options: ScrollToOptions) {
+      if (!isScroller(this)) return nativeScrollTo.call(this, options.left ?? this.scrollLeft, options.top ?? this.scrollTop);
+      // The fixture supplies browser/list offsets explicitly; only pane paging moves the viewport here.
+      if (options.behavior === "instant" && options.top !== undefined) this.scrollTop = options.top;
+    } },
+    onscrollend: { configurable: true, value: null },
+    clientHeight: px("clientHeight"), clientWidth: px("clientWidth"), scrollHeight: px("scrollHeight"),
+    scrollTop: { configurable: true, get(this: HTMLElement) { return isScroller(this) ? scroller.scrollTop : 0; }, set(this: HTMLElement, top: number) { if (isScroller(this)) scroller.scrollTop = top; } },
+    getBoundingClientRect: { configurable: true, value(this: HTMLElement) {
+      return isScroller(this) ? new page.window.DOMRect(0, 0, scroller.clientWidth, scroller.clientHeight) : bounds.call(this);
+    } },
+    querySelector: { configurable: true, value(this: HTMLElement, selector: string) {
+      const escaped = /^\[data-chat-row="(.*)"\]$/.exec(selector)?.[1];
+      if (escaped === undefined) return query.call(this, selector);
+      const key = escaped.replace(/\\(.)/g, "$1");
+      return [...this.querySelectorAll("[data-chat-row]")].find((node) => node.getAttribute("data-chat-row") === key) ?? null;
+    } },
+  });
+  page.window.innerWidth = 1440;
+  Object.defineProperty(page.window, "requestAnimationFrame", { configurable: true, value: () => 1 });
+  page.window.cancelAnimationFrame = () => {};
+  const values = {
+    Node: page.window.Node, Element: page.window.Element, HTMLElement: page.window.HTMLElement, HTMLDivElement: page.window.HTMLDivElement,
+    DOMRect: page.window.DOMRect, CSS: page.window.CSS,
     requestAnimationFrame: () => 1, cancelAnimationFrame() {},
-    WheelEvent: Wheel, KeyboardEvent: Key, PointerEvent: Pointer, TouchEvent: TouchInput,
-    navigator: { languages: ["en"], platform: "Linux" },
-    localStorage: storage,
-    window: {
-      ...listen, localStorage: storage, sessionStorage: storage, innerWidth: 1440,
-      matchMedia: () => ({ matches: false, ...listen }), setTimeout, clearTimeout,
-      requestAnimationFrame: () => 1, cancelAnimationFrame() {}, getSelection: () => null,
-    },
-    document: {
-      ...listen, visibilityState: "visible", activeElement: null, querySelector: () => null,
-      createRange: () => ({ setStart() {}, collapse() {} }),
-      documentElement: { lang: "", dataset: {}, style, hasAttribute: () => false },
-    },
-    getComputedStyle: () => style,
-    ResizeObserver: class {
-      constructor(callback: (entries: readonly { readonly target: Scroller }[]) => void) { resize = () => callback([{ target: scroller }]); }
-      observe() {}
-      unobserve() {}
-      disconnect() {}
-    },
-    MutationObserver: class { observe() {} disconnect() {} },
+    WheelEvent: page.window.WheelEvent, KeyboardEvent: page.window.KeyboardEvent, PointerEvent: page.window.PointerEvent, TouchEvent: page.window.TouchEvent,
+    ResizeObserver: TestResizeObserver, MutationObserver: page.window.MutationObserver,
+    getSelection: page.window.getSelection.bind(page.window),
   };
   for (const [key, value] of Object.entries(values)) {
     descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
@@ -89,9 +112,9 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  await act(async () => renderer?.unmount());
-  renderer = undefined;
+  await page.close();
   fetchSpy.mockRestore();
+  translationSpy.mockRestore();
   for (const [key, descriptor] of descriptors) {
     if (descriptor) Object.defineProperty(globalThis, key, descriptor);
     else Reflect.deleteProperty(globalThis, key);
@@ -102,34 +125,27 @@ afterEach(async () => {
 test.each(["wheel", "touch", "key", "scrollbar", "scrollbar track click", "layout", "returned"] as const)(
   "%s during a shrink keeps the reader's scroll; layout alone follows",
   async (input) => {
-    await act(async () => {
-      renderer = create(createElement(SettingsProvider, null, createElement(ChatView, {
+    await page.render(createElement(SettingsProvider, null, createElement(ChatView, {
         paneId: `shrink-${input}`, refreshKey: 0, connected: true, ended: false, agent: null, agentStatus: "idle",
-      })), { createNodeMock: ({ props }) => typeof props === "object" && props !== null && "className" in props && props.className === "chat-view" ? scroller : new Scroller() });
-    });
-    if (renderer === undefined) throw new Error("Chat did not mount");
-    const view = renderer.root.findByProps({ className: "chat-view" });
-    const scroll = (): void => { view.props.onScroll(); };
-    act(scroll);
+    })));
+    await act(async () => { scroll(); });
     expect(scroller.scrollTop).toBe(1242);
 
-    act(() => {
-      const send = (event: Event): void => {
-        Object.defineProperty(event, "target", { value: scroller });
-        events.dispatchEvent(event);
-      };
+    await act(async () => {
+      const wheel = () => box().dispatchEvent(new page.window.WheelEvent("wheel", { deltaY: -190, bubbles: true }) as unknown as Event);
+      const touch = (type: string, y: number) => box().dispatchEvent(new page.window.TouchEvent(type, { bubbles: true, touches: [new page.window.Touch({ identifier: 0, target: box() as never, clientY: y })] }) as unknown as Event);
       switch (input) {
-        case "wheel": send(new Wheel("wheel")); break;
-        case "touch": send(new TouchInput("touchstart", 200)); send(new TouchInput("touchmove", 390)); break;
-        case "key": send(new Key("keydown")); break;
-        case "scrollbar": send(new Pointer("pointerdown", 600)); send(new Pointer("pointermove", 410)); break;
-        case "scrollbar track click": send(new Pointer("pointerdown", 20)); send(new Pointer("pointerup", 20)); break;
+        case "wheel": wheel(); break;
+        case "touch": touch("touchstart", 200); touch("touchmove", 390); break;
+        case "key": box().dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "PageUp", keyCode: 33, bubbles: true }) as unknown as Event); break;
+        case "scrollbar": pointer("pointerdown", 600); pointer("pointermove", 410); break;
+        case "scrollbar track click": pointer("pointerdown", 20); pointer("pointerup", 20); break;
         case "layout": break;
-        case "returned": send(new Wheel("wheel")); scroller.scrollTop -= 190; scroll(); scroller.scrollTop += 190; scroll(); break;
+        case "returned": wheel(); scroller.scrollTop -= 190; scroll(); scroller.scrollTop += 190; scroll(); break;
         default: input satisfies never;
       }
       scroller.clientHeight = 627;
-      resize();
+      resize(box(), scroller.clientHeight);
       expect(scroller.scrollTop).toBe(1373);
       scroller.scrollTop -= input === "scrollbar track click" ? 20 : 190;
       scroll();
@@ -137,104 +153,105 @@ test.each(["wheel", "touch", "key", "scrollbar", "scrollbar track click", "layou
 
     const follows = input === "layout" || input === "returned";
     expect(scroller.scrollTop).toBe(follows ? 1373 : input === "scrollbar track click" ? 1353 : 1183);
-    expect(renderer.root.findAllByProps({ "aria-label": "Jump to latest" })).toHaveLength(follows ? 0 : 1);
+    expect(jumps()).toHaveLength(follows ? 0 : 1);
   },
 );
 
 async function mountVirtualChat(paneId: string, pageScroll?: ComponentProps<typeof ChatView>["pageScroll"]) {
   await loadChatTimeline();
-  fetchSpy.mockImplementation(Object.assign(async () => Response.json({ source: "grok-transcript", turns: [] }),
+  fetchSpy.mockImplementation(Object.assign(async () => Response.json({ source: "grok-transcript", turns: [{ role: "assistant", parts: [{ kind: "text", text: "A transcript to read" }] }] }),
     { preconnect: globalThis.fetch.preconnect }));
-  await act(async () => {
-    renderer = create(createElement(SettingsProvider, null, createElement(ChatView, {
-      paneId, pageScroll, refreshKey: 0, connected: true, ended: false, agent: null, agentStatus: "idle",
-    })), { createNodeMock: ({ props }) => typeof props === "object" && props !== null && "className" in props && props.className === "chat-view chat-view-virtual" ? scroller : new Scroller() });
-  });
-  if (renderer === undefined) throw new Error("Chat did not mount");
-  return { view: renderer.root, list: renderer.root.findByType(LegendList) };
+  await page.render(createElement(SettingsProvider, null, createElement(ChatView, {
+    paneId, pageScroll, refreshKey: 0, connected: true, ended: false, agent: null, agentStatus: "idle",
+  })));
+  box().style.lineHeight = "20px";
 }
+
+const pointer = (type: string, clientY: number, clientX = 601) => box().dispatchEvent(new page.window.PointerEvent(type, { bubbles: true, clientY, clientX, buttons: 1, button: 0, pointerType: "mouse" }) as unknown as Event);
 
 test("a first-open list scroll clamped at the old height catches up to the end", async () => {
   scroller.scrollHeight = 1200;
-  const { view, list } = await mountVirtualChat("first-open");
+  await mountVirtualChat("first-open");
 
-  act(() => {
+  await act(async () => {
+    scroller.scrollHeight = scroller.clientHeight;
+    scroller.scrollTop = 0;
+    scroll();
+    scroller.scrollHeight = 1200;
     scroller.scrollTop = scroller.scrollHeight; // clamped at the old end, 442 px
     scroller.scrollHeight = 2000;
-    list.props.onScroll();
+    scroll();
   });
 
   expect(scroller.scrollTop).toBe(1242);
-  expect(view.findAllByProps({ "aria-label": "Jump to latest" })).toHaveLength(0);
+  expect(jumps()).toHaveLength(0);
 });
 
 test("a downward scrollbar track click stops where the browser scrolled after pointerup", async () => {
   scroller.scrollTop = scroller.scrollHeight;
-  const { view, list } = await mountVirtualChat("scrollbar-track-down");
-  act(() => { list.props.onScroll(); });
+  await mountVirtualChat("scrollbar-track-down");
+  await act(async () => { scroll(); });
 
-  act(() => {
+  await act(async () => {
     scroller.scrollHeight += 600; // the thumb is no longer at the bottom
+    // This press is on the browser's scrollbar track, not in the transcript's selectable contents.
     for (const type of ["pointerdown", "pointerup"]) {
-      const event = new Pointer(type, scroller.clientHeight - 1);
-      Object.defineProperty(event, "target", { value: scroller });
-      events.dispatchEvent(event);
+      const event = new page.window.PointerEvent(type, { clientX: 601, clientY: scroller.clientHeight - 1, button: 0, buttons: type === "pointerdown" ? 1 : 0, pointerType: "mouse" });
+      Object.defineProperty(event, "target", { get: () => box() });
+      page.window.document.dispatchEvent(event);
     }
     scroller.scrollTop += 100;
-    list.props.onScroll();
+    scroll();
   });
 
   expect(scroller.scrollTop).toBe(1342);
-  expect(view.findAllByProps({ "aria-label": "Jump to latest" })).toHaveLength(0);
+  expect(jumps()).toHaveLength(0);
 });
 
 test("a one-pixel browser trim does not stop following during selection", async () => {
   scroller.scrollTop = scroller.scrollHeight;
-  const { view, list } = await mountVirtualChat("selection-trim");
-  act(() => {
-    scroller.dispatchEvent(new Pointer("pointerdown", 20, 10));
+  await mountVirtualChat("selection-trim");
+  await act(async () => {
+    pointer("pointerdown", 20, 10);
     scroller.scrollHeight += 61; // the selection holds the view while the last row grows
-    list.props.onScroll();
+    scroll();
   });
 
-  act(() => {
+  await act(async () => {
     scroller.scrollHeight -= 1;
     scroller.scrollTop -= 1;
-    list.props.onScroll();
+    scroll();
   });
 
   expect(scroller.scrollTop).toBe(1241);
-  expect(view.findAllByProps({ "aria-label": "Jump to latest" })).toHaveLength(0);
+  expect(jumps()).toHaveLength(0);
 });
 
 test.each(["wheel", "input-less"] as const)(
   "a late virtual list correction keeps following, but %s scrolling leaves the end",
   async (input) => {
     scroller.scrollTop = scroller.scrollHeight;
-    const { view, list } = await mountVirtualChat(`late-list-correction-${input}`);
-    const scroll = (): void => { list.props.onScroll(); };
-    act(scroll);
+    await mountVirtualChat(`late-list-correction-${input}`);
+    await act(async () => { scroll(); });
     expect(scroller.scrollTop).toBe(1242);
 
     // The virtual list re-anchors after measuring, with no net change in scroll height.
-    await act(async () => { list.props.onItemSizeChanged(); scroller.scrollTop -= 61; });
-    expect(view.findAllByProps({ "aria-label": "Jump to latest" })).toHaveLength(0);
+    await act(async () => { measure(121); scroller.scrollTop -= 61; });
+    expect(jumps()).toHaveLength(0);
     expect(scroller.scrollTop).toBe(1242);
 
     if (input === "wheel") {
-      act(() => {
-        const wheel = new Wheel("wheel");
-        Object.defineProperty(wheel, "target", { value: scroller });
-        events.dispatchEvent(wheel);
+      await act(async () => {
+        box().dispatchEvent(new page.window.WheelEvent("wheel", { deltaY: -190, bubbles: true }) as unknown as Event);
         scroller.scrollTop -= 61;
         scroll();
       });
     } else {
-      act(() => { scroller.scrollTop -= 30; scroll(); });
-      expect(view.findAllByProps({ "aria-label": "Jump to latest" })).toHaveLength(0);
-      act(() => { scroller.scrollTop -= 31; scroll(); });
+      await act(async () => { scroller.scrollTop -= 30; scroll(); });
+      expect(jumps()).toHaveLength(0);
+      await act(async () => { scroller.scrollTop -= 31; scroll(); });
     }
-    expect(view.findAllByProps({ "aria-label": "Jump to latest" })).toHaveLength(1);
+    expect(jumps()).toHaveLength(1);
     expect(scroller.scrollTop).toBe(1181);
   },
 );
@@ -244,22 +261,22 @@ test.each(["from the bottom", "clamped at the history start"] as const)(
   async (start) => {
     const pageScroll: { current: ((direction: -1 | 1) => void) | null } = { current: null };
     scroller.scrollTop = scroller.scrollHeight;
-    const { view, list } = await mountVirtualChat(`page-up-${start}`, pageScroll);
+    await mountVirtualChat(`page-up-${start}`, pageScroll);
     if (pageScroll.current === null) throw new Error("Chat paging did not mount");
-    act(() => { list.props.onScroll(); });
+    await act(async () => { scroll(); });
     expect(scroller.scrollTop).toBe(1242);
 
-    act(() => {
+    await act(async () => {
       // PageUp can arrive at the top before the browser delivers the scroll that got there.
       if (start === "clamped at the history start") scroller.scrollTop = 0;
       pageScroll.current?.(-1);
     });
     const paged = start === "from the bottom" ? 504 : 0;
     expect(scroller.scrollTop).toBe(paged);
-    expect(view.findAllByProps({ "aria-label": "Jump to latest" })).toHaveLength(1);
+    expect(jumps()).toHaveLength(1);
 
-    await act(async () => { list.props.onItemSizeChanged(); });
+    await act(async () => { measure(121); });
     expect(scroller.scrollTop).toBe(paged);
-    expect(view.findAllByProps({ "aria-label": "Jump to latest" })).toHaveLength(1);
+    expect(jumps()).toHaveLength(1);
   },
 );

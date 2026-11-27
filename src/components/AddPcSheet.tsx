@@ -234,6 +234,8 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
   // a join a PC's own page offers: one press to ask, then the number alone, which the PC checks and approves
   if ((state.kind === "confirm" || state.kind === "compare") && state.alone === true) {
     const asking = state.kind === "confirm";
+    // a join into the account's list: a member signs this device in on its person's word, which only this press gives
+    const pressing = state.kind === "compare" && !state.confirmed;
     return createPortal(
       <div className="modal-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
         <div ref={surface} className="modal add-pc-sheet add-pc-alone" lang={locale} role="dialog" aria-modal="true" aria-labelledby={`${id}-title`} tabIndex={-1} data-add-pc-mode={mode} data-add-pc-phase={asking ? "confirm" : "compare"}>
@@ -241,10 +243,11 @@ export function AddPcSheet({ mode, pc, state, onJoin, onPair, onMatch, onRetry, 
           {state.kind === "compare" && (
             <div className="modal-body add-pc-body">
               <p className="relay-shell-digits" aria-label={state.digits.split("").join(" ")}>{`${state.digits.slice(0, 3)} ${state.digits.slice(3)}`}</p>
-              <p className="relay-shell-copy">{state.approveOn === undefined ? t("Approve it if the PC shows the same number.") : approveOnLine(t, state.approveOn)}</p>
+              <p className="relay-shell-copy">{pressing ? t("Check that this number matches where you approve, then approve.") : state.approveOn === undefined ? t("Approve it if the PC shows the same number.") : approveOnLine(t, state.approveOn)}</p>
             </div>
           )}
-          <footer className="modal-footer add-pc-footer">{asking ? pairActions(cancel, <button key="primary" type="button" className="btn btn-primary" data-sheet-primary onClick={onPair}>{t("Ask to join")}</button>) : cancel}</footer>
+          <footer className="modal-footer add-pc-footer">{asking ? pairActions(cancel, <button key="primary" type="button" className="btn btn-primary" data-sheet-primary onClick={onPair}>{t("Ask to join")}</button>)
+            : pressing ? pairActions(cancel, <button key="primary" type="button" className="btn btn-primary" data-sheet-primary onClick={() => onMatch()}>{t("The numbers match")}</button>) : cancel}</footer>
           {/* a first join is the PC's alone to approve: no other way to point at */}
           {state.kind === "compare" && state.approveOn === undefined && (
             <details className="add-pc-other">

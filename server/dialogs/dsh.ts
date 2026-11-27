@@ -1,5 +1,5 @@
 import type { DialogReader } from "./registry.ts";
-import { ANSI_RE, KEY, cleanLine, findLastIndex, finishPrompt, joinWrapped, keySteps, navigationKeys, own, screenWidth, type ParsedPrompt } from "./shared.ts";
+import { ANSI_RE, KEY, cleanLine, findLastIndex, finishPrompt, joinWrapped, keySteps, navigationKeys, own, screenWidth, toggleMultiSelectKeys, type ParsedPrompt } from "./shared.ts";
 
 /**
  * DeepSeek Harness's `ask_user_question` panel, as dsh-tui 0.20.0 draws it
@@ -255,14 +255,7 @@ function readDshPanel(screen: string): DshPanel | null {
     ],
     ...(multi ? {
       multiSteps: (picked: number[]) => {
-        const want = new Set(picked);
-        let cursor = selectedIndex;
-        const keys: string[] = [];
-        for (const index of options.keys()) {
-          if (want.has(index) === checked.includes(index)) continue;
-          keys.push(...navigationKeys(index - cursor), KEY.space);
-          cursor = index;
-        }
+        const { keys, cursor } = toggleMultiSelectKeys(options.length, selectedIndex, checked, picked);
         // Enter on the free-text row with nothing typed asks for text instead of submitting the ticks
         if (cursor === options.length) keys.push(KEY.up);
         return keySteps([...keys, KEY.enter]);

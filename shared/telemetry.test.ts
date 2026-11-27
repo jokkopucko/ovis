@@ -1,5 +1,19 @@
 import { describe, expect, test } from "bun:test";
-import { countBucket, TELEMETRY_COUNT_MAX, TELEMETRY_COUNTERS, TELEMETRY_HARNESSES, telemetryCountsChange } from "./telemetry.ts";
+import { countBucket, emptyUsage, sameUsage, TELEMETRY_COUNT_MAX, TELEMETRY_COUNTERS, TELEMETRY_HARNESSES, telemetryAgentVersion, telemetryCountsChange } from "./telemetry.ts";
+
+describe("agent versions and answers", () => {
+  test("an agent's version is sent as major.minor only", () => {
+    expect(["2.1.330", "0.171.0", "2.10", "02.01.3-beta", "1.4.2026", "v2.1", "2", "", null].map(telemetryAgentVersion))
+      .toEqual(["2.1", "0.171", "2.10", "2.1", "1.4", null, null, null, null]);
+  });
+
+  test("usage without agents and answers is the same as usage with none", () => {
+    const { agents: _agents, answers: _answers, ...older } = emptyUsage();
+    expect(sameUsage(older, emptyUsage())).toBe(true);
+    expect(sameUsage(emptyUsage(), { ...emptyUsage(), answers: { terminal: 1 } })).toBe(false);
+    expect(sameUsage({ ...emptyUsage(), agents: { claude: { ovis: 1, other: 0, versions: [] } } }, { ...emptyUsage(), agents: { claude: { ovis: 0, other: 1, versions: [] } } })).toBe(false);
+  });
+});
 
 describe("button counts", () => {
   test("a day's count leaves the PC as its range: 1-2, 3-9, 10-29, 30 or more, and none for 0", () => {

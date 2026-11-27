@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { SEEN_PCS_MAX, clearTried, didFor, forgetSeenPc, noteAct, noteSession, noteTried, readSeenPcs, seenInSession, withoutPc, type SeenPcs } from "./seenPcs.ts";
+import { SEEN_PCS_MAX, clearTried, didFor, forgetSeenPc, howOf, noteAct, noteSession, noteTried, readSeenPcs, seenInSession, withoutPc, type SeenPcs } from "./seenPcs.ts";
 import { generateKeyPair } from "../../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 
@@ -28,7 +28,29 @@ describe("what a device keeps of the PCs it held sessions with", () => {
     // an act with no session yet: the row says what was done, and has no time until the PC lets this device in
     const added = didFor(empty(), B, "added");
     expect(added.pcs[B]).toEqual({ how: "added" });
+    // a PC that joined with this account's invite, proved by the line's own key, and the person's Add: a value of its own, kept like the others
+    const invitedPc = didFor(empty(), B, "invited");
+    expect(invitedPc.pcs[B]).toEqual({ how: "invited" });
+    expect(seenInSession(invitedPc, B, 9_000, "none").pcs[B]).toEqual({ since: 9_000, last: 9_000, how: "invited" });
+    // and it reads back from storage as it was written
+    const kept = new Map<string, string>([["ovis:seen-pcs:" + invitedPc.account, JSON.stringify(invitedPc)]]);
+    expect(readSeenPcs(invitedPc.account, { getItem: (name: string) => kept.get(name) ?? null } as unknown as Storage).pcs[B]).toEqual({ how: "invited" });
     expect(seenInSession(added, B, 9_000, "none").pcs[B]).toEqual({ since: 9_000, last: 9_000, how: "added" });
+  });
+
+  it("keeps a row whose `how` this build does not know as it is, through every write, and counts it as none for a decision", async () => {
+    const storage = memory();
+    // a later build wrote a value this one does not know
+    storage.setItem("ovis:seen-pcs:acct", JSON.stringify({ v: 1, account: "acct", pcs: { [A]: { since: 1_000, last: 2_000, how: "vouched_later" } } }));
+    expect(readSeenPcs("acct", storage).pcs[A]).toEqual({ since: 1_000, last: 2_000, how: "vouched_later" });
+    // a session with another PC, then one with this PC, and an act for it: the row stays, its `how` unchanged
+    await noteSession("acct", B, "paired", 3_000_000, storage);
+    await noteSession("acct", A, "paired", 4_000_000, storage);
+    await noteAct("acct", A, "added", storage);
+    const kept = readSeenPcs("acct", storage);
+    expect(kept.pcs[A]).toEqual({ since: 1_000, last: 4_000, how: "vouched_later" });
+    expect(kept.pcs[B]).toEqual({ since: 3_000, last: 3_000, how: "paired" });
+    expect([howOf(kept.pcs[A]), howOf(kept.pcs[B]), howOf(undefined)]).toEqual(["none", "paired", "none"]);
   });
 
   it("keeps the newest PCs only, by their last session, and a PC it did something for before one it only opened", () => {

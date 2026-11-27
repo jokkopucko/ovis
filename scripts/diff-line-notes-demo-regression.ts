@@ -1,18 +1,12 @@
 /** Nothing leaves this loopback-only app. */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Browser, Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
-
-const playwrightCore = "playwright-core";
-const { chromium } = (await import(playwrightCore)) as typeof import("playwright-core");
+import { appContext } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 
 const evidence = process.env.UI_EVIDENCE_DIR;
-if (evidence) mkdirSync(evidence, { recursive: true });
 const PANE = panes.api;
 const WAIT = { timeout: 15_000 } as const;
 const COMPOSER_LIMIT = 20_000;
@@ -117,7 +111,7 @@ const place = (page: Page): Promise<string> => page.locator(".repo-diff-line-pla
 const submits = (page: Page): Promise<Submit[]> => page.evaluate(() => (window as unknown as { noteLab: { submits: Submit[] } }).noteLab.submits);
 
 async function setup(browser: Browser, origin: string, phone: boolean, theme: "dark" | "light", language: Language, pane = PANE) {
-  const context = await browser.newContext({ viewport: { width: phone ? 390 : 1280, height: phone ? 844 : 800 }, deviceScaleFactor: evidence ? 2 : 1, isMobile: phone, hasTouch: phone, colorScheme: theme, locale: language === "ko" ? "ko-KR" : "en-US" });
+  const context = await appContext(browser, { viewport: { width: phone ? 390 : 1280, height: phone ? 844 : 800 }, deviceScaleFactor: evidence ? 2 : 1, isMobile: phone, hasTouch: phone, colorScheme: theme, locale: language === "ko" ? "ko-KR" : "en-US" });
   await context.addInitScript(([id, scheme, language]) => {
     if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify({ language, theme: scheme, palette: "codex" }));
     localStorage.setItem(`ovis:view:${id}`, "chat");
@@ -309,44 +303,33 @@ async function noAgent(browser: Browser, origin: string): Promise<void> {
   }
 }
 
-const app = mkdtempSync(join(tmpdir(), "herdr-diff-line-notes-demo-"));
-let server: ReturnType<typeof Bun.serve> | undefined;
-let browser: Browser | undefined;
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  const lab = `<script>(() => {
-    const lab = window.noteLab = { submits: [] };
-    const DemoSocket = window.WebSocket;
-    const Socket = function (...args) {
-      const socket = new DemoSocket(...args);
-      const send = socket.send.bind(socket);
-      socket.send = (raw) => { try { const message = JSON.parse(raw); if (message.type === "submit") lab.submits.push(message); } catch {} send(raw); };
-      return socket;
-    };
-    Socket.prototype = DemoSocket.prototype;
-    Object.setPrototypeOf(Socket, DemoSocket);
-    window.WebSocket = Socket;
-  })();</script>`;
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${lab}\n    <script type="module"`));
-  server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    const prefix = "/herdr-web-ui/demo/app/";
-    if (!path.startsWith(prefix) && !path.startsWith("/icons/")) return new Response("not found", { status: 404 });
-    let file = decodeURIComponent(path.startsWith("/icons/") ? path.slice(1) : path.slice(prefix.length));
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(app, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
-  browser = await chromium.launch({ executablePath: chromePath(), headless: true });
-  const origin = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/`;
+const lab = `<script>(() => {
+  const lab = window.noteLab = { submits: [] };
+  const DemoSocket = window.WebSocket;
+  const Socket = function (...args) {
+    const socket = new DemoSocket(...args);
+    const send = socket.send.bind(socket);
+    socket.send = (raw) => { try { const message = JSON.parse(raw); if (message.type === "submit") lab.submits.push(message); } catch {} send(raw); };
+    return socket;
+  };
+  Socket.prototype = DemoSocket.prototype;
+  Object.setPrototypeOf(Socket, DemoSocket);
+  window.WebSocket = Socket;
+})();</script>`;
+const serve = (app: string) => Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+  const path = new URL(request.url).pathname;
+  const prefix = "/herdr-web-ui/demo/app/";
+  if (!path.startsWith(prefix) && !path.startsWith("/icons/")) return new Response("not found", { status: 404 });
+  let file = decodeURIComponent(path.startsWith("/icons/") ? path.slice(1) : path.slice(prefix.length));
+  if (!file || file.endsWith("/")) file += "index.html";
+  if (file.split("/").includes("..")) return new Response("bad path", { status: 400 });
+  const body = Bun.file(join(app, file));
+  return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
+} });
+
+await withDemoBrowser({ tempPrefix: "herdr-diff-line-notes-demo-", serve, afterTransport: `\n    ${lab}` }, async ({ browser, baseUrl: origin }) => {
   for (const theme of ["dark", "light"] as const) await desktop(browser, origin, theme);
   for (const [theme, language] of [["dark", "en"], ["light", "en"], ["dark", "ko"], ["light", "ko"]] as const) await phone(browser, origin, theme, language);
   await noAgent(browser, origin);
   console.log("diff line notes: demo OK (hover +, keys, touch, chip, agent-only send, length refusal, no agent, Korean)");
-} finally {
-  await browser?.close();
-  server?.stop(true);
-  rmSync(app, { recursive: true, force: true });
-}
+});

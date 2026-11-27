@@ -1,7 +1,7 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 
 import type { AgentCatalogRow, AgentTabStarted } from "../../shared/agent-catalog.ts";
-import { fetchAgentCatalog, startAgentInstall, startAgentSignIn } from "./api.ts";
+import { fetchAgentCatalog, startAgentInstall } from "./api.ts";
 import { setupStep, type SetupStep } from "./agentSetup.ts";
 
 const DETECT_EVERY_MS = 3000;
@@ -10,19 +10,15 @@ export interface AgentSetupOptions {
   agent: AgentCatalogRow;
   machineId?: string;
   initial?: SetupStep;
-  onStep?: (step: SetupStep) => void;
   onRow?: (row: AgentCatalogRow) => void;
 }
 
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
-export function useAgentSetup({ agent, machineId = "local", initial = { kind: "idle" }, onStep, onRow }: AgentSetupOptions) {
+export function useAgentSetup({ agent, machineId = "local", initial = { kind: "idle" }, onRow }: AgentSetupOptions) {
   const onRowRef = useRef(onRow);
   onRowRef.current = onRow;
   const [step, dispatch] = useReducer(setupStep, initial);
-  const onStepRef = useRef(onStep);
-  onStepRef.current = onStep;
-  useEffect(() => { onStepRef.current?.(step); }, [step]);
 
   useEffect(() => {
     if (step.kind !== "installing") return;
@@ -49,6 +45,5 @@ export function useAgentSetup({ agent, machineId = "local", initial = { kind: "i
     });
   };
   const install = () => ask(() => startAgentInstall(agent.id, machineId), (tab) => dispatch({ type: "install-started", tab }));
-  const signIn = () => ask(() => startAgentSignIn(agent.id, machineId), (tab) => dispatch({ type: "sign-in-started", tab }));
-  return { step, dispatch, pending, install, signIn };
+  return { step, dispatch, pending, install };
 }

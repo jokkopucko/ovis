@@ -8,8 +8,10 @@ import { announcesUpdate, readAnnounced, readOfferClosed, summaryFor, watchAnnou
 import { describeUpdate } from "../lib/updateProgress.ts";
 import type { UpdatesModel } from "../lib/updates.ts";
 import { useDesktopAppUpdate, type DesktopAppUpdate, type DesktopUpdateLine } from "../lib/desktopUpdate.ts";
+import { usePreviewAppUpdate } from "../lib/previewAppUpdate.ts";
 import { lazyChunkFailed, onLazyChunkFailure } from "../lib/lazyChunk.ts";
 import { Markdown } from "./Markdown.tsx";
+import { ProgressLine } from "./ProgressBar.tsx";
 import { RenderBoundary } from "./RenderBoundary.tsx";
 import { SettingsBare, SettingsRow } from "./SettingsControls.tsx";
 import "./Machines.css";
@@ -77,12 +79,7 @@ function UpdateProgress({ status, fallback }: { status: UpdateStatus | null; fal
   const t = useT();
   const view = describeUpdate(status);
   const label = view ? t(view.label) : fallback;
-  return <div className="bridge-progress update-progress">
-    <p className="bridge-progress-step"><span>{label}</span>{view && <span className="bridge-progress-count">{view.step}</span>}</p>
-    <div className="bridge-progress-bar" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} {...(view ? { "aria-valuenow": view.percent } : {})}>
-      <span className={view ? "" : "is-indeterminate"} style={view ? { width: `${view.percent}%` } : undefined} />
-    </div>
-  </div>;
+  return <ProgressLine className="update-progress" label={label} count={view?.step ?? null} percent={view?.percent ?? null} />;
 }
 
 /** The app's own version and check, in About's row (desktop app): the app downloads updates by itself, and this checks now */
@@ -110,6 +107,20 @@ function AppUpdateRow({ app }: { app: DesktopAppUpdate }) {
     {state.phase === "ready" ? <button type="button" className="btn btn-primary" disabled={app.installing} onClick={app.install}>{t("Restart to Update")}</button>
       : state.phase !== "off" && <button type="button" className="btn" disabled={busy} onClick={app.check}>{t("Check for updates")}</button>}
   </>;
+}
+
+/** The phone's preview app itself, above the PC's own updates: shown only in the Android preview build */
+export function PreviewAppUpdate() {
+  const t = useT();
+  const preview = usePreviewAppUpdate();
+  if (!preview) return null;
+  return <section className="settings-section settings-updates" data-section="preview-app-update" aria-label="Ovis Preview">
+    <div className="settings-card">
+      <SettingsRow label="Ovis Preview" description={t("This phone's preview app. A check downloads a newer preview, and Restart to Update installs it.")} icon={Info}>
+        <AppUpdateRow app={preview} />
+      </SettingsRow>
+    </div>
+  </section>;
 }
 
 export function UpdateControls({ updates, bridgesFollow = false }: { updates: UpdatesModel; bridgesFollow?: boolean }) {

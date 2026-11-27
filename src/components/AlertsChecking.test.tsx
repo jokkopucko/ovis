@@ -1,60 +1,52 @@
 import { afterEach, beforeEach, describe, expect, it, jest, mock } from "bun:test";
-import { createElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, createElement } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 import * as i18n from "../lib/i18n.ts";
 
 await mock.module("../lib/i18n.ts", () => ({ ...i18n, useT: () => (key: string) => key }));
 const { AlertsChecking, ALERTS_CHECK_GIVE_UP_MS, useLongerThan } = await import("./AlertsChecking.tsx");
 
 describe("the guide's alerts while the PC's record is not in", () => {
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
   beforeEach(() => {
-    for (const key of ["window", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: globalThis });
+    page = openPage();
     jest.useFakeTimers();
+    Object.assign(page.window, { setTimeout, clearTimeout });
   });
-  afterEach(() => {
-    act(() => { renderer?.unmount(); });
-    renderer = undefined;
+  afterEach(async () => {
     jest.useRealTimers();
-    for (const [key, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    descriptors.clear();
+    await page.close();
   });
 
-  it("says Checking…, then past the bound that it could not check, with Try again", () => {
+  it("says Checking…, then past the bound that it could not check, with Try again", async () => {
     let retries = 0;
     function Probe() {
       const late = useLongerThan(true, ALERTS_CHECK_GIVE_UP_MS);
       return createElement(AlertsChecking, { uncheckable: late, onRetry: () => { retries += 1; } });
     }
-    act(() => { renderer = create(createElement(Probe)); });
-    const text = (): string => renderer!.root.findAllByType("p").map((node) => node.children.filter((child) => typeof child === "string").join("")).join(" ");
+    await page.render(createElement(Probe));
+    const text = (): string => [...page.container.querySelectorAll("p")].map((node) => node.textContent).join(" ");
     expect(text()).toBe("Checking…");
-    expect(renderer!.root.findAllByType("button")).toHaveLength(0);
-    act(() => { jest.advanceTimersByTime(ALERTS_CHECK_GIVE_UP_MS - 1); });
+    expect(page.container.querySelectorAll("button")).toHaveLength(0);
+    await act(async () => { jest.advanceTimersByTime(ALERTS_CHECK_GIVE_UP_MS - 1); });
     expect(text()).toBe("Checking…");
-    act(() => { jest.advanceTimersByTime(1); });
+    await act(async () => { jest.advanceTimersByTime(1); });
     expect(text()).toBe("Couldn't check alerts.");
-    const button = renderer!.root.findByType("button");
-    act(() => { button.props.onClick(); });
+    const button = page.one("button");
+    await act(async () => { button.click(); });
     expect(retries).toBe(1);
   });
 
-  it("starts the bound again once an answer came in between", () => {
+  it("starts the bound again once an answer came in between", async () => {
     const seen: boolean[] = [];
     function Probe({ on }: { on: boolean }) { seen.push(useLongerThan(on, ALERTS_CHECK_GIVE_UP_MS)); return null; }
-    act(() => { renderer = create(createElement(Probe, { on: true })); });
-    act(() => { jest.advanceTimersByTime(ALERTS_CHECK_GIVE_UP_MS - 1); });
-    act(() => { renderer!.update(createElement(Probe, { on: false })); });
-    act(() => { renderer!.update(createElement(Probe, { on: true })); });
-    act(() => { jest.advanceTimersByTime(ALERTS_CHECK_GIVE_UP_MS - 1); });
+    await page.render(createElement(Probe, { on: true }));
+    await act(async () => { jest.advanceTimersByTime(ALERTS_CHECK_GIVE_UP_MS - 1); });
+    await page.render(createElement(Probe, { on: false }));
+    await page.render(createElement(Probe, { on: true }));
+    await act(async () => { jest.advanceTimersByTime(ALERTS_CHECK_GIVE_UP_MS - 1); });
     expect(seen.at(-1)).toBe(false);
-    act(() => { jest.advanceTimersByTime(1); });
+    await act(async () => { jest.advanceTimersByTime(1); });
     expect(seen.at(-1)).toBe(true);
   });
 });

@@ -14,6 +14,14 @@ export const ACCOUNT_LISTING_ERRORS = "account-listing-errors-1";
  * `account_list_required`; one without it takes that code as a protocol error.
  */
 export const ACCOUNT_LIST_FEATURE = "account-list-1";
+/**
+ * A PC selects it only while it can let a new device into its account's signed list by itself: it is pinned to the
+ * list, in it, its own key signs for the list, and a person at the PC decides (docs/account.md, "A PC allows a
+ * device into the list"). A device that asks to join then sends its card in PAIR_REQUEST (`list_enc`, `list_card`),
+ * and the AUTH_OK of a join the PC allowed names the list and the place of the entry that let the device in (`list`).
+ * Not selected: this PC lets nobody into the list, and a join it allows makes its own pairing as before.
+ */
+export const ACCOUNT_LIST_ALLOW = "account-list-allow-1";
 /** Eight numbered receipts fit the existing 1 KiB session error, even with safe-integer log numbers. */
 export const AUTH_RECEIPTS_MAX = 8;
 /** The address is a hint: Noise against the pinned PC key proves the PC. */
@@ -156,17 +164,26 @@ type Method = "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
 type JsonObject = { readonly [key: string]: unknown };
 type Payloads = {
   readonly 0x01: { readonly protocol: "ovis-mux"; readonly versions: readonly number[]; readonly features: readonly string[]; readonly required_features: readonly string[] };
-  readonly 0x02: { readonly protocol: "ovis-mux"; readonly version: 1; readonly features: readonly string[]; readonly limits: LimitsV1; readonly nonce: string; readonly server_version: string; readonly relay_protocol: number; readonly min_supported_client: string; readonly provisional?: true };
+  readonly 0x02: { readonly protocol: "ovis-mux"; readonly version: 1; readonly features: readonly string[]; readonly limits: LimitsV1; readonly nonce: string; readonly server_version: string; readonly relay_protocol: number; readonly min_supported_client: string; readonly provisional?: true;
+    /** ACCOUNT_LIST_FEATURE selected: the id of the list the PC is pinned to, which the app signs in by the key it holds for (R-E). */
+    readonly list?: string };
   readonly 0x03: { readonly scheme: "device-key"; readonly device_id: string; readonly signature: string };
-  readonly 0x04: { readonly session_id: string; readonly device_id: string; readonly role: "drive" | "watch"; readonly relays?: readonly string[]; readonly direct?: readonly string[] };
+  readonly 0x04: { readonly session_id: string; readonly device_id: string; readonly role: "drive" | "watch"; readonly relays?: readonly string[]; readonly direct?: readonly string[];
+    /** ACCOUNT_LIST_ALLOW: the list the PC let the device into, and the place of the entry that did. */
+    readonly list?: { readonly id: string; readonly seq: number; readonly hash: string } };
   readonly 0x05: { readonly code: SessionError; readonly message: string; readonly hold?: HoldState; readonly receipts?: readonly BlockReceipt[] };
   readonly 0x06: { readonly code: "shutdown" | "id_exhausted"; readonly last_open_id: number; readonly drain_ms: number };
   readonly 0x07: bigint;
   readonly 0x08: bigint;
   readonly 0x09: bigint;
   readonly 0x0a: { readonly code: string; readonly label: string; readonly public_key: string };
-  readonly 0x0b: { readonly label: string; readonly public_key: string; readonly commitment: string; readonly server_key?: string };
-  readonly 0x0c: { readonly nonce: string; readonly approve_on?: PairApprover; readonly server_challenge?: string };
+  readonly 0x0b: { readonly label: string; readonly public_key: string; readonly commitment: string; readonly server_key?: string;
+    /** ACCOUNT_LIST_ALLOW: the device's encryption key and its card for the list, both or neither. */
+    readonly list_enc?: string; readonly list_card?: string;
+    /** Set by the reader alone, in the place of `list_enc` and `list_card` that came out of their form. */
+    readonly list_malformed?: true };
+  /** `list`: with ACCOUNT_LIST_ALLOW selected, the id of the list the PC follows: the device stops early when its card names another. */
+  readonly 0x0c: { readonly nonce: string; readonly approve_on?: PairApprover; readonly server_challenge?: string; readonly list?: string };
   readonly 0x0d: { readonly nonce: string; readonly server_proof?: string };
   readonly 0x0e: { readonly confirmed: true };
   readonly 0x10: { readonly device_id: string; readonly method: Method; readonly target: string; readonly headers: HeaderList; readonly body: "none" | "stream" };
@@ -259,6 +276,11 @@ function base64url(value: unknown, bytes: number): string {
 }
 
 /** DER SubjectPublicKeyInfo for id-ecPublicKey + prime256v1 + an uncompressed P-256 point. */
+/** AUTH_OK's `list`: a list id and a place in it. */
+function listPlace(value: unknown): { id: string; seq: number; hash: string } {
+  const v = object(value);
+  return { id: hex(v.id, 64), seq: integer(v.seq, 0, 999_999_999_999_999), hash: hex(v.hash, 64) };
+}
 function p256Spki(value: unknown): string {
   const public_key = base64url(value, 91);
   const der = atob(public_key.replace(/-/g, "+").replace(/_/g, "/"));
@@ -431,7 +453,8 @@ function metadata(type: FrameType, flags: number, stream_id: number, input: unkn
       requireProtocol(v.protocol === "ovis-mux" && v.version === 1, "Invalid welcome protocol");
       return { ...common, type, payload: { protocol: "ovis-mux", version: 1, features: list(v.features, 16, feature), limits: limits(v.limits),
         nonce: base64url(v.nonce, 32), server_version: text(v.server_version, 64), relay_protocol: integer(v.relay_protocol, 1, 65535), min_supported_client: text(v.min_supported_client, 64),
-        ...(v.provisional === undefined ? {} : (requireProtocol(v.provisional === true, "Invalid provisional welcome"), { provisional: true as const })) } };
+        ...(v.provisional === undefined ? {} : (requireProtocol(v.provisional === true, "Invalid provisional welcome"), { provisional: true as const })),
+        ...(v.list === undefined ? {} : { list: hex(v.list, 64) }) } };
     case FrameType.AUTH:
       requireProtocol(v.scheme === "device-key", "Invalid auth scheme");
       return { ...common, type, payload: { scheme: "device-key", device_id: hex(v.device_id, 16), signature: base64url(v.signature, 64) } };
@@ -441,10 +464,12 @@ function metadata(type: FrameType, flags: number, stream_id: number, input: unkn
       return { ...common, type, payload: { code, label: pairLabel(v.label), public_key: p256Spki(v.public_key) } };
     }
     case FrameType.PAIR_REQUEST:
-      return { ...common, type, payload: { label: pairLabel(v.label), public_key: p256Spki(v.public_key), commitment: base64url(v.commitment, 32), ...(v.server_key === undefined ? {} : { server_key: hex(v.server_key, 64) }) } };
+      return { ...common, type, payload: { label: pairLabel(v.label), public_key: p256Spki(v.public_key), commitment: base64url(v.commitment, 32), ...(v.server_key === undefined ? {} : { server_key: hex(v.server_key, 64) }),
+        ...listCard(v) } };
     case FrameType.PAIR_CHALLENGE:
       return { ...common, type, payload: { nonce: base64url(v.nonce, 32), ...(v.server_challenge === undefined ? {} : { server_challenge: text(v.server_challenge, 512) }),
-        ...(v.approve_on === undefined ? {} : { approve_on: PAIR_APPROVERS.find((approver) => approver === v.approve_on) ?? "pc" }) } };
+        ...(v.approve_on === undefined ? {} : { approve_on: PAIR_APPROVERS.find((approver) => approver === v.approve_on) ?? "pc" }),
+        ...(v.list === undefined ? {} : { list: hex(v.list, 64) }) } };
     case FrameType.PAIR_REVEAL:
       return { ...common, type, payload: { nonce: base64url(v.nonce, 32), ...(v.server_proof === undefined ? {} : { server_proof: text(v.server_proof, 256) }) } };
     case FrameType.KEY_CHALLENGE:
@@ -460,7 +485,8 @@ function metadata(type: FrameType, flags: number, stream_id: number, input: unkn
     case FrameType.AUTH_OK:
       return { ...common, type, payload: { session_id: hex(v.session_id, 32), device_id: hex(v.device_id, 16), role: choice(v.role, ["drive", "watch"]),
         ...(v.relays === undefined ? {} : { relays: list(v.relays, 2, relayOrigin) }),
-        ...(v.direct === undefined ? {} : { direct: list(v.direct, MAX_DIRECT_CARRIERS, directOrigin) }) } };
+        ...(v.direct === undefined ? {} : { direct: list(v.direct, MAX_DIRECT_CARRIERS, directOrigin) }),
+        ...(v.list === undefined ? {} : { list: listPlace(v.list) }) } };
     case FrameType.SESSION_ERROR:
       return { ...common, type, payload: sessionError(v) };
     case FrameType.GOAWAY:
@@ -546,6 +572,24 @@ function parseMetadata(bytes: Uint8Array): unknown {
   }
 }
 
+/**
+ * The card a join may bring in PAIR_REQUEST (ACCOUNT_LIST_ALLOW): `list_enc` and `list_card`, both in their form. They
+ * are an extension only a PC that selected the feature reads. So a frame whose members are out of that form (one
+ * without the other, a key that is none) is still the PAIR_REQUEST it was before the extension: it is read, with
+ * `list_malformed` in the members' place, and a PC that takes no card pairs as it always did. One that selected the
+ * feature refuses it.
+ */
+function listCard(v: JsonObject): { list_enc: string; list_card: string } | { list_malformed: true } | Record<string, never> {
+  if (v.list_enc === undefined && v.list_card === undefined && v.list_malformed === undefined) return {};
+  try {
+    if (v.list_malformed !== undefined) throw new MuxProtocolError("protocol_error", "Malformed list card");
+    return { list_enc: p256Spki(v.list_enc), list_card: base64url(v.list_card, 64) };
+  } catch (error) {
+    if (!(error instanceof MuxProtocolError)) throw error;
+    return { list_malformed: true };
+  }
+}
+
 export function decodeFrame(bytes: Uint8Array, filterRequestHeaders = false): MuxFrame {
   // These gates precede views, slices, UTF-8 decoding and JSON parsing.
   requireProtocol(bytes instanceof Uint8Array && bytes.byteLength >= ENVELOPE_BYTES && bytes.byteLength <= MAX_FRAME_BYTES, "Invalid frame length");
@@ -618,6 +662,8 @@ export function encodeFrame(frame: MuxFrame): Uint8Array {
     }
     default:
       payload = object(metadata(type, flags, stream_id, frame.payload).payload);
+      // nobody sends a card that is out of its form; only the reader lets one pass, as a member it then ignores
+      requireProtocol(!(frame.type === FrameType.PAIR_REQUEST && payload.list_malformed === true), "A list card comes with its encryption key, each in its form");
       size = jsonBytes(payload);
   }
   envelope(type, flags, stream_id, size + ENVELOPE_BYTES);

@@ -10,7 +10,10 @@ import { tmpdir } from "node:os";
 import { join as joinPath } from "node:path";
 import { bytesToHex } from "@noble/hashes/utils.js";
 
-import { newInvite } from "../shared/account-list-join.ts";
+import { verifyLineProof } from "../shared/account-list-invite.ts";
+import { epochKeyCommitment, newEpochKey, wrapEpochKey, wrapToText } from "../shared/account-list-seal.ts";
+import { listMember } from "../server/account/list.test-helpers.ts";
+import { newInvite, readJoinLine } from "../shared/account-list-join.ts";
 import { FakeAccountService } from "../shared/account-service-fake.ts";
 import { importPublicKey, importSecretKey } from "../shared/relay-e2ee.ts";
 import { encodeOffer } from "../shared/relay-offer.ts";
@@ -69,6 +72,8 @@ interface Run {
   readonly made: string;
   readonly service: FakeAccountService;
   readonly serverId: string;
+  /** this PC's relay key, as its listing names it */
+  readonly endpoint: string;
   /** this PC's calls, as `METHOD /path` */
   readonly local: string[];
   /** the account service's calls, as `METHOD /path` */
@@ -124,12 +129,15 @@ interface Setup {
   readonly inviteList?: string;
   /** the account the invite is for: acct_1 by default */
   readonly inviteAccount?: string;
+  /** told this PC's relay key once its relay identity is made, before the run */
+  readonly beforeRun?: (endpoint: string) => void;
 }
 
 async function joining(setup: Setup = {}): Promise<Run> {
   const stateDir = setup.stateDir ?? mkdtempSync(joinPath(tmpdir(), "ovis-join-"));
   if (setup.stateDir === undefined) scratch.push(stateDir);
   const identity = loadRelayIdentity(stateDir);
+  setup.beforeRun?.(bytesToHex(importPublicKey(identity.public_key)));
   const time = setup.time ?? clock();
   const service = setup.service ?? new FakeAccountService(time.now);
   service.opensAll = true;
@@ -225,7 +233,7 @@ async function joining(setup: Setup = {}): Promise<Run> {
     err: (text) => { err.push(text); heard(text); },
   });
   return {
-    code, out: out.join(""), err: err.join(""), line, made: madeLine, service, serverId: identity.server_id, local, calls, bodies, beforeQuestion, pressed, stateDir, state,
+    code, out: out.join(""), err: err.join(""), line, made: madeLine, service, serverId: identity.server_id, endpoint: bytesToHex(importPublicKey(identity.public_key)), local, calls, bodies, beforeQuestion, pressed, stateDir, state,
     listed: () => service.pcs(ACCOUNT).filter((entry) => entry.server_id === identity.server_id),
   };
 }
@@ -303,17 +311,136 @@ describe("ovis join: the invite", () => {
     }
   });
 
-  it("acts only on a line for this PC's own account service, and only on one for an account with no list yet; nothing is sent otherwise", async () => {
+  it("acts only on a line for this PC's own account service; nothing is sent otherwise", async () => {
     for (const other of ["https://account.ovis.sh", "https://account.test:8443", "https://evil.example"]) {
       const run = await joining({ inviteService: other });
       expect([other, run.code]).toEqual([other, JOIN_EXIT.invite_invalid]);
       expect(run.out).toBe("This invite is for another account service than the one this PC uses (https://account.test). Nothing was sent. Ask for an invite on a device signed in to that service, or check OVIS_ACCOUNT_SERVICE_URL here.\n");
       expect([run.local, run.calls]).toEqual([[], []]);
     }
-    const listed = await joining({ inviteList: "0f484e9226ad290aaac6dea9244aced4e2b7b97297ecd8d52d437a57c33e5383" });
-    expect(listed.code).toBe(JOIN_EXIT.not_available);
-    expect(listed.out).toBe("This invite is for an account with a signed member list, which needs a newer Ovis on this PC. Update it in Settings → Updates, then run this again. Nothing was sent.\n");
-    expect([listed.local, listed.calls]).toEqual([[], []]);
+  });
+
+  describe("a line that names the account's signed list", () => {
+    const LIST = "0f484e9226ad290aaac6dea9244aced4e2b7b97297ecd8d52d437a57c33e5383";
+    /** This PC's own keys for the list, as its card names them. */
+    const pcKeys = listMember();
+    /**
+     * this PC as one that follows lists: it says so, and answers the joins by the list as `joins` has them. `prepared`:
+     * what it answers a join's preparation (an invite a PC joins with by itself)
+     */
+    const following = (joins: (count: number, body: Record<string, unknown>) => Response, prepared?: () => Response | Promise<Response>) => {
+      const asked: Record<string, unknown>[] = [];
+      let endpoint = "";
+      const card = async () => ({ key: (await pcKeys).key, enc: (await pcKeys).enc, endpoint, list: LIST });
+      return { asked, card, endpointIs: (value: string) => { endpoint = value; }, localAnswer: (path: string, request: Request): Promise<Response> | Response | undefined => {
+        if (path === "/api/account/list" && request.method === "GET") return Response.json({ pinned: false });
+        if (path === "/api/account/list/join/prepare" && prepared) return prepared();
+        if (path !== "/api/account/list/join") return undefined;
+        return request.json().then(async (body) => {
+          const sent = body as Record<string, unknown>;
+          // the first ask brings no proof: the PC hands over its own card, for the line to sign its proof for
+          if (sent.proof === undefined) return Response.json({ state: "prove", card: await card() });
+          asked.push(sent);
+          return joins(asked.length, sent);
+        });
+      } };
+    };
+
+    it("is refused on an Ovis that follows no list, before anything is sent: the invite stays unused", async () => {
+      const listed = await joining({ inviteList: LIST });
+      expect(listed.code).toBe(JOIN_EXIT.not_available);
+      expect(listed.out).toBe("This invite is for an account with a signed member list, which needs a newer Ovis on this PC. Update it in Settings → Updates, then run this again. Nothing was sent.\n");
+      expect(listed.calls).toEqual([]);
+      expectNoInvite(listed);
+    });
+
+    it("joins by that list: this PC is asked whether its list holds it, with the account and the list the line names, and never for the account service's admission", async () => {
+      const pc = following((count) => Response.json(count < 3 ? { state: "waiting", standing: "waiting" } : { state: "added", account: "acct_1" }));
+      const run = await joining({ inviteList: LIST, localAnswer: pc.localAnswer, beforeRun: (endpoint) => pc.endpointIs(endpoint) });
+      expect(run.code).toBe(0);
+      // each ask names the account, the list and the invite, and carries the line's proof for the card the PC handed over
+      expect(pc.asked).toHaveLength(3);
+      const { key } = await readJoinLine(run.made, { service: SERVICE, followsLists: true });
+      for (const ask of pc.asked) {
+        expect(ask).toEqual({ account: "acct_1", list: LIST, invite: key, proof: expect.stringMatching(/^[A-Za-z0-9_-]{86}$/) });
+        expect(await verifyLineProof({ account: "acct_1", server_id: run.serverId, list: LIST, card: await pc.card() }, ask.proof, key)).toBe(true);
+      }
+      expect(run.pressed).toEqual([]);
+      expect(run.out).toContain("Added: this PC is in your account (acct_1)");
+      expectNoInvite(run);
+    });
+
+    it("says where a device that asks to join is let in: on another device of the account, since a PC that joined by an invite lets nobody into the list itself", async () => {
+      const pc = following((count) => Response.json(count < 2 ? { state: "waiting", standing: "waiting" } : { state: "added", account: "acct_1" }));
+      const run = await joining({ inviteList: LIST, localAnswer: pc.localAnswer, beforeRun: (endpoint) => pc.endpointIs(endpoint) });
+      expect(run.code).toBe(0);
+      // ovis approve on such a PC lets nobody in (plugin-link.ts approvedWords, not_signer): it is not offered
+      expect(run.out).not.toContain("ovis approve");
+      expect(run.out).toContain("If your phone asks to join when you open old-desktop, allow it on another device of your account: this PC joined by an invite, and lets nobody into your account's list itself.\n");
+    });
+
+    it("an invite a PC joins with by itself, on a PC the list holds already: the line proves the join for this PC's own card, and signs no join", async () => {
+      const pc: ReturnType<typeof following> = following(() => Response.json({ state: "added", account: "acct_1" }), async () => Response.json({ state: "prove", card: await pc.card() }));
+      const run = await joining({ auto: true, inviteList: LIST, localAnswer: pc.localAnswer, beforeRun: (endpoint) => pc.endpointIs(endpoint) });
+      expect(run.code).toBe(0);
+      const { key } = await readJoinLine(run.made, { service: SERVICE, followsLists: true });
+      expect(pc.asked).toHaveLength(1);
+      expect(await verifyLineProof({ account: "acct_1", server_id: run.serverId, list: LIST, card: await pc.card() }, pc.asked[0]!.proof, key)).toBe(true);
+      expect(run.local).not.toContain("POST /api/account/list/join/body");
+      expect(run.local).not.toContain("POST /api/account/list/join/place");
+    });
+
+    it("an invite a PC joins with by itself, on a PC its account bound meanwhile though its join still says waiting: it is added, and keeps its listing", async () => {
+      let prepared = 0;
+      const run = await joining({ auto: true, inviteList: LIST, localAnswer: (path, request) => {
+        if (path === "/api/account/list" && request.method === "GET") return Response.json({ pinned: false });
+        // the PC is in its list and pinned, and its copy has not reached the disk yet: each ask says it waits
+        if (path === "/api/account/list/join/prepare") { prepared++; return Response.json({ state: "waiting", standing: "in" }); }
+        if (path === "/api/account/status" && prepared > 0) return Response.json({ account: "acct_1", enrolling: false });
+        return undefined;
+      } });
+      expect(prepared).toBeGreaterThan(0);
+      expect(run.code).toBe(0);
+      expect(run.listed()).toHaveLength(1);
+      expect(run.out + run.err).not.toContain("was not added");
+    });
+
+    it("an invite a PC joins with by itself, where the account service hands a key to the names that the list does not commit to: it says so once, and joins without names", async () => {
+      const handed = newEpochKey(1);
+      const committed = epochKeyCommitment({ list: LIST, epoch: newEpochKey(1) });
+      const bodies: Record<string, unknown>[] = [];
+      let prepares = 0;
+      const run = await joining({ auto: true, inviteList: LIST, localAnswer: (path, request) => {
+        if (path === "/api/account/list" && request.method === "GET") return Response.json({ pinned: false });
+        if (path === "/api/account/list/join/prepare") return request.json().then(async (body) => {
+          prepares++;
+          // a wrap the line opens, of a key the list's opening entry does not commit to
+          const wrap = await wrapEpochKey({ list: LIST, epoch: handed, member: (body as { invite: string }).invite });
+          return Response.json({ state: "prepared", list: LIST, seq: 3, enc: (await pcKeys).enc, seal: { epoch: 1, opens: committed }, wraps: [{ epoch: 1, wrap: wrapToText(wrap!) }] });
+        });
+        if (path === "/api/account/list/join/body") return request.json().then((body) => {
+          bodies.push(body as Record<string, unknown>);
+          return Response.json(bodies.length < 2 ? { state: "again" } : { state: "added", account: "acct_1" });
+        });
+        return undefined;
+      } });
+      expect(run.code).toBe(0);
+      expect(prepares).toBe(2);
+      const said = (run.out + run.err).split("does not commit to").length - 1;
+      expect(said).toBe(1);
+      expect(run.out + run.err).toContain("Tell the account's owner: the account service did this.");
+      // nothing sealed under a key the list does not commit to
+      for (const body of bodies) expect(body).not.toHaveProperty("sealed");
+    });
+
+    it("ends with this PC's own words where it will not join that list, and takes itself off the account's list", async () => {
+      const pc = following(() => Response.json({ error: { code: "list_removed", message: "This PC was removed from this Ovis account. It can come back only as a new PC: on the PC, reset its relay identity, then add it again." } }, { status: 409 }));
+      const run = await joining({ inviteList: LIST, localAnswer: pc.localAnswer, beforeRun: (endpoint) => pc.endpointIs(endpoint) });
+      expect(run.code).toBe(JOIN_EXIT.not_added);
+      expect(run.out).toContain("Could not add this PC: This PC was removed from this Ovis account.");
+      expect(run.listed()).toEqual([]);
+      expect(run.pressed).toEqual([]);
+    });
   });
 
   it("sends the invite's public key and a signature over this account, this PC and this challenge: never the line or its secret", async () => {
@@ -503,6 +630,15 @@ describe("ovis join: what the account service says", () => {
   const UNCLEAR = "The account service did not say whether it took this PC. Try again in a moment. This PC was taken off that account's list again; the invite may be spent.";
   const answered = (code: string, status: number, headers: Record<string, string> = {}) => (path: string) =>
     path === "/v1/pc-invites/redeem" ? Response.json({ error: { code, message: `the service's own words ${code}` } }, { status, headers }) : undefined;
+
+  it("an invite the account's signed list does not hold as open (revoked, used, run out, or made before the list) is invite_invalid, in words of its own", async () => {
+    const run = await plainly({ serviceAnswer: answered("invite_not_in_list", 409) });
+    expect(run.code).toBe(JOIN_EXIT.invite_invalid);
+    expect(JSON.parse(run.out)).toEqual({ ok: false, error: "invite_invalid", message: "This invite does not work: your account's signed list does not hold it as open (it was revoked, used or ran out, or made before the account had its list). Ask for a new one." });
+    expect(run.err).not.toContain("invite_not_in_list");
+    expect(run.listed()).toEqual([]);
+    expectNoInvite(run);
+  });
 
   it("an invite another PC used is the one invite_invalid, in its own words", async () => {
     const time = clock();

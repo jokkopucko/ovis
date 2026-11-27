@@ -758,6 +758,23 @@ describe("alert timing and each device's choice", () => {
     expect(fake.received).toHaveLength(0);
   });
 
+  it("delivers a confirmed failure while Claude still looks busy with a queued successor", async () => {
+    const { push } = timed({ input: true, done: "off", error: true });
+    await push.onStatus("w1:p1", "working");
+    await push.onFailed("w1:p1", undefined, true);
+    await push.settled();
+    expect(fake.received.map((message) => message.payload.kind)).toEqual(["error"]);
+  });
+
+  it("keeps a failure told before a queued turn when that turn ends at once", async () => {
+    const { push } = timed({ input: true, done: "off", error: true });
+    await push.onStatus("w1:p1", "working");
+    await push.onFailed("w1:p1", undefined, true);
+    await push.onStatus("w1:p1", "idle");
+    await push.settled();
+    expect(fake.received.map((message) => message.payload.kind)).toEqual(["error"]);
+  });
+
   it("asks a waiting alert's device again for the PC as the alert goes out", async () => {
     const { push } = timed({ input: true, done: "off" });
     await push.onStatus("w1:p1", "working");
@@ -1460,6 +1477,24 @@ describe("push resync after lost status events", () => {
     await push.onStatus("w1:p2", "done");
     expect(fake.received.length).toBe(sent + 2);
   });
+});
+
+it("rekeys a finish already under way even when the destination reported work before the move", async () => {
+  const asked = Promise.withResolvers<void>();
+  const looked = Promise.withResolvers<void>();
+  const push = createPushService({ loopbackHttp: true, stateDir, timing: { short: 0, long: 0, longTurn: 0 },
+    lookupPane: async () => { asked.resolve(); await looked.promise; return { title: "claude" }; } });
+  push.subscribe(fake.subscription);
+  push.seed([pane("w1:p1", "working", "claude")]);
+  await push.onStatus("w1:p1", "done");
+  await asked.promise;
+  try {
+    await push.onStatus("w2:p1", "working");
+    push.moved("w1:p1", "w2:p1", "done");
+  } finally { looked.resolve(); }
+
+  await push.settled();
+  expect(fake.received.map(({ payload }) => [payload.kind, payload.pane_id])).toEqual([["done", "w2:p1"]]);
 });
 
 describe("the shared pane mute (shared/preferences.ts muted_panes)", () => {

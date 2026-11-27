@@ -1,21 +1,11 @@
-import { expect, test } from "bun:test";
-import { Terminal } from "@xterm/xterm";
+import { describe, expect, test } from "bun:test";
+import { testTerminal, type TestTerminal } from "./ghostty/testTerminal.test-support.ts";
 import { createSecretScreen } from "./secretScreen.ts";
-import { matchHerdrWidths } from "./terminalWidths.ts";
 
-const parse = (term: Terminal, data: string): Promise<void> => new Promise((resolve) => term.write(data, resolve));
-const terminal = (cols: number, rows = 10): Terminal => {
-  const term = new Terminal({ cols, rows, scrollback: 0, allowProposedApi: true });
-  matchHerdrWidths(term);
-  return term;
-};
+const parse = (term: TestTerminal, data: string): Promise<void> => new Promise((resolve) => term.write(data, resolve));
+
 /** What herdr's attach sends before its first screen: the alternate screen, where a resize joins no rows, and no wrap. */
 const SETUP = "\x1b[?1049h\x1b[?7l";
-const attached = async (cols: number, rows = 10): Promise<Terminal> => {
-  const term = terminal(cols, rows);
-  await parse(term, SETUP);
-  return term;
-};
 
 /**
  * One screen as herdr's attach stream draws it: inside a synchronized update, every row at its own place with
@@ -26,239 +16,279 @@ const frame = (cols: number, rows: string[], [row, column]: [number, number]): s
 
 const GIT = "Password for 'https://alice@github.com':";
 
-test("a prompt asks while the cursor is on its line, and is answered once the cursor has left it", async () => {
-  const term = await attached(80);
-  const screen = createSecretScreen(term, () => true);
-  try {
-    await parse(term, frame(80, ["$ git push", `${GIT} `, "", ""], [1, 41]));
-    expect(screen.read("a")).toBe(GIT);
-    await parse(term, frame(80, ["$ git push", `${GIT} `, "", ""], [2, 0]));
-    expect(screen.read("a")).toBeNull();
-    await parse(term, frame(80, ["$ git push", `${GIT} `, `${GIT} `, ""], [2, 41]));
-    expect(screen.read("a")).toBe(GIT);
-    // at the screen's last row the answer's line break scrolls the prompt up, which herdr redraws a row higher
-    await parse(term, frame(80, ["a", "b", "c", "d", "e", "f", "g", "h", "$ git push", `${GIT} `], [9, 41]));
-    expect(screen.read("a")).toBe(GIT);
-    await parse(term, frame(80, ["b", "c", "d", "e", "f", "g", "h", "$ git push", `${GIT} `, ""], [9, 0]));
-    expect(screen.read("a")).toBeNull();
-  } finally { term.dispose(); }
-});
-
-test("a prompt printed with its line break and read on the row below asks, whose cursor was never on it", async () => {
-  const term = await attached(80);
-  const screen = createSecretScreen(term, () => true);
-  try {
-    await parse(term, frame(80, ["$ ./setup.sh", "Password:", "", ""], [2, 0]));
-    expect(screen.read("a")).toBe("Password:");
-    await parse(term, frame(80, ["$ ./setup.sh", "Password:", "", ""], [2, 0]));
-    expect(screen.read("a")).toBe("Password:");
-  } finally { term.dispose(); }
-});
-
-test("what was seen of one pane's prompt says nothing of the next pane's", async () => {
-  const term = await attached(80);
-  const screen = createSecretScreen(term, () => true);
-  try {
-    await parse(term, frame(80, ["$ ./setup.sh", "Password: ", "", ""], [1, 10]));
-    expect(screen.read("a")).toBe("Password:");
-    term.reset();
+describe("read off libghostty's screen", () => {
+  const terminal = (cols: number, rows = 10, scrollback = 0) => testTerminal({ cols, rows, scrollback });
+  const attached = async (cols: number, rows = 10): Promise<TestTerminal> => {
+    const term = await terminal(cols, rows);
     await parse(term, SETUP);
-    await parse(term, frame(80, ["$ ./setup.sh", "Password:", "", ""], [2, 0]));
-    expect(screen.read("b")).toBe("Password:");
-  } finally { term.dispose(); }
-});
+    return term;
+  };
 
-test("an answered prompt stays answered when its own pane's screen is drawn again", async () => {
-  const term = await attached(80);
-  const screen = createSecretScreen(term, () => true);
-  try {
-    await parse(term, SETUP + frame(80, ["$ git push", `${GIT} `, "", ""], [1, 41]));
-    expect(screen.read("a")).toBe(GIT);
-    await parse(term, frame(80, ["$ git push", `${GIT} `, "", ""], [2, 0]));
-    expect(screen.read("a")).toBeNull();
-    await parse(term, "\x1bc");
-    await parse(term, SETUP + frame(80, ["$ git push", `${GIT} `, "", ""], [2, 0]));
-    expect(screen.read("a")).toBeNull();
-    await parse(term, SETUP + frame(80, ["$ git push", `${GIT} `, "", ""], [2, 0]));
-    expect(screen.read("a")).toBeNull();
-  } finally { term.dispose(); }
-});
+  test("a prompt asks while the cursor is on its line, and is answered once the cursor has left it", async () => {
+    const term = await attached(80);
+    const screen = createSecretScreen(term, () => true);
+    try {
+      await parse(term, frame(80, ["$ git push", `${GIT} `, "", ""], [1, 41]));
+      expect(screen.read("a")).toBe(GIT);
+      await parse(term, frame(80, ["$ git push", `${GIT} `, "", ""], [2, 0]));
+      expect(screen.read("a")).toBeNull();
+      await parse(term, frame(80, ["$ git push", `${GIT} `, `${GIT} `, ""], [2, 41]));
+      expect(screen.read("a")).toBe(GIT);
+      // at the screen's last row the answer's line break scrolls the prompt up, which herdr redraws a row higher
+      await parse(term, frame(80, ["a", "b", "c", "d", "e", "f", "g", "h", "$ git push", `${GIT} `], [9, 41]));
+      expect(screen.read("a")).toBe(GIT);
+      await parse(term, frame(80, ["b", "c", "d", "e", "f", "g", "h", "$ git push", `${GIT} `, ""], [9, 0]));
+      expect(screen.read("a")).toBeNull();
+    } finally { term.dispose(); }
+  });
 
-test("an answered prompt stays answered when the pane's width changes and the line above it is drawn another way", async () => {
-  const term = await attached(80);
-  const screen = createSecretScreen(term, () => true);
-  const command = "alice@laptop:~/work/some-project (main)$ git push";
-  try {
-    await parse(term, frame(80, [command, "Password: ", "", ""], [1, 10]));
-    expect(screen.read("a")).toBe("Password:");
-    await parse(term, frame(80, [command, "Password: ", "", ""], [2, 0]));
-    expect(screen.read("a")).toBeNull();
-    term.resize(40, 10);
-    await parse(term, frame(40, [command.slice(0, 40), command.slice(40), "Password: ", "", ""], [3, 0]));
-    expect(screen.read("a")).toBeNull();
-  } finally { term.dispose(); }
-});
+  test("a prompt printed with its line break and read on the row below asks, whose cursor was never on it", async () => {
+    const term = await attached(80);
+    const screen = createSecretScreen(term, () => true);
+    try {
+      await parse(term, frame(80, ["$ ./setup.sh", "Password:", "", ""], [2, 0]));
+      expect(screen.read("a")).toBe("Password:");
+      await parse(term, frame(80, ["$ ./setup.sh", "Password:", "", ""], [2, 0]));
+      expect(screen.read("a")).toBe("Password:");
+    } finally { term.dispose(); }
+  });
 
-test("an answered prompt stays answered when the line above it scrolls off the screen", async () => {
-  const term = await attached(80, 2);
-  const screen = createSecretScreen(term, () => true);
-  try {
-    await parse(term, frame(80, ["$ sudo true", "Password: "], [1, 10]));
-    expect(screen.read("a")).toBe("Password:");
-    await parse(term, frame(80, ["Password: ", ""], [1, 0]));
-    expect(screen.read("a")).toBeNull();
-  } finally { term.dispose(); }
-});
+  test("what was seen of one pane's prompt says nothing of the next pane's", async () => {
+    const term = await attached(80);
+    const screen = createSecretScreen(term, () => true);
+    try {
+      await parse(term, frame(80, ["$ ./setup.sh", "Password: ", "", ""], [1, 10]));
+      expect(screen.read("a")).toBe("Password:");
+      term.reset();
+      await parse(term, SETUP);
+      await parse(term, frame(80, ["$ ./setup.sh", "Password:", "", ""], [2, 0]));
+      expect(screen.read("b")).toBe("Password:");
+    } finally { term.dispose(); }
+  });
 
-test("a prompt of the same words printed below an answered one is another asking", async () => {
-  const term = await attached(80);
-  const screen = createSecretScreen(term, () => true);
-  try {
-    await parse(term, frame(80, ["$ ./ask", "Password: ", "", "", ""], [1, 10]));
-    expect(screen.read("a")).toBe("Password:");
-    await parse(term, frame(80, ["$ ./ask", "Password: ", "Password:", "", ""], [3, 0]));
-    expect(screen.read("a")).toBe("Password:");
-    await parse(term, frame(80, ["$ ./ask", "Password: ", "Password:", "", ""], [3, 0]));
-    expect(screen.read("a")).toBe("Password:");
-  } finally { term.dispose(); }
-});
+  test("an answered prompt stays answered when its own pane's screen is drawn again", async () => {
+    const term = await attached(80);
+    const screen = createSecretScreen(term, () => true);
+    try {
+      await parse(term, SETUP + frame(80, ["$ git push", `${GIT} `, "", ""], [1, 41]));
+      expect(screen.read("a")).toBe(GIT);
+      await parse(term, frame(80, ["$ git push", `${GIT} `, "", ""], [2, 0]));
+      expect(screen.read("a")).toBeNull();
+      await parse(term, "\x1bc");
+      await parse(term, SETUP + frame(80, ["$ git push", `${GIT} `, "", ""], [2, 0]));
+      expect(screen.read("a")).toBeNull();
+      await parse(term, SETUP + frame(80, ["$ git push", `${GIT} `, "", ""], [2, 0]));
+      expect(screen.read("a")).toBeNull();
+    } finally { term.dispose(); }
+  });
 
-test("a third prompt of the same words, read below its line, is not the second one answered", async () => {
-  const term = await attached(80);
-  const screen = createSecretScreen(term, () => true);
-  try {
-    await parse(term, frame(80, ["$ ./ask", "Password: ", "", "", "", ""], [1, 10]));
-    expect(screen.read("a")).toBe("Password:");
-    await parse(term, frame(80, ["$ ./ask", "Password: ", "Password: ", "", "", ""], [2, 10]));
-    expect(screen.read("a")).toBe("Password:");
-    await parse(term, frame(80, ["$ ./ask", "Password: ", "Password: ", "", "", ""], [3, 0]));
-    expect(screen.read("a")).toBeNull();
-    await parse(term, frame(80, ["$ ./ask", "Password: ", "Password: ", "Password:", "", ""], [4, 0]));
-    expect(screen.read("a")).toBe("Password:");
-  } finally { term.dispose(); }
-});
+  test("an answered prompt stays answered when the pane's width changes and the line above it is drawn another way", async () => {
+    const term = await attached(80);
+    const screen = createSecretScreen(term, () => true);
+    const command = "alice@laptop:~/work/some-project (main)$ git push";
+    try {
+      await parse(term, frame(80, [command, "Password: ", "", ""], [1, 10]));
+      expect(screen.read("a")).toBe("Password:");
+      await parse(term, frame(80, [command, "Password: ", "", ""], [2, 0]));
+      expect(screen.read("a")).toBeNull();
+      term.resize(40, 10);
+      await parse(term, frame(40, [command.slice(0, 40), command.slice(40), "Password: ", "", ""], [3, 0]));
+      expect(screen.read("a")).toBeNull();
+    } finally { term.dispose(); }
+  });
 
-test("an answered prompt under others of its words stays answered when the first of them scrolls off", async () => {
-  const term = await attached(80, 3);
-  const screen = createSecretScreen(term, () => true);
-  try {
-    await parse(term, frame(80, ["Password: ", "Password: ", "Password: "], [2, 10]));
-    expect(screen.read("a")).toBe("Password:");
-    await parse(term, frame(80, ["Password: ", "Password: ", ""], [2, 0]));
-    expect(screen.read("a")).toBeNull();
-  } finally { term.dispose(); }
-});
+  test("an answered prompt stays answered when the line above it scrolls off the screen", async () => {
+    const term = await attached(80, 2);
+    const screen = createSecretScreen(term, () => true);
+    try {
+      await parse(term, frame(80, ["$ sudo true", "Password: "], [1, 10]));
+      expect(screen.read("a")).toBe("Password:");
+      await parse(term, frame(80, ["Password: ", ""], [1, 0]));
+      expect(screen.read("a")).toBeNull();
+    } finally { term.dispose(); }
+  });
 
-test("a prompt herdr draws over two rows, printed again below an answered one, is not told from it, as before", async () => {
-  const term = await attached(30);
-  const screen = createSecretScreen(term, () => true);
-  const [first, second] = [GIT.slice(0, 30), GIT.slice(30)];
-  try {
-    await parse(term, frame(30, ["$ git push", first, `${second} `, "", "", "", ""], [2, 11]));
-    expect(screen.read("a")).toBe(GIT);
-    await parse(term, frame(30, ["$ git push", first, `${second} `, "", "", "", ""], [3, 0]));
-    expect(screen.read("a")).toBeNull();
-    await parse(term, frame(30, ["$ git push", first, `${second} `, first, second, "", ""], [5, 0]));
-    expect(screen.read("a")).toBeNull();
-  } finally { term.dispose(); }
-});
+  test("a prompt of the same words printed below an answered one is another asking", async () => {
+    const term = await attached(80);
+    const screen = createSecretScreen(term, () => true);
+    try {
+      await parse(term, frame(80, ["$ ./ask", "Password: ", "", "", ""], [1, 10]));
+      expect(screen.read("a")).toBe("Password:");
+      await parse(term, frame(80, ["$ ./ask", "Password: ", "Password:", "", ""], [3, 0]));
+      expect(screen.read("a")).toBe("Password:");
+      await parse(term, frame(80, ["$ ./ask", "Password: ", "Password:", "", ""], [3, 0]));
+      expect(screen.read("a")).toBe("Password:");
+    } finally { term.dispose(); }
+  });
 
-test("an answered prompt stays answered while a line above it changes", async () => {
-  const term = await attached(80);
-  const screen = createSecretScreen(term, () => true);
-  try {
-    await parse(term, frame(80, ["[0] 0:bash*                                                  12:34", "$ git push", `${GIT} `, ""], [2, 41]));
-    expect(screen.read("a")).toBe(GIT);
-    await parse(term, frame(80, ["[0] 0:bash*                                                  12:34", "$ git push", `${GIT} `, ""], [3, 0]));
-    expect(screen.read("a")).toBeNull();
-    await parse(term, frame(80, ["[0] 0:bash*                                                  12:35", "$ git push", `${GIT} `, ""], [3, 0]));
-    expect(screen.read("a")).toBeNull();
-  } finally { term.dispose(); }
-});
+  test("a third prompt of the same words, read below its line, is not the second one answered", async () => {
+    const term = await attached(80);
+    const screen = createSecretScreen(term, () => true);
+    try {
+      await parse(term, frame(80, ["$ ./ask", "Password: ", "", "", "", ""], [1, 10]));
+      expect(screen.read("a")).toBe("Password:");
+      await parse(term, frame(80, ["$ ./ask", "Password: ", "Password: ", "", "", ""], [2, 10]));
+      expect(screen.read("a")).toBe("Password:");
+      await parse(term, frame(80, ["$ ./ask", "Password: ", "Password: ", "", "", ""], [3, 0]));
+      expect(screen.read("a")).toBeNull();
+      await parse(term, frame(80, ["$ ./ask", "Password: ", "Password: ", "Password:", "", ""], [4, 0]));
+      expect(screen.read("a")).toBe("Password:");
+    } finally { term.dispose(); }
+  });
 
-test("a prompt that went away and is printed again, read below its line, asks", async () => {
-  const term = await attached(80);
-  const screen = createSecretScreen(term, () => true);
-  try {
-    await parse(term, frame(80, ["$ ./ask", "Password: ", "", "", ""], [1, 10]));
-    expect(screen.read("a")).toBe("Password:");
-    await parse(term, frame(80, ["$ ./ask", "Password: ", "", "", ""], [2, 0]));
-    expect(screen.read("a")).toBeNull();
-    await parse(term, frame(80, ["$ ./ask", "Password: ", "Wrong.", "", ""], [3, 0]));
-    expect(screen.read("a")).toBeNull();
-    await parse(term, frame(80, ["$ ./ask", "Password: ", "Wrong.", "Password:", ""], [4, 0]));
-    expect(screen.read("a")).toBe("Password:");
-  } finally { term.dispose(); }
-});
+  test("an answered prompt under others of its words stays answered when the first of them scrolls off", async () => {
+    const term = await attached(80, 3);
+    const screen = createSecretScreen(term, () => true);
+    try {
+      await parse(term, frame(80, ["Password: ", "Password: ", "Password: "], [2, 10]));
+      expect(screen.read("a")).toBe("Password:");
+      await parse(term, frame(80, ["Password: ", "Password: ", ""], [2, 0]));
+      expect(screen.read("a")).toBeNull();
+    } finally { term.dispose(); }
+  });
 
-test("a row is read as wide as the pane is now, not as it was drawn when the pane was wider", async () => {
-  // herdr draws on the alternate screen, where xterm keeps a row's cells past a narrower edge, and its redraw for
-  // a new grid clears nothing
-  const listing = ["-rw-r--r-- 1 alice alice  48213 Nov 11 10:02 quarterly-report-final.pdf", "-rw-r--r-- 1 alice alice   1178 Nov 11 10:02 notes-from-the-planning-call.txt"];
-  const term = await attached(80, 8);
-  const screen = createSecretScreen(term, () => true);
-  const sudo = "[sudo] password for alice:";
-  try {
-    await parse(term, frame(80, ["$ ls -l", "total 56", ...listing, "$ cd work", "$ git status -s", "$ "], [6, 2]));
-    expect(screen.read("a")).toBeNull();
-    term.resize(40, 8);
-    const narrow = [listing[0]!.slice(0, 40), listing[0]!.slice(40), listing[1]!.slice(0, 40), listing[1]!.slice(40)];
-    await parse(term, frame(40, [...narrow, "$ cd work", "$ git status -s", "$ sudo true", `${sudo} `], [7, 27]));
-    expect(screen.read("a")).toBe(sudo);
-    await parse(term, frame(40, [...narrow.slice(1), "$ cd work", "$ git status -s", "$ sudo true", `${sudo} `, ""], [7, 0]));
-    expect(screen.read("a")).toBeNull();
-  } finally { term.dispose(); }
-  const git = await attached(80, 6);
-  const gitScreen = createSecretScreen(git, () => true);
-  try {
-    await parse(git, frame(80, ["$ git push", `${GIT} `], [1, 41]));
-    expect(gitScreen.read("a")).toBe(GIT);
-    git.resize(30, 6);
-    await parse(git, frame(30, ["$ git push", GIT.slice(0, 30), `${GIT.slice(30)} `], [2, 11]));
-    expect(gitScreen.read("a")).toBe(GIT);
-  } finally { git.dispose(); }
-});
+  test("a prompt herdr draws over two rows, printed again below an answered one, is not told from it, as before", async () => {
+    const term = await attached(30);
+    const screen = createSecretScreen(term, () => true);
+    const [first, second] = [GIT.slice(0, 30), GIT.slice(30)];
+    try {
+      await parse(term, frame(30, ["$ git push", first, `${second} `, "", "", "", ""], [2, 11]));
+      expect(screen.read("a")).toBe(GIT);
+      await parse(term, frame(30, ["$ git push", first, `${second} `, "", "", "", ""], [3, 0]));
+      expect(screen.read("a")).toBeNull();
+      await parse(term, frame(30, ["$ git push", first, `${second} `, first, second, "", ""], [5, 0]));
+      expect(screen.read("a")).toBeNull();
+    } finally { term.dispose(); }
+  });
 
-test("on a stream of the program's own bytes, a long line cut by the screen's top does not undo an answer", async () => {
-  const term = new Terminal({ cols: 40, rows: 8, scrollback: 2000, allowProposedApi: true });
-  matchHerdrWidths(term);
-  const screen = createSecretScreen(term, () => true);
-  const sudo = "[sudo] password for alice:";
-  try {
-    await parse(term, `$ cat notes\r\nremote: ${"x".repeat(267)}\r\n$ sudo -k true\r\n${sudo} `);
-    expect(screen.read("a")).toBe(sudo);
-    await parse(term, "\r\n");
-    expect(screen.read("a")).toBeNull();
-  } finally { term.dispose(); }
-});
+  test("an answered prompt stays answered while a line above it changes", async () => {
+    const term = await attached(80);
+    const screen = createSecretScreen(term, () => true);
+    try {
+      await parse(term, frame(80, ["[0] 0:bash*                                                  12:34", "$ git push", `${GIT} `, ""], [2, 41]));
+      expect(screen.read("a")).toBe(GIT);
+      await parse(term, frame(80, ["[0] 0:bash*                                                  12:34", "$ git push", `${GIT} `, ""], [3, 0]));
+      expect(screen.read("a")).toBeNull();
+      await parse(term, frame(80, ["[0] 0:bash*                                                  12:35", "$ git push", `${GIT} `, ""], [3, 0]));
+      expect(screen.read("a")).toBeNull();
+    } finally { term.dispose(); }
+  });
 
-test("on a stream of the program's own bytes, a prompt xterm wrapped is answered by a line feed alone", async () => {
-  // a herdr-core pane: xterm wraps the 40-column prompt at 30 columns itself and joins its rows
-  const term = terminal(30);
-  const screen = createSecretScreen(term, () => true);
-  try {
-    await parse(term, `$ git push\r\n${GIT} `);
-    expect(screen.read("a")).toBe(GIT);
-    await parse(term, "\n");
-    expect(screen.read("a")).toBeNull();
-  } finally { term.dispose(); }
-  const edge = terminal(40);
-  const edgeScreen = createSecretScreen(edge, () => true);
-  try {
-    await parse(edge, `$ git push\r\n${GIT} `);
-    expect(edgeScreen.read("a")).toBe(GIT);
-    await parse(edge, "\r\n");
-    expect(edgeScreen.read("a")).toBeNull();
-  } finally { edge.dispose(); }
-});
+  test("a prompt that went away and is printed again, read below its line, asks", async () => {
+    const term = await attached(80);
+    const screen = createSecretScreen(term, () => true);
+    try {
+      await parse(term, frame(80, ["$ ./ask", "Password: ", "", "", ""], [1, 10]));
+      expect(screen.read("a")).toBe("Password:");
+      await parse(term, frame(80, ["$ ./ask", "Password: ", "", "", ""], [2, 0]));
+      expect(screen.read("a")).toBeNull();
+      await parse(term, frame(80, ["$ ./ask", "Password: ", "Wrong.", "", ""], [3, 0]));
+      expect(screen.read("a")).toBeNull();
+      await parse(term, frame(80, ["$ ./ask", "Password: ", "Wrong.", "Password:", ""], [4, 0]));
+      expect(screen.read("a")).toBe("Password:");
+    } finally { term.dispose(); }
+  });
 
-test("a pane whose cursor is not known keeps its prompt while it is the last text", async () => {
-  const term = await attached(80);
-  const screen = createSecretScreen(term, () => false);
-  try {
-    await parse(term, frame(80, ["$ git push", `${GIT} `, "", ""], [1, 41]));
-    expect(screen.read("a")).toBe(GIT);
-    await parse(term, frame(80, ["$ git push", `${GIT} `, "", ""], [2, 0]));
-    expect(screen.read("a")).toBe(GIT);
-  } finally { term.dispose(); }
+  test("a row is read as wide as the pane is now, not as it was drawn when the pane was wider", async () => {
+    // herdr draws on the alternate screen, where xterm keeps a row's cells past a narrower edge, and its redraw for
+    // a new grid clears nothing
+    const listing = ["-rw-r--r-- 1 alice alice  48213 Nov 11 10:02 quarterly-report-final.pdf", "-rw-r--r-- 1 alice alice   1178 Nov 11 10:02 notes-from-the-planning-call.txt"];
+    const term = await attached(80, 8);
+    const screen = createSecretScreen(term, () => true);
+    const sudo = "[sudo] password for alice:";
+    try {
+      await parse(term, frame(80, ["$ ls -l", "total 56", ...listing, "$ cd work", "$ git status -s", "$ "], [6, 2]));
+      expect(screen.read("a")).toBeNull();
+      term.resize(40, 8);
+      const narrow = [listing[0]!.slice(0, 40), listing[0]!.slice(40), listing[1]!.slice(0, 40), listing[1]!.slice(40)];
+      await parse(term, frame(40, [...narrow, "$ cd work", "$ git status -s", "$ sudo true", `${sudo} `], [7, 27]));
+      expect(screen.read("a")).toBe(sudo);
+      await parse(term, frame(40, [...narrow.slice(1), "$ cd work", "$ git status -s", "$ sudo true", `${sudo} `, ""], [7, 0]));
+      expect(screen.read("a")).toBeNull();
+    } finally { term.dispose(); }
+    const git = await attached(80, 6);
+    const gitScreen = createSecretScreen(git, () => true);
+    try {
+      await parse(git, frame(80, ["$ git push", `${GIT} `], [1, 41]));
+      expect(gitScreen.read("a")).toBe(GIT);
+      git.resize(30, 6);
+      await parse(git, frame(30, ["$ git push", GIT.slice(0, 30), `${GIT.slice(30)} `], [2, 11]));
+      expect(gitScreen.read("a")).toBe(GIT);
+    } finally { git.dispose(); }
+  });
+
+  test("on a stream of the program's own bytes, a long line cut by the screen's top does not undo an answer", async () => {
+    const term = await terminal(40, 8, 2000);
+    const screen = createSecretScreen(term, () => true);
+    const sudo = "[sudo] password for alice:";
+    try {
+      await parse(term, `$ cat notes\r\nremote: ${"x".repeat(267)}\r\n$ sudo -k true\r\n${sudo} `);
+      expect(screen.read("a")).toBe(sudo);
+      await parse(term, "\r\n");
+      expect(screen.read("a")).toBeNull();
+    } finally { term.dispose(); }
+  });
+
+  test("on a stream of the program's own bytes, a wrapped prompt is answered by a line feed alone", async () => {
+    // a herdr-core pane: xterm wraps the 40-column prompt at 30 columns itself and joins its rows
+    const term = await terminal(30);
+    const screen = createSecretScreen(term, () => true);
+    try {
+      await parse(term, `$ git push\r\n${GIT} `);
+      expect(screen.read("a")).toBe(GIT);
+      await parse(term, "\n");
+      expect(screen.read("a")).toBeNull();
+    } finally { term.dispose(); }
+    const edge = await terminal(40);
+    const edgeScreen = createSecretScreen(edge, () => true);
+    try {
+      await parse(edge, `$ git push\r\n${GIT} `);
+      expect(edgeScreen.read("a")).toBe(GIT);
+      await parse(edge, "\r\n");
+      expect(edgeScreen.read("a")).toBeNull();
+    } finally { edge.dispose(); }
+  });
+
+  test("on a stream of the program's own bytes, a prompt whose wrapped row is erased is answered", async () => {
+    // the trailing space of `Password: ` wraps onto a row of its own; erasing that row from its first column ends the wrap
+    const term = await terminal(9);
+    const screen = createSecretScreen(term, () => true);
+    try {
+      await parse(term, "Password: ");
+      expect(screen.read("a")).toBe("Password:");
+      await parse(term, "\r\x1b[K");
+      expect(screen.read("a")).toBeNull();
+    } finally { term.dispose(); }
+  });
+
+  test("on a stream of the program's own bytes, a prompt printed over an erased wrapped row asks", async () => {
+    // a line editor redraws its line: the row the long line wrapped onto is erased whole and the prompt printed there
+    const term = await terminal(20);
+    const screen = createSecretScreen(term, () => true);
+    try {
+      await parse(term, `${"x".repeat(20)}more\r\x1b[2KPassword: `);
+      expect(screen.read("a")).toBe("Password:");
+    } finally { term.dispose(); }
+  });
+
+  test("a program's switch to 132 columns leaves the pane at its original width", async () => {
+    const term = await terminal(40);
+    const screen = createSecretScreen(term, () => true);
+    try {
+      const long = "Password for 'https://alice@git.example.com':";
+      await parse(term, `\x1b[?40h\x1b[?3h$ git push\r\n${long} `);
+      expect(screen.read("a")).toBe(long);
+    } finally { term.dispose(); }
+  });
+
+  test("a pane whose cursor is not known keeps its prompt while it is the last text", async () => {
+    const term = await attached(80);
+    const screen = createSecretScreen(term, () => false);
+    try {
+      await parse(term, frame(80, ["$ git push", `${GIT} `, "", ""], [1, 41]));
+      expect(screen.read("a")).toBe(GIT);
+      await parse(term, frame(80, ["$ git push", `${GIT} `, "", ""], [2, 0]));
+      expect(screen.read("a")).toBe(GIT);
+    } finally { term.dispose(); }
+  });
 });

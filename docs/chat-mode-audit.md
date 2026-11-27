@@ -161,7 +161,7 @@ MIT bridge; no AGPL implementation or dependency was copied.
   Target changes/unmount abort them; identity checks also reject late success or
   failure when a transport ignores abort. Repeated clicks share the active fetch.
 
-Verification: `server/chat-history.test.ts` covers native shapes, hidden paging,
+Verification: `server/conversation-history.test.ts` covers native shapes, hidden paging,
 clear while appending, cached/held cursors, chunk boundaries, metadata and output
 reads. `bun scripts/chat-history-browser-qa.ts` bundles the real React components
 and controls response timing in Chrome; it covers stale pages, reused tool IDs,

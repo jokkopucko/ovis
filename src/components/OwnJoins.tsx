@@ -8,32 +8,55 @@ import type { OwnJoinRequest } from "../../shared/machines.ts";
 import { ApiError, approveOwnJoin, fetchOwnJoins } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { lastSeen } from "../lib/lastSeen.ts";
+import type { MachineSessionRegistry } from "../lib/machineSession.ts";
 import { ADDED_POLL_MS } from "./AccountSection.tsx";
 
 /**
  * The account joins waiting for this PC's own window (server/relay/routes.ts, /api/relay/joins), read every
- * ADDED_POLL_MS while `enabled` and the page shows, and at once whenever `again` changes. A 403, 404 or 405 is final:
- * a window that is not the PC's own, or a PC without the route, is not asked again.
+ * ADDED_POLL_MS while `enabled` and visible. Also read when the page becomes visible, the local
+ * socket opens, or `again` changes. A current 404, 405 or 403 other than `locked` stops further reads.
  */
-export function useOwnJoins(enabled: boolean, again = 0): readonly OwnJoinRequest[] {
+export function useOwnJoins(enabled: boolean, again = 0, machineSessions?: MachineSessionRegistry): readonly OwnJoinRequest[] {
   const [joins, setJoins] = useState<readonly OwnJoinRequest[]>([]);
   useEffect(() => {
     if (!enabled) { setJoins([]); return; }
     let live = true;
     let refused = false;
+    let issued = 0;
+    let applied = 0;
     const read = (): void => {
       if (refused || document.hidden) return;
-      fetchOwnJoins().then((next) => { if (live) setJoins(next); }, (error: unknown) => {
-        if (error instanceof ApiError && (error.status === 403 || error.status === 404 || error.status === 405)) refused = true;
-        else console.warn("Ovis: the account joins could not be read", error instanceof Error ? error.name : error);
+      const seq = ++issued;
+      fetchOwnJoins().then((next) => {
+        if (!live || refused || seq < applied) return;
+        applied = seq;
+        setJoins(next);
+      }, (error: unknown) => {
+        // An older refusal must not shut out a newer read that is still in flight.
+        if (!live || seq !== issued) return;
+        if (error instanceof ApiError) {
+          if (error.status === 403 && error.code === "locked") return;
+          if (error.status === 403 || error.status === 404 || error.status === 405) { refused = true; return; }
+        }
+        console.warn("Ovis: the account joins could not be read", error instanceof Error ? error.name : error);
       });
     };
     read();
     const timer = setInterval(read, ADDED_POLL_MS);
-    return () => { live = false; clearInterval(timer); };
-  }, [enabled, again]);
+    const offOpen = machineSessions?.get("local").socket.onBeforeReplay(read);
+    document.addEventListener("visibilitychange", read);
+    return () => {
+      live = false;
+      clearInterval(timer);
+      offOpen?.();
+      document.removeEventListener("visibilitychange", read);
+    };
+  }, [enabled, again, machineSessions]);
   return joins;
 }
+
+/** A join this PC cannot let in (`list_unknown`, server/relay/session.ts): nothing approves it here, and this is said instead. */
+const listUnknown = (join: OwnJoinRequest): boolean => join.list_unknown === true;
 
 /**
  * The account join waiting for this PC's own window that a member could also approve (it comes without its digits),
@@ -41,6 +64,7 @@ export function useOwnJoins(enabled: boolean, again = 0): readonly OwnJoinReques
  * in the PC's own window while the PC is not locked. Its person types the six digits the new device shows, and one
  * wrong entry ends that join. The field never takes the focus by itself: keys meant for a terminal must not land in it.
  * Not now hides the card in this window only; the join still lapses at its own deadline. `onDecided`: read them again.
+ * A join this PC cannot let in (listUnknown), a first join too, pops with no field: the card says to update that app.
  */
 export function OwnJoinCard({ joins, onDecided }: { readonly joins: readonly OwnJoinRequest[]; readonly onDecided: () => void }) {
   const t = useT();
@@ -50,7 +74,7 @@ export function OwnJoinCard({ joins, onDecided }: { readonly joins: readonly Own
   const [problem, setProblem] = useState<string | null>(null);
   /** what became of a join this card ended (a wrong number, or one no longer waiting), told until closed */
   const [ended, setEnded] = useState<string | null>(null);
-  const join = joins.find((each) => each.digits === undefined && !hidden.has(each.id));
+  const join = joins.find((each) => (each.digits === undefined || listUnknown(each)) && !hidden.has(each.id));
   if (join === undefined && ended === null) return null;
   const approve = (asked: OwnJoinRequest) => (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
@@ -63,6 +87,7 @@ export function OwnJoinCard({ joins, onDecided }: { readonly joins: readonly Own
       const code = error instanceof ApiError ? error.code : null;
       if (code === "wrong_digits") { setEnded(t("That is not the number {name} shows. It was not let in; it can ask again.", { name: asked.label })); return; }
       if (code === "relay_pairing_gone") { setEnded(t("{name} is no longer waiting.", { name: asked.label })); return; }
+      if (code === "list_unknown") { setEnded(t("{name} cannot be let in here: this PC lets devices into your account by its signed list, and {name} asked as an Ovis older than 0.5.10 does. Update Ovis on {name}, then have it ask to join again.", { name: asked.label })); return; }
       setProblem(t("Could not reach this PC. Try again."));
     }).finally(() => { setBusy(false); onDecided(); });
   };
@@ -71,7 +96,14 @@ export function OwnJoinCard({ joins, onDecided }: { readonly joins: readonly Own
       <Smartphone aria-hidden="true" />
       <span className="device-notice-text">
         {ended !== null && <span className="account-error" role="alert">{ended}</span>}
-        {join !== undefined && (
+        {join !== undefined && listUnknown(join) && (
+          <>
+            <span>{t("\"{name}\" asks to join your account", { name: join.label })}</span>
+            <span>{t("{name} cannot be let in here: this PC lets devices into your account by its signed list, and {name} asked as an Ovis older than 0.5.10 does. Update Ovis on {name}, then have it ask to join again.", { name: join.label })}</span>
+            <button type="button" className="btn" onClick={() => setHidden((current) => new Set(current).add(join.id))}>{t("Not now")}</button>
+          </>
+        )}
+        {join !== undefined && !listUnknown(join) && (
           <>
             <span>{t("\"{name}\" asks to join your account", { name: join.label })}</span>
             <form key={join.id} className="relay-shell-code-form" onSubmit={approve(join)}>
@@ -93,6 +125,7 @@ export function OwnJoinCard({ joins, onDecided }: { readonly joins: readonly Own
  * Account joins no pairing window invited, listed in this PC's own window only (server/relay/routes.ts, /api/relay/joins):
  * nothing pops up, and the owner lets one in by typing the digits its screen shows. A wrong number ends that join. A
  * first join, which comes with its digits, is asked on the window's prompt instead (RelayPairingPrompt, firstJoinPrompts).
+ * A join this PC cannot let in (listUnknown), a first join too, is listed with why and no way to approve it.
  */
 export function OwnJoins() {
   const t = useT();
@@ -100,7 +133,7 @@ export function OwnJoins() {
   const [problem, setProblem] = useState<string | null>(null);
   const [checks, setChecks] = useState(0);
   const id = useId();
-  const joins = useOwnJoins(true, checks).filter((join) => join.digits === undefined);
+  const joins = useOwnJoins(true, checks).filter((join) => join.digits === undefined || listUnknown(join));
 
   const approve = (join: OwnJoinRequest) => (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
@@ -116,6 +149,7 @@ export function OwnJoins() {
       // only an answer that says so ends the join on this screen: a failure on the way leaves it waiting, and the field open
       if (code === "wrong_digits") { setProblem(t("That is not the number {name} shows. It was not let in; it can ask again.", { name: join.label })); closeMine(); return; }
       if (code === "relay_pairing_gone") { setProblem(t("{name} is no longer waiting.", { name: join.label })); closeMine(); return; }
+      if (code === "list_unknown") { setProblem(t("{name} cannot be let in here: this PC lets devices into your account by its signed list, and {name} asked as an Ovis older than 0.5.10 does. Update Ovis on {name}, then have it ask to join again.", { name: join.label })); closeMine(); return; }
       setProblem(t("Could not reach this PC. Try again."));
     }).finally(() => setChecks((count) => count + 1));
   };
@@ -128,7 +162,9 @@ export function OwnJoins() {
           <span className="settings-label">{t("A device of your account asks to join")}
             <span className="settings-description"> · {join.label} · {lastSeen(join.asked_at, Date.now())}</span>
           </span>
-          {open === join.id ? (
+          {listUnknown(join) ? (
+            <span className="settings-description">{t("{name} cannot be let in here: this PC lets devices into your account by its signed list, and {name} asked as an Ovis older than 0.5.10 does. Update Ovis on {name}, then have it ask to join again.", { name: join.label })}</span>
+          ) : open === join.id ? (
             <form className="relay-shell-code-form" onSubmit={approve(join)}>
               <label className="field-label" htmlFor={`${id}-${join.id}`}>{t("Number on {name}", { name: join.label })}</label>
               <input id={`${id}-${join.id}`} name="digits" className="input relay-shell-code-input" inputMode="numeric" pattern="[0-9 ]{6,7}" maxLength={7} autoComplete="one-time-code" required autoFocus />

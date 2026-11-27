@@ -1,8 +1,8 @@
 import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname, join, relative, resolve, sep, win32 } from "node:path";
+import { basename, dirname, join, relative, sep, win32 } from "node:path";
 import type { CommandForm, SlashCommand } from "../../shared/protocol.ts";
 import type { AgentCommandSource } from "./index.ts";
-import { ancestorsToRepoRoot, environRecord, environValue, MAX_WALK_FOLDERS, piTemplates, plainObject, readFrontmatter, readSkillText } from "./walk.ts";
+import { ancestorsToRepoRoot, canonicalFile as canonical, environRecord, environValue, MAX_WALK_FOLDERS, piTemplates, plainObject, readFrontmatter, readSkillText } from "./walk.ts";
 
 /**
  * Pinned to codex-rs at 83086188ae0614bd882818ff1aa23f3194962012 (rust-v0.163.0 for the slash table):
@@ -19,11 +19,6 @@ const MAX_SCAN_DEPTH = 6;
 const PROMPTS_REMOVED_IN = [0, 118, 0] as const;
 // utils/plugins/src/plugin_namespace.rs: the manifest locations a plugin root may carry
 const MANIFESTS = ["plugin.json", ".codex-plugin/plugin.json", ".claude-plugin/plugin.json", ".cursor-plugin/plugin.json"];
-
-function canonical(path: string): string {
-  try { return realpathSync(path); }
-  catch { return resolve(path); }
-}
 
 /** Custom prompts are offered only by a Codex known to be older than 0.118.0. */
 function offersPrompts(version: string | null | undefined): boolean {
@@ -102,6 +97,7 @@ const TERMINAL: CommandForm[] = [{ match: "bare", interaction: "terminal" }];
 const NONE: CommandForm[] = [{ match: "bare", interaction: "none" }];
 
 export const source: AgentCommandSource = {
+  chatPaletteHidden: ["plan"],
   // codex-rs/tui/src/slash_command.rs at rust-v0.163.0, in its presentation order. Not listed: `app` (macOS and
   // Windows builds only) and `rollout` and `test-approval` (debug builds). `fast` is a model service-tier command
   // there, not a built-in. What the popup hides is listed again in `agentHidden`.

@@ -1,0 +1,16 @@
+                                              
+ Run the form fixture.                        
+                                              
+╭─ Ask ──────────────────────────────────────╮
+│   ○ United States, where the fictional   │ │
+│     billing runs                         │ │
+│   ○ Asia Pacific, nearest the fictional  █ │
+│     support desk                         █ │
+│ ❯ ○ South America & the fictional archive│ │
+│     "cold" tier                          │ │
+╰────────────────────────────────────────────╯
+
+
+  ⎋ Working…                                  
+ ❓ 1s > ⬢ Form fixture > 📁 …/cwd ▶─6%─┃131K─
+╰─                                            

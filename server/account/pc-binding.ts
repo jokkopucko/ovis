@@ -23,7 +23,7 @@ import { DEVICE_JOURNAL_FILE } from "./safety-log.ts";
  */
 export function listPinOnDisk(stateDir: string): boolean {
   try {
-    const doc = parseDoc(JSON.parse(readFileSync(join(realFolder(stateDir), ADMISSION_FILE), "utf8")));
+    const doc = parsePcAccount(JSON.parse(readFileSync(join(realFolder(stateDir), ADMISSION_FILE), "utf8")));
     if (typeof doc === "string") return false;
     const { binding } = doc;
     return binding !== null && binding.pending !== true && binding.list !== undefined && !doc.clears.some((clear) => clear.bind_id === binding.bind_id);
@@ -38,7 +38,7 @@ export function listPinOnDisk(stateDir: string): boolean {
 export function listRemovalOnDisk(stateDir: string, serverId: string | undefined): boolean {
   if (serverId === undefined) return false;
   try {
-    const doc = parseDoc(JSON.parse(readFileSync(join(realFolder(stateDir), ADMISSION_FILE), "utf8")));
+    const doc = parsePcAccount(JSON.parse(readFileSync(join(realFolder(stateDir), ADMISSION_FILE), "utf8")));
     return typeof doc !== "string" && doc.clears.some((clear) => clear.removed_as?.server_id === serverId);
   } catch { return false; }
 }
@@ -123,7 +123,7 @@ const ID = /^[0-9a-f]{32}$/;
 const ACCOUNT = /^[A-Za-z0-9_-]{1,64}$/;
 const LIST = /^[0-9a-f]{64}$/;
 
-function parseDoc(value: unknown): (PcDoc & { counterOnly?: true }) | string {
+export function parsePcAccount(value: unknown): (PcDoc & { counterOnly?: true }) | string {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return "it is not this PC's account state";
   const doc = value as Partial<PcDoc>;
   if (doc.v !== 1 && doc.v !== 2) return "unknown version";
@@ -155,6 +155,54 @@ function parseDoc(value: unknown): (PcDoc & { counterOnly?: true }) | string {
   return doc as PcDoc;
 }
 
+export function memberBindingProblem(path: string, bound: string | null, accounts: readonly string[]): string | null {
+  const other = accounts.find(account => account !== bound);
+  return other === undefined ? null : `this PC's devices name ${other}, and ${path} binds it to ${bound ?? "no account"}`;
+}
+
+export function rowNumberProblem(path: string, next: number | null, rows: readonly { readonly origin?: RowOrigin | undefined }[]): string | null {
+  const highest = Math.max(0, ...rows.flatMap(row => !row.origin || row.origin.from === "legacy" ? [] : [row.origin.admit_no]));
+  return highest === 0 ? null : next === null ? `${path} is missing beside rows this PC numbered`
+    : highest >= next ? `${path} is behind the number ${highest} a row here carries` : null;
+}
+
+/** Project the binding merge without writing either folder. Pending links are not standing during a merge. */
+export function mergePcBinding(ownDoc: PcDoc | null, sibling: PcDoc) {
+  const clears = mergeClears(ownDoc?.clears ?? [], sibling.clears);
+  const kept = (binding: AccountBinding | null) => binding !== null && !clears.some(clear => clear.bind_id === binding.bind_id) ? binding : null;
+  const own = kept(ownDoc?.binding ?? null);
+  const other = kept(sibling.binding);
+  const standing = own?.pending ? null : own;
+  const inherited = other?.pending ? null : other;
+  return { clears, inherited, binding: standing ?? inherited, ownBinding: own, siblingBinding: other,
+    conflict: standing !== null && inherited !== null && standing.account !== inherited.account };
+}
+
+type Member = { readonly account?: string | undefined; readonly relay_public_key?: string | undefined };
+
+function settleLink(binding: AccountBinding | null, firstKey: string | null, rows: readonly Member[]): AccountBinding | null {
+  if (binding?.pending !== true) return binding;
+  if (!rows.some(row => row.account === binding.account && row.relay_public_key === firstKey)) return null;
+  const { pending: _, ...standing } = binding;
+  return standing;
+}
+
+/** The same projection and pending-link decision startup uses, before a recovery writer touches the rows. */
+export function restampMemberProblem(path: string, pc: (PcDoc & { counterOnly?: true }) | null, sibling: PcDoc | null, rows: readonly Member[]): string | null {
+  const merge = sibling === null ? null : mergePcBinding(pc, sibling);
+  if (merge?.conflict) return "The two folders bind this PC to two accounts";
+  if (merge?.inherited?.list !== undefined && (merge.ownBinding?.pending || merge.ownBinding?.list !== merge.inherited.list || merge.ownBinding.bind_id !== merge.inherited.bind_id)) {
+    return "The folders do not hold the same signed-list binding";
+  }
+  if (merge?.ownBinding && merge.siblingBinding && merge.ownBinding.account !== merge.siblingBinding.account) {
+    return "A pending binding names a different account from the other folder's binding";
+  }
+  const binding = merge === null ? settleLink(pc?.binding ?? null, pc?.first?.key ?? null, rows) : merge.binding;
+  const accounts = rows.flatMap(row => row.account === undefined ? [] : [row.account]);
+  const migrating = pc === null || pc.counterOnly === true;
+  return memberBindingProblem(path, (migrating ? merge?.inherited?.account ?? accounts[0] : binding?.account) ?? null, accounts);
+}
+
 /** A lock file nobody removed for this long was left by a server that ended while it wrote. */
 const LOCK_STALE_MS = 10_000;
 /** How long one write waits for another server's write of the same file. */
@@ -167,7 +215,7 @@ const wallNow = (): number => performance.timeOrigin + performance.now();
  * what `work` reads of the file it then writes is what is there. A lock another server holds is waited for, briefly;
  * a write that cannot have it fails, with nothing written.
  */
-function withFileLock<T>(path: string, work: () => T): T {
+export function withFileLock<T>(path: string, work: () => T): T {
   const lock = `${path}.lock`;
   const deadline = performance.now() + LOCK_WAIT_MS;
   let held = false;
@@ -201,8 +249,8 @@ function docOnDisk(path: string): PcDoc | null {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw new Error(`${path} cannot be read (${(error as NodeJS.ErrnoException).code ?? "unknown error"})`);
   }
-  let parsed: ReturnType<typeof parseDoc>;
-  try { parsed = parseDoc(JSON.parse(text)); } catch { throw new Error(`${path} is not JSON`); }
+  let parsed: ReturnType<typeof parsePcAccount>;
+  try { parsed = parsePcAccount(JSON.parse(text)); } catch { throw new Error(`${path} is not JSON`); }
   if (typeof parsed === "string") throw new Error(`${path} cannot be trusted: ${parsed}`);
   const { counterOnly: _counterOnly, ...doc } = parsed;
   return doc;
@@ -273,6 +321,12 @@ function reconciled(base: PcDoc, next: PcDoc, disk: PcDoc | null, path: string):
   if (JSON.stringify(next.service_step2) === JSON.stringify(base.service_step2) && disk.service_step2 !== undefined) doc.service_step2 = disk.service_step2;
   return doc;
 }
+
+/** The binding the file holds after a PC bound itself by its list (PcAccountState.bindByList). `won`: it is the one this write made. */
+export interface ListBound { readonly id: string; readonly account: string; readonly list: string | null; readonly won: boolean }
+
+/** A bind of a PC that the account's list removed under this relay identity, found in the file under its lock: nothing is written. */
+export class RemovedOnDiskError extends Error {}
 
 /** A write that would end, on the account service's word, a binding the file on disk holds pinned: refused, whoever holds an older document. */
 export class PinnedOnDiskError extends Error {}
@@ -346,7 +400,7 @@ export class PcAccountState {
     }
     let value: unknown;
     try { value = JSON.parse(text); } catch { state.problem = `${state.path} is not JSON`; return state; }
-    const parsed = parseDoc(value);
+    const parsed = parsePcAccount(value);
     if (typeof parsed === "string") state.problem = `${state.path} cannot be trusted: ${parsed}`;
     else {
       const { counterOnly, ...doc } = parsed;
@@ -361,28 +415,25 @@ export class PcAccountState {
    * a row it numbered, or one at or behind such a number, is damage. Run before the merge.
    */
   checkRows(rows: readonly { readonly origin?: RowOrigin | undefined }[]): void {
-    const numbers = rows.flatMap((row) => row.origin === undefined || row.origin.from === "legacy" ? [] : [row.origin.admit_no]);
-    if (numbers.length === 0) return;
-    if (this.fresh) this.missingBeside();
-    else this.checkAbove(numbers);
+    if (this.problem !== null) return;
+    this.problem = rowNumberProblem(this.path, this.fresh ? null : this.doc.next_admit, rows);
+    if (this.problem !== null) this.fresh = false;
   }
 
   /**
    * A first link's binding left pending by a stop (T13): it stands when its row reached the disk, and bound nothing
    * when it did not.
    */
-  settlePending(rowOnDisk: (binding: AccountBinding, firstKey: string | null) => boolean): void {
+  settlePending(rows: readonly Member[]): void {
     const binding = this.doc.binding;
     if (binding?.pending !== true || this.problem !== null) return;
-    const { pending: _left, ...standing } = binding;
-    this.write(rowOnDisk(standing, this.doc.first?.key ?? null) ? { ...this.doc, binding: standing } : { ...this.doc, binding: null, first: null });
+    const standing = settleLink(binding, this.doc.first?.key ?? null, rows);
+    this.write(standing ? { ...this.doc, binding: standing } : { ...this.doc, binding: null, first: null });
   }
 
   /** Member rows of an account this PC is not in: the binding and the rows disagree, which is damage (P12, S19). */
   checkMembers(accounts: readonly string[]): void {
-    const bound = this.doc.binding?.account ?? null;
-    const other = accounts.find((account) => account !== bound);
-    if (this.problem === null && other !== undefined) this.problem = `this PC's devices name ${other}, and ${this.path} binds it to ${bound ?? "no account"}`;
+    this.problem ??= memberBindingProblem(this.path, this.doc.binding?.account ?? null, accounts);
   }
 
   /** A row numbered at or past the next number: the file is behind its rows, which is damage (P21). */
@@ -412,6 +463,14 @@ export class PcAccountState {
 
   get migrating(): boolean { return (this.fresh || this.upgrading) && this.problem === null; }
 
+  /** Give a recovery audit its required companion without migrating any member rows during rollback. */
+  ensureRestampAudit(): void {
+    if (!this.fresh || this.problem !== null) return;
+    writePrivateState(this.path, { v: 1, next_admit: this.doc.next_admit });
+    this.fresh = false;
+    this.upgradingFrom = true;
+  }
+
   /** S2-03's counter file, read: the rows are numbered already, and only the binding is migrated (T50). */
   get upgrading(): boolean { return this.upgradingFrom && this.problem === null; }
   private upgradingFrom = false;
@@ -431,8 +490,8 @@ export class PcAccountState {
   takeSibling(siblingDir: string): void {
     if (this.problem !== null) return;
     const path = join(realFolder(siblingDir), ADMISSION_FILE);
-    let parsed: ReturnType<typeof parseDoc>;
-    try { parsed = parseDoc(JSON.parse(readFileSync(path, "utf8"))); } catch (error) {
+    let parsed: ReturnType<typeof parsePcAccount>;
+    try { parsed = parsePcAccount(JSON.parse(readFileSync(path, "utf8"))); } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
       this.problem = `${path} cannot be read (${error instanceof Error ? error.message : String(error)})`;
       return;
@@ -591,6 +650,27 @@ export class PcAccountState {
     this.write({ ...this.doc, binding: { account, bind_id: randomBytes(16).toString("hex"), service: true, listing_id: listingId }, first: null, others_ever: this.doc.others_ever || this.doc.clears.length > 0 });
   }
 
+  /**
+   * Binds a PC in no account to `account` by the account's signed list `list`: the PC has read that list itself and
+   * found the entry that adds its own key, on a list a person at this PC confirmed. The binding is pinned to the list
+   * from its first moment, so nothing the account service says ever let a device in under it. No row is written with it
+   * and no device is its first (T67). Answers the binding the file holds once the write is done: another Ovis on this
+   * folder that bound the PC meanwhile keeps its binding (reconciled), and `won` is false then.
+   */
+  bindByList(account: string, list: string, serverId: string): ListBound {
+    if (this.doc.binding !== null) throw new Error("This PC is already in an account");
+    if (!ACCOUNT.test(account) || !LIST.test(list)) throw new Error("A PC joins an account's list by the account's id and the list's id");
+    const bind_id = randomBytes(16).toString("hex");
+    // a PC that account's list removed under this relay identity joins it again on no path: asked of the file under its
+    // lock, so a removal another Ovis on this folder wrote a moment ago counts
+    this.write({ ...this.doc, binding: { account, bind_id, list }, first: null, others_ever: this.doc.others_ever || this.doc.clears.length > 0, gen: this.doc.gen + 1 }, (doc) => {
+      if (doc.clears.some((clear) => clear.removed_as?.account === account && clear.removed_as.server_id === serverId)) throw new RemovedOnDiskError("This PC was removed from that account");
+    });
+    const held = standingIn(this.doc);
+    if (held === null) throw new Error("This PC's binding was not written");
+    return { id: held.bind_id, account: held.account, list: held.list ?? null, won: held.bind_id === bind_id };
+  }
+
   pinListing(bindId: string, listingId: string): void {
     const binding = this.doc.binding;
     if (binding !== null && binding.pending !== true && binding.bind_id === bindId && binding.listing_id === undefined) {
@@ -628,6 +708,26 @@ export class PcAccountState {
   /** Whether the account's signed list removed this PC from `account` while it had the relay identity `serverId` (AccountClear.removed_as). */
   removedByList(account: string, serverId: string): boolean {
     return this.doc.clears.some((clear) => clear.removed_as?.account === account && clear.removed_as.server_id === serverId);
+  }
+
+  /**
+   * Whether the PC may be reset as the new PC that the account's list removed it from `account` under the relay
+   * identity `serverId` (`removed`), read from the file under its lock, so what another Ovis on this folder wrote
+   * counts: `in_account` while the PC is in an account (one it joined since included, or one it is joining), and
+   * `not_removed` where that list did not remove that identity. The reset asks it in the turn that resets.
+   */
+  readdReset(account: string, serverId: string): "removed" | "in_account" | "not_removed" {
+    if (this.problem !== null) return "not_removed";
+    let doc: PcDoc;
+    try {
+      doc = withFileLock(this.path, () => {
+        const disk = docOnDisk(this.path);
+        return disk === null ? this.doc : reconciled(this.doc, this.doc, disk, this.path);
+      });
+    } catch { return "not_removed"; }
+    const binding = doc.binding;
+    if (binding !== null && !doc.clears.some((clear) => clear.bind_id === binding.bind_id)) return "in_account";
+    return doc.clears.some((clear) => clear.removed_as?.account === account && clear.removed_as.server_id === serverId) ? "removed" : "not_removed";
   }
 
   /** Whether this binding still waits for the device that made it to list the PC (AccountBinding.listing_due). */
@@ -681,7 +781,8 @@ export class PcAccountState {
     return true;
   }
 
-  private write(next: PcDoc): void {
+  /** `check`: asked of what would be written, under the lock; a throw writes nothing. */
+  private write(next: PcDoc, check?: (doc: PcDoc) => void): void {
     if (this.problem !== null) throw new Error(this.strict!);
     // The provisional first-link write and its rollback both represent no committed binding.
     const committedId = (binding: AccountBinding | null) => binding?.pending ? undefined : binding?.bind_id;
@@ -690,6 +791,7 @@ export class PcAccountState {
     withFileLock(this.path, () => {
       // read, reconcile, write, as one turn: what another server of this folder wrote meanwhile is never written over
       const doc = reconciled(this.doc, next, docOnDisk(this.path), this.path);
+      check?.(doc);
       writePrivateState(this.path, onDisk(doc));
       this.doc = doc;
       this.seen = stamp(this.path);

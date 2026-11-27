@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
+import { appContext, installClock } from "./app-context.ts";
 import { buildDemoApp } from "./demo-build.ts";
 import { chromePath } from "./chrome-path.ts";
 import { openSettingsPage } from "./settings-page.ts";
@@ -73,9 +74,9 @@ try {
     for (const theme of ["dark", "light"] as const) {
       const at = `${size.width}x${size.height}-${theme}`;
       const phone = "phone" in size;
-      const context = await browser.newContext(phone
-        ? { viewport: { width: size.width, height: size.height }, isMobile: true, hasTouch: true, deviceScaleFactor: 3, locale: "en-US", colorScheme: theme }
-        : { viewport: { width: size.width, height: size.height }, locale: "en-US", colorScheme: theme });
+      const context = await appContext(browser, phone
+        ? { viewport: { width: size.width, height: size.height }, isMobile: true, hasTouch: true, deviceScaleFactor: 3, colorScheme: theme }
+        : { viewport: { width: size.width, height: size.height }, colorScheme: theme });
       await context.addInitScript(([value, guide]) => {
         localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: value, palette: "codex", darkTheme: "codex", lightTheme: "codex" }));
         if (sessionStorage.getItem("seeded") === null) { localStorage.setItem("ovis:setup-guide", guide); sessionStorage.setItem("seeded", "1"); }
@@ -344,7 +345,7 @@ try {
   // recorded only once its line is wholly in view and nothing covers it, and the page's own copy is not drawn under
   // the guide. The demo sends no counts, so this page's /api/telemetry is a recorder that says they are on and unseen.
   {
-    const context = await browser.newContext({ viewport: { width: 1280, height: 420 }, locale: "en-US", colorScheme: "dark" });
+    const context = await appContext(browser, { viewport: { width: 1280, height: 420 }, colorScheme: "dark" });
     await context.addInitScript((guide) => {
       localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", palette: "codex", darkTheme: "codex", lightTheme: "codex" }));
       if (sessionStorage.getItem("seeded") === null) { localStorage.setItem("ovis:setup-guide", guide); sessionStorage.setItem("seeded", "1"); }
@@ -450,7 +451,7 @@ try {
   for (const size of [{ width: 1920, height: 1080 }, { width: 1280, height: 720 }] as const) {
     const at = `${size.width}x${size.height}`;
     const open = async (query: string) => {
-      const context = await browser!.newContext({ viewport: size, locale: "en-US", colorScheme: "dark" });
+      const context = await appContext(browser!, { viewport: size, colorScheme: "dark" });
       await context.addInitScript(([guide]) => {
         if (sessionStorage.getItem("seeded") !== null) return;
         localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", palette: "codex", darkTheme: "codex", lightTheme: "codex" }));
@@ -519,7 +520,7 @@ try {
   // shared-settings write, and this browser's settings byte for byte as they were. Only Continue on the agent step (the
   // user's own press) reads the plan usage
   {
-    const context = await browser!.newContext({ viewport: { width: 1920, height: 1080 }, locale: "en-US", colorScheme: "dark" });
+    const context = await appContext(browser!, { viewport: { width: 1920, height: 1080 }, colorScheme: "dark" });
     await context.addInitScript(([guide]) => {
       if (sessionStorage.getItem("seeded") === null) {
         localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", palette: "codex", darkTheme: "codex", lightTheme: "codex" }));
@@ -601,7 +602,7 @@ try {
   // Anywhere's QR code, then Tailscale (a new pairing code: the PC keeps one), then Anywhere again: the relay asks for a
   // fresh offer carrying the PC's current code, never shows the old one.
   {
-    const context = await browser!.newContext({ viewport: { width: 1920, height: 1080 }, locale: "en-US", colorScheme: "dark" });
+    const context = await appContext(browser!, { viewport: { width: 1920, height: 1080 }, colorScheme: "dark" });
     await context.addInitScript(([guide]) => {
       if (sessionStorage.getItem("seeded") === null) {
         localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", palette: "codex", darkTheme: "codex", lightTheme: "codex" }));
@@ -655,7 +656,7 @@ try {
   // While the relay starts (Turn on pressed, its answer not in), the other ways wait: picking one could let the start
   // close the device gate and spend that way's pairing code (#3962 CodeRabbit)
   {
-    const context = await browser!.newContext({ viewport: { width: 1920, height: 1080 }, locale: "en-US", colorScheme: "dark" });
+    const context = await appContext(browser!, { viewport: { width: 1920, height: 1080 }, colorScheme: "dark" });
     await context.addInitScript(([guide]) => {
       if (sessionStorage.getItem("seeded") !== null) return;
       localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", palette: "codex", darkTheme: "codex", lightTheme: "codex" }));
@@ -693,7 +694,7 @@ try {
   }
 
   {
-    const context = await browser!.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3, locale: "en-US", colorScheme: "dark" });
+    const context = await appContext(browser!, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3, colorScheme: "dark" });
     await context.addInitScript(([guide]) => {
       if (sessionStorage.getItem("seeded") !== null) return;
       localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", palette: "codex", darkTheme: "codex", lightTheme: "codex" }));
@@ -731,7 +732,7 @@ try {
 
   // A pairing code runs out: the QR code goes back to the plain address, and New code asks for another on a press
   {
-    const context = await browser!.newContext({ viewport: { width: 1920, height: 1080 }, locale: "en-US", colorScheme: "dark" });
+    const context = await appContext(browser!, { viewport: { width: 1920, height: 1080 }, colorScheme: "dark" });
     await context.addInitScript(([guide]) => {
       if (sessionStorage.getItem("seeded") !== null) return;
       localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", palette: "codex", darkTheme: "codex", lightTheme: "codex" }));
@@ -739,7 +740,7 @@ try {
       sessionStorage.setItem("seeded", "1");
     }, [WELCOME] as const);
     const page = await context.newPage();
-    await page.clock.install();
+    await installClock(page);
     await page.goto(`${root}?demo_devices=empty&demo_via=device`);
     const dialog = page.getByRole("dialog", { name: DIALOG, exact: true });
     for (const heading of ["Pick an agent", "Pick a look"]) {

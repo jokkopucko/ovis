@@ -317,3 +317,21 @@ describe("action pins and checkout credentials", () => {
     ]);
   });
 });
+
+// The Rust PTY host is the only one the server has: a job whose tests attach terminals without it fails
+describe("the jobs whose tests attach terminals", () => {
+  const ATTACHING: Record<string, string[]> = {
+    ".github/workflows/ci.yml": ["fast", "integration", "browser-main", "browser-other", "herdr-core-live"],
+    ".github/workflows/release-validate.yml": ["fast"],
+    ".github/workflows/omp-question-compat.yml": ["native-questions"],
+  };
+  it("set up the Rust PTY host", () => {
+    for (const [file, jobs] of Object.entries(ATTACHING)) {
+      const workflow = Bun.YAML.parse(readFileSync(join(root, file), "utf8")) as Workflow;
+      for (const job of jobs) {
+        const setup = workflow.jobs?.[job]?.steps?.find((step) => step.uses === "./.github/actions/setup-ci");
+        expect([file, job, setup?.with?.["pty-host"]]).toEqual([file, job, "true"]);
+      }
+    }
+  });
+});

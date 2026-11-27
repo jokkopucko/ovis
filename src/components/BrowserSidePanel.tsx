@@ -89,21 +89,27 @@ function TabCard({ tab, agent, onOpen }: { tab: DesktopBrowserTab; agent: string
   useEffect(() => {
     if (tab.loading) return;
     let alive = true;
-    // nothing to look at while the app is hidden or minimised
+    // nothing to look at while the app is hidden or minimised; a new picture at once when it shows again
     // a picture that no longer comes (the app could not draw the tab) is not kept as if it were live
     let missed = 0;
+    // showing again asks for no picture while one is on its way: main answers asks that overlap with one capture,
+    // which would count one miss as several
+    let taking = false;
     const take = () => {
       if (document.visibilityState === "hidden") return;
+      taking = true;
       void browserTabThumbnail(tab.id).then((next) => {
         if (!alive) return;
         missed = next === null ? missed + 1 : 0;
         if (next !== null) setPicture(next);
         else if (missed >= CARD_PICTURE_MISSES) setPicture(null);
-      });
+      }).finally(() => { taking = false; });
     };
     take();
     const timer = setInterval(take, CARD_PICTURE_MS);
-    return () => { alive = false; clearInterval(timer); };
+    const shown = () => { if (!taking) take(); };
+    document.addEventListener("visibilitychange", shown);
+    return () => { alive = false; clearInterval(timer); document.removeEventListener("visibilitychange", shown); };
   }, [tab.id, tab.loading, tab.address]);
   const name = tab.title || tab.address;
   const who = tab.held ? t("You have control") : agent ? t("{agent} is using it", { agent: agentName(agent) }) : t("An agent is using it");

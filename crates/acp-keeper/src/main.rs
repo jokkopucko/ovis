@@ -34,7 +34,9 @@ pub struct Opts {
     pub resume: Option<String>,
     pub session_meta: Option<Value>,
     pub mcp_servers: Vec<Value>,
+    pub config_options: Option<Vec<Value>>,
     pub announce_subagents: bool,
+    pub question_forms: bool,
     pub ask_every_time: bool,
     pub load: Option<String>,
     pub headless: bool,
@@ -199,7 +201,7 @@ async fn shutdown_signal() {
 }
 
 const USAGE: &str =
-    "Usage: ovis-acp-keeper ROOT [--cwd DIR] [--name NAME] [--resume 'CMD {session}' | '[\"CMD\",\"{session}\"]'] [--session-meta JSON] [--mcp-servers ARRAY] [--announce-subagents] [--ask-every-time] [--load SESSION] [--headless] -- AGENT [ARGS...]";
+    "Usage: ovis-acp-keeper ROOT [--cwd DIR] [--name NAME] [--resume 'CMD {session}' | '[\"CMD\",\"{session}\"]'] [--session-meta JSON] [--mcp-servers ARRAY] [--config-options ARRAY] [--announce-subagents] [--ask-every-time] [--load SESSION] [--headless] -- AGENT [ARGS...]";
 
 fn default_resume(command: &str, args: &[String]) -> Option<String> {
     let base = |s: &str| Path::new(s).file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
@@ -236,7 +238,9 @@ pub(crate) fn parse(args: Vec<String>) -> Result<Opts, String> {
         resume: default_resume(command, rest),
         session_meta: None,
         mcp_servers: Vec::new(),
+        config_options: None,
         announce_subagents: false,
+        question_forms: false,
         ask_every_time: false,
         load: None,
         headless: false,
@@ -253,7 +257,9 @@ pub(crate) fn parse(args: Vec<String>) -> Result<Opts, String> {
             "--load" => opts.load = Some(value()?),
             "--headless" => opts.headless = true,
             "--mcp-servers" => opts.mcp_servers = serde_json::from_str(&value()?).map_err(|e| format!("--mcp-servers needs a JSON array: {e}"))?,
+            "--config-options" => opts.config_options = Some(serde_json::from_str(&value()?).map_err(|e| format!("--config-options needs a JSON array: {e}"))?),
             "--announce-subagents" => opts.announce_subagents = true,
+            "--question-forms" => opts.question_forms = true,
             "--ask-every-time" => opts.ask_every_time = true,
             other => return Err(format!("unknown option {other}\n{USAGE}")),
         }
@@ -396,10 +402,12 @@ async fn finish_reader(reader: Option<JoinHandle<()>>) {
 fn write_process(root: &Path, acp: Option<&Agent>, tui: Option<&Agent>) {
     let pid = |a: Option<&Agent>| a.map(|a| a.pid);
     let scope = acp.or(tui).and_then(|a| a.scope.clone());
-    let _ = std::fs::write(
-        root.join("process.json"),
-        json!({"keeper": std::process::id(), "child": pid(acp), "tui": pid(tui), "scope": scope}).to_string(),
-    );
+    // Renamed into place: a client asking whether the keeper runs never reads it half written.
+    let next = root.join("process.json.next");
+    let body = json!({"keeper": std::process::id(), "child": pid(acp), "tui": pid(tui), "scope": scope}).to_string();
+    if std::fs::write(&next, body).is_ok() {
+        let _ = std::fs::rename(&next, root.join("process.json"));
+    }
 }
 
 fn ms(since: Instant) -> f64 {
@@ -455,6 +463,8 @@ async fn run(mut opts: Opts) -> i32 {
             return 1;
         }
     };
+    // The ROOT is this keeper's from here: a previous keeper's pid must not say it is gone while the agent starts.
+    write_process(&opts.root, None, None);
     let root = opts.root.clone();
     let (archive, previous) = match Archive::open(root.join("archive.jsonl")) {
         Ok((archive, previous)) => (Arc::new(archive), previous),
@@ -495,6 +505,8 @@ async fn run(mut opts: Opts) -> i32 {
     let mut tui: Option<Agent> = None;
     // The pid a replaying client is told: the ACP agent's, or the real TUI's while it has the pane.
     let agent_pid = Arc::new(AtomicU32::new(child_pid));
+    // Before the socket: a client refused by a socket not listening yet asks process.json whether the keeper runs.
+    write_process(&root, acp.as_ref(), None);
     let accept = match listen(&root, archive.clone(), agent_pid.clone(), tx.clone(), previous.last_client).await {
         Ok(accept) => accept,
         Err(e) => {
@@ -506,7 +518,6 @@ async fn run(mut opts: Opts) -> i32 {
         }
     };
     let accepting = tokio::spawn(accept);
-    write_process(&root, acp.as_ref(), None);
 
     let tty = !opts.headless && is_terminal();
     let job_control = tty && agent::job_control();
@@ -585,11 +596,17 @@ async fn run(mut opts: Opts) -> i32 {
         if hub.quit || archive.error().is_some() {
             break;
         }
+        let stop_deadline = hub.stop_deadline();
         tokio::select! {
+            _ = async {
+                if let Some(deadline) = stop_deadline {
+                    tokio::time::sleep_until(deadline.into()).await;
+                }
+            }, if stop_deadline.is_some() => hub.finish_stop(),
             ev = rx.recv() => {
                 let Some(ev) = ev else { break };
                 hub.handle(ev);
-                while archive.error().is_none() {
+                while archive.error().is_none() && !hub.quit && hub.stop_deadline().is_none() {
                     match rx.try_recv() {
                         Ok(ev) => hub.handle(ev),
                         Err(_) => break,

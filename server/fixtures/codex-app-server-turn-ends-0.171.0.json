@@ -1,0 +1,423 @@
+{
+ "recorded": "Codex 0.171.0's app server (codex app-server --listen unix://, an isolated CODEX_HOME, no model behind it): what it told the client that started a turn with turn/start, as far as that turn's end. interrupted: no model answered, and the client sent turn/interrupt; a second turn/start on the running turn was answered with that same turn (it steers it). failed: the model request was refused (HTTP 400), and the thread read systemError before the turn's own turn/completed. 2026-11-27",
+ "interrupted": {
+  "threadId": "01a21ca4-0444-7533-ae5d-4b4fa61b2124",
+  "response": {
+   "turn": {
+    "id": "01a21ca4-0452-7570-a5a9-986f3f657376",
+    "rootTurnId": "01a21ca4-0452-7570-a5a9-986f3f657376",
+    "items": [],
+    "itemsView": "notLoaded",
+    "status": "inProgress",
+    "error": null,
+    "startedAt": null,
+    "completedAt": null,
+    "durationMs": null
+   }
+  },
+  "told": [
+   {
+    "method": "thread/status/changed",
+    "params": {
+     "threadId": "01a21ca4-0444-7533-ae5d-4b4fa61b2124",
+     "status": {
+      "type": "active",
+      "activeFlags": []
+     }
+    },
+    "emittedAtMs": 1795776840795
+   },
+   {
+    "method": "turn/started",
+    "params": {
+     "threadId": "01a21ca4-0444-7533-ae5d-4b4fa61b2124",
+     "turn": {
+      "id": "01a21ca4-0452-7570-a5a9-986f3f657376",
+      "rootTurnId": "01a21ca4-0452-7570-a5a9-986f3f657376",
+      "items": [],
+      "itemsView": "notLoaded",
+      "status": "inProgress",
+      "error": null,
+      "startedAt": 1795776840,
+      "completedAt": null,
+      "durationMs": null
+     }
+    },
+    "emittedAtMs": 1795776840795
+   },
+   {
+    "method": "item/started",
+    "params": {
+     "item": {
+      "type": "userMessage",
+      "id": "01a21ca4-0462-7921-94d2-753e39b81685",
+      "clientId": "11111111-1111-4111-8111-111111111111",
+      "content": [
+       {
+        "type": "text",
+        "text": "first",
+        "text_elements": []
+       }
+      ],
+      "startedAtMs": 1795776840803,
+      "completedAtMs": null
+     },
+     "threadId": "01a21ca4-0444-7533-ae5d-4b4fa61b2124",
+     "turnId": "01a21ca4-0452-7570-a5a9-986f3f657376",
+     "startedAtMs": 1795776840803
+    },
+    "emittedAtMs": 1795776840803
+   },
+   {
+    "method": "item/completed",
+    "params": {
+     "item": {
+      "type": "userMessage",
+      "id": "01a21ca4-0462-7921-94d2-753e39b81685",
+      "clientId": "11111111-1111-4111-8111-111111111111",
+      "content": [
+       {
+        "type": "text",
+        "text": "first",
+        "text_elements": []
+       }
+      ],
+      "startedAtMs": 1795776840803,
+      "completedAtMs": 1795776840803
+     },
+     "threadId": "01a21ca4-0444-7533-ae5d-4b4fa61b2124",
+     "turnId": "01a21ca4-0452-7570-a5a9-986f3f657376",
+     "contentTokenCount": null,
+     "completedAtMs": 1795776840803
+    },
+    "emittedAtMs": 1795776840806
+   },
+   {
+    "method": "error",
+    "params": {
+     "error": {
+      "message": "Reconnecting... waiting for network",
+      "codexErrorInfo": {
+       "responseStreamDisconnected": {
+        "httpStatusCode": null
+       }
+      },
+      "additionalDetails": "Connection failed: error sending request",
+      "misalignment": null
+     },
+     "willRetry": true,
+     "threadId": "01a21ca4-0444-7533-ae5d-4b4fa61b2124",
+     "turnId": "01a21ca4-0452-7570-a5a9-986f3f657376"
+    },
+    "emittedAtMs": 1795776841030
+   },
+   {
+    "method": "error",
+    "params": {
+     "error": {
+      "message": "Reconnecting... waiting for network",
+      "codexErrorInfo": {
+       "responseStreamDisconnected": {
+        "httpStatusCode": null
+       }
+      },
+      "additionalDetails": "Connection failed: error sending request",
+      "misalignment": null
+     },
+     "willRetry": true,
+     "threadId": "01a21ca4-0444-7533-ae5d-4b4fa61b2124",
+     "turnId": "01a21ca4-0452-7570-a5a9-986f3f657376"
+    },
+    "emittedAtMs": 1795776846264
+   },
+   {
+    "method": "error",
+    "params": {
+     "error": {
+      "message": "Reconnecting... waiting for network",
+      "codexErrorInfo": {
+       "responseStreamDisconnected": {
+        "httpStatusCode": null
+       }
+      },
+      "additionalDetails": "Connection failed: error sending request",
+      "misalignment": null
+     },
+     "willRetry": true,
+     "threadId": "01a21ca4-0444-7533-ae5d-4b4fa61b2124",
+     "turnId": "01a21ca4-0452-7570-a5a9-986f3f657376"
+    },
+    "emittedAtMs": 1795776856497
+   },
+   {
+    "method": "error",
+    "params": {
+     "error": {
+      "message": "Reconnecting... waiting for network",
+      "codexErrorInfo": {
+       "responseStreamDisconnected": {
+        "httpStatusCode": null
+       }
+      },
+      "additionalDetails": "Connection failed: error sending request",
+      "misalignment": null
+     },
+     "willRetry": true,
+     "threadId": "01a21ca4-0444-7533-ae5d-4b4fa61b2124",
+     "turnId": "01a21ca4-0452-7570-a5a9-986f3f657376"
+    },
+    "emittedAtMs": 1795776876705
+   },
+   {
+    "method": "error",
+    "params": {
+     "error": {
+      "message": "Reconnecting... waiting for network",
+      "codexErrorInfo": {
+       "responseStreamDisconnected": {
+        "httpStatusCode": null
+       }
+      },
+      "additionalDetails": "Connection failed: error sending request",
+      "misalignment": null
+     },
+     "willRetry": true,
+     "threadId": "01a21ca4-0444-7533-ae5d-4b4fa61b2124",
+     "turnId": "01a21ca4-0452-7570-a5a9-986f3f657376"
+    },
+    "emittedAtMs": 1795776916930
+   },
+   {
+    "method": "item/started",
+    "params": {
+     "item": {
+      "type": "userMessage",
+      "id": "01a21ca5-63fa-7992-8e57-291df876ba00",
+      "clientId": "22222222-2222-4222-8222-222222222222",
+      "content": [
+       {
+        "type": "text",
+        "text": "second",
+        "text_elements": []
+       }
+      ],
+      "startedAtMs": 1795776930815,
+      "completedAtMs": null
+     },
+     "threadId": "01a21ca4-0444-7533-ae5d-4b4fa61b2124",
+     "turnId": "01a21ca4-0452-7570-a5a9-986f3f657376",
+     "startedAtMs": 1795776930815
+    },
+    "emittedAtMs": 1795776930815
+   },
+   {
+    "method": "item/completed",
+    "params": {
+     "item": {
+      "type": "userMessage",
+      "id": "01a21ca5-63fa-7992-8e57-291df876ba00",
+      "clientId": "22222222-2222-4222-8222-222222222222",
+      "content": [
+       {
+        "type": "text",
+        "text": "second",
+        "text_elements": []
+       }
+      ],
+      "startedAtMs": 1795776930815,
+      "completedAtMs": 1795776930815
+     },
+     "threadId": "01a21ca4-0444-7533-ae5d-4b4fa61b2124",
+     "turnId": "01a21ca4-0452-7570-a5a9-986f3f657376",
+     "contentTokenCount": null,
+     "completedAtMs": 1795776930815
+    },
+    "emittedAtMs": 1795776930819
+   },
+   {
+    "method": "thread/status/changed",
+    "params": {
+     "threadId": "01a21ca4-0444-7533-ae5d-4b4fa61b2124",
+     "status": {
+      "type": "idle"
+     }
+    },
+    "emittedAtMs": 1795776930838
+   },
+   {
+    "method": "turn/completed",
+    "params": {
+     "threadId": "01a21ca4-0444-7533-ae5d-4b4fa61b2124",
+     "turn": {
+      "id": "01a21ca4-0452-7570-a5a9-986f3f657376",
+      "rootTurnId": "01a21ca4-0452-7570-a5a9-986f3f657376",
+      "items": [],
+      "itemsView": "notLoaded",
+      "status": "interrupted",
+      "error": null,
+      "startedAt": 1795776840,
+      "completedAt": 1795776930,
+      "durationMs": 90038
+     }
+    },
+    "emittedAtMs": 1795776930838
+   }
+  ]
+ },
+ "failed": {
+  "threadId": "01a21ca6-7275-7743-ace6-00a247038fca",
+  "response": {
+   "turn": {
+    "id": "01a21ca6-729a-7990-a067-b867416d2845",
+    "rootTurnId": "01a21ca6-729a-7990-a067-b867416d2845",
+    "items": [],
+    "itemsView": "notLoaded",
+    "status": "inProgress",
+    "error": null,
+    "startedAt": null,
+    "completedAt": null,
+    "durationMs": null
+   }
+  },
+  "told": [
+   {
+    "method": "thread/status/changed",
+    "params": {
+     "threadId": "01a21ca6-7275-7743-ace6-00a247038fca",
+     "status": {
+      "type": "active",
+      "activeFlags": []
+     }
+    },
+    "emittedAtMs": 1795777000117
+   },
+   {
+    "method": "turn/started",
+    "params": {
+     "threadId": "01a21ca6-7275-7743-ace6-00a247038fca",
+     "turn": {
+      "id": "01a21ca6-729a-7990-a067-b867416d2845",
+      "rootTurnId": "01a21ca6-729a-7990-a067-b867416d2845",
+      "items": [],
+      "itemsView": "notLoaded",
+      "status": "inProgress",
+      "error": null,
+      "startedAt": 1795777000,
+      "completedAt": null,
+      "durationMs": null
+     }
+    },
+    "emittedAtMs": 1795777000117
+   },
+   {
+    "method": "item/started",
+    "params": {
+     "item": {
+      "type": "userMessage",
+      "id": "01a21ca6-72bd-75f3-aafb-588c3486e2a2",
+      "clientId": "11111111-1111-4111-8111-111111111111",
+      "content": [
+       {
+        "type": "text",
+        "text": "first",
+        "text_elements": []
+       }
+      ],
+      "startedAtMs": 1795777000125,
+      "completedAtMs": null
+     },
+     "threadId": "01a21ca6-7275-7743-ace6-00a247038fca",
+     "turnId": "01a21ca6-729a-7990-a067-b867416d2845",
+     "startedAtMs": 1795777000125
+    },
+    "emittedAtMs": 1795777000125
+   },
+   {
+    "method": "item/completed",
+    "params": {
+     "item": {
+      "type": "userMessage",
+      "id": "01a21ca6-72bd-75f3-aafb-588c3486e2a2",
+      "clientId": "11111111-1111-4111-8111-111111111111",
+      "content": [
+       {
+        "type": "text",
+        "text": "first",
+        "text_elements": []
+       }
+      ],
+      "startedAtMs": 1795777000125,
+      "completedAtMs": 1795777000125
+     },
+     "threadId": "01a21ca6-7275-7743-ace6-00a247038fca",
+     "turnId": "01a21ca6-729a-7990-a067-b867416d2845",
+     "contentTokenCount": null,
+     "completedAtMs": 1795777000125
+    },
+    "emittedAtMs": 1795777000129
+   },
+   {
+    "method": "thread/status/changed",
+    "params": {
+     "threadId": "01a21ca6-7275-7743-ace6-00a247038fca",
+     "status": {
+      "type": "systemError"
+     }
+    },
+    "emittedAtMs": 1795777000154
+   },
+   {
+    "method": "error",
+    "params": {
+     "error": {
+      "message": "no such model",
+      "codexErrorInfo": "modelNotFound",
+      "additionalDetails": null,
+      "misalignment": null
+     },
+     "willRetry": false,
+     "threadId": "01a21ca6-7275-7743-ace6-00a247038fca",
+     "turnId": "01a21ca6-729a-7990-a067-b867416d2845"
+    },
+    "emittedAtMs": 1795777000154
+   },
+   {
+    "method": "thread/readState/changed",
+    "params": {
+     "threadId": "01a21ca6-7275-7743-ace6-00a247038fca",
+     "readState": {
+      "firstUnread": {
+       "type": "turn",
+       "turnId": "01a21ca6-729a-7990-a067-b867416d2845"
+      },
+      "revision": "f9cebb10-be22-4b12-a9ca-3f26130a9274"
+     }
+    },
+    "emittedAtMs": 1795777000162
+   },
+   {
+    "method": "turn/completed",
+    "params": {
+     "threadId": "01a21ca6-7275-7743-ace6-00a247038fca",
+     "turn": {
+      "id": "01a21ca6-729a-7990-a067-b867416d2845",
+      "rootTurnId": "01a21ca6-729a-7990-a067-b867416d2845",
+      "items": [],
+      "itemsView": "notLoaded",
+      "status": "failed",
+      "error": {
+       "message": "no such model",
+       "codexErrorInfo": "modelNotFound",
+       "additionalDetails": null,
+       "misalignment": null
+      },
+      "startedAt": 1795777000,
+      "completedAt": 1795777000,
+      "durationMs": 62
+     }
+    },
+    "emittedAtMs": 1795777000162
+   }
+  ]
+ }
+}

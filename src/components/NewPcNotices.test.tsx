@@ -1,9 +1,14 @@
 import { afterEach, beforeEach, expect, it, jest, spyOn } from "bun:test";
 import { act } from "react";
-import { create, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { generateKeyPair } from "../../shared/relay-e2ee.ts";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
+import { entryFromText, readBody } from "../../shared/account-list-entry.ts";
+import { addListPc, listWorld } from "../lib/account/accountList.test-helpers.ts";
+import { allowDevice } from "../lib/account/listAllow.ts";
+import { removeListPc } from "../lib/account/listRemove.ts";
+import { setPageAccountList } from "../lib/account/pageList.ts";
 import { ACCOUNT_SIGN_OUT_EVENT } from "../lib/account/service.ts";
 import { indexedAccountStore, memoryAccountStore } from "../lib/account/store.ts";
 import { SettingsProvider } from "../lib/settings.ts";
@@ -15,8 +20,7 @@ const publicKey = generateKeyPair().publicKey;
 const PC = deriveServerId(publicKey);
 const OTHER = "a".repeat(32);
 const globals = new Map<string, PropertyDescriptor | undefined>();
-let renderer: ReactTestRenderer | undefined;
-let browser: EventTarget;
+let page: Page;
 let service: FakeAccountService;
 let store: ReturnType<typeof memoryAccountStore>;
 let restore: () => void;
@@ -28,17 +32,10 @@ let rejectDelete = false;
 let listed: unknown[] | null = null;
 
 beforeEach(async () => {
-  browser = new EventTarget();
-  const storage = new Map<string, string>();
+  page = openPage("https://app.ovis.sh/");
+  Object.defineProperty(page.window.document, "visibilityState", { configurable: true, value: "visible" });
   for (const [key, value] of Object.entries({
-    window: browser, location: new URL("https://app.ovis.sh/"), IS_REACT_ACT_ENVIRONMENT: true,
-    document: Object.assign(new EventTarget(), {
-      visibilityState: "visible", querySelector: () => null,
-      documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
-    }),
-    getComputedStyle: () => ({ getPropertyValue: () => "" }),
-    navigator: { languages: ["en"] },
-    localStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value) },
+    location: page.window.location, localStorage: page.window.localStorage, Event: page.window.Event,
   })) {
     globals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, key, { value, configurable: true });
@@ -63,6 +60,7 @@ beforeEach(async () => {
   listed = null;
   const get = spyOn(indexedAccountStore, "get").mockImplementation(store.get);
   const update = spyOn(indexedAccountStore, "update").mockImplementation(store.update);
+  const updateMany = spyOn(indexedAccountStore, "updateMany").mockImplementation(store.updateMany);
   const send = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     if (rejectDelete && init?.method === "DELETE") return new Response(null, { status: 503 });
     if (listed !== null && init?.method === "GET" && new URL(String(input instanceof Request ? input.url : input)).pathname === "/v1/pcs") return Response.json({ pcs: listed });
@@ -71,13 +69,12 @@ beforeEach(async () => {
     ] });
     return service.fetch(input, init);
   }, { preconnect: fetch.preconnect }));
-  restore = () => { get.mockRestore(); update.mockRestore(); send.mockRestore(); };
+  restore = () => { get.mockRestore(); update.mockRestore(); updateMany.mockRestore(); send.mockRestore(); };
 });
 
 afterEach(async () => {
-  await act(async () => { renderer?.unmount(); });
   jest.useRealTimers();
-  renderer = undefined;
+  await page.close();
   restore?.();
   for (const [key, descriptor] of globals) {
     if (descriptor === undefined) Reflect.deleteProperty(globalThis, key);
@@ -88,22 +85,24 @@ afterEach(async () => {
 
 /** `null`: a window that is no PC's own (a phone, the relay page); the default is another PC's own window */
 async function mount(ownWindowOf: string | null = OTHER, onRemoved?: () => void, enabled = true) {
-  await act(async () => {
-    renderer?.unmount();
-    renderer = create(<SettingsProvider><NewPcNotices enabled={enabled} ownWindowOf={ownWindowOf ?? undefined} onRemoved={onRemoved} /></SettingsProvider>);
-  });
-  if (renderer === undefined) throw new TypeError("Notice did not mount");
-  return renderer.root;
+  await page.render(null);
+  await page.render(<SettingsProvider><NewPcNotices enabled={enabled} ownWindowOf={ownWindowOf ?? undefined} onRemoved={onRemoved} /></SettingsProvider>);
+  return page.container;
 }
 
+const statuses = (root: Element) => [...root.querySelectorAll('[role="status"]')];
+const buttons = (root: Element) => [...root.querySelectorAll("button")];
+const spans = (root: Element) => [...root.querySelectorAll("span")];
+const text = (node: Element) => node.textContent ?? "";
+
 it("A2: a new PC is announced in every window but the PC's own local window, a window into that PC through the relay included", async () => {
-  const other = await mount();
-  expect(other.findByProps({ role: "status" }).findAllByType("span").some(({ children }) => children.includes("New PC added to your account: Desk"))).toBe(true);
+  await mount();
+  expect(spans(page.one('[role="status"]')).some((node) => text(node) === "New PC added to your account: Desk")).toBe(true);
   // a phone that opened the new PC through the relay is another device: it is told
-  Object.defineProperty(globalThis, "location", { value: new URL(`https://app.ovis.sh/s/${PC}/`), configurable: true });
-  expect((await mount(null)).findAllByProps({ role: "status" })).toHaveLength(1);
+  page.window.history.replaceState(null, "", `/s/${PC}/`);
+  expect(statuses(await mount(null))).toHaveLength(1);
   // the PC's own local window added it
-  expect((await mount(PC)).findAllByProps({ role: "status" })).toHaveLength(0);
+  expect(statuses(await mount(PC))).toHaveLength(0);
 });
 
 it("#16: a device that signed in after a PC was added is not told of it as new, while one signed in before is", async () => {
@@ -111,47 +110,47 @@ it("#16: a device that signed in after a PC was added is not told of it as new, 
   const newUntil = new Date(Date.now() + 23 * 60 * 60_000).toISOString();
   listed = [{ server_id: PC, label: "Desk", added_at: admittedAt, last_seen_at: null, new_until: newUntil, admitted_at: admittedAt, admitted_before_you: false }];
   // this sign-in (the fake's token, issued in beforeEach) came after the PC's admission
-  expect((await mount()).findAllByProps({ role: "status" })).toHaveLength(0);
+  expect(statuses(await mount())).toHaveLength(0);
   // admitted after this sign-in: told
   const later = new Date(Date.now() + 1_000).toISOString();
   listed = [{ server_id: PC, label: "Desk", added_at: later, last_seen_at: null, new_until: newUntil, admitted_at: later, admitted_before_you: false }];
-  expect((await mount()).findAllByProps({ role: "status" })).toHaveLength(1);
+  expect(statuses(await mount())).toHaveLength(1);
 });
 
 it("#16 gate B2: a browser that signs in again to remove the PC (a new, later sign-in) still sees the notice and removes it", async () => {
   const first = await mount();
-  expect(first.findAllByProps({ role: "status" })).toHaveLength(1);
+  expect(statuses(first)).toHaveLength(1);
   // Sign in again leaves the page and comes back with a fresh sign-in, made after the PC was added
   clock += 60_000;
   const again = service.issueToken(ACCOUNT, { twoStep: true });
   await store.update("session", (current) => current === undefined ? undefined : { ...current, access_token: again, sign_in_id: "notice-test-again" });
   const back = await mount();
-  expect(back.findAllByProps({ role: "status" })).toHaveLength(1);
-  const remove = back.findAllByType("button").find(({ children }) => children.includes("I didn't add this"));
+  expect(statuses(back)).toHaveLength(1);
+  const remove = buttons(back).find((node) => text(node) === "I didn't add this");
   if (remove === undefined) throw new TypeError("Missing removal action");
-  await act(async () => { await remove.props.onClick(); });
+  await act(async () => { remove.click(); });
   expect(service.requests.filter((request) => request.startsWith("DELETE"))).toEqual([`DELETE /v1/pcs/${PC}`]);
-  expect(back.findAllByProps({ role: "status" })).toHaveLength(0);
+  expect(statuses(back)).toHaveLength(0);
 });
 
 it("A2: Not me deletes the PC once, clears the card, and refreshes the account list", async () => {
   const refreshed = Promise.withResolvers<void>();
   const root = await mount(OTHER, refreshed.resolve);
-  const remove = root.findAllByType("button").find(({ children }) => children.includes("I didn't add this"));
+  const remove = buttons(root).find((node) => text(node) === "I didn't add this");
   if (remove === undefined) throw new TypeError("Missing removal action");
-  await act(async () => { await remove.props.onClick(); await refreshed.promise; });
+  await act(async () => { remove.click(); await refreshed.promise; });
   expect(service.requests.filter((request) => request.startsWith("DELETE"))).toEqual([`DELETE /v1/pcs/${PC}`]);
-  expect(root.findAllByProps({ role: "status" })).toHaveLength(0);
+  expect(statuses(root)).toHaveLength(0);
 });
 
 it("A2: a failed removal leaves the notice in place with a retryable alert", async () => {
   rejectDelete = true;
   const root = await mount();
-  const remove = root.findAllByType("button").find(({ children }) => children.includes("I didn't add this"));
+  const remove = buttons(root).find((node) => text(node) === "I didn't add this");
   if (remove === undefined) throw new TypeError("Missing removal action");
-  await act(async () => { await remove.props.onClick(); });
-  expect(root.findByProps({ role: "alert" }).children).toEqual(["The PC could not be removed. Try again."]);
-  expect(remove.props.disabled).toBe(false);
+  await act(async () => { remove.click(); });
+  expect(page.one('[role="alert"]').textContent).toBe("The PC could not be removed. Try again.");
+  expect(remove.disabled).toBe(false);
 });
 
 it("PCR-1: a device code's sign-in removes nothing and is told to sign in on this device", async () => {
@@ -160,53 +159,53 @@ it("PCR-1: a device code's sign-in removes nothing and is told to sign in on thi
   const token = service.issueToken(ACCOUNT, { device: true });
   await store.update("session", (current) => current === undefined ? undefined : { ...current, access_token: token });
   const root = await mount();
-  const remove = root.findAllByType("button").find(({ children }) => children.includes("I didn't add this"));
+  const remove = buttons(root).find((node) => text(node) === "I didn't add this");
   if (remove === undefined) throw new TypeError("Missing removal action");
-  await act(async () => { await remove.props.onClick(); });
-  expect(root.findAllByProps({ role: "alert" }).map(({ children }) => children.join(""))).toEqual(["Sign in on this device to remove it."]);
-  expect(root.findAllByProps({ role: "status" })).toHaveLength(1);
+  await act(async () => { remove.click(); });
+  expect([...root.querySelectorAll('[role="alert"]')].map(text)).toEqual(["Sign in on this device to remove it."]);
+  expect(statuses(root)).toHaveLength(1);
 });
 
 it("A2: Close hides the notice on this device and keeps it hidden after remount", async () => {
   const root = await mount();
-  await act(async () => root.findByProps({ "aria-label": "Close" }).props.onClick());
-  expect(root.findAllByProps({ role: "status" })).toHaveLength(0);
-  expect((await mount()).findAllByProps({ role: "status" })).toHaveLength(0);
+  await act(async () => page.one('button[aria-label="Close"]').click());
+  expect(statuses(root)).toHaveLength(0);
+  expect(statuses(await mount())).toHaveLength(0);
   expect(service.requests.filter((request) => request.startsWith("DELETE"))).toEqual([]);
 });
 
 it("A2: a PC whose new-until timestamp has passed is not announced", async () => {
   expired = true;
-  expect((await mount()).findAllByProps({ role: "status" })).toHaveLength(0);
+  expect(statuses(await mount())).toHaveLength(0);
 });
 
 it("A2: ending the sign-in clears the previous account's notices", async () => {
   const root = await mount();
-  expect(root.findAllByProps({ role: "status" })).toHaveLength(1);
+  expect(statuses(root)).toHaveLength(1);
   await store.update("session", () => undefined);
-  await act(async () => { browser.dispatchEvent(new Event(ACCOUNT_SIGN_OUT_EVENT)); });
-  expect(root.findAllByProps({ role: "status" })).toHaveLength(0);
+  await act(async () => { page.window.dispatchEvent(new page.window.Event(ACCOUNT_SIGN_OUT_EVENT)); });
+  expect(statuses(root)).toHaveLength(0);
 });
 
 it("A2: the refresh timer updates a visible page every minute and skips hidden pages", async () => {
-  const visibility = (state: "visible" | "hidden") => Object.defineProperty(document, "visibilityState", { value: state, configurable: true });
+  const visibility = (state: "visible" | "hidden") => Object.defineProperty(page.window.document, "visibilityState", { value: state, configurable: true });
   jest.useFakeTimers();
   const root = await mount();
-  expect(root.findAllByProps({ role: "status" })).toHaveLength(1);
+  expect(statuses(root)).toHaveLength(1);
   expired = true;
   visibility("hidden");
   await act(async () => { jest.advanceTimersByTime(60_000); });
-  expect(root.findAllByProps({ role: "status" })).toHaveLength(1);
+  expect(statuses(root)).toHaveLength(1);
 
   visibility("visible");
   await act(async () => { jest.advanceTimersByTime(60_000); });
-  expect(root.findAllByProps({ role: "status" })).toHaveLength(0);
+  expect(statuses(root)).toHaveLength(0);
 });
 
 const beforeYou = (admittedAt: string, newUntil: string | null = null) =>
   [{ server_id: PC, label: "Desk", added_at: admittedAt, last_seen_at: null, new_until: newUntil, admitted_at: admittedAt, admitted_before_you: true }];
 const button = (root: Awaited<ReturnType<typeof mount>>, label: string) => {
-  const found = root.findAllByType("button").find(({ children }) => children.join("") === label);
+  const found = buttons(root).find((node) => text(node) === label);
   if (found === undefined) throw new TypeError(`Missing ${label}`);
   return found;
 };
@@ -215,49 +214,54 @@ it("#29: a PC added before this device joined is asked about in one card naming 
   const admittedAt = new Date(Date.now() - 3 * 86_400_000).toISOString();
   listed = beforeYou(admittedAt, new Date(Date.now() + 3_600_000).toISOString());
   const root = await mount(null);
-  const cards = root.findAllByProps({ role: "status" });
+  const cards = statuses(root);
   expect(cards).toHaveLength(1);
-  expect(cards[0]!.findAllByType("span").map(({ children }) => children.join(""))).toContain("Desk was added to your account before this device joined. Did you add it?");
-  expect(root.findAllByType("button").map(({ children }) => children.join(""))).toEqual(["Yes", "No (remove)"]);
-  await act(async () => button(root, "Yes").props.onClick());
-  expect(root.findAllByProps({ role: "status" })).toHaveLength(0);
-  expect((await mount(null)).findAllByProps({ role: "status" })).toHaveLength(0);
+  expect(spans(page.one('[role="status"]')).map(text)).toContain("Desk was added to your account before this device joined. Did you add it?");
+  expect(buttons(root).map(text)).toEqual(["Yes", "No (remove)"]);
+  await act(async () => button(root, "Yes").click());
+  expect(statuses(root)).toHaveLength(0);
+  expect(statuses(await mount(null))).toHaveLength(0);
   expect(service.requests.filter((request) => request.startsWith("DELETE"))).toEqual([]);
 });
 
 it("#29: on a phone the card says this phone, in the owner's words", async () => {
-  Object.defineProperty(globalThis, "navigator", { value: { languages: ["ko"], userAgent: "Mozilla/5.0 (Linux; Android 15; Pixel 9) Mobile", maxTouchPoints: 5 }, configurable: true });
+  Object.defineProperty(page.window.navigator, "languages", { configurable: true, value: ["ko"] });
+  Object.defineProperty(page.window.navigator, "userAgent", { configurable: true, value: "Mozilla/5.0 (Linux; Android 15; Pixel 9) Mobile" });
+  Object.defineProperty(page.window.navigator, "maxTouchPoints", { configurable: true, value: 5 });
   listed = beforeYou(new Date(Date.now() - 86_400_000).toISOString());
   const root = await mount(null);
-  expect(root.findByProps({ role: "status" }).findAllByType("span").map(({ children }) => children.join(""))).toContain("Desk가 이 폰이 들어오기 전에 계정에 추가됐어요. 직접 추가하셨나요?");
-  expect(root.findAllByType("button").map(({ children }) => children.join(""))).toEqual(["네", "아니요(빼기)"]);
+  expect(spans(page.one('[role="status"]')).map(text)).toContain("Desk가 이 폰이 들어오기 전에 계정에 추가됐어요. 직접 추가하셨나요?");
+  expect(buttons(root).map(text)).toEqual(["네", "아니요(빼기)"]);
 });
 
 it("#29: No (remove) is the not-me removal: a refusal keeps the card with its alert, the service's confirmation clears it", async () => {
   listed = beforeYou(new Date(Date.now() - 86_400_000).toISOString());
   rejectDelete = true;
   const root = await mount(null);
-  await act(async () => { await button(root, "No (remove)").props.onClick(); });
-  expect(root.findByProps({ role: "alert" }).children).toEqual(["The PC could not be removed. Try again."]);
-  expect(root.findAllByProps({ role: "status" })).toHaveLength(1);
+  await act(async () => { button(root, "No (remove)").click(); });
+  expect(page.one('[role="alert"]').textContent).toBe("The PC could not be removed. Try again.");
+  expect(statuses(root)).toHaveLength(1);
   rejectDelete = false;
   listed = null;
-  await act(async () => { await button(root, "No (remove)").props.onClick(); });
+  await act(async () => { button(root, "No (remove)").click(); });
   expect(service.requests.filter((request) => request.startsWith("DELETE"))).toEqual([`DELETE /v1/pcs/${PC}`]);
-  expect(root.findAllByProps({ role: "status" })).toHaveLength(0);
+  expect(statuses(root)).toHaveLength(0);
 });
 
 it("C3 (first PC): a PC added under the first-PC exemption before this device joined is shown once after its 24 h", async () => {
   const admittedAt = new Date(Date.now() - 3 * 86_400_000).toISOString();
   listed = beforeYou(admittedAt);
   const root = await mount();
-  expect(root.findAllByProps({ role: "status" })).toHaveLength(1);
-  await act(async () => button(root, "Yes").props.onClick());
-  expect((await mount()).findAllByProps({ role: "status" })).toHaveLength(0);
+  expect(statuses(root)).toHaveLength(1);
+  await act(async () => button(root, "Yes").click());
+  expect(statuses(await mount())).toHaveLength(0);
   // a lapsed PC this device was told about (or that needed two-step) is not shown again
   listed = [{ server_id: PC, label: "Desk", added_at: admittedAt, last_seen_at: null, new_until: null, admitted_at: admittedAt, admitted_before_you: false }];
-  localStorage.setItem = () => {};
-  expect((await mount()).findAllByProps({ role: "status" })).toHaveLength(0);
+  localStorage.clear();
+  Object.defineProperty(localStorage, "setItem", { configurable: true, value: () => {} });
+  localStorage.setItem("storage-test", "1");
+  expect(localStorage.getItem("storage-test")).toBeNull();
+  expect(statuses(await mount())).toHaveLength(0);
 });
 
 it("C3 (first PC): the fake marks a first-PC admit for a device whose key came later, and never a two-step admit", async () => {
@@ -305,10 +309,10 @@ it("A2: a focus or a page shown again reads the list at most once a minute while
   await mount();
   const reads = () => (globalThis.fetch as unknown as { mock: { calls: [unknown, RequestInit?][] } }).mock.calls.filter(([, init]) => init?.method === "GET").length;
   const before = reads();
-  for (let tab = 0; tab < 5; tab++) await act(async () => { browser.dispatchEvent(new Event("focus")); });
+  for (let tab = 0; tab < 5; tab++) await act(async () => { page.window.dispatchEvent(new page.window.Event("focus")); });
   expect(reads()).toBe(before);
   await act(async () => { jest.advanceTimersByTime(60_000); });
-  await act(async () => { browser.dispatchEvent(new Event("focus")); });
+  await act(async () => { page.window.dispatchEvent(new page.window.Event("focus")); });
   expect(reads()).toBe(before + 1);
 });
 
@@ -328,18 +332,18 @@ it("PADD-11: where the step-2 switch is off the account's list is never read", a
   jest.useFakeTimers();
   await mount(OTHER, undefined, false);
   const reads = () => (globalThis.fetch as unknown as { mock: { calls: [unknown, RequestInit?][] } }).mock.calls.filter(([, init]) => init?.method === "GET").length;
-  await act(async () => { jest.advanceTimersByTime(10 * 60_000); browser.dispatchEvent(new Event("focus")); });
+  await act(async () => { jest.advanceTimersByTime(10 * 60_000); page.window.dispatchEvent(new page.window.Event("focus")); });
   expect(reads()).toBe(0);
 });
 
 it("PADD-11: a dismissed notice is nothing left to tell: focus reads come at most once a minute again", async () => {
   jest.useFakeTimers();
-  const root = await mount();
-  await act(async () => root.findByProps({ "aria-label": "Close" }).props.onClick());
+  await mount();
+  await act(async () => page.one('button[aria-label="Close"]').click());
   await act(async () => { jest.advanceTimersByTime(60_000); });
   const reads = () => (globalThis.fetch as unknown as { mock: { calls: [unknown, RequestInit?][] } }).mock.calls.filter(([, init]) => init?.method === "GET").length;
   const before = reads();
-  for (let tab = 0; tab < 5; tab++) await act(async () => { browser.dispatchEvent(new Event("focus")); });
+  for (let tab = 0; tab < 5; tab++) await act(async () => { page.window.dispatchEvent(new page.window.Event("focus")); });
   expect(reads()).toBeLessThanOrEqual(before + 1);
 });
 
@@ -351,4 +355,75 @@ it("PADD-11: the PC whose own window this is, new or not, keeps no minute reads 
   const before = reads();
   await act(async () => { jest.advanceTimersByTime(4 * 60_000); });
   expect(reads()).toBe(before);
+});
+
+it("on an account with a signed list, tells of a PC another device added by the name the list seals, says which device, and removes it by an entry of the list", async () => {
+  const w = listWorld(ACCOUNT, Date.now());
+  const first = await w.device({ label: "Dana's phone" });
+  await first.list.sync();
+  const second = await w.device({ label: "Dana's tablet" });
+  await second.list.sync();
+  const let_in = await allowDevice(first.list, { key: (await second.keys()).key, label: "Dana's tablet", os: "android" }, { wait: async () => {} });
+  if (!let_in.allowed) throw new TypeError("The second device was not let in");
+  await second.list.adopt(let_in.offer);
+  const desk = await addListPc(w, first, "Desk in the study");
+  // a PC only the account service names is none of the account's: nothing tells of it
+  const rogue = generateKeyPair().publicKey;
+  const headers = { authorization: `Bearer ${second.session.access_token}`, "content-type": "application/json" };
+  expect((await w.fake.fetch(`${ORIGIN}/v1/pcs/${deriveServerId(rogue)}`, { method: "PUT", headers, body: JSON.stringify({ label: "Rogue", public_key: Buffer.from(rogue).toString("hex"), relay: "wss://relay.ovis.sh" }) })).ok).toBe(true);
+  expect((await w.fake.fetch(`${ORIGIN}/v1/pcs/${deriveServerId(rogue)}/admit`, { method: "POST", headers })).ok).toBe(true);
+  await second.list.sync();
+  service = w.fake;
+  spyOn(indexedAccountStore, "get").mockImplementation(second.store.get);
+  spyOn(indexedAccountStore, "update").mockImplementation(second.store.update);
+  spyOn(indexedAccountStore, "updateMany").mockImplementation(second.store.updateMany);
+  setPageAccountList(second.list);
+  try {
+    const refreshed = Promise.withResolvers<void>();
+    const root = await mount(null, refreshed.resolve);
+    const said = () => statuses(root).flatMap((card) => spans(card).flatMap((node) => [...node.childNodes].filter((child) => child.nodeType === page.window.Node.TEXT_NODE).map((child) => child.nodeValue)));
+    expect(statuses(root)).toHaveLength(1);
+    expect(said()).toContain("New PC added to your account: Desk in the study");
+    expect(said()).toContain("Added from Dana's phone.");
+    const remove = buttons(root).find((node) => text(node) === "I didn't add this");
+    if (remove === undefined) throw new TypeError("Missing removal action");
+    const before = w.held().entries.length;
+    await act(async () => { remove.click(); await refreshed.promise; });
+    expect(w.fake.requests.filter((request) => request.startsWith("DELETE"))).toEqual([]);
+    expect(w.held().entries.slice(before).map((text) => readBody(entryFromText(text).body).kind)).toEqual(["remove", "epoch"]);
+    expect([second.list.holdsPc(desk.endpoint), statuses(root)]).toEqual([false, []]);
+    // the device that added it is told nothing
+    setPageAccountList(first.list);
+    spyOn(indexedAccountStore, "get").mockImplementation(first.store.get);
+    spyOn(indexedAccountStore, "update").mockImplementation(first.store.update);
+    spyOn(indexedAccountStore, "updateMany").mockImplementation(first.store.updateMany);
+    const laptop = await addListPc(w, first, "Laptop");
+    expect([first.list.holdsPc(laptop.endpoint), statuses(await mount(null))]).toEqual([true, []]);
+  } finally { setPageAccountList(null); }
+});
+
+it("follows the account's list: the notice of a PC goes when another device puts that PC out, with no reload and no press here (M61)", async () => {
+  const w = listWorld(ACCOUNT, Date.now());
+  const first = await w.device({ label: "Dana's phone" });
+  await first.list.sync();
+  const second = await w.device({ label: "Dana's tablet" });
+  await second.list.sync();
+  const let_in = await allowDevice(first.list, { key: (await second.keys()).key, label: "Dana's tablet", os: "android" }, { wait: async () => {} });
+  if (!let_in.allowed) throw new TypeError("The second device was not let in");
+  await second.list.adopt(let_in.offer);
+  const desk = await addListPc(w, first, "Desk in the study");
+  await second.list.sync();
+  service = w.fake;
+  spyOn(indexedAccountStore, "get").mockImplementation(second.store.get);
+  spyOn(indexedAccountStore, "update").mockImplementation(second.store.update);
+  spyOn(indexedAccountStore, "updateMany").mockImplementation(second.store.updateMany);
+  setPageAccountList(second.list);
+  try {
+    const root = await mount(null);
+    expect(statuses(root)).toHaveLength(1);
+    // the phone removes the PC; the tablet's page reads its list by its own clock, and nothing else tells the notice
+    expect(await removeListPc(first.list, desk.endpoint, { wait: async () => {} })).toEqual({ removed: true });
+    await act(async () => { await second.list.sync(); for (let turn = 0; turn < 20; turn += 1) await new Promise<void>((resolve) => setImmediate(resolve)); });
+    expect([second.list.holdsPc(desk.endpoint), statuses(root)]).toEqual([false, []]);
+  } finally { setPageAccountList(null); }
 });

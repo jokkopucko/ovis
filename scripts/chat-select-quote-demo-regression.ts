@@ -1,21 +1,12 @@
 /** All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened. */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Page } from "playwright-core";
 import { appFaces } from "./app-faces.ts";
 import panes from "../site/demo/fixtures/panes.json";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
-import { serveDemo } from "./demo-server.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 
-const playwrightCore = "playwright-core";
-const { chromium } = (await import(playwrightCore)) as typeof import("playwright-core");
-
-const app = mkdtempSync(join(tmpdir(), "herdr-chat-quote-demo-"));
 const evidence = process.env.UI_EVIDENCE_DIR;
-if (evidence) mkdirSync(evidence, { recursive: true });
 const PANE = panes.api;
 const WAIT = { timeout: 10_000 } as const;
 const ASK = "Plan the offline sync rework first, no code yet.";
@@ -76,198 +67,181 @@ async function select(page: Page, phrase: string, mouse: boolean): Promise<void>
   await frames(page);
 }
 
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  const html = readFileSync(index, "utf8");
-  assert.match(html, /<script type="module"/);
-  const gates = `<script>(() => {
-    const demo = window.fetch;
-    const lab = window.quoteLab = { submits: [], answers: 0 };
-    const DemoSocket = window.WebSocket;
-    const Socket = function (...args) {
-      const socket = new DemoSocket(...args);
-      const send = socket.send.bind(socket);
-      socket.send = (raw) => { try { const message = JSON.parse(raw); if (message.type === "submit") lab.submits.push(message); } catch {} send(raw); };
-      return socket;
-    };
-    Socket.prototype = DemoSocket.prototype;
-    Object.setPrototypeOf(Socket, DemoSocket);
-    window.WebSocket = Socket;
-    window.fetch = (input, init) => {
-      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
-      if (url.pathname !== "/api/pane/conversation" || url.searchParams.get("pane_id") !== ${JSON.stringify(PANE)}) return demo(input, init);
-      return Promise.resolve(demo(input, init)).then(async (response) => {
-        if (!response.ok) return response;
-        const body = await response.json();
-        // the demo's answers to a sent message, as the chat reads them: drawn or not, the page has them
-        if (Array.isArray(body.turns)) lab.answers = body.turns.filter((turn) => turn.role === "assistant" && JSON.stringify(turn.parts).includes("This is the demo, so nothing ran")).length;
-        if (Array.isArray(body.turns)) body.turns = [...body.turns,
-          { role: "user", ts: "2026-10-29T00:00:00.000Z", parts: [{ kind: "text", text: ${JSON.stringify(ASK)} }] },
-          { role: "assistant", ts: "2026-10-29T00:00:01.000Z", end_ts: "2026-10-29T00:00:20.000Z", parts: [{ kind: "text", phase: "final_answer", text: ${JSON.stringify(PLAN)} }] }];
-        return new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
-      });
-    };
-  })();</script>`;
-  writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${gates}\n    <script type="module"`));
+const gates = `<script>(() => {
+  const demo = window.fetch;
+  const lab = window.quoteLab = { submits: [], answers: 0 };
+  const DemoSocket = window.WebSocket;
+  const Socket = function (...args) {
+    const socket = new DemoSocket(...args);
+    const send = socket.send.bind(socket);
+    socket.send = (raw) => { try { const message = JSON.parse(raw); if (message.type === "submit") lab.submits.push(message); } catch {} send(raw); };
+    return socket;
+  };
+  Socket.prototype = DemoSocket.prototype;
+  Object.setPrototypeOf(Socket, DemoSocket);
+  window.WebSocket = Socket;
+  window.fetch = (input, init) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
+    if (url.pathname !== "/api/pane/conversation" || url.searchParams.get("pane_id") !== ${JSON.stringify(PANE)}) return demo(input, init);
+    return Promise.resolve(demo(input, init)).then(async (response) => {
+      if (!response.ok) return response;
+      const body = await response.json();
+      // the demo's answers to a sent message, as the chat reads them: drawn or not, the page has them
+      if (Array.isArray(body.turns)) lab.answers = body.turns.filter((turn) => turn.role === "assistant" && JSON.stringify(turn.parts).includes("This is the demo, so nothing ran")).length;
+      if (Array.isArray(body.turns)) body.turns = [...body.turns,
+        { role: "user", ts: "2026-10-29T00:00:00.000Z", parts: [{ kind: "text", text: ${JSON.stringify(ASK)} }] },
+        { role: "assistant", ts: "2026-10-29T00:00:01.000Z", end_ts: "2026-10-29T00:00:20.000Z", parts: [{ kind: "text", phase: "final_answer", text: ${JSON.stringify(PLAN)} }] }];
+      return new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
+    });
+  };
+})();</script>`;
 
-  const server = serveDemo(app);
-  const url = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(PANE)}`;
-  try {
-    const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
+await withDemoBrowser({ tempPrefix: "herdr-chat-quote-demo-", afterTransport: `\n    ${gates}` }, async ({ newContext, baseUrl }) => {
+  const url = `${baseUrl}?pane=${encodeURIComponent(PANE)}`;
+  const shapes = [
+    { name: "desktop-1280", width: 1280, height: 800, mobile: false },
+    { name: "phone-390", width: 390, height: 844, mobile: true },
+  ] as const;
+  for (const shape of shapes) for (const theme of evidence ? ["dark", "light"] as const : ["dark"] as const) {
+    const label = `${shape.name}-${theme}`;
+    const context = await newContext({ viewport: { width: shape.width, height: shape.height }, hasTouch: shape.mobile, isMobile: shape.mobile, deviceScaleFactor: evidence ? 2 : 1 });
     try {
-      const shapes = [
-        { name: "desktop-1280", width: 1280, height: 800, mobile: false },
-        { name: "phone-390", width: 390, height: 844, mobile: true },
-      ] as const;
-      for (const shape of shapes) for (const theme of evidence ? ["dark", "light"] as const : ["dark"] as const) {
-        const label = `${shape.name}-${theme}`;
-        const context = await browser.newContext({ viewport: { width: shape.width, height: shape.height }, locale: "en-US", hasTouch: shape.mobile, isMobile: shape.mobile, deviceScaleFactor: evidence ? 2 : 1 });
-        try {
-          await context.addInitScript(([id, scheme]) => {
-            localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: scheme, palette: "codex" }));
-            localStorage.setItem(`ovis:view:${id}`, "chat");
-          }, [PANE, theme] as const);
-          const page = await context.newPage();
-          const errors: string[] = [];
-          page.on("pageerror", (error) => errors.push(error.message));
-          page.setDefaultTimeout(WAIT.timeout);
-          await page.goto(url);
-          await page.getByText("Show a conflict banner", { exact: false }).waitFor(WAIT);
-          // the demo's Claude pane is mid-turn when it opens, and ends that turn a few seconds later
-          // (site/demo/transport.ts): the earlier reply gets its last words and the Working line goes,
-          // and the chat, following its end, moves the reply quoted from. A drag made meanwhile ends
-          // on other words, so the selections start once that turn has ended
-          await page.getByText("6 tests pass.", { exact: false }).waitFor(WAIT);
-          await page.locator(".chat-virtual-footer", { hasText: "Working" }).waitFor({ state: "detached", ...WAIT });
-          await page.locator(".chat-frame[data-pane-content]").waitFor({ state: "attached", ...WAIT });
-          await appFaces(page);
-          await frames(page);
-          const shot = async (step: string) => { if (evidence) await page.screenshot({ path: join(evidence, `${label}-${step}.png`) }); };
-          const composer = page.getByRole("textbox", { name: "Message", exact: true });
+      await context.addInitScript(([id, scheme]) => {
+        localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: scheme, palette: "codex" }));
+        localStorage.setItem(`ovis:view:${id}`, "chat");
+      }, [PANE, theme] as const);
+      const page = await context.newPage();
+      const errors: string[] = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      page.setDefaultTimeout(WAIT.timeout);
+      await page.goto(url);
+      await page.getByText("Show a conflict banner", { exact: false }).waitFor(WAIT);
+      // the demo's Claude pane is mid-turn when it opens, and ends that turn a few seconds later
+      // (site/demo/transport.ts): the earlier reply gets its last words and the Working line goes,
+      // and the chat, following its end, moves the reply quoted from. A drag made meanwhile ends
+      // on other words, so the selections start once that turn has ended
+      await page.getByText("6 tests pass.", { exact: false }).waitFor(WAIT);
+      await page.locator(".chat-virtual-footer", { hasText: "Working" }).waitFor({ state: "detached", ...WAIT });
+      await page.locator(".chat-frame[data-pane-content]").waitFor({ state: "attached", ...WAIT });
+      await appFaces(page);
+      await frames(page);
+      const shot = async (step: string) => { if (evidence) await page.screenshot({ path: join(evidence, `${label}-${step}.png`) }); };
+      const composer = page.getByRole("textbox", { name: "Message", exact: true });
 
-          await composer.fill(TYPED);
-          await composer.blur();
+      await composer.fill(TYPED);
+      await composer.blur();
 
-          await select(page, FIRST, !shape.mobile);
-          const buttons = page.locator(".selection-offer button");
-          assert.equal(await buttons.count(), 2, `${label}: two actions on the selection`);
-          assert.equal((await buttons.nth(0).textContent())?.trim(), "Quote", `${label}: Quote comes first, with its label`);
-          assert.equal(await buttons.nth(1).getAttribute("aria-label"), "Comment", `${label}: Comment comes second`);
-          await shot("1-select");
+      await select(page, FIRST, !shape.mobile);
+      const buttons = page.locator(".selection-offer button");
+      assert.equal(await buttons.count(), 2, `${label}: two actions on the selection`);
+      assert.equal((await buttons.nth(0).textContent())?.trim(), "Quote", `${label}: Quote comes first, with its label`);
+      assert.equal(await buttons.nth(1).getAttribute("aria-label"), "Comment", `${label}: Comment comes second`);
+      await shot("1-select");
 
-          const sent = (await submits(page)).length;
-          await buttons.nth(0).click();
-          await page.locator(".selection-offer").waitFor({ state: "detached", ...WAIT });
-          await frames(page);
-          const quoted = `${TYPED}\n\n> ${FIRST}\n\n`;
-          assert.equal(await composer.inputValue(), quoted, `${label}: the quote goes after the typed text, a blank line after it`);
-          const box = await page.evaluate(() => { const field = document.activeElement as HTMLTextAreaElement | null; return { focused: field?.getAttribute("aria-label") ?? null, start: field?.selectionStart ?? -1, end: field?.selectionEnd ?? -1 }; });
-          assert.deepEqual(box, { focused: "Message", start: quoted.length, end: quoted.length }, `${label}: the message box has the keyboard, its caret at the end`);
-          assert.equal(await page.evaluate(() => getSelection()?.isCollapsed ?? true), true, `${label}: quoting clears the selection`);
+      const sent = (await submits(page)).length;
+      await buttons.nth(0).click();
+      await page.locator(".selection-offer").waitFor({ state: "detached", ...WAIT });
+      await frames(page);
+      const quoted = `${TYPED}\n\n> ${FIRST}\n\n`;
+      assert.equal(await composer.inputValue(), quoted, `${label}: the quote goes after the typed text, a blank line after it`);
+      const box = await page.evaluate(() => { const field = document.activeElement as HTMLTextAreaElement | null; return { focused: field?.getAttribute("aria-label") ?? null, start: field?.selectionStart ?? -1, end: field?.selectionEnd ?? -1 }; });
+      assert.deepEqual(box, { focused: "Message", start: quoted.length, end: quoted.length }, `${label}: the message box has the keyboard, its caret at the end`);
+      assert.equal(await page.evaluate(() => getSelection()?.isCollapsed ?? true), true, `${label}: quoting clears the selection`);
 
-          await composer.blur();
-          await select(page, SECOND, !shape.mobile);
-          await page.locator(".selection-quote").click();
-          await page.locator(".selection-offer").waitFor({ state: "detached", ...WAIT });
-          await frames(page);
-          const stacked = `${quoted}> ${SECOND}\n\n`;
-          assert.equal(await composer.inputValue(), stacked, `${label}: quotes stack in the order taken`);
-          await shot("2-quoted");
-          assert.equal((await submits(page)).length, sent, `${label}: quoting sends nothing`);
+      await composer.blur();
+      await select(page, SECOND, !shape.mobile);
+      await page.locator(".selection-quote").click();
+      await page.locator(".selection-offer").waitFor({ state: "detached", ...WAIT });
+      await frames(page);
+      const stacked = `${quoted}> ${SECOND}\n\n`;
+      assert.equal(await composer.inputValue(), stacked, `${label}: quotes stack in the order taken`);
+      await shot("2-quoted");
+      assert.equal((await submits(page)).length, sent, `${label}: quoting sends nothing`);
 
-          await composer.blur();
-          await select(page, FIRST, !shape.mobile);
-          await page.locator(".reply-comment-offer").click();
-          await page.getByRole("textbox", { name: "Comment", exact: true }).waitFor(WAIT);
-          await page.getByRole("button", { name: "Cancel", exact: true }).click();
-          await page.locator(".reply-comment-form").waitFor({ state: "detached", ...WAIT });
-          assert.equal(await composer.inputValue(), stacked, `${label}: Comment leaves the message box alone`);
+      await composer.blur();
+      await select(page, FIRST, !shape.mobile);
+      await page.locator(".reply-comment-offer").click();
+      await page.getByRole("textbox", { name: "Comment", exact: true }).waitFor(WAIT);
+      await page.getByRole("button", { name: "Cancel", exact: true }).click();
+      await page.locator(".reply-comment-form").waitFor({ state: "detached", ...WAIT });
+      assert.equal(await composer.inputValue(), stacked, `${label}: Comment leaves the message box alone`);
 
-          // the message goes as written, for an agent alone: a shell would read its `>` lines as redirects
-          await composer.press("End");
-          await composer.pressSequentially("Go ahead.");
-          const answers = await page.evaluate(() => (window as unknown as { quoteLab: { answers: number } }).quoteLab.answers);
-          await page.getByRole("button", { name: "Send message", exact: true }).click();
-          await page.waitForFunction((count) => (window as unknown as { quoteLab: { submits: Submit[] } }).quoteLab.submits.length > count, sent, WAIT);
-          const message = (await submits(page)).at(-1)!;
-          assert.equal(message.text, `${stacked}Go ahead.`, `${label}: the message the agent gets`);
-          assert.equal(message.agent_only, true, `${label}: for an agent alone`);
-          // the demo answers the message: once its answer is in and the Working line gone, the chat stops moving under the next drag
-          await page.waitForFunction((count) => (window as unknown as { quoteLab: { answers: number } }).quoteLab.answers > count, answers, WAIT);
-          // read is not drawn: the answer's row is in the page (the list keeps the rows near the end it shows), then the Working line is gone
-          await page.locator(".chat-turn-agent", { hasText: "This is the demo, so nothing ran" }).last().waitFor({ state: "attached", ...WAIT });
-          await page.locator(".chat-virtual-footer", { hasText: "Working" }).waitFor({ state: "detached", ...WAIT });
-          await frames(page);
+      // the message goes as written, for an agent alone: a shell would read its `>` lines as redirects
+      await composer.press("End");
+      await composer.pressSequentially("Go ahead.");
+      const answers = await page.evaluate(() => (window as unknown as { quoteLab: { answers: number } }).quoteLab.answers);
+      await page.getByRole("button", { name: "Send message", exact: true }).click();
+      await page.waitForFunction((count) => (window as unknown as { quoteLab: { submits: Submit[] } }).quoteLab.submits.length > count, sent, WAIT);
+      const message = (await submits(page)).at(-1)!;
+      assert.equal(message.text, `${stacked}Go ahead.`, `${label}: the message the agent gets`);
+      assert.equal(message.agent_only, true, `${label}: for an agent alone`);
+      // the demo answers the message: once its answer is in and the Working line gone, the chat stops moving under the next drag
+      await page.waitForFunction((count) => (window as unknown as { quoteLab: { answers: number } }).quoteLab.answers > count, answers, WAIT);
+      // read is not drawn: the answer's row is in the page (the list keeps the rows near the end it shows), then the Working line is gone
+      await page.locator(".chat-turn-agent", { hasText: "This is the demo, so nothing ran" }).last().waitFor({ state: "attached", ...WAIT });
+      await page.locator(".chat-virtual-footer", { hasText: "Working" }).waitFor({ state: "detached", ...WAIT });
+      await frames(page);
 
-          const full = "x".repeat(19_990);
-          await composer.fill(full);
-          await composer.blur();
-          await select(page, FIRST, !shape.mobile);
-          assert.equal(await page.locator(".selection-quote").getAttribute("aria-disabled"), "true", `${label}: Quote refuses a quote past the limit`);
-          assert.equal((await page.locator(".selection-note").textContent())?.trim(), "Too long to quote: shorten the message or the selection.", `${label}: it says why`);
-          await shot("3-too-long");
-          // aria-disabled stays pressable (Playwright counts it as not enabled): the press must change nothing
-          await page.locator(".selection-quote").click({ force: true });
-          await frames(page);
-          assert.equal(await composer.inputValue(), full, `${label}: the draft stays whole`);
+      const full = "x".repeat(19_990);
+      await composer.fill(full);
+      await composer.blur();
+      await select(page, FIRST, !shape.mobile);
+      assert.equal(await page.locator(".selection-quote").getAttribute("aria-disabled"), "true", `${label}: Quote refuses a quote past the limit`);
+      assert.equal((await page.locator(".selection-note").textContent())?.trim(), "Too long to quote: shorten the message or the selection.", `${label}: it says why`);
+      await shot("3-too-long");
+      // aria-disabled stays pressable (Playwright counts it as not enabled): the press must change nothing
+      await page.locator(".selection-quote").click({ force: true });
+      await frames(page);
+      assert.equal(await composer.inputValue(), full, `${label}: the draft stays whole`);
 
-          if (shape.mobile) {
-            await composer.fill("");
-            await composer.blur();
-            await select(page, FIRST, false);
-            const tall = await page.locator(".selection-offer").evaluate((offer) => offer.getBoundingClientRect().height);
-            assert.ok(tall > 36, `${label}: a touch screen draws the offer taller than its mouse size (${tall}px)`);
-            await page.evaluate(() => getSelection()?.removeAllRanges());
-            await page.locator(".selection-offer").waitFor({ state: "detached", ...WAIT });
-            // between the room the mouse size needs below the selection (72px) and the room the drawn offer needs
-            const gap = 72 + (tall - 36) / 2;
-            const placed = await page.evaluate(([words, room]) => {
-              const turn = [...document.querySelectorAll(".chat-turn-agent")].filter((row) => (row.textContent ?? "").includes(words)).at(-1)!;
-              const bottomOf = (): number => {
-                const walker = document.createTreeWalker(turn, NodeFilter.SHOW_TEXT);
-                for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-                  const at = (node as Text).data.indexOf(words);
-                  if (at < 0) continue;
-                  const range = document.createRange();
-                  range.setStart(node, at);
-                  range.setEnd(node, at + words.length);
-                  const drawn = [...range.getClientRects()].filter((rect) => rect.width > 0);
-                  if (drawn.length > 0) return drawn.at(-1)!.bottom;
-                }
-                throw new Error(`not drawn in one text node: ${words}`);
-              };
-              const layer = turn.closest(".pane-frame")!.querySelector(".reply-comment-layer")!;
-              const composerTop = layer.closest(".pane-frame")!.querySelector(".composer")!.getBoundingClientRect().top;
-              const limit = Math.min(layer.getBoundingClientRect().bottom, composerTop);
-              let scroller: HTMLElement | null = turn.parentElement;
-              while (scroller !== null && !(scroller.scrollHeight > scroller.clientHeight && /auto|scroll/.test(getComputedStyle(scroller).overflowY))) scroller = scroller.parentElement;
-              scroller!.scrollTop += bottomOf() - (limit - room);
-              return { limit, gap: limit - bottomOf() };
-            }, [NEAR, gap] as const);
-            await frames(page);
-            assert.ok(Math.abs(placed.gap - gap) < 2, `${label}: the selection ends ${gap}px above the composer (${placed.gap})`);
-            await page.evaluate((words) => {
-              const turn = [...document.querySelectorAll(".chat-turn-agent")].filter((row) => (row.textContent ?? "").includes(words)).at(-1)!;
-              turn.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "touch" }));
-              document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerType: "touch" }));
-            }, NEAR);
-            await select(page, NEAR, false);
-            const offer = await page.locator(".selection-offer").evaluate((node) => node.getBoundingClientRect().bottom);
-            assert.ok(offer <= placed.limit - 7.5, `${label}: the offer stays above the composer on its first placement (bottom ${offer}, composer at ${placed.limit})`);
-          }
-          assert.deepEqual(errors, [], `${label}: no page errors`);
-          console.log(`PASS ${label}`);
-        } finally {
-          await context.close();
-        }
+      if (shape.mobile) {
+        await composer.fill("");
+        await composer.blur();
+        await select(page, FIRST, false);
+        const tall = await page.locator(".selection-offer").evaluate((offer) => offer.getBoundingClientRect().height);
+        assert.ok(tall > 36, `${label}: a touch screen draws the offer taller than its mouse size (${tall}px)`);
+        await page.evaluate(() => getSelection()?.removeAllRanges());
+        await page.locator(".selection-offer").waitFor({ state: "detached", ...WAIT });
+        // between the room the mouse size needs below the selection (72px) and the room the drawn offer needs
+        const gap = 72 + (tall - 36) / 2;
+        const placed = await page.evaluate(([words, room]) => {
+          const turn = [...document.querySelectorAll(".chat-turn-agent")].filter((row) => (row.textContent ?? "").includes(words)).at(-1)!;
+          const bottomOf = (): number => {
+            const walker = document.createTreeWalker(turn, NodeFilter.SHOW_TEXT);
+            for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+              const at = (node as Text).data.indexOf(words);
+              if (at < 0) continue;
+              const range = document.createRange();
+              range.setStart(node, at);
+              range.setEnd(node, at + words.length);
+              const drawn = [...range.getClientRects()].filter((rect) => rect.width > 0);
+              if (drawn.length > 0) return drawn.at(-1)!.bottom;
+            }
+            throw new Error(`not drawn in one text node: ${words}`);
+          };
+          const layer = turn.closest(".pane-frame")!.querySelector(".reply-comment-layer")!;
+          const composerTop = layer.closest(".pane-frame")!.querySelector(".composer")!.getBoundingClientRect().top;
+          const limit = Math.min(layer.getBoundingClientRect().bottom, composerTop);
+          let scroller: HTMLElement | null = turn.parentElement;
+          while (scroller !== null && !(scroller.scrollHeight > scroller.clientHeight && /auto|scroll/.test(getComputedStyle(scroller).overflowY))) scroller = scroller.parentElement;
+          scroller!.scrollTop += bottomOf() - (limit - room);
+          return { limit, gap: limit - bottomOf() };
+        }, [NEAR, gap] as const);
+        await frames(page);
+        assert.ok(Math.abs(placed.gap - gap) < 2, `${label}: the selection ends ${gap}px above the composer (${placed.gap})`);
+        await page.evaluate((words) => {
+          const turn = [...document.querySelectorAll(".chat-turn-agent")].filter((row) => (row.textContent ?? "").includes(words)).at(-1)!;
+          turn.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "touch" }));
+          document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerType: "touch" }));
+        }, NEAR);
+        await select(page, NEAR, false);
+        const offer = await page.locator(".selection-offer").evaluate((node) => node.getBoundingClientRect().bottom);
+        assert.ok(offer <= placed.limit - 7.5, `${label}: the offer stays above the composer on its first placement (bottom ${offer}, composer at ${placed.limit})`);
       }
+      assert.deepEqual(errors, [], `${label}: no page errors`);
+      console.log(`PASS ${label}`);
     } finally {
-      await browser.close();
+      await context.close();
     }
-  } finally {
-    server.stop(true);
   }
-} finally {
-  rmSync(app, { recursive: true, force: true });
-}
+});

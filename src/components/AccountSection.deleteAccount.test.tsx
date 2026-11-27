@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
-import { createElement, type ReactNode } from "react";
-import * as ReactDom from "react-dom";
-import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { act } from "react";
+import { openPage, reactProps, type Page } from "../lib/page.fixture.ts";
 
 import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { type AccountSession, indexedAccountStore } from "../lib/account/store.ts";
@@ -9,9 +8,7 @@ import { fakeIndexedDB } from "../lib/indexedDB.fake.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { nativeTransport, setTransport } from "../lib/transport.ts";
 
-// a portal is drawn in place inside a marker, so the test renderer sees Manage account's sheet
-await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => createElement("div", { "data-portal": "" }, node) }));
-const { AccountSection } = await import("./AccountSection.tsx");
+import { AccountSection } from "./AccountSection.tsx";
 
 // In the desktop app, which signs in by redirect, the same button asks before it deletes, and the service's
 // refusals are said in the person's words. On a PC's own page in a browser, whose sign-in is a device code or the
@@ -30,10 +27,12 @@ let safetyPosts = 0;
 /** the desktop app's providers, and whether the account service refuses to start a link */
 let bridgeProviders: string[] = ["github"];
 let linkFails = false;
+/** the changes to the account's ways in the account service lists, newest first, when a test sets some */
+let methodChanges: unknown[] = [];
 
 describe("deleting the account from Settings", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
   let fake: FakeAccountService;
   let userCode: string | null;
   let ahead: number;
@@ -49,17 +48,22 @@ describe("deleting the account from Settings", () => {
     safetyPosts = 0;
     bridgeProviders = ["github"];
     linkFails = false;
+    methodChanges = [];
     fake = new FakeAccountService(() => Date.now() + ahead);
     fake.offerLinkPage(["github", "google"]);
-    for (const key of ["window", "document", "navigator", "indexedDB", "getComputedStyle", "location", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    // Manage account's sheet keeps the focus in it, which asks what an element is
-    Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: class {} });
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, writable: true, value: true });
-    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
+    page = openPage("https://workstation.example.ts.net/");
+    Object.defineProperty(page.window, "isSecureContext", { configurable: true, value: true });
+    for (const key of ["indexedDB", "location", "HTMLElement", "Event", "CustomEvent"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, "Event", { configurable: true, value: page.window.Event });
+    Object.defineProperty(globalThis, "CustomEvent", { configurable: true, value: page.window.CustomEvent });
     Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: fakeIndexedDB().factory });
-    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36", maxTouchPoints: 0 } });
-    Object.defineProperty(globalThis, "location", { configurable: true, writable: true, value: { pathname: "/", origin: "https://workstation.example.ts.net" } });
-    const tab = new Map<string, string>();
+    Object.defineProperty(globalThis, "location", { configurable: true, value: page.window.location });
+    Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: page.window.HTMLElement });
+    Object.defineProperty(page.window.navigator, "userAgent", { configurable: true, value: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0 Safari/537.36" });
+    const meta = page.window.document.createElement("meta");
+    meta.name = "ovis-pc-account-service";
+    meta.content = SERVICE;
+    page.window.document.head.append(meta);
     // the desktop app's sign-in: the system browser at the provider, back to its loopback server with the code
     const bridge = {
       service: SERVICE, get providers() { return bridgeProviders; },
@@ -69,20 +73,7 @@ describe("deleting the account from Settings", () => {
         return new URL((await fake.fetch(url)).headers.get("location") ?? "").search;
       },
     };
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      get ovisAccount() { return desktop ? bridge : undefined; },
-      isSecureContext: true,
-      location: { href: "https://workstation.example.ts.net/" },
-      sessionStorage: { getItem: (key: string) => tab.get(key) ?? null, setItem: (key: string, value: string) => { tab.set(key, value); }, removeItem: (key: string) => { tab.delete(key); } },
-      localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {}, key: () => null, length: 0 },
-      addEventListener: () => {}, removeEventListener: () => {},
-    } });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: {
-      hidden: false,
-      documentElement: { lang: "", dataset: {}, style: { setProperty() {}, removeProperty() {}, getPropertyValue: () => "" } },
-      querySelector: (selector: string) => selector === 'meta[name="ovis-pc-account-service"]' ? { getAttribute: () => SERVICE } : null,
-      addEventListener: () => {}, removeEventListener: () => {},
-    } });
+    Object.defineProperty(page.window, "ovisAccount", { configurable: true, get: () => desktop ? bridge : undefined });
     const fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       const url = new URL(String(input instanceof Request ? input.url : input), "https://workstation.example.ts.net");
       if (url.origin !== SERVICE) {
@@ -96,6 +87,7 @@ describe("deleting the account from Settings", () => {
       if (url.pathname === "/v1/safety-records" && safetyAnswer !== null) return safetyAnswer(String((JSON.parse(String(init?.body)) as { record: { id: unknown } }).record.id));
       if (url.pathname === "/v1/token" && userCode !== null) { fake.approveOnLinkPage(userCode, signsInAs, "github"); fake.approveDevice(userCode, signsInAs); userCode = null; }
       const answer = await fake.fetch(input, init);
+      if (url.pathname === "/v1/identities" && answer.ok && methodChanges.length > 0) return Response.json({ ...await answer.json() as object, history: methodChanges });
       if (url.pathname === "/v1/account" && onDelete !== null) await onDelete();
       if (!url.pathname.startsWith("/v1/signin/") || !answer.ok) return answer;
       const started = await answer.json() as Record<string, unknown>;
@@ -108,8 +100,7 @@ describe("deleting the account from Settings", () => {
   });
 
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
+    await page.close();
     setTransport(nativeTransport);
     mock.restore();
     for (const [key, descriptor] of descriptors) {
@@ -119,27 +110,28 @@ describe("deleting the account from Settings", () => {
     descriptors.clear();
   });
 
-  const text = (node: ReactTestInstance): string => node.children.map((child) => typeof child === "string" ? child : text(child)).join("");
-  const shown = (): string => text(renderer!.root);
-  const buttons = (): string[] => renderer!.root.findAll((node) => node.type === "button").map(text);
+  const text = (node: { textContent: string | null }): string => node.textContent ?? "";
+  const shown = (): string => text(document.body);
+  const buttons = (): string[] => [...document.body.querySelectorAll<HTMLButtonElement>("button")].map(text);
   const until = async (holds: () => boolean): Promise<void> => {
     for (let turn = 0; turn < 400 && !holds(); turn++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
     expect(holds()).toBe(true);
   };
   const press = async (label: string): Promise<void> => {
-    const found = renderer!.root.findAll((node) => node.type === "button" && text(node) === label);
+    const found = [...document.body.querySelectorAll<HTMLButtonElement>("button")].filter((node) => text(node) === label);
     expect(found).toHaveLength(1);
-    await act(async () => { (found[0]!.props as { onClick: () => void }).onClick(); });
+    await act(async () => { found[0]?.click(); });
   };
-  const inSheet = (node: ReactTestInstance): boolean => {
-    for (let at: ReactTestInstance | null = node; at !== null; at = at.parent) if (at.props["data-testid"] === "manage-account") return true;
-    return false;
+  const inSheet = (node: Element): boolean => node.closest('[data-testid="manage-account"]') !== null;
+  const sheet = (): string => text(document.body.querySelector('[data-testid="manage-account"]')!);
+  const button = (label: string): HTMLButtonElement => {
+    const found = [...document.body.querySelectorAll<HTMLButtonElement>("button")].find((node) => text(node) === label);
+    if (!found) throw new Error(`Missing button: ${label}`);
+    return found;
   };
-  const sheet = (): string => text(renderer!.root.find((node) => node.props["data-testid"] === "manage-account"));
-  const button = (label: string): ReactTestInstance => renderer!.root.find((node) => node.type === "button" && text(node) === label);
   /** signed in, with Manage account's sheet open: Delete account is in it */
   const signedIn = async (): Promise<void> => {
-    await act(async () => { renderer = create(<SettingsProvider><AccountSection withdrawn={() => withdrawnNow} /></SettingsProvider>); });
+    await page.render(<SettingsProvider><AccountSection withdrawn={() => withdrawnNow} /></SettingsProvider>);
     await until(() => buttons().includes(SIGN_IN));
     await press(SIGN_IN);
     await until(() => buttons().includes("Manage account"));
@@ -254,7 +246,7 @@ describe("deleting the account from Settings", () => {
     await press("Sign out");
     await until(() => buttons().includes("Send it now"));
     await press("Send it now");
-    await until(() => shown().includes(retry ? "The block did not go through yet." : "The block was refused. Block it again from this device."));
+    await until(() => shown().includes(retry ? "The block did not go through yet." : "The account service did not take this block, so a PC that was off may still let that device in. Block it from an older device, or use Sign out every device."));
     expect((await indexedAccountStore.get("session"))?.sign_in_id).toBe(a.sign_in_id);
     expect(buttons().includes("Try again")).toBe(retry);
     expect(buttons()).toContain("Sign out anyway");
@@ -275,13 +267,13 @@ describe("deleting the account from Settings", () => {
     busy = 200;
     await press("Try again");
     await until(() => !buttons().includes("Try again"));
-    expect(shown()).toContain("The block was refused. Block it again from this device.");
+    expect(shown()).toContain("The account service did not take this block, so a PC that was off may still let that device in. Block it from an older device, or use Sign out every device.");
     expect(buttons()).toContain("Sign out anyway");
     expect((await indexedAccountStore.get("session"))?.sign_in_id).toBe(a.sign_in_id);
     // the refusal stays queued until its owner presses OK
     expect(Object.keys(await indexedAccountStore.get("unsent_blocks") ?? {})).toEqual(["refused-1"]);
     await press("OK");
-    await until(() => !shown().includes("The block was refused. Block it again from this device."));
+    await until(() => !shown().includes("The account service did not take this block, so a PC that was off may still let that device in. Block it from an older device, or use Sign out every device."));
     expect(await indexedAccountStore.get("unsent_blocks")).toBeUndefined();
   });
 
@@ -316,7 +308,7 @@ describe("deleting the account from Settings", () => {
       await checked.promise;
     });
     await act(async () => {});
-    expect(shown()).not.toContain("The block was refused. Block it again from this device.");
+    expect(shown()).not.toContain("The account service did not take this block, so a PC that was off may still let that device in. Block it from an older device, or use Sign out every device.");
     expect(Object.values(await indexedAccountStore.get("unsent_blocks") ?? {}).map((entry) => [entry.records[0]?.id, entry.refused])).toEqual([["late-1", true]]);
   });
 
@@ -373,7 +365,7 @@ describe("deleting the account from Settings", () => {
     await until(() => fake.deleted(ACCOUNT) && (buttons().includes(SIGN_IN) || (fake.requests.slice(fake.requests.indexOf("DELETE /v1/account") + 1).some((line) => line.startsWith("GET ")) && buttons().includes("Manage account"))));
     expect(buttons()).not.toContain(SIGN_IN);
     // Manage account was the deleted account's: it does not stay open for the sign-in that took its place
-    expect(renderer!.root.findAll((node) => node.props["data-testid"] === "manage-account")).toHaveLength(0);
+    expect(document.body.querySelectorAll('[data-testid="manage-account"]')).toHaveLength(0);
     expect((await indexedAccountStore.get("session"))?.account).toBe("acct_two");
   });
 
@@ -395,14 +387,14 @@ describe("deleting the account from Settings", () => {
 
   it("says on a PC's own page in a browser where to delete, and offers no delete the service would refuse", async () => {
     desktop = false;
-    await act(async () => { renderer = create(<SettingsProvider><AccountSection /></SettingsProvider>); });
+    await page.render(<SettingsProvider><AccountSection /></SettingsProvider>);
     await until(() => buttons().includes("Sign in"));
     await press("Sign in");
     await until(() => buttons().includes("Sign out"));
     expect(shown()).not.toContain("To delete your account");
     await press("Manage account");
     expect(sheet()).toContain("To delete your account, use the Ovis phone app, the desktop app or app.ovis.sh.");
-    expect(renderer!.root.findAll((node) => node.type === "button" && node.props["data-action"] === "delete-account")).toHaveLength(0);
+    expect(document.body.querySelectorAll('button[data-action="delete-account"]')).toHaveLength(0);
     expect(fake.requests).not.toContain("DELETE /v1/account");
   });
 
@@ -414,10 +406,12 @@ describe("deleting the account from Settings", () => {
     await press("Delete account");
     await press("Delete account for good?");
     await act(async () => { await reached.promise; });
-    const button = renderer!.root.find((node) => node.type === "button" && node.props["data-action"] === "delete-account");
-    expect(button.props.disabled).toBe(true);
-    expect(button.props["aria-busy"]).toBe("true");
-    await act(async () => { (button.props as { onClick: () => void }).onClick(); });
+    const button = document.body.querySelector<HTMLButtonElement>('button[data-action="delete-account"]')!;
+    expect(button.disabled).toBe(true);
+    expect(button.getAttribute("aria-busy")).toBe("true");
+    await act(async () => { button.click(); });
+    // React drops the click on the disabled button: the handler's own check must hold too
+    await act(async () => { (reactProps(button).onClick as () => void)(); });
     expect(shown()).not.toContain("for good");
     gate.resolve();
     await until(() => shown().includes("Your account was deleted."));
@@ -435,7 +429,7 @@ describe("deleting the account from Settings", () => {
   });
 
   it("keeps Delete account off the page: asks, cancels and says a refusal in Manage account's sheet, and a sign-out takes the sheet away", async () => {
-    await act(async () => { renderer = create(<SettingsProvider><AccountSection withdrawn={() => withdrawnNow} /></SettingsProvider>); });
+    await page.render(<SettingsProvider><AccountSection withdrawn={() => withdrawnNow} /></SettingsProvider>);
     await until(() => buttons().includes(SIGN_IN));
     await press(SIGN_IN);
     await until(() => buttons().includes("Manage account"));
@@ -454,7 +448,7 @@ describe("deleting the account from Settings", () => {
     expect(fake.deleted(ACCOUNT)).toBe(false);
     await press("Sign out");
     await until(() => buttons().includes(SIGN_IN));
-    expect(renderer!.root.findAll((node) => node.props["data-testid"] === "manage-account")).toHaveLength(0);
+    expect(document.body.querySelectorAll('[data-testid="manage-account"]')).toHaveLength(0);
     expect(shown()).not.toContain("Cancel your subscription first");
   });
 
@@ -462,8 +456,8 @@ describe("deleting the account from Settings", () => {
     await signedIn();
     await press("Delete account");
     expect(buttons()).toContain("Delete account for good?");
-    await act(async () => { (renderer!.root.find((node) => node.type === "button" && node.props["aria-label"] === "Close").props as { onClick: () => void }).onClick(); });
-    expect(renderer!.root.findAll((node) => node.props["data-testid"] === "manage-account")).toHaveLength(0);
+    await act(async () => { document.body.querySelector<HTMLButtonElement>('button[aria-label="Close"]')!.click(); });
+    expect(document.body.querySelectorAll('[data-testid="manage-account"]')).toHaveLength(0);
     await press("Manage account");
     expect(buttons()).toContain("Delete account");
     expect(buttons()).not.toContain("Delete account for good?");
@@ -477,7 +471,7 @@ describe("deleting the account from Settings", () => {
     const session = indexedAccountService.session.bind(indexedAccountService);
     const held = spyOn(indexedAccountService, "session").mockImplementationOnce(async () => { await read.promise; return await session(); });
     await press("Delete account");
-    await act(async () => { (renderer!.root.find((node) => node.type === "button" && node.props["aria-label"] === "Close").props as { onClick: () => void }).onClick(); });
+    await act(async () => { document.body.querySelector<HTMLButtonElement>('button[aria-label="Close"]')!.click(); });
     await act(async () => { read.resolve(); });
     held.mockRestore();
     await press("Manage account");
@@ -491,7 +485,7 @@ describe("deleting the account from Settings", () => {
     await signedIn();
     ahead = 11 * 60_000;
     await press("Add Google");
-    await until(() => renderer!.root.findAll((node) => node.props["data-testid"] === "manage-account").length === 1 && sheet().includes("To change how you sign in, sign in again with GitHub first."));
+    await until(() => document.body.querySelectorAll('[data-testid="manage-account"]').length === 1 && sheet().includes("To change how you sign in, sign in again with GitHub first."));
     expect(inSheet(button("Sign in again"))).toBe(true);
   });
 
@@ -500,10 +494,18 @@ describe("deleting the account from Settings", () => {
     linkFails = true;
     await signedIn();
     await press("Add Google");
-    await until(() => renderer!.root.findAll((node) => node.props["data-testid"] === "manage-account").length === 1 && sheet().includes("The sign-in did not finish. Try again."));
-    const alerts = renderer!.root.findAll((node) => node.props.role === "alert" && text(node).includes("The sign-in did not finish"));
+    await until(() => document.body.querySelectorAll('[data-testid="manage-account"]').length === 1 && sheet().includes("The sign-in did not finish. Try again."));
+    const alerts = [...document.body.querySelectorAll('[role="alert"]')].filter((node) => text(node).includes("The sign-in did not finish"));
     expect(alerts).toHaveLength(1);
     expect(inSheet(alerts[0]!)).toBe(true);
+  });
+
+  it("shows the latest changes to the ways in under the chips in Manage account's sheet", async () => {
+    methodChanges = [{ kind: "add", provider: "google", at: new Date(2026, 10, 27, 12).toISOString(), device_no: 3 }];
+    await signedIn();
+    const changes = (): string[] => [...document.body.querySelectorAll('[data-testid="manage-account"] .account-methods [data-testid="account-method-history"] li')].map(text);
+    await until(() => changes().length > 0);
+    expect(changes()).toEqual(["Nov 27 · Google added · Device 3"]);
   });
 
   it("asks for a sign-in again in Manage account's sheet, then deletes", async () => {

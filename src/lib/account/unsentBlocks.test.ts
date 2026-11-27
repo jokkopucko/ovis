@@ -6,6 +6,7 @@ import { leaveAccount } from "./leave.ts";
 import { FakeAccountService } from "../../../shared/account-service-fake.ts";
 import { MemoryDeviceStore } from "../relay/device.test.ts";
 import { memoryAccountStore, newKey, type AccountSession } from "./store.ts";
+import { ownRemovals } from "./listMigrate.ts";
 
 const session: AccountSession = { service: "https://account.example", account: "acct", provider: "github", sign_in_id: "this-sign-in", access_token: "a", refresh_token: "r", expires_at: Date.now() + 3_600_000 };
 
@@ -25,6 +26,19 @@ it("S32-1: kept before any delivery, and dropped once the service confirms it", 
   expect((await unsentBlocks(store, session)).flatMap((kept) => kept.records)).toEqual([record]);
   expect(await postKept(store, session, [record], async () => {})).toBe("sent");
   expect(await unsentBlocks(store, session)).toEqual([]);
+});
+
+it("R-F: a kept block's target stays among the account's own blocks once the service confirmed it, and after a sign-out", async () => {
+  const store = memoryAccountStore();
+  await store.set("session", session);
+  const record = await block();
+  await keepUnsent(store, session, [record]);
+  expect(await postKept(store, session, [record], async () => {})).toBe("sent");
+  expect(await unsentBlocks(store, session)).toEqual([]);
+  expect(await ownRemovals(store, session.account)).toEqual([record.target]);
+  expect(await ownRemovals(store, "other")).toEqual([]);
+  await store.clear();
+  expect(await ownRemovals(store, session.account)).toEqual([record.target]);
 });
 
 it("S32-1: a post a retry may change (no answer, 5xx, 401, 408, 429) keeps the exact record and throws", async () => {
@@ -249,6 +263,32 @@ it("S32-1: a later sign-in to the same account takes the queue on with the same 
   // a post under the other account's sign-in removes nothing of this account's
   expect(await postKept(store, { ...session, account: "other" }, [record], async () => {})).toBe("sent");
   expect(Object.keys(await store.get("unsent_blocks") ?? {})).toEqual([record.id]);
+});
+
+it("S32-1: a block kept by one sign-in and sent by a later sign-in of the account is refused for good: the account service takes a signer only on the sign-in that registered its key", async () => {
+  const fake = new FakeAccountService();
+  fake.opensAll = true;
+  const first = fake.issueToken("acct");
+  const [own, stranger] = [await newKey(), await newKey()];
+  // the phone first, then the device it does not know: the phone is the older one, so only the sign-in can refuse it
+  const signerNo = fake.registerSessionKey(first, own.public_spki, "Phone");
+  const targetNo = fake.registerDevice("acct", stranger.public_spki, "Stranger");
+  const record = await signSafetyRecord({
+    v: 1, kind: "block", account: "acct", target: stranger.public_spki, target_no: targetNo, signer: own.public_spki, signer_no: signerNo,
+    signed_at: new Date().toISOString(), nonce: newRecordId(),
+  }, own.private_key);
+  const store = memoryAccountStore();
+  const before = { ...session, access_token: first };
+  await store.set("session", before);
+  await keepUnsent(store, before, [record]);
+  // that sign-in ended before the block went out; the next sign-in to the account takes the queue on and sends it
+  const later = { ...session, sign_in_id: "a-later-sign-in", access_token: fake.issueToken("acct") };
+  await store.set("session", later);
+  const service = new AccountService({ store, fetch: fake.fetch });
+  const refusal = await service.postSafetyRecord(record).catch((error: unknown) => error);
+  expect(refusal).toMatchObject({ status: 403, code: "signer_not_member" });
+  expect(await postKept(store, later, [record], (kept) => service.postSafetyRecord(kept))).toBe("refused");
+  expect(Object.values(await store.get("unsent_blocks") ?? {}).map((entry) => entry.refused)).toEqual([true]);
 });
 
 it("S32-1: leaving the account keeps every unsent block: only the service's answer takes one away", async () => {

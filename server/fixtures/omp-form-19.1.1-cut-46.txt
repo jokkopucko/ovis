@@ -1,0 +1,24 @@
+                                              
+ Run the form fixture.                        
+                                              
+╭─ Ask · 3 of 3 answered ────────────────────╮
+│ origin = devswha/ovis). It stores the    │ │
+│ newest page of messages in IndexedDB so  █ │
+│ the chat shows up instantly on a cold    █ │
+│ start.                                   █ │
+│                                          █ │
+│ ✓ Q1 · Branch and base for the chat cache█ │
+│    ✓ New branch feat/cha…   Same branch …█ │
+│                                          █ │
+│ Q2 · How far should I go?                │ │
+│ ❯ ◉ Implement, run the related tests,    │ │
+│     check it in the browser, commit, and │ │
+│     push the branch to fork. No PR       │ │
+│     anywhere. Recommended because you    │ │
+│     said "personal repo".                │ │
+╰────────────────────────────────────────────╯
+
+
+  ⎋ Working…                                  
+ ❓ 1s > ⬢ Form fixture > 📁 …/cwd ▶─6%─┃131K─
+╰─                                            

@@ -1,16 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { chromium, type Browser, type Page } from "playwright-core";
+import type { Browser, Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
-import { serveDemo } from "./demo-server.ts";
+import { appContext } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 
 // All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
 const repo = join(import.meta.dir, "..");
-const app = mkdtempSync(join(tmpdir(), "herdr-interface-font-demo-"));
 const BUILT_IN = readFileSync(join(repo, "src/styles.css"), "utf8").match(/--font-ui:\s*([^;]+);/)![1]!.trim();
 const evidence = process.env.UI_EVIDENCE_DIR;
 
@@ -23,7 +20,7 @@ const stored = (page: Page): Promise<unknown> => page.evaluate(() => {
 
 async function open(browser: Browser, width: number, settings: Record<string, unknown>, query: string, uiFont = ""): Promise<{ page: Page; errors: string[]; close: () => Promise<void> }> {
   const phone = width <= 480;
-  const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, locale: "en-US", hasTouch: phone, isMobile: phone });
+  const context = await appContext(browser, { viewport: { width, height: phone ? 844 : 900 }, hasTouch: phone, isMobile: phone });
   await context.addInitScript(([value, font]) => {
     if (localStorage.getItem("ovis:settings") !== null) return;
     localStorage.setItem("ovis:settings", value!);
@@ -38,75 +35,63 @@ async function open(browser: Browser, width: number, settings: Record<string, un
 }
 
 let origin = "";
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    <script type="module"`));
-  const server = serveDemo(app);
-  origin = `http://127.0.0.1:${server.port}`;
-  try {
-    const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
+await withDemoBrowser({ tempPrefix: "herdr-interface-font-demo-" }, async ({ browser, origin: served }) => {
+  origin = served;
+  for (const width of [390, 1440]) {
+    const { page, errors, close } = await open(browser, width, {}, "&settings=appearance&section=typography");
     try {
-      if (evidence) mkdirSync(evidence, { recursive: true });
-      for (const width of [390, 1440]) {
-        const { page, errors, close } = await open(browser, width, {}, "&settings=appearance&section=typography");
-        try {
-          const dialog = page.locator(".settings-dialog");
-          const select = dialog.getByLabel("Interface font", { exact: true });
-          await select.waitFor();
-          assert.equal(await select.inputValue(), "default", "nothing is chosen until the user picks");
-          assert.equal(await token(page), "", "Default leaves --font-ui to the stylesheet");
-          const monoBefore = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--font-mono").trim());
+      const dialog = page.locator(".settings-dialog");
+      const select = dialog.getByLabel("Interface font", { exact: true });
+      await select.waitFor();
+      assert.equal(await select.inputValue(), "default", "nothing is chosen until the user picks");
+      assert.equal(await token(page), "", "Default leaves --font-ui to the stylesheet");
+      const monoBefore = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--font-mono").trim());
 
-          await select.selectOption("system");
-          assert.equal(await token(page), "system-ui, sans-serif", "System is the device's own stack, with no Pretendard behind it");
-          assert.equal(await fontOf(page, "body"), "system-ui, sans-serif", "the interface is set in it");
-          assert.equal(await fontOf(page, ".settings-label"), "system-ui, sans-serif", "and so is Settings itself");
-          assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--font-mono").trim()), monoBefore, "code keeps its own stack");
-          assert.deepEqual(await stored(page), { own: "system-ui", inMain: false }, "kept in its own key, out of ovis:settings");
-          if (evidence) await page.screenshot({ path: join(evidence, `interface-font-system-${width}.png`) });
+      await select.selectOption("system");
+      assert.equal(await token(page), "system-ui, sans-serif", "System is the device's own stack, with no Pretendard behind it");
+      assert.equal(await fontOf(page, "body"), "system-ui, sans-serif", "the interface is set in it");
+      assert.equal(await fontOf(page, ".settings-label"), "system-ui, sans-serif", "and so is Settings itself");
+      assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--font-mono").trim()), monoBefore, "code keeps its own stack");
+      assert.deepEqual(await stored(page), { own: "system-ui", inMain: false }, "kept in its own key, out of ovis:settings");
+      if (evidence) await page.screenshot({ path: join(evidence, `interface-font-system-${width}.png`) });
 
-          await select.selectOption("custom");
-          const field = dialog.getByRole("textbox", { name: "Custom interface font", exact: true });
-          await field.fill("Fixture UI Font, Hiragino Sans");
-          await field.press("Enter");
-          await page.waitForFunction(() => document.documentElement.style.getPropertyValue("--font-ui").startsWith('"Fixture UI Font"'));
-          assert.equal(await token(page), `"Fixture UI Font", "Hiragino Sans", ${BUILT_IN}`, "a typed list goes in front of the built-in stack");
-          assert.equal(await select.inputValue(), "custom");
-          if (evidence) await page.screenshot({ path: join(evidence, `interface-font-custom-${width}.png`) });
+      await select.selectOption("custom");
+      const field = dialog.getByRole("textbox", { name: "Custom interface font", exact: true });
+      await field.fill("Fixture UI Font, Hiragino Sans");
+      await field.press("Enter");
+      await page.waitForFunction(() => document.documentElement.style.getPropertyValue("--font-ui").startsWith('"Fixture UI Font"'));
+      assert.equal(await token(page), `"Fixture UI Font", "Hiragino Sans", ${BUILT_IN}`, "a typed list goes in front of the built-in stack");
+      assert.equal(await select.inputValue(), "custom");
+      if (evidence) await page.screenshot({ path: join(evidence, `interface-font-custom-${width}.png`) });
 
-          // a reload steps out of Settings (lib/settingsHistory.ts): the app comes back with the choice, and the link opens the page again
-          await page.reload();
-          await page.locator(".conn-live").waitFor({ state: "attached" });
-          assert.equal(await token(page), `"Fixture UI Font", "Hiragino Sans", ${BUILT_IN}`, "a reload keeps the typed list");
-          await page.goto(`${origin}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(panes.web)}&settings=appearance&section=typography`);
-          await select.waitFor();
-          assert.equal(await select.inputValue(), "custom", "and Settings says it is a typed list");
+      // a reload steps out of Settings (lib/settingsHistory.ts): the app comes back with the choice, and the link opens the page again
+      await page.reload();
+      await page.locator(".conn-live").waitFor({ state: "attached" });
+      assert.equal(await token(page), `"Fixture UI Font", "Hiragino Sans", ${BUILT_IN}`, "a reload keeps the typed list");
+      await page.goto(`${origin}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(panes.web)}&settings=appearance&section=typography`);
+      await select.waitFor();
+      assert.equal(await select.inputValue(), "custom", "and Settings says it is a typed list");
 
-          await select.selectOption("default");
-          assert.equal(await token(page), "", "Default gives the stylesheet its token back");
-          assert.deepEqual(await stored(page), { own: "", inMain: false });
-          assert.equal(await dialog.getByRole("textbox", { name: "Custom interface font", exact: true }).count(), 0, "the field goes with Custom");
-          assert.deepEqual(errors, []);
-          console.log(`PASS ${width}px: Interface font System and a typed list lead --font-ui, a reload keeps it, Default restores the stylesheet's`);
-        } finally { await close(); }
-      }
+      await select.selectOption("default");
+      assert.equal(await token(page), "", "Default gives the stylesheet its token back");
+      assert.deepEqual(await stored(page), { own: "", inMain: false });
+      assert.equal(await dialog.getByRole("textbox", { name: "Custom interface font", exact: true }).count(), 0, "the field goes with Custom");
+      assert.deepEqual(errors, []);
+      console.log(`PASS ${width}px: Interface font System and a typed list lead --font-ui, a reload keeps it, Default restores the stylesheet's`);
+    } finally { await close(); }
+  }
 
-      for (const width of [390, 1440]) {
-        for (const [settings, uiFont, want] of [[{ chatFontFamily: "Georgia" }, "", /^Georgia, "Pretendard Variable"/], [{}, "system-ui", /^system-ui, sans-serif$/]] as const) {
-          const { page, errors, close } = await open(browser, width, settings, "&view=chat", uiFont);
-          try {
-            await page.locator(".composer-text").waitFor();
-            assert.match(await fontOf(page, ".composer-text"), want, `${width}px ${JSON.stringify(settings)}: the message box`);
-            assert.match(await fontOf(page, ".composer-measure"), want, `${width}px ${JSON.stringify(settings)}: its measure copy`);
-            assert.deepEqual(errors, []);
-            if (evidence && uiFont === "") await page.screenshot({ path: join(evidence, `composer-chat-font-${width}.png`) });
-          } finally { await close(); }
-        }
-        console.log(`PASS ${width}px: the message box takes the Chat font, else the interface font`);
-      }
-    } finally { await browser.close(); }
-  } finally { await server.stop(true); }
-} finally {
-  rmSync(app, { recursive: true, force: true });
-}
+  for (const width of [390, 1440]) {
+    for (const [settings, uiFont, want] of [[{ chatFontFamily: "Georgia" }, "", /^Georgia, "Pretendard Variable"/], [{}, "system-ui", /^system-ui, sans-serif$/]] as const) {
+      const { page, errors, close } = await open(browser, width, settings, "&view=chat", uiFont);
+      try {
+        await page.locator(".composer-text").waitFor();
+        assert.match(await fontOf(page, ".composer-text"), want, `${width}px ${JSON.stringify(settings)}: the message box`);
+        assert.match(await fontOf(page, ".composer-measure"), want, `${width}px ${JSON.stringify(settings)}: its measure copy`);
+        assert.deepEqual(errors, []);
+        if (evidence && uiFont === "") await page.screenshot({ path: join(evidence, `composer-chat-font-${width}.png`) });
+      } finally { await close(); }
+    }
+    console.log(`PASS ${width}px: the message box takes the Chat font, else the interface font`);
+  }
+});

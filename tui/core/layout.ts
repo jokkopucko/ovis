@@ -465,6 +465,7 @@ export class LayoutWrites {
   private serverRefused(action: string, answer: { readonly code: string; readonly message: string }): void {
     if (answer.code === "no_server") this.notice("ovis_server_none", { action }, true);
     else if (answer.code === "server_not_loopback") this.notice("ovis_server_address", { action }, true);
+    else if (answer.code === "ovis_desktop_not_running" || answer.code === "ovis_desktop_changed") this.notice(answer.code, {}, true);
     else this.notice("ovis_server_refused", { action, code: answer.code, message: answer.message });
   }
 

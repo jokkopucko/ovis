@@ -499,6 +499,7 @@ function parseOmoPending(screen: string, pending: readonly OmoAsk[]): ParsedProm
     steps: omoSteps(tabs, ask),
   }, {
     omoQuestion: ask.id ? { call: ask.id, index } : undefined,
+    omoData: ask.id && ask.questions.length === 1 && asked.id !== undefined ? { key: asked.id, labels: asked.options.map((option) => option.label.trim()) } : undefined,
     responder: "omo-pending", menuLabels: [...options.map((option) => option.label), "Type your reply"], selectedIndex: -1,
     checkedOptionIndices: [], customMenuIndex: asked.multiSelect ? null : options.length, rejectWithEscapeIndex: null,
     optionSteps: options.map(() => []),

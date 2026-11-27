@@ -1,4 +1,14 @@
 import type { PaneFindMatch, PaneScrollInfo } from "../../shared/protocol.ts";
+import type { GhosttyTerminal } from "./ghostty/terminal.ts";
+
+/** A new controller still displays the old owner's grid. Adopt its grant before drawing the first
+ * frame; otherwise an active driver ignores geometry echoes, which may lag a later local fit. */
+export function adoptPaneGrid(term: Pick<GhosttyTerminal, "cols" | "rows" | "resize">,
+  grid: { cols: number; rows: number; fixed?: boolean; windows_fit?: boolean }, wasFixed: boolean, drives: boolean): boolean {
+  if (drives && !(wasFixed && grid.fixed === false && grid.windows_fit)) return false;
+  if (term.cols !== grid.cols || term.rows !== grid.rows) term.resize(grid.cols, grid.rows);
+  return true;
+}
 
 export interface ViewportCell { chars: string; width: number }
 export interface FindCellRect { row: number; col: number; width: number; current: boolean }

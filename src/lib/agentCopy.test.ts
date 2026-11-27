@@ -1,5 +1,11 @@
-import { describe, expect, it } from "bun:test";
+import { beforeAll, describe, expect, it } from "bun:test";
 import { unwrapAgentRows } from "./agentCopy.ts";
+import { GhosttyVt } from "./ghostty/vt.ts";
+
+beforeAll(async () => {
+  const vt = await GhosttyVt.create(20, 2);
+  vt.dispose();
+});
 
 const REPLY = "Summary line. The build command is `npx example-cli@latest build -p ios --profile beta --auto-submit` and it should be copied exactly as one line without any extra spaces. Summary line. The build command is npx example-cli@latest build -p ios --profile beta --auto-submit and it should be copied exactly as one line.";
 
@@ -11,6 +17,10 @@ describe("unwrapAgentRows", () => {
     expect(unwrapAgentRows(copied, 158, 2, [REPLY])).toBe(REPLY.replaceAll("`", ""));
     expect(unwrapAgentRows("⏺ The reply wraps\n  here.", 18, 0, ["The reply wraps here."])).toBe("⏺ The reply wraps here.");
     expect(unwrapAgentRows("⏺ The reply wraps\n  he", 18, 0, ["The reply wraps here."])).toBe("⏺ The reply wraps he");
+  });
+
+  it("uses the cells of a ZWJ family, not its code points, to recognize a wrap", () => {
+    expect(unwrapAgentRows("  a👨‍👩‍👧\n  bee", 7, 0, ["a👨‍👩‍👧 bee"])).toBe("  a👨‍👩‍👧 bee");
   });
 
   it("keeps every break the agent's own text does not show as a wrap (#2575 review)", () => {

@@ -6,17 +6,16 @@ import type { UsageCount, UsageGlance } from "./settings.ts";
 import { currentLocale, t } from "./i18n.ts";
 import { lastSeen } from "./lastSeen.ts";
 import { usePageVisible } from "./visibility.ts";
+import { PROVIDER_NAME } from "./usage-provider-names.ts";
+
+export { PROVIDER_NAME } from "./usage-provider-names.ts";
 
 /** The server asks a provider at most every 5 minutes; a minute here only picks that up sooner. */
 const POLL_MS = 60_000;
 export const HIGH_PERCENT = 80;
 
-export const PROVIDER_NAME: Readonly<Record<UsageProviderId, string>> = {
-  claude: "Claude", codex: "Codex", cursor: "Cursor", copilot: "GitHub Copilot", grok: "Grok", antigravity: "Antigravity", opencode: "OpenCode",
-};
-
 export const PROVIDER_MARK: Readonly<Record<UsageProviderId, string>> = {
-  claude: "claude", codex: "codex", cursor: "cursor", copilot: "copilot", grok: "grok", antigravity: "agy", opencode: "opencode",
+  claude: "claude", codex: "codex", cursor: "cursor", copilot: "copilot", grok: "grok", antigravity: "agy", opencode: "opencode", devin: "devin", kimi: "kimi",
 };
 
 export const WINDOW_LABEL: Readonly<Record<UsageWindow["kind"], string>> = {
@@ -54,7 +53,7 @@ export function composerUsage(providers: readonly ProviderUsage[], agent: string
 }
 
 export function statusWindows(usage: ProviderUsage): UsageWindow[] {
-  return (["session", "week"] as const)
+  return (usage.id === "devin" ? ["session", "day", "week"] as const : ["session", "week"] as const)
     .map((kind) => usage.windows.find((window) => window.kind === kind && window.scope === null))
     .filter((window): window is UsageWindow => window !== undefined);
 }
@@ -184,15 +183,18 @@ export function formatResetIn(resetsAt: string | null, now: number): string | nu
 
 export function creditsText(credits: UsageCredits): string {
   const locale = currentLocale();
+  const money = (amount: number, currency: string): string => {
+    try { return new Intl.NumberFormat(locale, { style: "currency", currency }).format(amount); } catch { return `${amount} ${currency}`; }
+  };
   if (credits.kind === "balance") {
     if (credits.unlimited) return t("Unlimited");
-    return credits.balance === null ? t("Available") : t("{n} credits", { n: new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format(credits.balance) });
+    if (credits.balance === null) return t("Available");
+    return credits.currency === undefined
+      ? t("{n} credits", { n: new Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format(credits.balance) })
+      : money(credits.balance, credits.currency);
   }
-  const money = (amount: number): string => {
-    try { return new Intl.NumberFormat(locale, { style: "currency", currency: credits.currency }).format(amount); } catch { return `${amount} ${credits.currency}`; }
-  };
-  if (credits.limit !== null) return `${credits.used === null ? "—" : money(credits.used)} / ${money(credits.limit)}`;
-  return credits.used === null ? t("Unlimited") : t("{amount} spent", { amount: money(credits.used) });
+  if (credits.limit !== null) return `${credits.used === null ? "—" : money(credits.used, credits.currency)} / ${money(credits.limit, credits.currency)}`;
+  return credits.used === null ? t("Unlimited") : t("{amount} spent", { amount: money(credits.used, credits.currency) });
 }
 
 export function formatPercent(value: number): string {

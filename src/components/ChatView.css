@@ -535,6 +535,107 @@
 .markdown-h5 { color: inherit; font-weight: var(--fw-semibold); line-height: var(--lh-heading); }
 .markdown-h6 { color: var(--text-dim); font-weight: var(--fw-semibold); line-height: var(--lh-heading); }
 
+/* Chat Markdown style presets (Settings → Appearance → Chat Markdown, `data-markdown-style` on <html>).
+   Scoped to assistant turns only so user bubbles, file previews and fenced code tokens stay untouched;
+   clickable file chips (`.markdown-file`) and link code pills keep their own affordance.
+   `plain` inherits the neutral base rules above unchanged. */
+[data-markdown-style="editorial"] .chat-turn-agent .markdown :is(.markdown-h1, .markdown-h2, .markdown-h3) {
+  color: var(--text-strong);
+  letter-spacing: -0.01em;
+}
+[data-markdown-style="editorial"] .chat-turn-agent .markdown .markdown-h2 {
+  padding-bottom: var(--space-1);
+  border-bottom: var(--hairline) solid color-mix(in srgb, var(--border-strong) 55%, transparent);
+}
+[data-markdown-style="editorial"] .chat-turn-agent .markdown :is(.markdown-h4, .markdown-h5) {
+  color: color-mix(in srgb, var(--text-strong) 80%, var(--text-dim));
+}
+/* ordered numbers are text and keep the reply's color; only bullets take the tint */
+[data-markdown-style="editorial"] .chat-turn-agent .markdown ul.markdown-list > li::marker {
+  color: color-mix(in srgb, var(--accent) 60%, var(--text-dim));
+}
+[data-markdown-style="editorial"] .chat-turn-agent .markdown blockquote {
+  border-left-color: color-mix(in srgb, var(--accent) 55%, var(--border-strong));
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
+  padding: var(--space-2) var(--space-3);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+[data-markdown-style="editorial"] .chat-turn-agent .markdown blockquote > :last-child {
+  margin-bottom: 0;
+}
+/* one wash however deep the quote: stacked washes darken the ground under --text-dim */
+:is([data-markdown-style="editorial"], [data-markdown-style="tinted"]) .chat-turn-agent .markdown blockquote blockquote {
+  background: none;
+}
+[data-markdown-style="editorial"] .chat-turn-agent .markdown :not(pre):not(.markdown-file):not(.markdown-code-link):not(a) > code {
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg));
+  border: var(--hairline) solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  /* one text color, never a mix of two: an imported theme may put them on either side of its ground */
+  color: var(--text-strong);
+}
+[data-markdown-style="editorial"] .chat-turn-agent .markdown th {
+  background: color-mix(in srgb, var(--bg-elevated) 75%, var(--bg));
+  color: var(--text-strong);
+}
+
+[data-markdown-style="tinted"] .chat-turn-agent .markdown {
+  --markdown-heading: color-mix(in srgb, var(--syntax-function) 42%, var(--text-strong));
+  --markdown-subheading: color-mix(in srgb, var(--syntax-type) 38%, var(--text-strong));
+  --markdown-inline-code: color-mix(in srgb, var(--syntax-keyword) 38%, var(--text-strong));
+}
+[data-markdown-style="tinted"] .chat-turn-agent .markdown :is(.markdown-h1, .markdown-h2) {
+  color: var(--markdown-heading);
+}
+[data-markdown-style="tinted"] .chat-turn-agent .markdown :is(.markdown-h3, .markdown-h4) {
+  color: var(--markdown-subheading);
+}
+[data-markdown-style="tinted"] .chat-turn-agent .markdown :is(.markdown-h5, .markdown-h6) {
+  color: var(--text-dim);
+}
+[data-markdown-style="tinted"] .chat-turn-agent .markdown .markdown-list > li::marker {
+  color: color-mix(in srgb, var(--syntax-function) 55%, var(--text-dim));
+}
+[data-markdown-style="tinted"] .chat-turn-agent .markdown blockquote {
+  border-left-color: color-mix(in srgb, var(--syntax-type) 55%, var(--border-strong));
+  background: color-mix(in srgb, var(--syntax-type) 4%, transparent);
+  padding: var(--space-2) var(--space-3);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+[data-markdown-style="tinted"] .chat-turn-agent .markdown blockquote > :last-child {
+  margin-bottom: 0;
+}
+[data-markdown-style="tinted"] .chat-turn-agent .markdown :not(pre):not(.markdown-file):not(.markdown-code-link):not(a) > code {
+  background: color-mix(in srgb, var(--syntax-keyword) 6%, var(--bg));
+  border: var(--hairline) solid color-mix(in srgb, var(--syntax-keyword) 16%, var(--border));
+  color: var(--markdown-inline-code);
+}
+[data-markdown-style="tinted"] .chat-turn-agent .markdown th {
+  background: color-mix(in srgb, var(--bg-elevated) 75%, var(--bg));
+  color: var(--markdown-subheading);
+}
+[data-markdown-style="tinted"] .chat-turn-agent .markdown :is(.markdown-h1, .markdown-h2, .markdown-h3, .markdown-h4, .markdown-h5, .markdown-h6, a) :is(strong, b, em, i) {
+  color: inherit;
+}
+
+[data-markdown-style="colorful"] .chat-turn-agent .markdown {
+  --markdown-heading: color-mix(in srgb, var(--syntax-function) 70%, var(--text-strong));
+  --markdown-subheading: color-mix(in srgb, var(--syntax-type) 70%, var(--text-strong));
+  --markdown-detail: color-mix(in srgb, var(--syntax-meta) 70%, var(--text-strong));
+  --markdown-strong: color-mix(in srgb, var(--syntax-variable) 70%, var(--text-strong));
+  --markdown-emphasis: color-mix(in srgb, var(--syntax-meta) 70%, var(--text-strong));
+  --markdown-inline-code: color-mix(in srgb, var(--syntax-keyword) 70%, var(--text-strong));
+}
+[data-markdown-style="colorful"] .chat-turn-agent .markdown :is(.markdown-h1, .markdown-h2) { color: var(--markdown-heading); }
+[data-markdown-style="colorful"] .chat-turn-agent .markdown :is(.markdown-h3, .markdown-h4) { color: var(--markdown-subheading); }
+[data-markdown-style="colorful"] .chat-turn-agent .markdown :is(.markdown-h5, .markdown-h6) { color: var(--markdown-detail); }
+[data-markdown-style="colorful"] .chat-turn-agent .markdown :is(strong, b) { color: var(--markdown-strong); }
+[data-markdown-style="colorful"] .chat-turn-agent .markdown :is(em, i) { color: var(--markdown-emphasis); }
+[data-markdown-style="colorful"] .chat-turn-agent .markdown :not(pre):not(.markdown-file):not(.markdown-code-link):not(a) > code { color: var(--markdown-inline-code); }
+[data-markdown-style="colorful"] .chat-turn-agent .markdown .markdown-list > li::marker { color: var(--markdown-heading); }
+[data-markdown-style="colorful"] .chat-turn-agent .markdown blockquote { border-left-color: var(--markdown-subheading); }
+[data-markdown-style="colorful"] .chat-turn-agent .markdown th { color: var(--markdown-subheading); }
+[data-markdown-style="colorful"] .chat-turn-agent .markdown :is(.markdown-h1, .markdown-h2, .markdown-h3, .markdown-h4, .markdown-h5, .markdown-h6, a) :is(strong, b, em, i) { color: inherit; }
+
 /* A marker sits outside its item, in this indent, and is drawn in the Chat font: in a monospace face
    every digit and the ". " after it take a whole cell (`1ch`), so a fixed 20px cut "1." off on the
    left (#1993). The indent is the widest marker in cells, never less than the 20px a bullet always

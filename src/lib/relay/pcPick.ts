@@ -1,6 +1,6 @@
 /** Which saved PCs the hosted shell opens by itself (shell.tsx): a launch, and a move off a PC that went away. */
 import { isNewAccountPc, type MyPc } from "../account/myPcs.ts";
-import { newPcNoticeClosed, newPcNoticeKey } from "../account/newPcNotice.ts";
+import { newPcNoticeKey, pcNoticeClosed } from "../account/newPcNotice.ts";
 import type { RelayDevice } from "./device.ts";
 import type { ProbeTarget } from "./pcStatus.ts";
 
@@ -18,17 +18,20 @@ export function openablePcs(devices: readonly RelayDevice[]): RelayDevice[] {
  * t13r, ruling b), opened through the account key as a PC's own page does. All must hold:
  * - the PC trusts the account's device list for this device's registered key (`accountOpen`, with a verified `join`);
  * - its listing is confirmed: the PC itself pulled this account's mailbox with its server proof (`last_seen_at`), since
- *   anyone can list any PC in their directory;
+ *   anyone can list any PC in their directory; or this device's verified list holds the PC (`byList`), which no
+ *   listing can make it do;
  * - it is past its new window (`new_until`): a PC inside its 24 hours, or whose window does not parse, stays under condition 3;
  * - no saved row here: a PC an introduction alone saved (introduction-only) or a pairing never finished is not one;
- * - no "added before you joined" notice for it is still open on this device (NewPcNotices.tsx).
+ * - no "added before you joined" notice for it is still open on this device (NewPcNotices.tsx);
+ * - it is not a PC that this device's list of the account does not hold (`notInList`): such a row opens on a tap alone.
  */
 export function accountOpenablePcs(pcs: readonly MyPc[], here: { readonly account: string; readonly devices: readonly RelayDevice[]; readonly now: number }): ProbeTarget[] {
   const saved = new Set(here.devices.map((device) => device.server_id));
   const noticeOpen = (pc: MyPc): boolean => pc.admitted_before_you === true
-    && !newPcNoticeClosed(newPcNoticeKey(here.account, { server_id: pc.server_id, admitted_at: pc.admitted_at ?? null, new_until: pc.new_until ?? null }));
+    && !pcNoticeClosed(newPcNoticeKey(here.account, { server_id: pc.server_id, admitted_at: pc.admitted_at ?? null, new_until: pc.new_until ?? null }));
   return pcs.flatMap((pc) => !pc.paired && pc.join !== undefined && pc.accountOpen === true
-    && pc.last_seen_at !== null
+    && (pc.last_seen_at !== null || pc.byList === true)
+    && pc.notInList !== true
     && !isNewAccountPc(pc, here.now)
     && !saved.has(pc.server_id)
     && !noticeOpen(pc)

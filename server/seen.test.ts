@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, mock, spyOn } from "bun:test";
-import * as fs from "node:fs";
+import * as fs from "node:fs/promises";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,17 +23,17 @@ const post = (store: SeenStore, body: string) => handleSeenRequest(new Request("
 const finish = (pane: string, id: number, answer?: string): SeenFinish => ({ pc: "local", epoch: "e1", pane, id, ...(answer === undefined ? {} : { answer }) });
 
 describe("read finishes shared by the browsers of a server", () => {
-  it("keeps the greatest finish per pane, adds a missing answer, and tells only a change", () => {
+  it("keeps the greatest finish per pane, adds a missing answer, and tells only a change", async () => {
     const dir = root();
     const store = new SeenStore(dir);
     const told: SeenFinish[] = [];
     store.subscribe((changed) => told.push(changed));
-    store.record(finish("a", 2));
-    store.record(finish("a", 1, "older"));
-    store.record(finish("a", 2));
-    store.record(finish("a", 2, "answer"));
-    store.record(finish("a", 2, "another"));
-    store.record({ ...finish("a", 1), epoch: "e2" });
+    await store.record(finish("a", 2));
+    await store.record(finish("a", 1, "older"));
+    await store.record(finish("a", 2));
+    await store.record(finish("a", 2, "answer"));
+    await store.record(finish("a", 2, "another"));
+    await store.record({ ...finish("a", 1), epoch: "e2" });
     expect(told).toEqual([finish("a", 2), finish("a", 2, "answer"), { ...finish("a", 1), epoch: "e2" }]);
     expect(store.list()).toEqual([finish("a", 2, "answer"), { ...finish("a", 1), epoch: "e2" }]);
     expect(new SeenStore(dir).list()).toEqual(store.list());
@@ -59,14 +59,14 @@ describe("read finishes shared by the browsers of a server", () => {
     expect(store.list()).toEqual([]);
   });
 
-  it("drops the oldest records past the limit", () => {
+  it("drops the oldest records past the limit", async () => {
     // a full store in one write: every record() is a durable write of the whole file, and 500 of them
     // took a minute on a loaded runner's disk
     const dir = root();
     writeFileSync(join(dir, "seen.json"), `${JSON.stringify(Array.from({ length: MAX_SEEN }, (_, pane) => finish(`p${pane}`, 1)))}\n`);
     const store = new SeenStore(dir);
-    store.record(finish(`p${MAX_SEEN}`, 1));
-    store.record(finish("p1", 2));
+    await store.record(finish(`p${MAX_SEEN}`, 1));
+    await store.record(finish("p1", 2));
     const panes = store.list().map((kept) => kept.pane);
     expect(panes).toHaveLength(MAX_SEEN);
     expect(panes).not.toContain("p0");
@@ -78,9 +78,9 @@ describe("read finishes shared by the browsers of a server", () => {
     const dir = root();
     const old = { ...finish("a", 4), epoch: "e0" };
     const remote = { ...finish("a", 2), pc: "remote", epoch: "r0" };
-    new SeenStore(dir).record(old);
-    new SeenStore(dir).record(remote);
-    new SeenStore(dir).record(finish("b", 1));
+    await new SeenStore(dir).record(old);
+    await new SeenStore(dir).record(remote);
+    await new SeenStore(dir).record(finish("b", 1));
     const ended = new Set(["local/e0"]);
     const store = new SeenStore(dir, (pc, epoch) => ended.has(`${pc}/${epoch}`));
     const told: SeenFinish[] = [];
@@ -90,7 +90,7 @@ describe("read finishes shared by the browsers of a server", () => {
     expect(await (await post(store, JSON.stringify({ ...old, id: 5 }))).json()).toEqual({ ...old, id: 5 });
     expect(told).toEqual([]);
     expect(JSON.parse(readFileSync(join(dir, "seen.json"), "utf8"))).toEqual([old, remote, finish("b", 1)]);
-    store.record(finish("c", 1));
+    await store.record(finish("c", 1));
     expect(JSON.parse(readFileSync(join(dir, "seen.json"), "utf8"))).toEqual([remote, finish("b", 1), finish("c", 1)]);
     expect(told).toEqual([finish("c", 1)]);
     ended.add("remote/r0");
@@ -170,7 +170,7 @@ describe("read finishes shared by the browsers of a server", () => {
 
   it("sends every record when a browser connects to the machine events, then each change", async () => {
     const store = new SeenStore(root());
-    store.record(finish("a", 1));
+    await store.record(finish("a", 1));
     const manager = { subscribe: () => () => undefined } as unknown as MachineManager;
     const abort = new AbortController();
     const response = await handleMachineRequest(new Request("http://127.0.0.1:7317/api/machines/events", { signal: abort.signal }), manager,
@@ -190,7 +190,7 @@ describe("read finishes shared by the browsers of a server", () => {
     try {
       while (events.length === 0) await read();
       expect(events).toEqual([{ type: "seen", finishes: [finish("a", 1)] }]);
-      store.record(finish("b", 4));
+      await store.record(finish("b", 4));
       while (events.length === 1) await read();
       expect(events[1]).toEqual({ type: "seen", finishes: [finish("b", 4)] });
     } finally {
@@ -224,17 +224,17 @@ describe("a damaged read-finish file", () => {
     expect(readFileSync(bad(dir))).toEqual(current);
     expectPrivate(bad(dir));
     expect(new SeenStore(dir).list()).toEqual([finish("a", 1)]);
-    store.record(finish("b", 2));
+    await store.record(finish("b", 2));
     expect(readFileSync(bad(dir))).toEqual(current);
     expect(files(dir)).toEqual(["seen.json", "seen.json.bad"]);
     const again = Buffer.from("]]");
     writeFileSync(file(dir), again);
-    new SeenStore(dir).record(finish("c", 3));
+    await new SeenStore(dir).record(finish("c", 3));
     expect(readFileSync(bad(dir))).toEqual(again);
     expect(files(dir)).toEqual(["seen.json", "seen.json.bad"]);
   });
 
-  it("preserves wrong-shaped documents privately: not a list", () => {
+  it("preserves wrong-shaped documents privately: not a list", async () => {
     quiet();
     const dir = root();
     const bytes = Buffer.from('{"finishes":[{"pc":"local","epoch":"e1","pane":"a","id":1}]}');
@@ -243,14 +243,14 @@ describe("a damaged read-finish file", () => {
     expect(store.list()).toEqual([]);
     expect(readFileSync(file(dir))).toEqual(bytes);
     expect(files(dir)).toEqual(["seen.json"]);
-    store.record(finish("b", 1));
+    await store.record(finish("b", 1));
     expect(readFileSync(bad(dir))).toEqual(bytes);
     expectPrivate(bad(dir));
     expect(files(dir)).toEqual(["seen.json", "seen.json.bad"]);
     expect(new SeenStore(dir).list()).toEqual([finish("b", 1)]);
   });
 
-  it("preserves wrong-shaped documents privately: rows that are not finishes", () => {
+  it("preserves wrong-shaped documents privately: rows that are not finishes", async () => {
     const logged = quiet();
     const dir = root();
     const bytes = Buffer.from(JSON.stringify([finish("a", 2), { pc: "local", epoch: "e1", pane: "b", id: 0 }]));
@@ -260,13 +260,13 @@ describe("a damaged read-finish file", () => {
     expect(readFileSync(file(dir))).toEqual(bytes);
     expect(files(dir)).toEqual(["seen.json"]);
     expect(logged.mock.calls.flat().join("\n")).toContain("not a list of read finishes");
-    store.record(finish("c", 1));
+    await store.record(finish("c", 1));
     expect(readFileSync(bad(dir))).toEqual(bytes);
     expectPrivate(bad(dir));
     expect(new SeenStore(dir).list()).toEqual([finish("a", 2), finish("c", 1)]);
   });
 
-  it("keeps a manual repair rather than quarantining it", () => {
+  it("keeps a manual repair rather than quarantining it", async () => {
     quiet();
     const dir = root();
     writeFileSync(file(dir), "not json");
@@ -274,12 +274,12 @@ describe("a damaged read-finish file", () => {
     const told: SeenFinish[] = [];
     store.subscribe((changed) => told.push(changed));
     writeFileSync(file(dir), JSON.stringify([finish("b", 2)]));
-    expect(store.record(finish("a", 1))).toEqual(finish("a", 1));
+    expect(await store.record(finish("a", 1))).toEqual(finish("a", 1));
     expect(store.list()).toEqual([finish("b", 2), finish("a", 1)]);
     expect(told).toEqual([finish("a", 1)]);
     expect(files(dir)).toEqual(["seen.json"]);
     expect(new SeenStore(dir).list()).toEqual([finish("b", 2), finish("a", 1)]);
-    expect(store.record(finish("b", 1))).toEqual(finish("b", 2));
+    expect(await store.record(finish("b", 1))).toEqual(finish("b", 2));
     expect(told).toHaveLength(1);
   });
 
@@ -334,13 +334,14 @@ describe("a damaged read-finish file", () => {
     const store = new SeenStore(dir);
     const told: SeenFinish[] = [];
     store.subscribe((changed) => told.push(changed));
-    const rename = fs.renameSync;
-    const spy = spyOn(fs, "renameSync").mockImplementation((from, to) => {
+    const rename = fs.rename;
+    const spy = spyOn(fs, "rename").mockImplementation(async (from, to) => {
       if (String(from).endsWith(".tmp")) throw Object.assign(new Error("EIO: i/o error, rename"), { code: "EIO" });
-      rename(from, to);
+      await rename(from, to);
     });
     expect((await post(store, JSON.stringify(finish("a", 1)))).status).toBe(500);
     spy.mockRestore();
+    expect(readFileSync(file(dir))).toEqual(bytes);
     expect(readFileSync(bad(dir))).toEqual(bytes);
     expect(files(dir).filter((name) => name.endsWith(".bad"))).toEqual(["seen.json.bad"]);
     expect(store.list()).toEqual([]);
@@ -352,7 +353,7 @@ describe("a damaged read-finish file", () => {
     expect(new SeenStore(dir).list()).toEqual([finish("a", 1)]);
   });
 
-  it("preserves a file damaged after a valid start on the first write", () => {
+  it("preserves a file damaged after a valid start on the first write", async () => {
     quiet();
     const dir = root();
     writeFileSync(file(dir), JSON.stringify([finish("a", 1)]));
@@ -360,14 +361,14 @@ describe("a damaged read-finish file", () => {
     expect(store.list()).toEqual([finish("a", 1)]);
     const bytes = Buffer.from("{damaged after the start");
     writeFileSync(file(dir), bytes);
-    store.record(finish("b", 1));
+    await store.record(finish("b", 1));
     expect(readFileSync(bad(dir))).toEqual(bytes);
     expectPrivate(bad(dir));
     expect(files(dir)).toEqual(["seen.json", "seen.json.bad"]);
     expect(new SeenStore(dir).list()).toEqual([finish("b", 1)]);
   });
 
-  it("holds nothing of a repair whose replacement failed, and checks the file again on retry", () => {
+  it("holds nothing of a repair whose replacement failed, and checks the file again on retry", async () => {
     quiet();
     const dir = root();
     writeFileSync(file(dir), "{damaged");
@@ -375,19 +376,19 @@ describe("a damaged read-finish file", () => {
     const told: SeenFinish[] = [];
     store.subscribe((changed) => told.push(changed));
     writeFileSync(file(dir), JSON.stringify([finish("r", 3)]));
-    const rename = fs.renameSync;
-    const spy = spyOn(fs, "renameSync").mockImplementation((from, to) => {
+    const rename = fs.rename;
+    const spy = spyOn(fs, "rename").mockImplementation(async (from, to) => {
       if (String(from).endsWith(".tmp")) throw Object.assign(new Error("EIO: i/o error, rename"), { code: "EIO" });
-      rename(from, to);
+      await rename(from, to);
     });
-    expect(() => store.record(finish("a", 1))).toThrow("EIO");
+    await expect(store.record(finish("a", 1))).rejects.toThrow("EIO");
     spy.mockRestore();
     expect(store.list()).toEqual([]);
     expect(told).toEqual([]);
     expect(files(dir).some((name) => name.endsWith(".bad"))).toBe(false);
     const changed = Buffer.from("{damaged before the retry");
     writeFileSync(file(dir), changed);
-    expect(store.record(finish("a", 1))).toEqual(finish("a", 1));
+    expect(await store.record(finish("a", 1))).toEqual(finish("a", 1));
     expect(readFileSync(bad(dir))).toEqual(changed);
     expectPrivate(bad(dir));
     expect(files(dir)).toEqual(["seen.json", "seen.json.bad"]);
@@ -397,13 +398,13 @@ describe("a damaged read-finish file", () => {
 });
 
 describe("a pane moved under a new ID (#1503)", () => {
-  it("reads under the new ID what was read under the old one, renumbered, on its own PC only, and tells every browser", () => {
+  it("reads under the new ID what was read under the old one, renumbered, on its own PC only, and tells every browser", async () => {
     const store = new SeenStore(root());
-    store.record(finish("w1:p1", 3, "answer"));
-    store.record({ ...finish("w1:p1", 2), pc: "other" });
+    await store.record(finish("w1:p1", 3, "answer"));
+    await store.record({ ...finish("w1:p1", 2), pc: "other" });
     const told: SeenFinish[] = [];
     store.subscribe((changed) => told.push(changed));
-    store.moved("local", "w1:p1", "w2:p1", (id) => id + 4);
+    await store.moved("local", "w1:p1", "w2:p1", (id) => id + 4);
     expect(told).toEqual([finish("w2:p1", 7, "answer")]);
     expect(store.list()).toContainEqual(finish("w2:p1", 7, "answer"));
     expect(store.list()).toContainEqual({ ...finish("w1:p1", 2), pc: "other" });

@@ -71,4 +71,5 @@ export const UPDATES_JA: Record<string, string> = {
   "Downloading Ovis {version}… {percent}%": "Ovis {version} をダウンロードしています… {percent}%",
   "The update did not go through: {error}": "アップデートできませんでした: {error}",
   "Update": "更新",
+  "This phone's preview app. A check downloads a newer preview, and Restart to Update installs it.": "このスマートフォンのプレビューアプリです。確認すると新しいプレビューをダウンロードし、「再起動してアップデート」でインストールします。",
 };

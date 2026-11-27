@@ -102,6 +102,7 @@ function projectFolders(cwd: string, home: string): string[] {
 
 export const source: AgentCommandSource = {
   builtins: Object.keys(descriptions).filter((name) => !(agentHidden as readonly string[]).includes(name)),
+  chatPaletteHidden: ["allow-all", "autopilot", "plan"],
   descriptions,
   pin: "1.0.105",
   agentHidden,

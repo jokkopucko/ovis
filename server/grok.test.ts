@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { ConversationReadPending, forgetTranscriptState, HistoryChanged, transcriptPage, transcriptToolOutput } from "./conversation.ts";
 import { grokImage, grokToolOutput, grokProjection, GrokUnavailable, parseGrokTranscript } from "./grok.ts";
 import { darwinProcess } from "./claude-store.ts";
-import { grokHeldSessionsFromLsof, grokHeldTranscript, grokHomeFromEnvironment, grokLsofEvidence, grokPaneProcesses, grokTranscriptPath, isGrokExecutable, resolveGrokStore } from "./grok-store.ts";
+import { grokActiveSession, grokHeldSessionsFromLsof, grokHeldTranscript, grokHomeFromEnvironment, grokLsofEvidence, grokPaneProcesses, grokTranscriptPath, isGrokExecutable, resolveGrokStore } from "./grok-store.ts";
 import * as herdr from "./herdr/client.ts";
 import type { ConversationPart, HerdrPane } from "../shared/protocol.ts";
 
@@ -534,6 +534,315 @@ describe("exact store lookup", () => {
     expect(grokHomeFromEnvironment("USERPROFILE=/user\0")).toBe("/user/.grok");
     expect(grokHomeFromEnvironment("HOME=/user\0GROK_HOME=relative\0")).toBeNull();
   });
+  test("active_sessions.json selects strictly latest opened_at for matching pid and pid_start and rejects malformed or oversized files", () => {
+    const home = realpathSync(root);
+    const registry = join(home, "active_sessions.json");
+    const entry = (overrides: Record<string, unknown> = {}) => ({
+      session_id: "01a21759-5ab0-71c1-829f-5e69f545fd48",
+      pid: 487620,
+      pid_start: 15502352,
+      cwd: "/tmp/grokprobe",
+      opened_at: "2026-11-26T10:14:21.720942887Z",
+      ...overrides,
+    });
+    expect(grokActiveSession(home, 487620, 15502352)).toBeNull();
+    writeFileSync(registry, JSON.stringify([]));
+    expect(grokActiveSession(home, 487620, 15502352)).toBeNull();
+    // pid and pid_start must both match
+    writeFileSync(registry, JSON.stringify([
+      entry({ session_id: "older-session", opened_at: "2026-11-26T10:14:21.720942887Z" }),
+      entry({ session_id: "newer-session", opened_at: "2026-11-26T10:17:37.758289633Z" }),
+      entry({ session_id: "other-pid", pid: 487621, opened_at: "2026-11-26T12:00:00Z" }),
+      entry({ session_id: "other-start", pid_start: 15502353, opened_at: "2026-11-26T12:00:00Z" }),
+    ]));
+    expect(grokActiveSession(home, 487620, 15502352)).toBe("newer-session");
+    expect(grokActiveSession(home, 487620, 99999999)).toBeNull();
+    expect(grokActiveSession(home, 999999, 15502352)).toBeNull();
+    // tied latest timestamps (the same millisecond, and across timezone offsets) return null
+    writeFileSync(registry, JSON.stringify([
+      entry({ session_id: "a", opened_at: "2026-11-26T10:14:21.720942887Z" }),
+      entry({ session_id: "b", opened_at: "2026-11-26T10:14:21.720942888Z" }),
+    ]));
+    expect(grokActiveSession(home, 487620, 15502352)).toBeNull();
+    writeFileSync(registry, JSON.stringify([
+      entry({ session_id: "a", opened_at: "2026-11-26T10:14:21.720000000Z" }),
+      entry({ session_id: "b", opened_at: "2026-11-26T19:14:21.72+09:00" }),
+    ]));
+    expect(grokActiveSession(home, 487620, 15502352)).toBeNull();
+    // tied older entries do not block a strictly newer entry
+    writeFileSync(registry, JSON.stringify([
+      entry({ session_id: "a", opened_at: "2026-11-26T10:14:21Z" }),
+      entry({ session_id: "b", opened_at: "2026-11-26T10:14:21Z" }),
+      entry({ session_id: "c", opened_at: "2026-11-26T10:14:22Z" }),
+    ]));
+    expect(grokActiveSession(home, 487620, 15502352)).toBe("c");
+    // malformed payloads and invalid fields fail closed
+    for (const bad of [
+      "{not json",
+      JSON.stringify({ session_id: "a" }),
+      JSON.stringify([null]),
+      JSON.stringify([entry({ session_id: "../escape" })]),
+      JSON.stringify([entry({ session_id: "" })]),
+      JSON.stringify([entry({ pid: "487620" })]),
+      JSON.stringify([entry({ pid: 0 })]),
+      JSON.stringify([entry({ pid_start: -1 })]),
+      JSON.stringify([entry({ pid_start: 1.5 })]),
+      JSON.stringify([entry({ opened_at: "not-a-timestamp" })]),
+      JSON.stringify([entry({ cwd: 123 })]),
+      // a malformed sibling entry also fails closed
+      JSON.stringify([entry(), entry({ pid: 123, session_id: "../bad" })]),
+    ]) {
+      writeFileSync(registry, bad);
+      expect(grokActiveSession(home, 487620, 15502352)).toBeNull();
+    }
+    // oversized registry (> 1 MiB) fails closed
+    writeFileSync(registry, `[${JSON.stringify(entry())}]${" ".repeat(1024 * 1024)}`);
+    expect(grokActiveSession(home, 487620, 15502352)).toBeNull();
+  });
+
+  test.skipIf(process.platform !== "linux" || !existsSync("/proc/self/fd"))(
+    "falls back to active_sessions.json on Linux when herdr reports no session, keeps herdr priority, and still confirms via held writes",
+    async () => {
+      const home = realpathSync(root);
+      const firstId = "01a21759-5ab0-71c1-829f-5e69f545fd48";
+      const secondId = "01a2175c-5884-7650-8dde-30650861708a";
+      const firstTranscript = join(home, "sessions", "%2Ffiction", firstId, "updates.jsonl");
+      const secondTranscript = join(home, "sessions", "%2Ffiction", secondId, "updates.jsonl");
+      const firstEvents = join(dirname(firstTranscript), "events.jsonl");
+      const secondEvents = join(dirname(secondTranscript), "events.jsonl");
+      for (const file of [firstTranscript, secondTranscript]) { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, user(0)); }
+      writeFileSync(firstEvents, "");
+      writeFileSync(secondEvents, "");
+      utimesSync(firstEvents, 100, 100);
+      utimesSync(secondEvents, 200, 200);
+      const executable = join(home, "grok");
+      copyFileSync(process.execPath, executable);
+      const fds = [openSync(firstEvents, "r"), openSync(secondEvents, "r")];
+      const child = spawn(executable, ["-e", "process.stdout.write('running\\n'); process.stdin.resume()"], {
+        stdio: ["pipe", "pipe", "ignore", ...fds], env: { ...process.env, HOME: "/bridge-home", GROK_HOME: home },
+      });
+      const running = once(child.stdout!, "data", { signal: AbortSignal.timeout(10_000) });
+      const basePane: HerdrPane = {
+        pane_id: "grok-fixture", agent: "grok", agent_status: "ready", focused: false,
+        revision: 0, tab_id: "tab-fixture", terminal_id: "terminal-fixture", workspace_id: "workspace-fixture",
+      };
+      const info = spyOn(herdr, "paneProcessInfo").mockResolvedValue({
+        pane_id: basePane.pane_id, foreground_processes: [{ pid: child.pid!, name: "grok", argv: [executable] }],
+      });
+      try {
+        await running;
+        const statText = readFileSync(`/proc/${child.pid!}/stat`, "utf8");
+        const pidStart = Number(statText.slice(statText.lastIndexOf(") ") + 2).split(" ")[19]);
+        const registry = join(home, "active_sessions.json");
+        // multi-session in the same process: latest opened_at is secondId, confirmed by newest held write
+        writeFileSync(registry, JSON.stringify([
+          { session_id: firstId, pid: child.pid!, pid_start: pidStart, cwd: "/tmp/grokprobe", opened_at: "2026-11-26T10:14:21.720942887Z" },
+          { session_id: secondId, pid: child.pid!, pid_start: pidStart, cwd: "/tmp/grokprobe", opened_at: "2026-11-26T10:17:37.758289633Z" },
+        ]));
+        expect(await resolveGrokStore(basePane)).toBe(secondTranscript);
+        // write times confirm, never select: if the earlier session was written more recently (/resume), stay on terminal
+        utimesSync(firstEvents, 300, 300);
+        expect(await resolveGrokStore(basePane)).toBeNull();
+        // herdr-reported session keeps priority over active_sessions.json
+        const herdrReported: HerdrPane = {
+          ...basePane,
+          agent_session: { agent: "grok", kind: "id", source: "herdr:grok", value: firstId },
+        };
+        expect(await resolveGrokStore(herdrReported)).toBe(firstTranscript);
+        // when herdr's report fails confirmation, do not fall back to active_sessions.json
+        utimesSync(firstEvents, 100, 100);
+        expect(await resolveGrokStore(herdrReported)).toBeNull();
+        // pid_start mismatch rejects
+        writeFileSync(registry, JSON.stringify([
+          { session_id: secondId, pid: child.pid!, pid_start: pidStart + 1, cwd: "/tmp/grokprobe", opened_at: "2026-11-26T10:17:37.758289633Z" },
+        ]));
+        expect(await resolveGrokStore(basePane)).toBeNull();
+        // tie rejects
+        writeFileSync(registry, JSON.stringify([
+          { session_id: firstId, pid: child.pid!, pid_start: pidStart, cwd: "/tmp/grokprobe", opened_at: "2026-11-26T10:17:37.758289633Z" },
+          { session_id: secondId, pid: child.pid!, pid_start: pidStart, cwd: "/tmp/grokprobe", opened_at: "2026-11-26T10:17:37.758289633Z" },
+        ]));
+        expect(await resolveGrokStore(basePane)).toBeNull();
+        // malformed rejects
+        writeFileSync(registry, "{broken");
+        expect(await resolveGrokStore(basePane)).toBeNull();
+        // the pid left the pane by the last foreground lookup (another pane's Grok reused it): never binds
+        writeFileSync(registry, JSON.stringify([
+          { session_id: secondId, pid: child.pid!, pid_start: pidStart, cwd: "/tmp/grokprobe", opened_at: "2026-11-26T10:17:37.758289633Z" },
+        ]));
+        utimesSync(firstEvents, 100, 100);
+        expect(await resolveGrokStore(basePane)).toBe(secondTranscript);
+        info.mockResolvedValueOnce({ pane_id: basePane.pane_id, foreground_processes: [{ pid: child.pid!, name: "grok", argv: [executable] }] })
+          .mockResolvedValueOnce({ pane_id: basePane.pane_id, foreground_processes: [] });
+        expect(await resolveGrokStore(basePane)).toBeNull();
+      } finally {
+        info.mockRestore();
+        const exited = once(child, "exit", { signal: AbortSignal.timeout(2000) });
+        child.kill();
+        await exited;
+        for (const fd of fds) closeSync(fd);
+      }
+    },
+  );
+
+  test.skipIf(process.platform !== "linux" || !existsSync("/proc/self/fd"))(
+    "resolves Grok behind an npm node/bun launcher both when listed with the native binary and when listed alone",
+    async () => {
+      const home = realpathSync(root);
+      const transcript = join(home, "sessions", "%2Ffiction", session, "updates.jsonl");
+      const events = join(dirname(transcript), "events.jsonl");
+      mkdirSync(dirname(transcript), { recursive: true });
+      writeFileSync(transcript, user(0));
+      writeFileSync(events, "");
+      const executable = join(home, "grok-1.0.92");
+      copyFileSync(process.execPath, executable);
+      // Spawn a stand-in launcher (process.execPath, whose /proc/<pid>/exe is bun, not grok)
+      // that spawns the native grok binary as its direct child holding events.jsonl.
+      const launcherScript = `
+        const { spawn } = require("node:child_process");
+        const { openSync } = require("node:fs");
+        const fd = openSync(process.env.TEST_EVENTS, "r");
+        const children = [];
+        const count = Number(process.env.TEST_CHILD_COUNT || "1");
+        let ready = 0;
+        for (let i = 0; i < count; i++) {
+          const child = spawn(process.env.TEST_GROK_EXE, ["-e", "process.stdout.write('ok\\\\n'); process.stdin.resume()"], {
+            stdio: ["pipe", "pipe", "ignore", fd], detached: process.env.TEST_DETACHED === "1",
+            env: { ...process.env, HOME: "/bridge-home", GROK_HOME: process.env.TEST_GROK_HOME },
+          });
+          children.push(child);
+          child.stdout.once("data", () => {
+            if (++ready === count) process.stdout.write(children.map((c) => c.pid).join(",") + "\\n");
+          });
+        }
+        if (count === 0) process.stdout.write("none\\n");
+        process.on("SIGTERM", () => { for (const c of children) c.kill("SIGKILL"); process.exit(0); });
+        process.stdin.resume();
+      `;
+      const startLauncher = async (childCount: number, detached = false) => {
+        const proc = spawn(process.execPath, ["-e", launcherScript], {
+          stdio: ["pipe", "pipe", "ignore"],
+          env: {
+            ...process.env,
+            TEST_EVENTS: events,
+            TEST_GROK_EXE: executable,
+            TEST_GROK_HOME: home,
+            TEST_CHILD_COUNT: String(childCount),
+            TEST_DETACHED: detached ? "1" : "0",
+          },
+        });
+        let chunk: Buffer;
+        try {
+          [chunk] = await once(proc.stdout!, "data", { signal: AbortSignal.timeout(10_000) }) as [Buffer];
+        } catch (error) {
+          // a launcher that never got ready still owns its children: SIGTERM makes it kill them
+          const exited = once(proc, "exit", { signal: AbortSignal.timeout(3000) });
+          proc.kill("SIGTERM");
+          await exited.catch(() => proc.kill("SIGKILL"));
+          throw error;
+        }
+        const text = chunk.toString("utf8").trim();
+        const childPids = text === "none" ? [] : text.split(",").map(Number);
+        return {
+          launcherPid: proc.pid!,
+          childPids,
+          stop: async () => {
+            const exited = once(proc, "exit", { signal: AbortSignal.timeout(3000) });
+            proc.kill("SIGTERM");
+            await exited;
+          },
+        };
+      };
+
+      const basePane: HerdrPane = {
+        pane_id: "grok-fixture", agent: "grok", agent_status: "ready", focused: false,
+        revision: 0, tab_id: "tab-fixture", terminal_id: "terminal-fixture", workspace_id: "workspace-fixture",
+      };
+      const reportedPane: HerdrPane = {
+        ...basePane,
+        agent_session: { agent: "grok", kind: "id", source: "herdr:grok", value: session },
+      };
+
+      const single = await startLauncher(1);
+      const childPid = single.childPids[0]!;
+      try {
+        const statText = readFileSync(`/proc/${childPid}/stat`, "utf8");
+        const pidStart = Number(statText.slice(statText.lastIndexOf(") ") + 2).split(" ")[19]);
+        writeFileSync(join(home, "active_sessions.json"), JSON.stringify([
+          { session_id: session, pid: childPid, pid_start: pidStart, cwd: "/tmp/grokprobe", opened_at: "2026-11-26T10:14:21.720942887Z" },
+        ]));
+
+        // 1) launcher + native listed together (classic herdr): prefers native
+        const both = spyOn(herdr, "paneProcessInfo").mockResolvedValue({
+          pane_id: basePane.pane_id,
+          foreground_processes: [
+            { pid: single.launcherPid, name: "node", argv: ["node", "/home/user/.local/bin/grok"] },
+            { pid: childPid, name: "grok", argv: [executable] },
+          ],
+        });
+        try {
+          expect(await resolveGrokStore(basePane)).toBe(transcript);
+          expect(await resolveGrokStore(reportedPane)).toBe(transcript);
+          expect(await grokHeldTranscript(basePane, undefined, "linux")).toBe(transcript);
+        } finally { both.mockRestore(); }
+
+        // 2) launcher ONLY listed (herdr-core / hc): resolves its single direct Grok child
+        const launcherOnly = spyOn(herdr, "paneProcessInfo").mockResolvedValue({
+          pane_id: basePane.pane_id,
+          foreground_processes: [
+            { pid: single.launcherPid, name: "node", argv: ["node", "/home/user/.local/bin/grok"] },
+          ],
+        });
+        try {
+          expect(await resolveGrokStore(basePane)).toBe(transcript);
+          expect(await resolveGrokStore(reportedPane)).toBe(transcript);
+          expect(await grokHeldTranscript(basePane, undefined, "linux")).toBe(transcript);
+        } finally { launcherOnly.mockRestore(); }
+      } finally { await single.stop(); }
+
+      // 3) launcher with 0 Grok children -> null
+      const zero = await startLauncher(0);
+      try {
+        const info = spyOn(herdr, "paneProcessInfo").mockResolvedValue({
+          pane_id: basePane.pane_id,
+          foreground_processes: [{ pid: zero.launcherPid, name: "node", argv: ["node", "/home/user/.local/bin/grok"] }],
+        });
+        try {
+          expect(await resolveGrokStore(basePane)).toBeNull();
+          expect(await resolveGrokStore(reportedPane)).toBeNull();
+          expect(await grokHeldTranscript(basePane, undefined, "linux")).toBeNull();
+        } finally { info.mockRestore(); }
+      } finally { await zero.stop(); }
+
+      // 4) launcher with 2 direct Grok children -> ambiguous -> null
+      const two = await startLauncher(2);
+      try {
+        const info = spyOn(herdr, "paneProcessInfo").mockResolvedValue({
+          pane_id: basePane.pane_id,
+          foreground_processes: [{ pid: two.launcherPid, name: "node", argv: ["node", "/home/user/.local/bin/grok"] }],
+        });
+        try {
+          expect(await resolveGrokStore(basePane)).toBeNull();
+          expect(await resolveGrokStore(reportedPane)).toBeNull();
+          expect(await grokHeldTranscript(basePane, undefined, "linux")).toBeNull();
+        } finally { info.mockRestore(); }
+      } finally { await two.stop(); }
+
+      // 5) the launcher's single Grok child moved out of its process group is not the pane's job -> null
+      const detached = await startLauncher(1, true);
+      try {
+        const info = spyOn(herdr, "paneProcessInfo").mockResolvedValue({
+          pane_id: basePane.pane_id,
+          foreground_processes: [{ pid: detached.launcherPid, name: "node", argv: ["node", "/home/user/.local/bin/grok"] }],
+        });
+        try {
+          expect(await resolveGrokStore(basePane)).toBeNull();
+          expect(await resolveGrokStore(reportedPane)).toBeNull();
+          expect(await grokHeldTranscript(basePane, undefined, "linux")).toBeNull();
+        } finally { info.mockRestore(); }
+      } finally { await detached.stop(); }
+    },
+  );
 });
 
 describe("macOS held-file evidence", () => {
@@ -864,5 +1173,21 @@ describe("macOS held-file evidence", () => {
     await silent("darwin", [{ pid: 1.5, argv: [exe] }]);
     const linux = await silent("linux", [{ pid: process.pid, argv: ["grok"] }]);
     expect(linux.askedProcessInfo).toBe(true);
+  });
+
+  test("prefers the native Grok executable over a node/bun launcher on macOS, including the re-check", async () => {
+    const store = place(100);
+    const launcherAndNative = [
+      { pid: 4241, argv: ["node", "/usr/local/bin/grok"] },
+      { pid: 4242, argv: [exe] },
+    ];
+    const found = await darwin(store, { processes: launcherAndNative });
+    expect(found.result).toBe(store.transcript);
+    expect(found.calls).toEqual([["/usr/sbin/lsof", "-nPbw", "-a", "-p", "4242", "-FfDin"]]);
+    // two native binaries on re-check fail closed even when a launcher is also present
+    const ambiguous = await darwin(store, {
+      recheckedProcesses: [...launcherAndNative, { pid: 4243, argv: ["grok"] }],
+    });
+    expect(ambiguous.result).toBeNull();
   });
 });

@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { chromium } from "playwright-core";
 import type { Machine, SetupRequest } from "../shared/machines.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 const snapshot = { version: "0.9.3", protocol: 22, focused_workspace_id: null, focused_tab_id: null, focused_pane_id: null, workspaces: [], tabs: [], panes: [], layouts: [], agents: [] };
 const local = { id: "local", name: "QA host", kind: "local", state: "connected", enabled: true, error: null, snapshot } as Machine;
@@ -41,6 +42,7 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) 
   const file = Bun.file(resolve("dist", path === "/" ? "index.html" : path.slice(1)));
   return new Response(await file.exists() ? file : Bun.file("dist/index.html"));
 } });
+checkChromeTmpdir();
 const browser = await chromium.launch({ headless: true, executablePath: process.env["CHROME_PATH"] || chromium.executablePath() });
 const shots = resolve("evidence/machine-conflict"); mkdirSync(shots, { recursive: true });
 try {

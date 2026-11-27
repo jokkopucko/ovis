@@ -806,10 +806,11 @@ async function legacyRelayShellQa(tree: RelayServerTree): Promise<void> {
           // there and stays to correct (no lookup goes out for it), and Cancel closes the field
           await front(page).locator('[data-tab-panel="relay"] [data-action="add-code"]').click();
           const codeField = front(page).locator('[data-code-form] input[name="code"]');
-          await codeField.fill("x");
+          await codeField.pressSequentially("ab3de");
+          assert.equal(await codeField.inputValue(), "AB3DE-", `the field puts the dash in after five characters (${width}px)`);
           await front(page).locator('[data-code-form] button[type="submit"]').click();
           await front(page).locator('[data-code-form] [role="alert"]').waitFor();
-          assert.equal(await codeField.inputValue(), "x", `a code that does not read stays in its field to correct (${width}px)`);
+          assert.equal(await codeField.inputValue(), "AB3DE-", `a code that does not read stays in its field to correct (${width}px)`);
           await capture(page, `code-field-${width}-${theme}`);
           await front(page).locator("[data-code-form]").getByRole("button", { name: "Cancel", exact: true }).click();
           await front(page).locator("[data-code-form]").waitFor({ state: "detached" });

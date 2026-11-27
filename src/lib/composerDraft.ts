@@ -1,8 +1,20 @@
-import { paneLifetimes, paneStateKey, type PaneLifetimes } from "./paneLifetime.ts";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
+import { RECEIPT_RESUME_ID } from "../../shared/receipt-resume.ts";
+import { COMMAND_PREFIX, paneLifetimes, paneStateKey, type PaneLifetimes } from "./paneLifetime.ts";
+import { newReceiptId } from "./receiptResume.ts";
 
 type DraftStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 interface Draft { text: string; sending: boolean }
 interface InFlight { sent: string; at: number }
+/**
+ * Who wrote a draft, so the composer knows what its upload places (#3216) still point into: "box" is
+ * the composer's own edit, which moves them itself (a send's acknowledgement too); "append" adds
+ * after the draft and keeps them (a quote, a recovered or withdrawn message); "replace" is any other
+ * write (another tab, a restored or new draft, a pane move), after which no place points into the
+ * text any more. Every write names one: there is no default to forget.
+ */
+export type DraftWrite = "box" | "append" | "replace";
 /**
  * How long another tab's in-flight send is honoured before it is read as abandoned (a tab that
  * closed mid-send never clears it). Longer than the 90s submit timeout in ws.ts, so a send that
@@ -35,11 +47,17 @@ export class ComposerDraftStore {
   private unsaved = new Set<string>();
   private agentOnly = new Set<string>();
   private pending = new Map<string, { sent: string; edited: boolean }>();
+  private commands = new Map<string, { message: string; id: string; shared: boolean }>();
   private listeners = new Set<() => void>();
   private own = new Set<string>();
   private expiries = new Map<string, unknown>();
   private sends = new Map<string, { id: number; lifetime: string | null | undefined }>();
   private sendCount = 0;
+  /** how many times each draft was written as a "replace" (see DraftWrite), here or by another tab */
+  private replaced = new Map<string, number>();
+  private replace(key: string): void { this.replaced.set(key, (this.replaced.get(key) ?? 0) + 1); }
+  /** A count that changes each time the draft `key` is replaced by a write that is not its composer's own edit or an append. */
+  replacements(key: string): number { return this.replaced.get(key) ?? 0; }
   constructor(
     private storage: () => DraftStorage = () => paneLifetimes.paneStorage,
     private schedule: (run: () => void, ms: number) => unknown = (run, ms) => setTimeout(run, ms),
@@ -65,7 +83,7 @@ export class ComposerDraftStore {
   private inFlight(key: string): InFlight | null {
     try { return sendLease(this.storage(), key); } catch { return null; }
   }
-  refresh(key: string): void {
+  refresh(key: string, writtenElsewhere = false): void {
     if (this.unsaved.has(key)) return;
     const draft = this.read(key);
     // another tab's send is on its way: its draft must not be sent a second time from here
@@ -77,18 +95,26 @@ export class ComposerDraftStore {
     let text: string | null = null;
     try { text = this.storage().getItem(key); } catch { return; }
     this.adoptMark(key, text);
-    if (text === this.saved.get(key) && sending === draft.sending) return;
-    if (text !== this.saved.get(key)) {
+    // A storage event replaces the draft even if a later write already restored the same text.
+    if (text !== this.saved.get(key) || writtenElsewhere) {
+      this.commands.delete(key);
       const pending = this.pending.get(key);
       if (pending && !(text ?? "").startsWith(pending.sent)) pending.edited = true;
       this.saved.set(key, text);
-    }
+      // another tab wrote it: whatever that write was, it was not this tab's box
+      this.replace(key);
+    } else if (sending === draft.sending) return;
     this.drafts.set(key, { text: text ?? "", sending });
     this.notify();
   }
-  set(key: string, value: string | ((previous: string) => string)): void {
+  set(key: string, value: string | ((previous: string) => string), write: DraftWrite): void {
     const draft = this.read(key);
     const text = typeof value === "string" ? value : value(draft.text);
+    if (write === "replace") this.replace(key);
+    if (text !== draft.text) {
+      this.commands.delete(key);
+      try { this.storage().removeItem(COMMAND_PREFIX + key); } catch {}
+    }
     // cleared and retyped while on its way, a draft can end up starting with the sent text
     // again: once it stopped extending it, the whole of it is the user's own
     const pending = this.pending.get(key);
@@ -112,7 +138,7 @@ export class ComposerDraftStore {
     // page whatever storage does, and marked before the text is there to send (set stores the mark first)
     this.refresh(key);
     if (agentOnly) this.markAgentOnly(key);
-    this.set(key, (draft) => draft ? `${draft}\n\n${text}` : text);
+    this.set(key, (draft) => draft ? `${draft}\n\n${text}` : text, "append");
   }
   /** The draft's next text is a message for an agent alone (#511): set stores it only with the mark. */
   markAgentOnly(key: string): void {
@@ -148,6 +174,41 @@ export class ComposerDraftStore {
     return this.read(key).text === sent && this.begin(key, sent);
   }
   sendOf(key: string): number | undefined { return this.sends.get(key)?.id; }
+  /** Only a claimed composer draft, never a terminal line or a saved queue action. */
+  commandKey(key: string, message: string): string | undefined {
+    const claim = this.pending.get(key);
+    if (!claim) return undefined;
+    const prior = this.commands.get(key);
+    // Edits and acknowledgements remove the marker, even when the same words are
+    // retyped before another tab sees a storage event. Bind any added quote too.
+    const prefix = bytesToHex(sha256(utf8ToBytes(JSON.stringify([claim.sent, message])))) + ":";
+    let shareable = false;
+    try {
+      const storage = this.storage();
+      shareable = !this.unsaved.has(key) && (storage.getItem(key) ?? "") === claim.sent;
+      if (shareable) {
+        const marker = storage.getItem(COMMAND_PREFIX + key);
+        const id = marker?.startsWith(prefix) ? marker.slice(prefix.length) : "";
+        if (RECEIPT_RESUME_ID.test(id)) {
+          this.commands.set(key, { message, id, shared: true });
+          return id;
+        }
+      }
+    } catch { if (prior?.message === message) return prior.id; }
+    if (!shareable && prior?.message === message && !prior.shared) return prior.id;
+    const id = newReceiptId();
+    let shared = false;
+    if (shareable) try { this.storage().setItem(COMMAND_PREFIX + key, prefix + id); shared = true; } catch {}
+    this.commands.set(key, { message, id, shared });
+    return id;
+  }
+  forgetCommand(key: string, id: string): void {
+    if (this.commands.get(key)?.id === id) this.commands.delete(key);
+    try {
+      const storage = this.storage(), marker = COMMAND_PREFIX + key;
+      if (storage.getItem(marker)?.endsWith(`:${id}`)) storage.removeItem(marker);
+    } catch {}
+  }
   end(key: string, send?: number): void {
     if (send !== undefined && this.sends.get(key)?.id !== send) return;
     this.sends.delete(key);
@@ -168,8 +229,8 @@ export class ComposerDraftStore {
     const text = this.read(from).text;
     if (text === "" || this.own.has(from) || this.inFlight(from) !== null || this.read(to).text !== "") return;
     if (this.isAgentOnly(from)) this.markAgentOnly(to);
-    this.set(to, text);
-    this.set(from, "");
+    this.set(to, text, "replace");
+    this.set(from, "", "replace");
   }
   /** Another herdr took the PC's pane IDs: its drafts are read again from where they now are. */
   forget(machineId: string, lifetimes: Pick<PaneLifetimes, "keep"> = paneLifetimes): void {
@@ -186,7 +247,9 @@ export class ComposerDraftStore {
       if (pane?.machineId !== machineId) continue;
       if (this.unsaved.has(key)) lifetimes.keep(machineId, pane.paneId, "message", draft.text, false, this.isAgentOnly(key));
       this.drafts.delete(key);
+      this.commands.delete(key);
       this.saved.delete(key);
+      this.replace(key);
       this.unsaved.delete(key);
       this.agentOnly.delete(key);
     }
@@ -202,13 +265,16 @@ export class ComposerDraftStore {
   settle(key: string, sent: string, send: number | undefined): { text: string; edited: boolean } | null;
   settle(key: string, sent: string, send?: number): { text: string; edited: boolean } | null {
     if (send !== undefined && this.sends.get(key)?.id !== send) return null;
+    this.commands.delete(key);
+    try { this.storage().removeItem(COMMAND_PREFIX + key); } catch {}
     this.refresh(key);
     const current = this.read(key).text;
     const editedMeanwhile = this.pending.get(key)?.edited === true;
     this.pending.delete(key);
     const edited = editedMeanwhile || current !== sent && !current.startsWith(sent);
     const text = edited ? current : current.slice(sent.length);
-    this.set(key, text);
+    // the composer's own send: it moves its upload places itself (Composer's settle)
+    this.set(key, text, "box");
     return { text, edited };
   }
 }
@@ -238,7 +304,10 @@ export function storageEventDraft(key: string | null): string | null {
   if (key.startsWith(SENDING_PREFIX)) return key.slice(SENDING_PREFIX.length);
   return key.startsWith("ovis:composer-draft:") ? key : null;
 }
-if (typeof window !== "undefined") window.addEventListener("storage", (event) => {
-  const key = storageEventDraft(event.key);
-  if (key !== null) composerDrafts.refresh(key);
-});
+/** Another tab's storage event: a draft's own key is a write of it, counted even when its text came back the same; a send's lease only refreshes it. */
+export function onDraftStorage(eventKey: string | null): void {
+  const key = storageEventDraft(eventKey);
+  if (key === null) return;
+  composerDrafts.refresh(key, key === eventKey);
+}
+if (typeof window !== "undefined") window.addEventListener("storage", (event) => onDraftStorage(event.key));

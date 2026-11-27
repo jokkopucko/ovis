@@ -16,6 +16,8 @@ export interface SocketData {
   machineEvents?: MachineEventDocument;
   /** A listed drive row may receive this PC, never the multi-PC document or its pairing subscriptions. */
   localRoster?: (send: (machines: Machine[]) => void) => () => void;
+  /** Beside that roster, on a PC pinned to its account's list: the joins that wait here, for a device of the list that may let one in (remotePairingEvents). */
+  listJoins?: (send: (event: MachineEvent) => void) => () => void;
   deviceId?: string;
   provedKey?: string;
   readOnly?: boolean;
@@ -24,6 +26,9 @@ export interface SocketData {
   open?: boolean;
   relay?: MachineRelay;
   bridge?: boolean;
+  /** A managed machine's own bearer can correlate submissions; it grants no bridge-only API access. */
+  managedReceipts?: boolean;
+  commandBrowser?: string;
   surface?: TelemetrySurface;
   ingress?: TelemetryIngress;
   /** a visitor Portal signed in: the socket is closed after this many ms, and the page's reconnect meets Portal's sign-in again (server/portal.ts `recheckMs`) */
@@ -32,7 +37,7 @@ export interface SocketData {
   untilLock?: (close: () => void) => () => void;
   connectionId: string;
   /** A fresh claim per attach lifetime; deleting it invalidates queued terminal keys. */
-  attached: Map<string, { keepSize: boolean; receiptResumeId?: string }>;
+  attached: Map<string, { keepSize: boolean; receiptResumeId?: string; fitGrid?: { cols: number; rows: number; drives: boolean } }>;
   conversationInterests: Set<string>;
   conversationWatches: Set<string>;
   promptWatches: Set<string>;
@@ -69,7 +74,7 @@ function stateOf(client: Client): ConnectionState {
 }
 
 /** The data for a connection's upgrade: it starts to interact unless its access is read-only. */
-export function connectionData(fields: { machineEvents?: MachineEventDocument; localRoster?: SocketData["localRoster"]; relay?: MachineRelay; deviceId: string | undefined; provedKey?: string; readOnly: boolean; open?: boolean; bridge?: boolean; surface?: TelemetrySurface; ingress?: TelemetryIngress; recheckMs?: number; untilLock?: (close: () => void) => () => void }): SocketData {
+export function connectionData(fields: { machineEvents?: MachineEventDocument; localRoster?: SocketData["localRoster"]; listJoins?: SocketData["listJoins"]; relay?: MachineRelay; deviceId: string | undefined; provedKey?: string; readOnly: boolean; open?: boolean; bridge?: boolean; managedReceipts?: boolean; commandBrowser?: string; surface?: TelemetrySurface; ingress?: TelemetryIngress; recheckMs?: number; untilLock?: (close: () => void) => () => void }): SocketData {
   const data: SocketData = { connectionId: crypto.randomUUID(), attached: new Map<string, { keepSize: boolean }>(), conversationInterests: new Set<string>(), conversationWatches: new Set<string>(), promptWatches: new Set<string>(), output: new Map(), ...fields };
   states.set(data, { closing: false, revoked: false, mode: fields.readOnly ? "observe" : "interact", roles: 0, watches: new Map<string, PaneView>(), waiting: new Map() });
   return data;
@@ -83,7 +88,7 @@ export function setMachineEvents(client: Client, enabled: boolean, compactAgents
   const state = stateOf(client);
   if (!enabled) { state.stopMachineEvents?.(); state.stopMachineEvents = undefined; return; }
   if (state.closing || state.stopMachineEvents) return;
-  const { machineEvents, localRoster } = client.data;
+  const { machineEvents, localRoster, listJoins } = client.data;
   if (!machineEvents && !localRoster) return;
   state.compactMachineAgents = compactAgents;
   let stop: (() => void) | undefined;
@@ -98,7 +103,11 @@ export function setMachineEvents(client: Client, enabled: boolean, compactAgents
   const tell = (event: MachineEvent) => {
     if (!overflowed) send(client, { type: "machine-event", event }, overflow);
   };
-  stop = localRoster ? localRoster(machines => tell({ type: "machines", machines })) : machineEvents && subscribeMachineEvents(machineEvents, tell);
+  if (localRoster) {
+    const stopRoster = localRoster(machines => tell({ type: "machines", machines }));
+    const stopJoins = listJoins?.(tell);
+    stop = () => { stopRoster(); stopJoins?.(); };
+  } else stop = machineEvents && subscribeMachineEvents(machineEvents, tell);
   if (!stop) return;
   if (state.closing) stop();
   else if (overflowed) end();

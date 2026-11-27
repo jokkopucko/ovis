@@ -43,6 +43,12 @@ export function accountDispatchRefusal(request: Request, ctx: ServerContext): Re
   if (localPath === null) return fail("local_only");
   if (request.method !== "GET" && !dispatchMutationRegistered(request.method, localPath)) return fail("account_route_denied");
   if (accountRouteGuard(request.method, localPath)) return null;
+  // where the account's signed list stands, and its entries: only a PC that follows a list a person named takes them
+  // from an account row; one that follows none answers as it always did
+  if (request.method === "POST" && (localPath === "/api/account/list/head" || localPath === "/api/account/list/page") && (ctx.services.accountList?.peerHead() ?? null) === null) return fail("account_route_denied");
+  // the joins that wait at this PC, on a PC pinned to its account's list alone: its handler says which of them a
+  // device of the list may see (relay/routes.ts). A PC that follows no list answers as it always did
+  if (request.method === "GET" && localPath === "/api/relay/pairings" && ctx.services.accountList?.pinned() === true) return null;
   const action = accountRouteAction(request.method, localPath)
     ?? (accountReadAllowed(request.method, localPath) ? { action: "read" as const } : null);
   if (action === null) return fail("account_route_denied");

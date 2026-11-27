@@ -3,7 +3,8 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, posix, sep } from "node:path";
-import { fixedSleepCounts, fixedSleeps, markedWaitCounts, markedWaits, sleepFiles } from "./fixed-sleeps.ts";
+import { browserScriptFiles, demoLaunchCounts, demoLaunches, directContextCounts, directContexts } from "./direct-contexts.ts";
+import { fixedSleepCounts, fixedSleeps, markedWaitCounts, markedWaits, sleepFiles, turnWaitCounts, turnWaitFiles, turnWaits } from "./fixed-sleeps.ts";
 import { fail, files, lineOf, read, repo, stripComments } from "./source-scan.ts";
 
 const SOURCES = [...files("{src,server,shared,scripts,site,telemetry,integrations,tui}/**/*.{ts,tsx,mjs,js}"), "vite.config.ts"];
@@ -36,7 +37,7 @@ describe("imports", () => {
 });
 
 describe("the frontend build", () => {
-  const BUILD_SCRIPTS = ["vite.config.ts", "scripts/build-xterm.ts", "scripts/compressed-assets.ts", "scripts/service-worker-build.ts", "scripts/theme-bootstrap-build.ts", "scripts/shell-build.ts", "scripts/build-cache.ts"];
+  const BUILD_SCRIPTS = ["vite.config.ts", "scripts/compressed-assets.ts", "scripts/service-worker-build.ts", "scripts/theme-bootstrap-build.ts", "scripts/shell-build.ts", "scripts/build-cache.ts"];
 
   it("imports nothing from server/ or relay/", () => {
     const offenders = BUILD_SCRIPTS.flatMap((file) => specifiers(file).filter(({ specifier }) => /(?:^|\/)(?:server|relay)\//.test(specifier)).map(({ at }) => at));
@@ -122,8 +123,8 @@ describe("the ratchets' base", () => {
  * Holds every file to its count in `json`, which may only shrink: never above the one at the ratchets' base, and
  * lowered when the code has fewer. `instead` says what to do in place of raising it.
  */
-function countRatchet({ json, what, counts, list, print, instead }: {
-  json: string; what: string; counts: () => Record<string, number>; list: (file: string) => string[]; print: string; instead: string;
+function countRatchet({ json, what, counts, list, print, instead, covered = sleepFiles }: {
+  json: string; what: string; counts: () => Record<string, number>; list: (file: string) => string[]; print: string; instead: string; covered?: () => string[];
 }): void {
   const baseline = JSON.parse(read(json)) as Record<string, number>;
 
@@ -156,7 +157,7 @@ function countRatchet({ json, what, counts, list, print, instead }: {
   });
 
   it("lists only files that exist", () => {
-    fail(Object.keys(baseline).filter((file) => !existsSync(join(repo, file)) || !sleepFiles().includes(file)),
+    fail(Object.keys(baseline).filter((file) => !existsSync(join(repo, file)) || !covered().includes(file)),
       `Remove these entries from ${json}: the files are gone or no longer covered. A renamed file keeps its entry under the new path, with the same count.`);
   });
 }
@@ -285,7 +286,7 @@ describe("killing by name", () => {
     expect(found("Bun.spawnSync([\"pgrep\", \"-f\", tag]);")).toBe(0);
     expect(found("spawnSync(\"pkill\", [\"-KILL\", \"-f\", tempDir]);")).toBe(0);
     expect(found("pkill -f \"$r/remote.sh\" || true", "example.sh")).toBe(0);
-    expect(found("Bun.spawnSync([\"pgrep\", \"-P\", String(process.pid), \"-f\", \"pty-host.mjs\"]);")).toBe(0);
+    expect(found("Bun.spawnSync([\"pgrep\", \"-P\", String(process.pid), \"-f\", \"ovis-pty-sidecar\"]);")).toBe(0);
     expect(found("kill -HUP \"$(pgrep -o -x sshd)\"", "example.sh")).toBe(0);
     expect(found("# pkill -f server/index.ts", "example.sh")).toBe(0);
     expect(found("// pkill -f server/index.ts")).toBe(0);
@@ -305,6 +306,104 @@ describe("waits marked fixed", () => {
     expect(found("await Bun.sleep(300);")).toBe(0);
     expect(found("// fixed wait: polled\nwhile (!done() && Date.now() < deadline) await Bun.sleep(25);")).toBe(0);
     expect(found("// fixed wait: raced\nawait Promise.race([event, Bun.sleep(1000)]);")).toBe(0);
+  });
+});
+
+describe("turn waits", () => {
+  countRatchet({
+    json: "scripts/turn-waits.json", what: "turn wait", counts: turnWaitCounts, list: turnWaits, print: "bun scripts/fixed-sleeps.ts --turns", covered: turnWaitFiles,
+    instead: "Wait for the work itself, not for a turn of the event loop: a turn ends before work that waits on a file, a timer or a socket, so an assertion that something did not happen passes before it could. Await the work's own promise (the status hub's `codexLooks()`, a spy's result, an event you subscribed to before acting), or poll its condition in a loop bounded by a deadline.",
+  });
+
+  it("tells a turn wait from a wait for the event", () => {
+    const found = (code: string, file = "example.test.ts") => turnWaits(file, code).length;
+    expect(found("await new Promise<void>((resolve) => setImmediate(resolve));")).toBe(1);
+    expect(found("await new Promise((resolve) => { setImmediate(resolve); });")).toBe(1);
+    expect(found("await new Promise((resolve) => setTimeout(resolve, 0));")).toBe(1);
+    expect(found("await new Promise((r) => setTimeout(() => r()));")).toBe(1);
+    expect(found("await new Promise(setImmediate);")).toBe(1);
+    expect(found("for (let turn = 0; turn < 8; turn++) { await d.settled(); await new Promise(setImmediate); }")).toBe(1);
+    expect(found("await act(async () => { for (let turn = 0; turn < 3; turn++) await new Promise((resolve) => setTimeout(resolve, 0)); });")).toBe(1);
+    expect(found("const tick = () => new Promise<void>((resolve) => setImmediate(resolve));\nawait tick();\nawait tick();")).toBe(2);
+    expect(found("import { setImmediate as turn } from \"node:timers/promises\";\nawait turn();")).toBe(1);
+    expect(found("const settled = async () => {\n  await lookup;\n  await new Promise<void>((resolve) => setImmediate(resolve));\n};\nawait settled();")).toBe(1);
+    expect(found("await new Promise((resolve) => setTimeout(resolve, 20));")).toBe(0);
+    expect(found("await h.status.codexLooks();")).toBe(0);
+    expect(found("for (let turn = 0; turn < 50 && answer === null; turn++) await new Promise((resolve) => setImmediate(resolve));")).toBe(0);
+    expect(found("while (!done()) { if (performance.now() > end) throw new Error(\"late\"); await new Promise((r) => setImmediate(r)); }")).toBe(0);
+    expect(found("for (let seen = null; seen !== lane;) { seen = lane; await lane; await new Promise((resolve) => setTimeout(resolve, 0)); }")).toBe(0);
+    expect(found("for (;;) {\n  if (seen()) break;\n  await new Promise(setImmediate);\n}")).toBe(0);
+    expect(found("expect(await Promise.race([ready, new Promise((resolve) => setImmediate(() => resolve(\"pending\")))])).toBe(\"pending\");")).toBe(0);
+    expect(found("await Promise.race([ready, new Promise(setImmediate)]); await new Promise(setImmediate);")).toBe(1);
+    expect(found("for (let i = 8; i > 0; i--) { await new Promise(setImmediate); }")).toBe(1);
+    expect(found("for (const type of types) { await page.evaluate(() => { return 1; }); await new Promise(setImmediate); }")).toBe(1);
+    expect(found("do { await new Promise(setImmediate); } while (!done() && Date.now() < deadline);")).toBe(0);
+    expect(found("function tick() { return new Promise(setImmediate); }\nawait tick();\nawait tick(\"flushed\");")).toBe(2);
+    expect(found("import { setTimeout as sleep } from \"node:timers/promises\";\nawait sleep(0);\nawait sleep();\nawait sleep(20);")).toBe(2);
+    expect(found("import * as timers from \"node:timers/promises\";\nawait timers.setImmediate();\nawait timers.setTimeout(0);\nawait timers.setTimeout(20);")).toBe(2);
+    expect(found("close: () => { setImmediate(() => socket.close()); },")).toBe(0);
+    expect(found("// await new Promise(setImmediate);")).toBe(0);
+  });
+
+  it("counts in tests and browser scripts only", () => {
+    const covered = turnWaitFiles();
+    expect(covered).toContain("server/core/codex-status-hub.test.ts");
+    expect(covered).toContain("scripts/ui-regression.ts");
+    expect(covered).not.toContain("server/core/status.ts");
+  });
+});
+
+describe("browser contexts", () => {
+  countRatchet({
+    json: "scripts/direct-contexts.json", what: "direct context", counts: directContextCounts, list: directContexts, print: "bun scripts/direct-contexts.ts", covered: browserScriptFiles,
+    instead: "Open a context through the shared factory, not with Playwright's own call: `newContext(overrides)` of withDemoBrowser's session (scripts/demo-browser.ts), taken from the session by name, or `appContext(browser, overrides)` from scripts/app-context.ts, and a page with that context's newPage(), not the browser's. Both start from the same context (no service worker, English); what a script needs different goes in `overrides`.",
+  });
+  const found = (text: string) => directContexts("scripts/x-regression.ts", text).length;
+
+  it("counts a call however it is written, and neither the session's helper nor a mention", () => {
+    expect(found("const context = await browser.newContext({ locale: \"en-US\" });\nconst second = await browser!\n  .newContext();")).toBe(2);
+    expect(found("const a = await browser?.newContext?.();\nconst b = await browser[\"newContext\"]();\nconst c = await (browser.newContext)();")).toBe(3);
+    expect(found("const context = await chromium.launchPersistentContext(profile, { headless: true });")).toBe(1);
+    expect(found("const context = await newContext({ viewport });\nconst other = await appContext(browser, { viewport });")).toBe(0);
+    expect(found("// was browser.newContext()\nconsole.log(\"browser.newContext() is counted\");\nconst named = /browser.newContext()/.test(text);")).toBe(0);
+  });
+
+  it("counts a page made on a browser, which is a context of Playwright's own, and not a context's page", () => {
+    expect(found("const page = await browser.newPage();\nconst other = await (await chromium.launch()).newPage();\nconst third = await this.browser!.newPage();")).toBe(3);
+    expect(found("const page = await context.newPage();\nconst other = await browserContext.newPage();\nconst third = await (await newContext()).newPage();")).toBe(0);
+  });
+
+  it("finds a call after a regular expression or a nested template that holds a backtick", () => {
+    // a scan of the text takes such a backtick for a template's start and reads the code up to the next one as its words
+    expect(found("const fence = /`{3}/;\nconst context = await browser.newContext();\nconst label = `done`;")).toBe(1);
+    expect(found("const note = `${rows.map((row) => `${row}'s`).join(\", \")}'`;\nconst context = await browser.newContext();\nconst label = `done`;")).toBe(1);
+  });
+});
+
+describe("demo launches", () => {
+  countRatchet({
+    json: "scripts/demo-launches.json", what: "demo launch", counts: demoLaunchCounts, list: demoLaunches, print: "bun scripts/direct-contexts.ts --launches", covered: browserScriptFiles,
+    instead: "Run a script that checks the demo inside withDemoBrowser (scripts/demo-browser.ts), which builds the demo app, serves it and launches Chromium the same way for every script, in place of buildDemoApp and chromium.launch of its own. A snippet for the page goes in `beforeTransport` or `afterTransport`.",
+  });
+  const found = (text: string) => demoLaunches("scripts/x-demo-regression.ts", text).length;
+
+  it("counts a launch in a script that imports the demo's build, whatever it calls it", () => {
+    expect(found("import { buildDemoApp } from \"./demo-build.ts\";\nawait buildDemoApp(app);\nconst browser = await chromium.launch({ headless: true });")).toBe(1);
+    expect(found("import { buildDemoApp as build } from \"./demo-build.ts\";\nawait build(app);\nconst browser = await chromium\n  .launch();")).toBe(1);
+    expect(found("import * as demo from \"./demo-build.ts\";\nconst browser = await chromium[\"launch\"]?.();\nconst kept = await chromium.launchPersistentContext(profile);")).toBe(2);
+    expect(found("const { buildDevelopmentDemoApp } = await import(\"./demo-build.ts\");\nconst browser = await chromium.launch();")).toBe(1);
+  });
+
+  it("counts a second browser a script launches beside withDemoBrowser's, but not one in a unit test", () => {
+    const second = "import { withDemoBrowser } from \"./demo-browser.ts\";\nawait withDemoBrowser({ tempPrefix: \"x-\" }, async () => { const other = await chromium.launch({ args: [\"--force-device-scale-factor=2\"] }); });";
+    expect(found(second)).toBe(1);
+    expect(demoLaunches("scripts/x.test.ts", second)).toEqual([]);
+  });
+
+  it("counts none in a script that builds no demo, or leaves the launch to the harness", () => {
+    expect(found("const server = await createServer();\nconst browser = await chromium.launch({ headless: true });")).toBe(0);
+    expect(found("import { withDemoBrowser } from \"./demo-browser.ts\";\nawait withDemoBrowser({ tempPrefix: \"x-\" }, async ({ newContext }) => { await newContext(); });")).toBe(0);
+    expect(found("import { buildDemoApp } from \"./demo-build.ts\";\nconsole.log(\"chromium.launch()\", /chromium.launch()/);")).toBe(0);
   });
 });
 
@@ -412,7 +511,6 @@ describe("the demo app's file server", () => {
     "scripts/prompt-card-timing-demo-regression.ts": "also serves paths outside /app/",
     "scripts/repo-diff-browser-qa.ts": "serves /icons/ beside the app",
     "scripts/settings-pages-demo-regression.ts": "serves two builds side by side",
-    "scripts/settings-palette-search-demo-regression.ts": "serves two builds side by side",
     "scripts/settings-rows-demo-regression.ts": "serves two builds side by side",
     "scripts/setup-dialog-demo-regression.ts": "serves /icons/ beside the app",
     "scripts/setup-row-demo-regression.ts": "serves /icons/ beside the app",
@@ -462,6 +560,19 @@ describe("demo transport", () => {
     "/api/account/pc-proof": "this PC's own proof for its listing: asked only by a signed-in window on this PC itself, which the demo never is",
     "/api/account/list": "how this PC follows its account's signed list: read by this PC's own window and CLI for diagnosis, and no screen of the app asks for it",
     "/api/account/list/pin": "a person at the PC names the list it pins: this PC's own window and CLI alone, and no screen of the app asks for it yet",
+    "/api/account/list/head": "a device and the PC say where the account's signed list stands: the demo's PC follows no list, and 404 is what such a PC answers",
+    "/api/account/list/page": "a device hands the PC entries of the account's signed list: the demo's PC follows no list, and 404 is what such a PC answers",
+    "/api/account/list/named": "a device that scanned a PC's QR code names its account's list in the place of its link: the demo's PC is in its account and shows no such code",
+    "/api/account/list/witness": "a device asks a PC whom it lets in before its account moves onto a signed list: the demo's account never moves",
+    "/api/account/list/name": "a device names its account's signed list to a PC that follows none: the demo's account has no list",
+    "/api/account/list/card": "a device asks a PC its list carried in for its card: the demo's PC follows no list, and refuses it as such a PC does",
+    "/api/account/list/add": "a PC in no account is added to an account that keeps a signed list: asked by `ovis add` and by Add this PC in the PC's own window, and the demo's PC is in its account",
+    "/api/account/list/add/confirm": "the person at the PC says the adding device shows the same number: asked by `ovis add` on the PC",
+    "/api/account/list/add/cancel": "the person at the PC says the numbers differ: asked by `ovis add` on the PC",
+    "/api/account/list/join": "`ovis join` with an invite's line that names the account's list: the CLI on the PC alone",
+    "/api/account/list/join/prepare": "`ovis join` with an auto invite: the CLI on the PC alone",
+    "/api/account/list/join/body": "`ovis join` with an auto invite: the CLI on the PC alone",
+    "/api/account/list/join/place": "`ovis join` with an auto invite: the CLI on the PC alone",
     "/api/runtime/move/install": "the demo reports runtime move unavailable (not_herdr), so the app never offers an install",
     "/api/runtime/move/stop": "the demo reports runtime move unavailable (not_herdr), so the app never offers a stop",
     "/api/runtime/move/stop-all": "the demo reports runtime move unavailable (not_herdr), so the app never offers a stop",
@@ -537,10 +648,9 @@ describe("names from before Ovis", () => {
     "src/lib/legacyStorage.test.ts": "tests that move",
     "server/auth.ts": "still accepts and clears the old cookies",
     "server/auth.test.ts": "tests the old cookies",
-    "server/pty/pty-host.mjs": "keeps the token from the attach under either name",
-    "server/pty/session.ts": "keeps the token from the sidecar under either name",
-    "crates/pty-sidecar/src/pty.rs": "keeps the token from the attach under either name, as pty-host.mjs does",
-    "server/pty/host.test.ts": "tests that both PTY hosts keep the token from the command under either name",
+    "server/pty/session.ts": "keeps the token from the PTY host under either name",
+    "crates/pty-sidecar/src/pty.rs": "keeps the token from the attach under either name",
+    "server/pty/host.test.ts": "tests that the PTY host keeps the token from the command under either name",
     "server/remote-host.ts": "a remote bundle published before the rename reads the old name",
     "install.sh": "reads the old settings of an earlier install",
     "scripts/plugin-tui.ts": "withholds the old token name from ovis tui too, as a shell set up for an earlier install may export it",

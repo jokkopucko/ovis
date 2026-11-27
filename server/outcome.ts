@@ -92,7 +92,8 @@ export interface OutcomeObservation {
   readonly dialog?: { readonly id: string; readonly reader: string };
   readonly waitingSince?: number;
   readonly settledSince?: number;
-  readonly evidence?: { readonly kind: "dialog" | "native" | "side-store"; readonly at: number; readonly catalogChanged?: true };
+  /** `named`: the agent named this very command (its hook), so a later send does not cut it off, only the window */
+  readonly evidence?: { readonly kind: "dialog" | "native" | "side-store"; readonly at: number; readonly catalogChanged?: true; readonly named?: true };
 }
 
 export const WINDOW_MS = 10 * 60_000;
@@ -575,7 +576,7 @@ export function commandOutcome(paneId: string, sent: CommandSend, observation: O
     const records = typeof observation.transcript === "string" ? commandTranscriptRecords(observation.transcript) : observation.transcript ?? [];
     const recorded = observation.transcriptAt ?? transcriptEvidence(sent, records, until)?.at ?? null;
     const external = observation.evidence;
-    const validExternal = external && external.at > sent.at && external.at < until ? external : undefined;
+    const validExternal = external && external.at > sent.at && external.at < (external.named ? sent.at + WINDOW_MS : until) ? external : undefined;
     const result = now < sent.at + WINDOW_MS
       ? recognizedResult(sent, observation.resultScreen ?? observation.screen ?? "", observation.readers ?? [], observation.top) : null;
     if (recorded !== null || validExternal || result) {

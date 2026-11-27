@@ -10,7 +10,7 @@ import { holdAcpChildren } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { useAnnouncedText } from "../lib/useAnnouncedText.ts";
 import { useEdgeFades } from "../lib/useEdgeFades.ts";
-import { AGENT_GROUPS, agentGroup, agentRoster, groupAgentRows, splitBackgroundRows, type AgentGroup, type AgentRow } from "../lib/agentRoster.ts";
+import { AGENT_GROUPS, agentFamilies, agentGroup, agentRoster, groupAgentRows, splitBackgroundRows, type AgentGroup, type AgentRow } from "../lib/agentRoster.ts";
 import { stampState, stateSince } from "../lib/agentStateSince.ts";
 import { useAgentStateStamps } from "../lib/useAgentStateSince.ts";
 import { knownStatus } from "../lib/status.ts";
@@ -289,13 +289,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   };
   const people = useMemo(() => {
     if (settings.agentOrder !== "waiting" || groups !== null || named !== null) return parts.people;
-    const families: AgentRow[][] = [];
-    for (const row of parts.people) {
-      const family = families.at(-1);
-      const parent = row.entry.pane.parent_pane_id;
-      if (family && parent !== undefined && family.some((member) => member.machine.id === row.machine.id && member.entry.pane.pane_id === parent)) family.push(row);
-      else families.push([row]);
-    }
+    const families = agentFamilies(parts.people);
     const waits = (family: AgentRow[]) => family.some((row) => rowStatus(row) === "blocked");
     return [...families.filter(waits), ...families.filter((family) => !waits(family))].flat();
   }, [settings.agentOrder, groups, named, parts, rowStatus]);
@@ -350,13 +344,29 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   const busy = (row: AgentRow) => { const status = rowStatus(row); return status === "blocked" || status === "working" || status === "waiting"; };
   useEffect(() => {
     if (holding) return;
-    held.current = { readerKey, order: people.map(rowKey), active: new Set(people.filter(busy).map(rowKey)) };
+    // what stands above the resting line is held by family: a helper leaving or ending keeps its agent in place
+    held.current = { readerKey, order: people.map(rowKey), active: new Set(agentFamilies(people).filter((family) => family.some(busy)).flat().map(rowKey)) };
   });
-  const heldOrder = holding ? held.current?.order ?? [] : [];
-  const shownPeople = !holding ? people : [...people].sort((a, b) => {
-    const at = (row: AgentRow) => { const index = heldOrder.indexOf(rowKey(row)); return index < 0 ? Number.MAX_SAFE_INTEGER : index; };
-    return at(a) - at(b);
-  });
+  const heldOrder = holding ? held.current?.order : undefined;
+  // the order drawn, which the tree lines below are read from too
+  const shownPeople = useMemo(() => {
+    if (heldOrder === undefined) return people;
+    // a row that came during the hold takes the place of its nearest held ancestor, so a new helper stands with its agent
+    const byKey = new Map(people.map((row) => [rowKey(row), row]));
+    const at = (row: AgentRow): number => {
+      const passed = new Set<AgentRow>();
+      for (let up: AgentRow | undefined = row; up && !passed.has(up); up = up.entry.pane.parent_pane_id === undefined ? undefined : byKey.get(sidebarPinKey(up.machine.id, up.entry.pane.parent_pane_id))) {
+        const index = heldOrder.indexOf(rowKey(up));
+        if (index >= 0) return index;
+        passed.add(up);
+      }
+      return Number.MAX_SAFE_INTEGER;
+    };
+    const places = new Map(people.map((row) => [row, at(row)]));
+    const sorted = [...people].sort((a, b) => places.get(a)! - places.get(b)!);
+    // the same order is the same list: the tree lines and folds below are not drawn again for a hold alone
+    return sorted.every((row, index) => row === people[index]) ? people : sorted;
+  }, [people, heldOrder]);
   useEffect(() => {
     if (foldRequest === null || foldRequest.folded === folded) return;
     if (filter.active) { setFilterFold(foldRequest.folded); return; }
@@ -465,7 +475,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
     const restLines = new Map<AgentRow, { more: boolean; through: boolean }>();
     const helpersOf = new Map<AgentRow, AgentRow[]>();
     const foldedHelpers = new Set<AgentRow>();
-    for (const list of [...named ? named.map((group) => group.rows) : groups ? groups.map((group) => group.rows) : [people], parts.background]) {
+    for (const list of [...named ? named.map((group) => group.rows) : groups ? groups.map((group) => group.rows) : [shownPeople], parts.background]) {
       const listDepths = depths(list);
       for (const [row, depth] of listDepths) restDepths.set(row, depth);
       if (foldHelpers) {
@@ -483,7 +493,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
       for (const [row, line] of treeLines(shown, listDepths)) restLines.set(row, line);
     }
     return { restDepths, restLines, helpersOf, foldedHelpers };
-  }, [parts, people, groups, named, foldHelpers, openHelpers, selectedMachineId, selectedPaneId, rowStatus]);
+  }, [parts, shownPeople, groups, named, foldHelpers, openHelpers, selectedMachineId, selectedPaneId, rowStatus]);
   useLayoutEffect(() => {
     const active = document.activeElement;
     const inList = Boolean(active && sectionRef.current?.contains(active));
@@ -646,10 +656,15 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
         ...groupRows.flatMap((row) => listItems([row], groupFolded && !isSelected(row), group)),
       ];
     }) : restingFold && named === null && groups === null ? (() => {
+      // a helper stays with the agent that started it: a family is above the line while any of it is
       const inActive = (row: AgentRow) => holding ? held.current?.active.has(rowKey(row)) === true : busy(row);
-      const active = shownPeople.filter(inActive);
-      const resting = shownPeople.filter((row) => !inActive(row));
-      const restingCount = shownPeople.filter((row) => !busy(row)).length;
+      const families = agentFamilies(shownPeople);
+      const activeFamilies = (rowActive: (row: AgentRow) => boolean) => new Set(families.filter((family) => family.some(rowActive)).flat());
+      const above = activeFamilies(inActive);
+      const active = shownPeople.filter((row) => above.has(row));
+      const resting = shownPeople.filter((row) => !above.has(row));
+      const busyNow = activeFamilies(busy);
+      const restingCount = shownPeople.filter((row) => !busyNow.has(row)).length;
       if (resting.length === 0) return listItems(shownPeople);
       return [...listItems(active),
         <li className="agent-background-label agent-resting-label" key="resting">

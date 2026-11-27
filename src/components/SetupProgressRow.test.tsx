@@ -1,73 +1,58 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
-import { act, createElement, type ReactNode } from "react";
-import * as ReactDom from "react-dom";
-import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { act, createElement } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 import { SETUP_ROW_KEY } from "../lib/firstHints.ts";
 import { SettingsProvider } from "../lib/settings.ts";
-import type { SetupActions } from "./SetupProgressRow.tsx";
+import { SetupProgressRow, type SetupActions } from "./SetupProgressRow.tsx";
 
-// the checklist is a portal on document.body, which this renderer has none of
-await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
-const { SetupProgressRow } = await import("./SetupProgressRow.tsx");
-
-const globals = new Map<string, PropertyDescriptor | undefined>();
-let renderer: ReactTestRenderer | undefined;
+let page: Page;
 let guideOpened = 0;
 let called: string[] = [];
 
-const node = () => ({ isConnected: true, focus() {}, contains: () => false, querySelector: () => null, querySelectorAll: () => [], getClientRects: () => [], getBoundingClientRect: () => ({ top: 700, left: 0, right: 240, bottom: 732, width: 240, height: 32 }), closest: () => null, addEventListener() {}, removeEventListener() {} });
-const textOf = (instance: ReactTestInstance): string => instance.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
-const item = (id: string) => renderer!.root.find((instance) => instance.type === "button" && instance.props["data-item"] === id);
+const menu = () => {
+  const found = document.querySelectorAll('[role="menu"]');
+  if (found.length !== 1 || !found[0]) throw new Error("Expected one setup checklist");
+  return found[0];
+};
+const item = (id: string) => {
+  const button = menu().querySelector<HTMLButtonElement>(`button[data-item="${id}"]`);
+  if (!button) throw new Error(`Missing setup item ${id}`);
+  return button;
+};
 
 beforeEach(() => {
-  const events = new EventTarget();
-  const local = new Map<string, string>([[SETUP_ROW_KEY, "on"]]);
-  const storage = { getItem: (key: string) => local.get(key) ?? null, setItem: (key: string, value: string) => { local.set(key, value); }, removeItem: (key: string) => { local.delete(key); } };
-  const matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
-  for (const [name, value] of Object.entries({
-    window: Object.assign(events, { localStorage: storage, matchMedia, innerWidth: 1280, innerHeight: 800, requestAnimationFrame: () => 1, cancelAnimationFrame() {}, location: new URL("http://127.0.0.1:7317/"), history: { state: null, replaceState() {}, pushState() {}, back() {} } }),
-    IS_REACT_ACT_ENVIRONMENT: true,
-    document: Object.assign(new EventTarget(), { activeElement: null, body: {}, querySelector: () => null, querySelectorAll: () => [], documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } } }),
-    getComputedStyle: () => ({ getPropertyValue: () => "" }),
-    navigator: { languages: ["en"], userAgent: "Test", maxTouchPoints: 0 },
-    matchMedia,
-    localStorage: storage,
-  })) {
-    globals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
-    Object.defineProperty(globalThis, name, { value, configurable: true });
-  }
+  page = openPage("http://127.0.0.1:7317/");
+  page.window.localStorage.setItem(SETUP_ROW_KEY, "on");
+  Object.defineProperties(page.window, {
+    innerWidth: { configurable: true, value: 1280 },
+    innerHeight: { configurable: true, value: 800 },
+    requestAnimationFrame: { configurable: true, value: () => 1 },
+    cancelAnimationFrame: { configurable: true, value: () => {} },
+  });
   guideOpened = 0;
   called = [];
   window.addEventListener("ovis:open-setup-guide", () => { guideOpened += 1; });
 });
 
 afterEach(async () => {
-  await act(async () => { renderer?.unmount(); });
-  renderer = undefined;
-  for (const [name, descriptor] of globals) {
-    if (descriptor === undefined) Reflect.deleteProperty(globalThis, name);
-    else Object.defineProperty(globalThis, name, descriptor);
-  }
-  globals.clear();
+  await page.close();
 });
 
 const actions: SetupActions = { workspace: () => { called.push("workspace"); }, phone: () => { called.push("phone"); }, alerts: () => { called.push("alerts"); } };
 
 async function openChecklist(facts: { workspace: boolean; phone: boolean; alerts: boolean }): Promise<void> {
-  await act(async () => {
-    renderer = create(createElement(SettingsProvider, { children: createElement(SetupProgressRow, { facts, actions }) }), { createNodeMock: node as never });
-  });
-  const row = renderer!.root.find((instance) => instance.type === "button" && String(instance.props.className).includes("setup-row-open"));
-  expect(textOf(row)).toContain("Setup: 2 left");
-  await act(async () => { row.props.onClick(); });
+  await page.render(createElement(SettingsProvider, { children: createElement(SetupProgressRow, { facts, actions }) }));
+  const row = page.one<HTMLButtonElement>("button.setup-row-open");
+  Object.defineProperty(row, "getBoundingClientRect", { configurable: true, value: () => new window.DOMRect(0, 700, 240, 32) });
+  expect(row.textContent).toContain("Setup: 2 left");
+  await act(async () => { row.click(); });
 }
 
 describe("the setup row", () => {
   it("opens a checklist of the four parts, never the whole guide, done ones ticked", async () => {
     await openChecklist({ workspace: true, phone: false, alerts: false });
     expect(guideOpened).toBe(0);
-    const menu = renderer!.root.find((instance) => instance.props.role === "menu");
-    expect(menu.findAll((instance) => instance.type === "button").map((instance) => [instance.props["data-item"], instance.props["aria-checked"] === true])).toEqual([
+    expect([...menu().querySelectorAll("button")].map((button) => [button.getAttribute("data-item"), button.getAttribute("aria-checked") === "true"])).toEqual([
       ["workspace", true], ["theme", true], ["phone", false], ["alerts", false],
     ]);
   });
@@ -75,23 +60,22 @@ describe("the setup row", () => {
   it("runs each remaining item's own action, and the done one does nothing", async () => {
     for (const id of ["phone", "alerts"] as const) {
       await openChecklist({ workspace: true, phone: false, alerts: false });
-      await act(async () => { item(id).props.onClick(); });
-      await act(async () => { renderer!.unmount(); });
-      renderer = undefined;
+      await act(async () => { item(id).click(); });
+      await page.render(null);
     }
     expect(called).toEqual(["phone", "alerts"]);
     await openChecklist({ workspace: true, phone: false, alerts: false });
-    expect(item("workspace").props["aria-disabled"]).toBe(true);
-    await act(async () => { item("workspace").props.onClick(); });
+    expect(item("workspace").getAttribute("aria-disabled")).toBe("true");
+    await act(async () => { item("workspace").click(); });
     expect(called).toEqual(["phone", "alerts"]);
     // the checklist stays: a done row is no way out of it
-    expect(renderer!.root.findAll((instance) => instance.props.role === "menu")).toHaveLength(1);
+    expect(page.window.document.querySelectorAll('[role="menu"]')).toHaveLength(1);
     expect(guideOpened).toBe(0);
   });
 
   it("opens a workspace from its item when none is open yet", async () => {
     await openChecklist({ workspace: false, phone: true, alerts: false });
-    await act(async () => { item("workspace").props.onClick(); });
+    await act(async () => { item("workspace").click(); });
     expect(called).toEqual(["workspace"]);
     expect(guideOpened).toBe(0);
   });

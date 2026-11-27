@@ -223,8 +223,61 @@ try {
           await dialog.waitFor({ state: "detached" });
           await page.locator(`.workspace-select[data-pane="${partial.pane_id}"][aria-current="true"]`).waitFor({ state: "attached" });
           assert.equal(requests, beforeOpen, "Open after partial failure never creates another workspace");
+
+          await page.evaluate(() => localStorage.setItem("ovis:recent-directories:local",
+            JSON.stringify(Array.from({ length: 23 }, (_, index) => `/paged/folder-${String(index + 1).padStart(2, "0")}`))));
+          await page.reload();
+          await betaRow.waitFor({ state: "attached" });
+          await openNew();
+          const paged = (await page.evaluate(() => JSON.parse(localStorage.getItem("ovis:recent-directories:local")!) as string[])).filter((path) => !passingFolder(path));
+          assert.ok(paged.length >= 23);
+          await packed(paged.length);
+          const nextPage = (loaded: number) => `${Math.min(10, paged.length - loaded)}개 더 보기`;
+          if (width === 390) {
+            for (let loaded = 10; loaded < paged.length; loaded += 10) {
+              assert.deepEqual(await titles(chips), paged.slice(0, loaded), "a phone's row holds ten folders, then ten more for each +N");
+              assert.equal(await more.innerText(), `+${paged.length - loaded}`);
+              assert.equal(await more.getAttribute("aria-label"), `+${paged.length - loaded}: ${nextPage(loaded)}`);
+              if (loaded === 10) {
+                await more.scrollIntoViewIfNeeded();
+                await page.screenshot({ path: join(evidence, `recent-folders-paged-${width}-${theme}.png`) });
+              }
+              await more.click();
+              await chips.nth(Math.min(loaded + 10, paged.length) - 1).waitFor();
+            }
+            assert.deepEqual(await titles(chips), paged);
+            assert.equal(await more.count(), 0, "+N goes once every folder is in the row");
+          } else {
+            const inRow = await titles(chips);
+            assert.equal(await more.innerText(), `+${paged.length - inRow.length}`, "+N counts every folder not in the row, shown in the list or not");
+            await more.click();
+            const menu = page.getByRole("menu", { name: "최근 폴더", exact: true });
+            await menu.waitFor();
+            const listed = menu.locator('[role="menuitem"][title]');
+            const showMore = menu.locator('[role="menuitem"][data-item="show-more"]');
+            assert.deepEqual([...inRow, ...await titles(listed)], paged.slice(0, 10), "ten folders at first, the row's and the list's");
+            assert.equal(await showMore.innerText(), nextPage(10));
+            await page.screenshot({ path: join(evidence, `recent-folders-paged-${width}-${theme}.png`) });
+            await showMore.click();
+            await listed.nth(20 - inRow.length - 1).waitFor();
+            assert.deepEqual([...inRow, ...await titles(listed)], paged.slice(0, 20), "Show more adds the next ten and leaves the list open");
+            assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("title")), paged[10], "the first folder Show more brought takes the focus");
+            assert.equal(await showMore.innerText(), nextPage(20));
+            await page.keyboard.press("End");
+            assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("data-item")), "show-more");
+            await page.keyboard.press("Enter");
+            await listed.nth(paged.length - inRow.length - 1).waitFor();
+            assert.deepEqual([...inRow, ...await titles(listed)], paged, "Show more goes once every folder is listed");
+            assert.equal(await showMore.count(), 0);
+            assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("title")), paged[20], "the folder in Show more's place takes the focus");
+            await page.screenshot({ path: join(evidence, `recent-folders-paged-all-${width}-${theme}.png`) });
+            await page.keyboard.press("Escape");
+            await menu.waitFor({ state: "detached" });
+          }
+          await pickFolder(paged.at(-1)!);
+          assert.equal(await dialog.locator("#new-session-cwd").inputValue(), paged.at(-1), "a folder Show more brought fills Directory, and the list keeps what it loaded");
           assert.deepEqual(errors, []);
-          console.log(`PASS recent folders ${width} ${theme}: snapshot seed behind kept folders, closed workspace, reload, PC isolation, worktrees and temporary folders left out, one swiped row on a phone, one row and +N on a wider screen, chip fills Directory, a start moves its folder first, pending, focus trap, failed-start order`);
+          console.log(`PASS recent folders ${width} ${theme}: snapshot seed behind kept folders, closed workspace, reload, PC isolation, worktrees and temporary folders left out, one swiped row on a phone, one row and +N on a wider screen, chip fills Directory, a start moves its folder first, pending, focus trap, failed-start order, ten folders at first and ten more for each Show more`);
         } finally {
           gate.resolve();
           await context.close();

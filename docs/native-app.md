@@ -490,6 +490,11 @@ app's own page (the released front page does), bring the SSH setup up over home 
 SSH](#pcs-over-ssh)): Back or Cancel there is home again as it was, and the current PC is untouched. A pairing link tapped outside the app (Android) still waits for the app's own page, which
 checks it and opens its PC.
 
+`HerdrShell.appId` (Android) answers `{ id }`, the application id the build was made as. The client reads it once
+for one thing: only the QA twin (`sh.ovis.app.previewqa`) may turn the waits of moving an account onto its signed list
+down ([account-list.md](account-list.md), "In the app"); every other build, a browser and an app that does not answer
+wait the full time.
+
 `HerdrShell.identify` (both platforms) lets a PC's own page say which PC it is: its relay ID, as its own
 `/api/health` gives it to that page (`web_ui.server_id`, authenticated only; `""` once a health read names none, which
 drops the one kept), and its name (64 characters at most, counted as grapheme clusters on both platforms,
@@ -670,9 +675,10 @@ one more browser's and is unchanged.
   plugin the app lacks would never settle.
 - Turning alerts on asks for notifications (the phone's own prompt), then subscribes, and the PC
   sends its confirmation push, as in a browser. The app shows an alert that arrives while it is
-  open too. On Android, tapping a pane's alert opens the PC that sent it on that pane's chat, as a
+  open too. Tapping a pane's alert opens the PC that sent it on that pane's chat, as a
   browser's does: the PC names the endpoint it pushed to and its relay ID inside the encrypted alert
-  (`shared/push.ts`), and the app finds the saved PC by them (`PCStore.alertLink`). A tap for the
+  (`shared/push.ts`), and the app finds the saved PC by them (`PCStore.alertLink` on Android,
+  `Alert.link` in `app/ios/OvisHomeCore` on iOS). A tap for the
   PC already open selects the pane in its page without reloading the page (over a reader or a file
   page, or before that page is up, the alert's address opens instead). An alert for another
   saved PC opens that PC, as switching PC does, without asking: unsent text the open page kept in
@@ -681,7 +687,16 @@ one more browser's and is unchanged.
   ID is sent without them, and its tap just opens the app, as does an alert from an older PC or
   from one the phone no longer keeps. A tap for the open PC only brings the app forward when that
   PC's page is from an Ovis older than this hand-over and is served over plain http, where a page
-  has no service worker. On iOS a tap still only opens the app.
+  has no service worker.
+- On iOS the tap is read from the PC's encrypted alert again, with the phone's keys
+  (`OvisPushPlugin.tapped`), never from what the notification shows, so a tap still works where
+  the extension ran out of time. Only an endpoint the app still knows can open a PC. A tap that
+  launched the app opens the alert's PC as the first screen, at its pane. A relay PC's page in
+  the hosted app the person kept as the PC is that relay
+  PC's own: its alert selects the pane there too. While a sheet is over the page (an SSH setup, the
+  scanner) a tap only brings the app forward, leaving the sheet as it was. An alert whose endpoint
+  the app kept under the hosted origin before the shell moved inside the app (`PCStore.settleShell`)
+  is not the current pairing's, and its tap just opens the app.
 - The plugin is `app/ios/App/App/OvisPushPlugin.swift` on iOS and
   [`app/android/ovis-push`](../app/android/ovis-push/README.md) on Android, with the same calls:
   `checkPermissions()` and `requestPermissions()` (`{ notifications }`, Capacitor's permission
@@ -791,7 +806,11 @@ pieces are the Java twins of the iOS ones, in `app/android/app/src/main/java/sh/
   through the relay), to `SaveImagePlugin` (`OvisSave`), which writes them to Downloads through
   MediaStore with no storage permission, as Chrome saves a download. Android 8 and 9 give an app
   that without the storage permission, so there it opens the share sheet with the picture instead.
-  An app built before the plugin makes the viewer say it couldn't save.
+  An app built before the plugin makes the viewer say it couldn't save. Download in the file
+  viewer takes the same way for a file of any type (`saveFile`): the page reads the file through
+  its transport and hands its bytes over, up to the plugin's 20 MB (a larger file is not offered:
+  the viewer says to download it on the PC). An app without `saveFile` makes the viewer ask for
+  an update.
 - A PC's link on the hosted shell tapped outside the app (a message, the camera app reading the
   PC's QR code) opens in the app: the manifest's `autoVerify` intent-filter takes
   `https://app.ovis.sh/s/`, which Android verifies against
@@ -1227,7 +1246,9 @@ so the apps' `OvisDirect` plugin opens it for the hosted app (`app/ios/App/App/O
   Capacitor's message handler, which lets any frame call; on Android Capacitor's own origin rule and
   main-frame check apply, and the plugin refuses without the WebView's message listener.
 - It opens only `ws://<10/8, 172.16/12, 192.168/16, 169.254/16 or Tailscale's 100.64/10 address>:<port>/v1/ws?v=1`,
-  at most two at once, and closes them when a new page loads. Noise inside the channel proves the PC.
+  at most two at once (iOS counts one until it reports its close). A race or probe it refuses as full
+  (`too_many`) waits on the page and asks again once the plugin reports a close; a background sweep does not wait.
+  It closes them when a new page loads. Noise inside the channel proves the PC.
   Its `features` call answers `{ tailnet: true }`, so the page asks the PC for its Tailscale address
   only in an app that opens it; an app built before that has no `features` and stays on home-network
   addresses. A Tailscale address needs no Local Network permission (Tailscale is a VPN on the phone).

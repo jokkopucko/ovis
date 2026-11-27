@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { act, createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { create, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 import { AgentMark } from "./AgentMark.tsx";
 import { AgentPicker, type AgentPickerProps } from "./AgentPicker.tsx";
 
@@ -32,54 +32,33 @@ describe("AgentPicker", () => {
 });
 
 describe("AgentPicker's Add another agent row", () => {
-  const saved = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
-  const node = { getBoundingClientRect: () => ({ left: 0, top: 0, bottom: 40, width: 300 }), contains: () => true };
-
-  beforeEach(() => {
-    for (const key of ["window", "document", "IS_REACT_ACT_ENVIRONMENT"]) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    const events = new EventTarget();
-    const on = { addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events) };
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: { ...on, innerHeight: 800 } });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: { ...on, getElementById: () => null, activeElement: null } });
-  });
-
-  afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    saved.clear();
-  });
+  let page: Page;
+  beforeEach(() => { page = openPage(); });
+  afterEach(async () => { await page.close(); });
 
   async function openList(props: Partial<AgentPickerProps>) {
     const chosen: string[] = [];
     let added = 0;
-    await act(async () => {
-      renderer = create(createElement(AgentPicker, { agents, value: "codex", labelledBy: "agent", onChange: (kind) => chosen.push(kind), ...props, ...(props.addAgent ? { addAgent: { ...props.addAgent, onSelect: () => { added += 1; } } } : {}) }), { createNodeMock: () => node });
-    });
-    const root = renderer!.root;
-    const trigger = root.findByProps({ role: "combobox" });
-    await act(async () => { trigger.props.onClick(); });
-    const rows = () => root.findAllByProps({ role: "option" });
-    return { root, trigger, rows, chosen, added: () => added };
+    await page.render(createElement(AgentPicker, { agents, value: "codex", labelledBy: "agent", onChange: (kind) => chosen.push(kind), ...props, ...(props.addAgent ? { addAgent: { ...props.addAgent, onSelect: () => { added += 1; } } } : {}) }));
+    const trigger = page.one('[role="combobox"]');
+    Object.defineProperty(trigger, "getBoundingClientRect", { value: () => new page.window.DOMRect(0, 0, 300, 40) });
+    await act(async () => { trigger.click(); });
+    const rows = () => [...document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')];
+    return { trigger, rows, chosen, added: () => added };
   }
 
   it("ends the list with the row, which opens the add flow and picks no agent", async () => {
     const { rows, chosen, added } = await openList({ addAgent: { label: "Add another agent…", onSelect: () => {} } });
-    const labels = rows().map((row) => row.findAllByProps({ className: "menu-item-main" })[0]!.children.join(""));
+    const labels = rows().map((row) => row.querySelector('[class="menu-item-main"]')?.textContent);
     expect(labels).toEqual(["Shell", "Codex", "Claude Code", "Add another agent…"]);
-    await act(async () => { rows().at(-1)!.props.onClick(); });
+    await act(async () => { rows().at(-1)?.click(); });
     expect(added()).toBe(1);
     expect(chosen).toEqual([]);
   });
 
   it("reaches the row from the keyboard: End then Enter", async () => {
     const { trigger, chosen, added } = await openList({ addAgent: { label: "Add another agent…", onSelect: () => {} } });
-    const key = (name: string) => trigger.props.onKeyDown({ key: name, preventDefault() {} });
+    const key = (name: string) => trigger.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true }) as unknown as Event);
     await act(async () => { key("End"); });
     await act(async () => { key("Enter"); });
     expect(added()).toBe(1);

@@ -220,9 +220,10 @@ async function walkOne(browser: Browser, site: PagesSite, run: Run, arriveHere: 
     if (relayReachable) { relayBrowserSocket(ws, () => relayUrl(ws.url())); return; }
     ws.close({ code: 1011, reason: "out of reach" });
   });
-  await context.addInitScript(({ language, theme }) => {
-    if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify({ language, theme }));
-  }, { language: run.language, theme: run.theme });
+  await context.addInitScript(({ app, language, theme }) => {
+    // about:blank, which each load of the front page passes through (toFront), has no storage to read
+    if (location.origin === app && localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify({ language, theme }));
+  }, { app: APP, language: run.language, theme: run.theme });
   const page = await context.newPage();
   await page.clock.setFixedTime(PAGE_NOW);
   page.setDefaultTimeout(20_000);
@@ -244,11 +245,14 @@ async function walkOne(browser: Browser, site: PagesSite, run: Run, arriveHere: 
    * check opened its socket. Always a navigation of its own, never a script in the page: a sign-in's return may still be
    * loading it, and goto wins over that. The tab's launch is past, so the front page stays My PCs. The front page
    * checks its PCs at most once a minute (pcSweep.ts CHECK_GAP_MS), so each load is a minute after the one before on
-   * the page's standing clock.
+   * the page's standing clock. That minute is stamped in localStorage by whichever page of the tab checks first, so the
+   * page before is unloaded before the clock moves: a late redraw of it, once it reads the seeded pairings, would otherwise
+   * check at the new minute, take it from this load, and go away before its socket opened.
    */
   let pageNow = PAGE_NOW;
   const toFront = async (entry: Entry): Promise<void> => {
     pageNow += CHECK_GAP_MS;
+    await page.goto("about:blank");
     await page.clock.setFixedTime(pageNow);
     const checked = nextSocket(entry.server_id);
     await page.goto(`${APP}/`);

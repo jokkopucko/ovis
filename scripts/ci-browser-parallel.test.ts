@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { processStart } from "./check.ts";
 import { parseLaneLog } from "./ci-flakes.ts";
-import { programName, processName, failureSite, longestFirst, quarantineNote, quarantineStatus, scriptTimeoutSeconds, serialBrowserScripts, shardScripts, stopReport, stopRun } from "./ci-browser-parallel.ts";
+import { demoOnlyScripts, programName, processName, failureSite, longestFirst, quarantineNote, quarantineStatus, scriptTimeoutSeconds, serialBrowserScripts, shardScripts, stopReport, stopRun } from "./ci-browser-parallel.ts";
 import { QUARANTINE, QUARANTINE_MAX_DAYS } from "./ci-browser-quarantine.ts";
 import type { StopIo } from "./ci-browser-parallel.ts";
 
@@ -591,5 +591,87 @@ describe("browser flake quarantine", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("the scripts a change to the server alone leaves out", () => {
+  /** A repository of `files`, with the demo app's entries unless `files` names them. */
+  const repoOf = (files: Record<string, string>): string => {
+    const root = mkdtempSync(join(tmpdir(), "demo-only-"));
+    const app = { "scripts/demo-build.ts": "", "vite.config.ts": "import './scripts/plugin.ts';", "scripts/plugin.ts": "", "src/main.tsx": "import '../shared/protocol.ts';", "src/pwa.ts": "", "site/demo/transport.ts": "import '../../src/lib/api';", "src/lib/api.ts": "", "shared/protocol.ts": "" };
+    for (const [file, text] of Object.entries({ ...app, ...files })) {
+      mkdirSync(join(root, file, ".."), { recursive: true });
+      writeFileSync(join(root, file), text);
+    }
+    return root;
+  };
+  const withRepo = (files: Record<string, string>, check: (root: string) => void): void => {
+    const root = repoOf(files);
+    try { check(root); } finally { rmSync(root, { recursive: true, force: true }); }
+  };
+
+  it("are the demo scripts that load no file of the server through any chain", () => {
+    withRepo({
+      "scripts/pure-demo-regression.ts": "import { x } from './lib/page.ts'; import '../shared/protocol.ts';",
+      "scripts/lib/page.ts": "import '../../src/lib/api';",
+      "scripts/deep-demo-regression.ts": "import './lib/helper';",
+      "scripts/lib/helper.ts": "export const load = () => import('../../server/http.ts');",
+      "scripts/direct-demo-regression.ts": "import { createServer } from '../server/index';",
+      "scripts/spawn-demo-regression.ts": "Bun.spawn(['bun', join(repo, 'server', 'index.ts')]);",
+      "scripts/path-demo-regression.ts": "const fixture = readFileSync('server/fixtures/a.json');",
+      "scripts/missing-demo-regression.ts": "import './lib/gone';",
+      "scripts/computed-demo-regression.ts": "const helper = './lib/page.ts'; await import(helper);",
+      "scripts/spaced-demo-regression.ts": "const helper = './lib/page.ts'; await import /* loader */ (helper);",
+      "scripts/template-demo-regression.ts": "const access = readFileSync(`${process.cwd()}/server/access.ts`);",
+      "scripts/rooted-demo-regression.ts": "import { x } from '/server/http.ts';",
+      "scripts/glob-demo-regression.ts": "const all = import.meta.glob('../src/*.ts');",
+      "scripts/shell-demo-regression.ts": "Bun.spawnSync(['sh', '-c', 'cat server/http.ts']);",
+      "scripts/broken-demo-regression.ts": "import { x } from './lib/page.ts'; const = ;",
+      "scripts/typed-demo-regression.ts": "const page: typeof import('./lib/page.ts') = await import('./lib/page.ts'); await import(`data:text/javascript;base64,${code}`);",
+      "scripts/pure-regression.ts": "",
+      "server/http.ts": "", "server/index.ts": "",
+    }, (root) => {
+      const all = ["pure-demo", "deep-demo", "direct-demo", "spawn-demo", "path-demo", "missing-demo", "computed-demo", "spaced-demo", "template-demo", "rooted-demo", "glob-demo", "shell-demo", "broken-demo", "typed-demo", "pure"].map((name) => `scripts/${name}-regression.ts`);
+      expect(demoOnlyScripts(all, root)).toEqual(["scripts/pure-demo-regression.ts", "scripts/typed-demo-regression.ts"]);
+    });
+  });
+
+  it("are none when the demo app itself loads a file of the server, or one it names as it runs", () => {
+    withRepo({ "scripts/pure-demo-regression.ts": "", "site/demo/transport.ts": "import { x } from '../../server/entries';", "server/entries.ts": "" }, (root) => {
+      expect(demoOnlyScripts(["scripts/pure-demo-regression.ts"], root)).toEqual([]);
+    });
+    withRepo({ "scripts/pure-demo-regression.ts": "", "src/pwa.ts": "const worker = './sw.ts'; void import(worker);" }, (root) => {
+      expect(demoOnlyScripts(["scripts/pure-demo-regression.ts"], root)).toEqual([]);
+    });
+    // an entry vite.config.ts's plugin bundles, and a config that reads a server file as it builds
+    withRepo({ "scripts/pure-demo-regression.ts": "", "scripts/plugin.ts": "const entry = new URL('../src/boot.ts', import.meta.url);", "src/boot.ts": "import { on } from '../server/flags';", "server/flags.ts": "" }, (root) => {
+      expect(demoOnlyScripts(["scripts/pure-demo-regression.ts"], root)).toEqual([]);
+    });
+    withRepo({ "scripts/pure-demo-regression.ts": "", "scripts/plugin.ts": "const name = '../src/boot.ts'; const entry = new URL(name, import.meta.url);", "src/boot.ts": "" }, (root) => {
+      expect(demoOnlyScripts(["scripts/pure-demo-regression.ts"], root)).toEqual([]);
+    });
+    withRepo({ "scripts/pure-demo-regression.ts": "", "vite.config.ts": "const revision = readFileSync('server/app-revision.ts', 'utf8');" }, (root) => {
+      expect(demoOnlyScripts(["scripts/pure-demo-regression.ts"], root)).toEqual([]);
+    });
+  });
+
+  const lane = (env: Record<string, string>) => spawnSync("bun", ["scripts/ci-browser-parallel.ts"], {
+    cwd: join(import.meta.dir, ".."),
+    encoding: "utf8",
+    timeout: 30_000,
+    env: { ...process.env, BROWSER_SCRIPTS: "scripts/sidebar-filter-demo-regression.ts,scripts/sidebar-spacing-demo-regression.ts", BROWSER_SHARD: "2/2", BROWSER_LIVE_ONLY: "", ...env },
+  });
+
+  it("let a part they leave empty pass without starting a browser, and a part empty before them fail", () => {
+    const empty = lane({ BROWSER_LIVE_ONLY: "true" });
+    expect(empty.status, empty.stderr).toBe(0);
+    expect(empty.stdout).toContain("no script left for this part (shard 2/2)");
+    expect(empty.stdout).not.toContain("Building demo app");
+    const unexplained = lane({ BROWSER_SCRIPTS: "scripts/sidebar-filter-demo-regression.ts" });
+    expect(unexplained.status).toBe(1);
+    expect(unexplained.stderr).toContain("No browser scripts selected for shard 2/2");
+    const emptyAnyway = lane({ BROWSER_LIVE_ONLY: "true", BROWSER_SHARD: "3/3", BROWSER_SCRIPTS: "scripts/sidebar-filter-demo-regression.ts,scripts/ui-regression.ts" });
+    expect(emptyAnyway.status).toBe(1);
+    expect(emptyAnyway.stderr).toContain("No browser scripts selected for shard 3/3");
   });
 });

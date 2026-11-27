@@ -45,7 +45,7 @@ try {
   const waitHighlight = async () => {
     try { await page.locator(".terminal-find-hit.is-current").first().waitFor(); }
     catch (error) {
-      console.error("Search diagnostic", { searches: JSON.stringify([searches[0], ...searches.slice(-2)]), native: await paneScrollInfo(paneId), dom: await page.evaluate(() => ({ text: document.querySelector(".find-bar")?.textContent, hits: document.querySelectorAll(".terminal-find-hit").length, rows: document.querySelector(".xterm-rows")?.childElementCount, screen: document.querySelector(".xterm-rows")?.textContent })) });
+      console.error("Search diagnostic", { searches: JSON.stringify([searches[0], ...searches.slice(-2)]), native: await paneScrollInfo(paneId), dom: await page.evaluate(() => ({ text: document.querySelector(".find-bar")?.textContent, hits: document.querySelectorAll(".terminal-find-hit").length, rows: document.querySelectorAll(".ghostty-row").length, screen: document.querySelector(".ghostty-text")?.textContent })) });
       if (process.env.UI_EVIDENCE_DIR) { mkdirSync(process.env.UI_EVIDENCE_DIR, { recursive: true }); await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "terminal-search-failure.png") }); }
       throw error;
     }
@@ -266,7 +266,7 @@ try {
   await until(async () => {
     const native = await paneScrollInfo(paneId);
     return !!native && native.viewport_rows < beforeFindRows
-      && native.viewport_rows === await page.locator(".xterm-rows > div").count();
+      && native.viewport_rows === await page.evaluate(() => document.querySelectorAll(".ghostty-row").length);
   }, "the search bar's native geometry is ready");
   await input.fill("mark_needle");
   await input.press("Enter");
@@ -287,7 +287,7 @@ try {
   await waitHighlight();
   const hit = (await page.locator(".terminal-find-hit.is-current").first().boundingBox())!;
   const screen = (await page.locator(".xterm-screen").boundingBox())!;
-  const wide = await page.evaluate(() => { const row = document.querySelector(".xterm-rows > div"); return row?.getBoundingClientRect().height ?? 0; });
+  const wide = await page.evaluate(() => { const row = document.querySelector(".ghostty-row"); return row?.getBoundingClientRect().height ?? 0; });
   assert.ok(hit.width > 20 && hit.height > 0 && wide > 0 && hit.x >= screen.x, "wide and combining text has visible cell-aligned emphasis");
   await page.evaluate((owner) => {
     const original = window.fetch;

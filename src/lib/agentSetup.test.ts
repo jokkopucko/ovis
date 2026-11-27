@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { AGENT_CATALOG, catalogRow, type AgentInstallState } from "../../shared/agent-catalog.ts";
-import { setupProgress, setupStep, type SetupStep } from "./agentSetup.ts";
+import { setupStep, type SetupStep } from "./agentSetup.ts";
 
 const tab = { pane_id: "w1:p2", workspace_id: "w1", command: "curl -fsSL https://claude.ai/install.sh | bash", shell: "posix" as const };
 const row = (id: string, state: Partial<AgentInstallState>) => catalogRow(AGENT_CATALOG.find((entry) => entry.id === id)!, "linux", { installed: false, binary: null, on_path: null, version: null, version_error: null, meets_min_version: null, ...state });
@@ -41,7 +41,5 @@ describe("agent setup", () => {
     expect(setupStep({ kind: "installing", tab }, { type: "failed", message: "x" })).toEqual({ kind: "failed", message: "x", after: "install" });
     expect(setupStep({ kind: "signing-in", tab, version: null }, { type: "failed", message: "y" })).toMatchObject({ after: "sign-in" });
     expect(setupStep({ kind: "installing", tab }, { type: "cancel" })).toEqual({ kind: "idle" });
-    expect(setupProgress({ kind: "failed", message: "x", after: "sign-in" })).toEqual({ index: 1, fraction: 0.6 });
-    expect(setupProgress({ kind: "ready", version: null }).fraction).toBe(1);
   });
 });

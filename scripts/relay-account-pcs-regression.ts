@@ -96,10 +96,16 @@ const { code: _code, ...offer } = decodeOffer((await offered.json() as { url: st
 await service.fetch(new Request(`${ACCOUNT_SERVICE}/v1/pcs/${offer.server_id}`, { method: "PUT", headers: { authorization: `Bearer ${token}` },
   body: JSON.stringify({ label: "Desk", public_key: bytesToHex(importPublicKey(offer.server_public_key)), relay: offer.relay }) }));
 assert.equal((await b.context.services.accountMailbox.readSnapshot())?.committed, true);
-// a PC of the account that is never on: its relay route answers nobody
+await b.context.services.accountMailbox.pull();
+assert.ok(service.pcs(ACCOUNT).find((pc) => pc.server_id === offer.server_id)?.last_seen_at, "Desk checked in after being listed");
+// Away checked in before going offline; its relay route no longer answers.
 const awayKey = randomBytes(32);
-await service.fetch(new Request(`${ACCOUNT_SERVICE}/v1/pcs/${deriveServerId(awayKey)}`, { method: "PUT", headers: { authorization: `Bearer ${token}` },
+const awayId = deriveServerId(awayKey);
+await service.fetch(new Request(`${ACCOUNT_SERVICE}/v1/pcs/${awayId}`, { method: "PUT", headers: { authorization: `Bearer ${token}` },
   body: JSON.stringify({ label: "Away", public_key: bytesToHex(awayKey), relay: offer.relay }) }));
+const awayEntry = service.pcs(ACCOUNT).find((pc) => pc.server_id === awayId);
+assert.ok(awayEntry, "Away is listed in the account");
+awayEntry.last_seen_at = new Date(Date.now() - 30 * 60_000).toISOString();
 
 const aState = stateDir();
 // one host in A's ssh config: the relay tab lists it with Add, which opens Add PC for it
@@ -218,11 +224,11 @@ try {
   const adding = await accountWindow(browser, pageErrors);
   // signed in, with nothing opened: the sidebar lists the account's PCs that are not in this app yet
   const away = accountRow(adding.page, "Away");
-  await away.getByText("Switched off", { exact: true }).waitFor({ timeout: 30_000 });
+  await away.getByText("Can't reach the PC: it may be off", { exact: true }).waitFor({ timeout: 30_000 });
   const deskRow = accountRow(adding.page, "Desk");
   const request = await remotePrompt(); // the sidebar starts the ready PC once, without an Add button
   assert.equal(await deskRow.getByRole("button").count(), 0);
-  assert.equal(await away.locator('.machine-dot[title="Switched off"]').count(), 1);
+  assert.equal(await away.locator(`.machine-dot[title="Can't reach the PC: it may be off"]`).count(), 1);
   assert.equal(await adding.page.locator(".settings-dialog, .connect-phone-dialog").count(), 0, "the sidebar starts without opening settings");
   await shot(adding.page, "sidebar");
   const approve = await approver();

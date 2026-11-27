@@ -11,8 +11,85 @@ import { PendingInputs } from "../../server/pending-input.ts";
 function fixture() {
   const data = new Map<string, string>();
   const storage = { getItem: (key: string) => data.get(key) ?? null, setItem: (key: string, value: string) => { data.set(key, value); }, removeItem: (key: string) => { data.delete(key); } };
-  return { data, store: new ComposerDraftStore(() => storage) };
+  return { data, storage, store: new ComposerDraftStore(() => storage) };
 }
+it("can claim and key a draft on HTTP without crypto.randomUUID", () => {
+  const { store } = fixture();
+  store.set("p", "continue", "replace");
+  expect(store.claim("p", "continue")).toBe(true);
+  const descriptor = Object.getOwnPropertyDescriptor(crypto, "randomUUID");
+  Object.defineProperty(crypto, "randomUUID", { configurable: true, value: undefined });
+  try { expect(store.commandKey("p", "continue")).toMatch(/^[a-f0-9-]{36}$/); }
+  finally {
+    if (descriptor) Object.defineProperty(crypto, "randomUUID", descriptor);
+    else Reflect.deleteProperty(crypto, "randomUUID");
+  }
+});
+
+it.each(["continue", "> reply\ncontinue"])("another tab retries the unchanged draft with the original key: %s", (message) => {
+  const { storage, store } = fixture(), other = new ComposerDraftStore(() => storage);
+  const key = "ovis:composer-draft:p";
+  store.set(key, "continue", "replace");
+  expect(store.claim(key, "continue")).toBe(true);
+  const sent = store.commandKey(key, message);
+  expect(sent).toBeString();
+  store.end(key); // no acknowledgement
+  expect(other.claim(key, "continue")).toBe(true);
+  expect(other.commandKey(key, message)).toBe(sent);
+  expect(other.commandKey(key, "> a different reply\ncontinue")).not.toBe(sent);
+});
+
+it("recognizes an identical draft replaced by another tab before storage events run", () => {
+  const { storage, store } = fixture(), other = new ComposerDraftStore(() => storage);
+  const key = "ovis:composer-draft:p";
+  store.set(key, "continue", "replace");
+  expect(store.claim(key, "continue")).toBe(true);
+  const sent = store.commandKey(key, "continue");
+  store.end(key);
+  other.set(key, "", "replace");
+  other.set(key, "continue", "replace");
+  expect(store.claim(key, "continue")).toBe(true);
+  expect(store.commandKey(key, "continue")).not.toBe(sent);
+});
+
+it("uses a fresh command for an explicit retry of a confirmed incomplete send", () => {
+  const { storage, store } = fixture();
+  const key = "ovis:composer-draft:p";
+  store.set(key, "continue", "replace");
+  expect(store.claim(key, "continue")).toBe(true);
+  const first = store.commandKey(key, "continue")!;
+  store.forgetCommand(key, first);
+  store.end(key);
+  const other = new ComposerDraftStore(() => storage);
+  expect(other.claim(key, "continue")).toBe(true);
+  const second = other.commandKey(key, "continue");
+  expect(second).toBeString();
+  expect(second).not.toBe(first);
+  store.forgetCommand(key, first);
+  expect(other.commandKey(key, "continue")).toBe(second);
+});
+
+it("keeps the command key for a manual retry, not for edited or acknowledged drafts", () => {
+  const { store } = fixture(), key = "pane", text = "echo once";
+  const claim = () => {
+    expect(store.claim(key, text)).toBe(true);
+    const id = store.commandKey(key, text);
+    expect(id).toBeString();
+    store.end(key);
+    return id;
+  };
+  store.set(key, text, "replace");
+  const first = claim();
+  expect(claim()).toBe(first);
+  store.set(key, "echo edited", "box");
+  store.set(key, text, "box");
+  const edited = claim();
+  expect(edited).not.toBe(first);
+  store.settle(key, text);
+  store.set(key, text, "replace");
+  expect(claim()).not.toBe(edited);
+});
+
 it("does not edit another tab's saved held copy without authoritative withdrawal", async () => {
   const data = new Map<string, string>();
   const storage = paneLifetimes.paneStorage;
@@ -28,7 +105,7 @@ it("does not edit another tab's saved held copy without authoritative withdrawal
     original.accept(owner, message, "original");
     pendingMessages.publish(owner, [], [{ id: message.id, outcome: "held", resumed: true, until: Date.now() + 60_000 }], "receipt");
     expect(pendingMessages.read(owner)[0]).toMatchObject({ state: "held", serverOwned: false });
-    composerDrafts.set(key, "existing draft");
+    composerDrafts.set(key, "existing draft", "replace");
     let actions!: ReturnType<typeof useComposerSends>;
     function Composer() {
       const deps: Partial<ComposerSendsDeps> = {
@@ -47,7 +124,7 @@ it("does not edit another tab's saved held copy without authoritative withdrawal
     expect(original.read(owner)).toMatchObject([{ id: message.id, serverOwned: true }]);
   } finally {
     pendingMessages.removeCopy(owner, message.id);
-    composerDrafts.set(key, "");
+    composerDrafts.set(key, "", "replace");
     for (const spy of spies) spy.mockRestore();
   }
 });
@@ -65,7 +142,7 @@ it.each(["sent", "discarded", "dismissed"] as const)("restores an edited row onl
   try {
     pendingMessages.accept(owner, message, "scope");
     expect(other.read(owner)).toHaveLength(1);
-    composerDrafts.set(key, "existing draft");
+    composerDrafts.set(key, "existing draft", "replace");
     const socket: Pick<HerdrSocket, "on" | "pendingAction"> = {
       on: (listener: (frame: ServerMessage) => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
       pendingAction: async (pane: string, id: string, action: string) => {
@@ -99,7 +176,7 @@ it.each(["sent", "discarded", "dismissed"] as const)("restores an edited row onl
     expect(listeners.size).toBe(0);
   } finally {
     pendingMessages.publish(owner, [], [{ id: message.id, outcome: "discarded" }], "scope");
-    composerDrafts.set(key, "");
+    composerDrafts.set(key, "", "replace");
     for (const spy of spies) spy.mockRestore();
   }
 });
@@ -167,7 +244,7 @@ it("does not restore an already-editing row after another tab's ambiguous resend
   let deliveries = 0;
   try {
     expect(other.read(owner)[0]).toMatchObject({ state: "held", serverOwned: false, heldByRequest: true });
-    composerDrafts.set(key, "existing draft");
+    composerDrafts.set(key, "existing draft", "replace");
     const socket: Pick<HerdrSocket, "on" | "pendingAction"> = {
       on: (listener: (frame: ServerMessage) => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
       pendingAction: async (_pane, _id, _action, _generation, withdrawalOnly) => {
@@ -201,13 +278,13 @@ it("does not restore an already-editing row after another tab's ambiguous resend
     expect(listeners.size).toBe(0);
   } finally {
     pendingMessages.publish(owner, [], [{ id: item.message.id, outcome: "discarded" }], "scope");
-    composerDrafts.set(key, "");
+    composerDrafts.set(key, "", "replace");
     for (const spy of spies) spy.mockRestore();
   }
 });
 it("restores withdrawn text into the latest draft without losing mentions, typing or an in-flight send", () => {
   const { store, data } = fixture();
-  store.set("a", "@/tmp/image.png draft");
+  store.set("a", "@/tmp/image.png draft", "replace");
   store.begin("a", "@/tmp/image.png draft");
   data.set("a", "@/tmp/image.png draft plus concurrent typing");
   store.restorePending("a", "withdrawn");
@@ -221,14 +298,14 @@ it("restores withdrawn text into the latest draft without losing mentions, typin
 });
 it("keeps the draft busy and intact until an acknowledged send settles, and releases a refused send for retry", () => {
   const { store } = fixture();
-  store.set("a", "check delivery");
+  store.set("a", "check delivery", "replace");
   expect(store.begin("a", "check delivery")).toBe(true);
   expect(store.read("a")).toEqual({ text: "check delivery", sending: true });
   expect(store.begin("a", "check delivery")).toBe(false);
   store.settle("a", "check delivery");
   store.end("a");
   expect(store.read("a")).toEqual({ text: "", sending: false });
-  store.set("a", "retry this");
+  store.set("a", "retry this", "replace");
   store.begin("a", "retry this");
   store.end("a");
   expect(store.read("a")).toEqual({ text: "retry this", sending: false });
@@ -236,8 +313,8 @@ it("keeps the draft busy and intact until an acknowledged send settles, and rele
 });
 it("settles an unmounted pane's draft and pending send without changing another owner", () => {
   const { store, data } = fixture();
-  store.set("local:a", "sent"); store.begin("local:a");
-  store.set("remote:a", "other PC");
+  store.set("local:a", "sent", "replace"); store.begin("local:a");
+  store.set("remote:a", "other PC", "replace");
   expect(store.begin("local:a")).toBe(false);
   store.settle("local:a", "sent"); store.end("local:a");
   expect(store.read("local:a")).toEqual({ text: "", sending: false });
@@ -246,16 +323,16 @@ it("settles an unmounted pane's draft and pending send without changing another 
 });
 it("preserves appended text, internal edits and newer edits from another tab", () => {
   const { store, data } = fixture();
-  store.set("a", "sent plus next");
+  store.set("a", "sent plus next", "replace");
   expect(store.settle("a", "sent")).toEqual({ text: " plus next", edited: false });
-  store.set("a", "edited sent");
+  store.set("a", "edited sent", "replace");
   expect(store.settle("a", "sent")).toEqual({ text: "edited sent", edited: true });
   data.set("a", "another tab's draft");
   expect(store.settle("a", "sent").text).toBe("another tab's draft");
 });
 it("notifies a remounted composer and keeps a failed send's draft", () => {
   const { store } = fixture();
-  store.set("a", "sent"); store.begin("a");
+  store.set("a", "sent", "replace"); store.begin("a");
   let updates = 0;
   const off = store.subscribe(() => { updates++; });
   store.end("a");
@@ -266,23 +343,23 @@ it("notifies a remounted composer and keeps a failed send's draft", () => {
 });
 it("retains unsaved edits when browser storage is unavailable", () => {
   const store = new ComposerDraftStore(() => { throw new Error("blocked"); });
-  store.set("a", "sent then next");
+  store.set("a", "sent then next", "replace");
   expect(store.settle("a", "sent").text).toBe(" then next");
 });
 it("keeps a draft cleared and retyped while its send was on its way", () => {
   const { store } = fixture();
-  store.set("a", "a"); store.begin("a", "a");
-  store.set("a", ""); store.set("a", "ab");
+  store.set("a", "a", "replace"); store.begin("a", "a");
+  store.set("a", "", "replace"); store.set("a", "ab", "replace");
   expect(store.settle("a", "a")).toEqual({ text: "ab", edited: true });
   store.end("a");
-  store.set("a", "x"); store.begin("a", "x");
-  store.set("a", "xy");
+  store.set("a", "x", "replace"); store.begin("a", "x");
+  store.set("a", "xy", "replace");
   expect(store.settle("a", "x")).toEqual({ text: "y", edited: false });
   store.end("a");
 });
 it("keeps a draft another tab cleared and retyped while this tab's send was on its way", () => {
   const { store, data } = fixture();
-  store.set("a", "sent"); store.begin("a", "sent");
+  store.set("a", "sent", "replace"); store.begin("a", "sent");
   data.delete("a"); store.refresh("a");
   data.set("a", "sent again"); store.refresh("a");
   expect(store.settle("a", "sent")).toEqual({ text: "sent again", edited: true });
@@ -295,7 +372,7 @@ it("refuses a second tab's send while the first is still on its way", () => {
     setItem: (key: string, value: string) => { data.set(key, value); },
     removeItem: (key: string) => { data.delete(key); },
   }));
-  first.set("a", "do the thing");
+  first.set("a", "do the thing", "replace");
   first.begin("a", "do the thing");
   second.read("a");
   second.refresh("a");
@@ -323,7 +400,7 @@ it("ignores a hand-edited sending record instead of blocking the pane", () => {
 });
 it("still reconciles another tab's text when no send is in flight", () => {
   const { data, store } = fixture();
-  store.set("a", "mine");
+  store.set("a", "mine", "replace");
   store.refresh("a");
   data.set("a", "theirs");
   store.refresh("a");

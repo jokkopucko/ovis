@@ -1,0 +1,40 @@
+                                         ██       v19.1.0
+
+                Tip: Agent overthinking? Say `chillax` — on models with per-message
+                effort, thinking drops to the lowest level, even mid-turn — watch it
+                                          glow as you type
+
+                                                                                                    
+ Run the form fixture.                                                                              
+                                                                                                    
+╭─ Ask · 4 of 6 answered ──────────────────────────────────────────────────────────────────────────╮
+│ Sessions live in memory and are lost on restart.                                                 │
+│                                                                                                  │
+│ ✓ Where should sessions persist?                                                                 │
+│    SQLite: one file, n…   Redis: shared acros…   ✓ Other: xyz                                    │
+│                                                                                                  │
+│ ✓ Q2 · Targets                                                                                   │
+│    ✓ Desktop   Phone   Tablet                                                                    │
+│                                                                                                  │
+│ ✓ Q3 · Region                                                                                    │
+│    Europe   ✓ United States                                                                      │
+│                                                                                                  │
+│ ✓ Session lifetime (days)                                                                        │
+│   45                                                                                             │
+│                                                                                                  │
+│ ❯ Notes                                                                                          │
+│   │                                                                                              │
+│   │                                                                                              │
+│   │                                                                                              │
+│   │                                                                                              │
+│                                                                                                  │
+│ ○ Ship it today                                                                                  │
+│    Ship it today                                                                                 │
+│                                                                                                  │
+│   Submit                                                                                         │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+  ⎋ Working…                                                                                        
+ ❓ 3s > ⬢ Form fixture > 📁 …7d_78nzzhq00000gn/T/omp-form-UFLtJV/cwd ▶─6%───────────────╎─┃───131K─
+╰─                                                                                                  

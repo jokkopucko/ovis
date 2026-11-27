@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowDown } from "lucide-react";
-import type { Terminal } from "@xterm/xterm";
+import type { GhosttyTerminal } from "../lib/ghostty/terminal.ts";
 import type { PaneFindResponse, PaneScrollInfo } from "../../shared/protocol.ts";
 import { useMachineApi } from "../lib/machineContext.tsx";
 import type { ViewportIntentGate } from "../lib/viewportIntent.ts";
@@ -8,14 +8,15 @@ import { ApiError } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { PAGE_OVERLAP_ROWS, pageScrollDistance } from "../lib/pageScroll.ts";
 import { SCROLL_POLL_BUSY_MS, SCROLL_POLL_SETTLE_MS, scrollPollDelay, validScroll, visibleFindRects, type FindCellRect } from "../lib/terminalViewport.ts";
-import { VIEW_MOVED_EVENT } from "../lib/ghostty/viewMoved.ts";
+import { GHOSTTY_VIEW_EVENT, VIEW_MOVED_EVENT, ghosttyRowsAbove } from "../lib/ghostty/viewMoved.ts";
+import { viewRows } from "../lib/terminalScreen.ts";
 import "./TerminalViewportTools.css";
 
 export interface TerminalSearchState { query: string; result: PaneFindResponse }
 interface Box { left: number; top: number; width: number; height: number; cols: number; rows: number; anchorX: number; anchorY: number }
 interface Props {
   viewportIntent: ViewportIntentGate;
-  terminal: Terminal | null;
+  terminal: GhosttyTerminal | null;
   paneId: string;
   pageScroll?: { current: ((direction: -1 | 1) => void) | null };
   lineScroll?: { current: ((lines: number) => void) | null };
@@ -77,6 +78,8 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       && getComputedStyle(terminal.element).visibility !== "hidden";
     const clearHits = () => { data = null; lastKey = ""; setHits((old) => old.length ? [] : old); };
     const screen = terminal.element?.querySelector<HTMLElement>(".xterm-screen") ?? null;
+    // the rows drawn: libghostty's while it holds the screen
+    const rows = () => viewRows(terminal);
     const mount = terminal.element?.parentElement;
     const paintBox = () => {
       if (!alive || !showing()) return;
@@ -100,9 +103,11 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       if (!showing()) return;
       const matches = data?.matches ?? [];
       const nativeScroll = data?.scroll;
+      // the rows drawn, read once a paint (each read of libghostty's is a row read from wasm)
+      const buffer = rows();
       const rectangles = active && data && validScroll(nativeScroll) ? visibleFindRects(matches, nativeScroll, active.query, terminal.cols, terminal.rows,
         (row, col) => {
-          const cell = terminal.buffer.active.getLine(terminal.buffer.active.viewportY + row)?.getCell(col);
+          const cell = buffer.getLine(buffer.viewportY + row)?.getCell(col);
           return cell ? { chars: cell.getChars(), width: cell.getWidth() } : undefined;
         }, active.result.match) : [];
       const key = JSON.stringify(rectangles);
@@ -204,7 +209,7 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       const metrics = scrollRef.current;
       if (!interactive || !alive || viewportIntent.isSearching() || !validScroll(metrics) || !showing()) return;
       desired = Math.max(0, Math.min(metrics.max_offset_from_bottom, Math.round(offset)));
-      // herdr paints the moved view as output: libghostty's layer tells it apart from new lines (ghostty/overlay.ts)
+      // herdr paints the moved view as output: the renderer tells it apart from new lines
       terminal.element?.dispatchEvent(new Event(VIEW_MOVED_EVENT, { bubbles: true }));
       previewRef.current = desired;
       void flush();
@@ -268,12 +273,15 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       outputAt = now;
       schedule(scrollPollDelay(true, 0, scrollRef.current, following()));
     });
-    // xterm's own scrollback is 0 on a herdr server, so its view sits below history only on a herdr-core one
+    // libghostty's scrollback is 0 on a herdr server, so its view sits above the screen only on a herdr-core one
     const readLocal = () => {
-      const buffer = terminal.buffer.active;
-      setLocalBack(buffer.viewportY < buffer.baseY);
+      // the view is libghostty's (terminal.ts): the rows it sits above the bottom, or its buffer's own position when
+      // no view is registered
+      const rowsAbove = ghosttyRowsAbove(terminal);
+      setLocalBack(rowsAbove === null ? terminal.buffer.active.viewportY < terminal.buffer.active.baseY : rowsAbove > 0);
     };
     const scrolled = terminal.onScroll(readLocal);
+    terminal.element?.addEventListener(GHOSTTY_VIEW_EVENT, readLocal);
     const rendered = terminal.onRender(() => { readLocal(); paintHits(); });
     // a wheel or swipe that xterm sends to herdr as mouse reports comes back only as output, from a view
     // that left the bottom: read at the busy cadence, not the follow pace
@@ -298,6 +306,7 @@ export function TerminalViewportTools({ viewportIntent, terminal, paneId, pageSc
       previewRef.current = null;
       unregisterCancellation();
       if (timer !== null) clearTimeout(timer);
+      terminal.element?.removeEventListener(GHOSTTY_VIEW_EVENT, readLocal);
       parsed.dispose(); scrolled.dispose(); rendered.dispose(); resized.dispose(); observer.disconnect();
       mount?.removeEventListener("scroll", paint);
       terminal.element?.removeEventListener("wheel", gesture, { capture: true });

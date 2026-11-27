@@ -14,6 +14,9 @@ import { OmoStatus } from "./omo-status.ts";
 import * as claudeStore from "./claude-store.ts";
 import * as agentLaunchModule from "./agent-launch.ts";
 import * as piModule from "./pi.ts";
+import * as codexModule from "./codex.ts";
+import { CodexServers } from "./approvals/codex.ts";
+import * as codexServer from "./approvals/codex.ts";
 import { MachineManager } from "./machines.ts";
 import { DeviceStore } from "./devices.ts";
 import { DEVICE_COOKIE } from "./auth.ts";
@@ -56,6 +59,18 @@ mock.module("./pi.ts", () => ({
     const path = fakePiTranscripts.get(paneId);
     return path ? existsSync(path) ? { path } : { unwritten: { id: basename(path, ".jsonl"), path } }
       : realPiTranscriptPath(paneId, ...args as Parameters<typeof realPiTranscriptPath> extends [string, ...infer Rest] ? Rest : never);
+  },
+}));
+const fakeCodexTranscripts = new Map<string, string>();
+const realCodexHome = codexModule.paneCodexHomePlaced, realCodexRollout = codexModule.codexOpenRollout, realCodexTranscript = codexModule.codexTranscriptPath;
+mock.module("./codex.ts", () => ({
+  ...codexModule,
+  paneCodexHomePlaced: async (...args: Parameters<typeof realCodexHome>) => fakeCodexTranscripts.has(args[0])
+    ? { home: root, placed: true } : realCodexHome(...args),
+  codexOpenRollout: async (...args: Parameters<typeof realCodexRollout>) => fakeCodexTranscripts.get(args[0]) ?? realCodexRollout(...args),
+  codexTranscriptPath: async (...args: Parameters<typeof realCodexTranscript>) => {
+    const path = fakeCodexTranscripts.get(args[0]);
+    return path === undefined ? realCodexTranscript(...args) : { path, how: "inferred" as const };
   },
 }));
 const launches: string[] = [];
@@ -137,6 +152,7 @@ beforeAll(() => {
 afterEach(async () => {
   for (const item of active.splice(0)) { for (const socket of item.sockets) socket.close(); item.stop(); await herdrRpc("workspace.close", { workspace_id: item.workspace }).catch(() => undefined); }
   fakePiTranscripts.clear();
+  fakeCodexTranscripts.clear();
   unavailablePiTranscripts.clear();
   failedPiIdentityLookups.clear();
 });
@@ -1056,17 +1072,109 @@ describe("connection-owned pending input", () => {
     await f.waitBytes("barrier\r");
     expect(f.bytes().split("held cross tab").length - 1).toBe(1);
   }, 30_000);
-  it("interrupts an explicit Codex Send now only after its native steering panel appears", async () => {
-    const f = await setup("codex-send-now", "codex"); const message = await f.queue(1, "send this now");
+  it("reconciles a late Codex completed user item through the production conversation watcher", async () => {
+    let clientId: string | undefined;
+    const steer = spyOn(CodexServers.prototype, "steerTarget").mockImplementation(() => ({
+      threadId: "receipt-session", send: async (_text, id, beforeWrite, writing) => { await beforeWrite(); writing(); clientId = id; return "unknown"; },
+    }));
+    try {
+      const transcript = join(root, "codex-native-receipt.jsonl");
+      writeFileSync(transcript, JSON.stringify({ type: "session_meta", timestamp: new Date().toISOString(), payload: { id: "receipt-session", cwd: root } }) + "\n");
+      const f = await setup("codex-native-receipt", "codex", "• Working (2s • esc to interrupt)\n› Ask Codex to do anything\n");
+      fakeCodexTranscripts.set(f.pane, transcript);
+      f.socket.send({ type: "conversation-watch", pane_id: f.pane, enabled: true });
+      await f.socket.wait((frame) => frame.type === "conversation-changed" && frame.pane_id === f.pane && !frame.signature.startsWith("unavailable:"));
+      const row = await f.queue(1, "the native transcript confirms this message");
+      const follower = await f.queue(2, "later held message");
+      f.socket.send({ type: "pending-action", id: 10, pane_id: f.pane, pending_id: row.id, action: "steer" });
+      expect(await f.socket.action(10)).toMatchObject({ ok: false, code: "submit_changed" });
+      const payload = {
+        type: "item_completed", thread_id: "receipt-session", turn_id: "active-turn",
+        item: { type: "UserMessage", id: "accepted-user-item", client_id: clientId, content: [{ type: "text", text: row.text, text_elements: [] }] },
+      };
+      appendFileSync(transcript, JSON.stringify({ type: "event_msg", timestamp: new Date().toISOString(), payload }) + "\n");
+      const confirmed = await f.removed(row.id, "consumed");
+      expect(confirmed.messages).toMatchObject([{ id: follower.id, state: "held" }]);
+      expect(confirmed.messages.some((message: PendingMessage) => message.id === row.id)).toBe(false);
+      expect(f.bytes()).toBe("");
+    } finally { steer.mockRestore(); }
+  }, 30_000);
+
+  it("sends a queued Codex message at rest as a turn through the server Ovis started, typing nothing", async () => {
+    const turns: string[] = [];
+    const status = spyOn(codexServer, "servedStatus").mockReturnValue({ threadId: "t1", context: null, model: null });
+    const turn = spyOn(codexServer, "servedTurn").mockImplementation(async (_pane, threadId, input, _id, mayWrite) => {
+      if (!mayWrite()) return "unsent";
+      turns.push(`${threadId}:${input}`);
+      return { turn: "started", over: Promise.resolve(true) };
+    });
+    try {
+      const f = await setup("codex-queued-turn", "codex");
+      const row = await f.queue(1, "follow after work");
+      // the turn's end, by report or as herdr reads the screen itself: the row's own send is what is awaited
+      await herdrRpc("pane.report_agent", { pane_id: f.pane, source: "manual", agent: "codex", state: "idle" });
+      await f.removed(row.id, "sent");
+      expect(turns).toEqual(["t1:follow after work"]);
+      expect(f.bytes()).toBe("");
+    } finally { status.mockRestore(); turn.mockRestore(); }
+  }, 30_000);
+
+  it("types nothing of a queued Codex message discarded while the server Ovis started was asked", async () => {
+    const status = spyOn(codexServer, "servedStatus").mockReturnValue({ threadId: "t1", context: null, model: null });
+    const asked = Promise.withResolvers<void>(), discarded = Promise.withResolvers<void>();
+    const turn = spyOn(codexServer, "servedTurn").mockImplementation(async (_pane, _threadId, _input, _id, mayWrite) => {
+      asked.resolve();
+      await discarded.promise;
+      return mayWrite() ? { turn: "started", over: Promise.resolve(true) } : "unsent";
+    });
+    try {
+      const f = await setup("codex-queued-turn-discard", "codex");
+      const row = await f.queue(1, "discard me");
+      await herdrRpc("pane.report_agent", { pane_id: f.pane, source: "manual", agent: "codex", state: "idle" });
+      await asked.promise;
+      f.socket.send({ type: "pending-action", id: 10, pane_id: f.pane, pending_id: row.id, action: "discard" });
+      // frames of one connection are handled in order: an answer for another pane says the discard was taken in
+      f.socket.send({ type: "pending-action", id: 12, pane_id: "no-such-pane", pending_id: row.id, action: "discard" });
+      await f.socket.action(12);
+      discarded.resolve();
+      expect((await f.socket.action(10)).ok).toBe(true);
+      f.socket.send({ type: "submit", id: 11, pane_id: f.pane, text: "barrier", payload: "barrier", typed: true });
+      expect((await f.socket.result(11)).ok).toBe(true);
+      await f.waitBytes("barrier\r");
+      expect(f.bytes()).toBe("barrier\r");
+    } finally { status.mockRestore(); turn.mockRestore(); }
+  }, 30_000);
+
+  it("keeps an explicit terminal Send now uncertain without a send-specific acknowledgement", async () => {
+    const status = "Working (5s • esc to interrupt) · 1 background terminal running · /ps to view · /stop to close";
+    const composer = "› Ask Codex to do anything\n  GPT-6.2-Sol default · /workspace\n  ← for agents · ? for shortcuts";
+    const before = `› earlier input\n\n${status}\n\n${composer}\n`;
+    const f = await setup("codex-immediate-acceptance", "codex", before);
+    const message = await f.queue(1, "send this now");
     f.socket.send({ type: "pending-action", id: 10, pane_id: f.pane, pending_id: message.id, action: "steer" });
-    await f.waitBytes("\r"); expect(f.bytes()).toBe(`${paste("send this now")}\r`);
-    await f.showScreen(codexSteering());
-    expect(await f.socket.action(10)).toMatchObject({ ok: true }); await f.removed(message.id); await f.waitBytes("\u001b");
-    const received = f.socket.seen.length;
+    await f.waitBytes("\r");
+    await f.showScreen(before.replace(status, `› ${message.text}\n\n${status}`));
+    const result = await f.socket.action(10);
+    expect(f.bytes()).toBe(`${paste(message.text)}\r`);
+    expect(result).toMatchObject({ ok: false, code: "submit_changed" });
+  }, 30_000);
+
+  it("keeps terminal Codex Send now uncertain after a matching panel without a receipt (#4769)", async () => {
+    const f = await setup("codex-send-now-panel", "codex"); const message = await f.queue(1, "send this now");
+    f.socket.send({ type: "pending-action", id: 10, pane_id: f.pane, pending_id: message.id, action: "steer" });
+    await f.waitBytes("\r");
+    expect(f.bytes()).toBe(`${paste(message.text)}\r`);
+    await f.showScreen(codexSteering(message.text));
+    const result = await f.socket.action(10);
+    const settled = await f.socket.event((frame) => frame.messages.some((item) => item.id === message.id && item.state === "uncertain")
+      || frame.removed?.some((item) => item.id === message.id) === true);
+    expect(settled.messages).toMatchObject([{ id: message.id, state: "uncertain", error: { code: "submit_changed" } }]);
+    expect(result).toMatchObject({ ok: false, code: "submit_changed" });
+
     f.socket.send({ type: "pending-action", id: 11, pane_id: f.pane, pending_id: message.id, action: "steer" });
-    expect(await f.socket.action(11)).toMatchObject({ ok: true });
-    await f.socket.wait((frame) => frame.type === "pending-messages" && frame.removed?.some((item: any) => item.id === message.id), received);
-    expect(f.bytes()).toBe(`${paste("send this now")}\r\u001b`);
+    expect(await f.socket.action(11)).toMatchObject({ ok: false, code: "pending_uncertain" });
+    await f.waitBytes("\u001b");
+    expect(f.bytes()).toBe(`${paste(message.text)}\r\u001b`);
   }, 30_000);
 
   it("withholds Codex Escape when its sender's lease lapses while the key RPC connects", async () => {
@@ -1842,7 +1950,7 @@ describe("connection-owned pending input", () => {
 
   // Claude Code queues what Enter commits during a turn; its Ctrl+Enter sends it at once (#737).
   // The stand-in asks for modifyOtherKeys as Claude Code does, so herdr types Ctrl+Enter as xterm does.
-  it("steers Claude with Ctrl+Enter and Codex with Enter then a confirmed interruption", async () => {
+  it("steers Claude with Ctrl+Enter and sends Codex an unmodified Escape after its steering panel appears", async () => {
     const ctrlEnter = "\u001b[27;5;13~";
     const f = await setup("steer-claude", "claude", "\\x1b[>4;2m› Message\n");
     const steer = await f.queue(1, "steer now"); const next = await f.queue(2, "next turn");
@@ -1857,7 +1965,7 @@ describe("connection-owned pending input", () => {
     codex.socket.send({ type: "pending-action", id: 10, pane_id: codex.pane, pending_id: other.id, action: "steer" });
     await codex.waitBytes("\r");
     await codex.showScreen(codexSteering("codex steer"));
-    expect(await codex.socket.action(10)).toMatchObject({ ok: true }); await codex.waitBytes("\u001b");
+    expect(await codex.socket.action(10)).toMatchObject({ ok: false, code: "submit_changed" }); await codex.waitBytes("\u001b");
     expect(codex.bytes()).toBe(`${paste("codex steer")}\r\u001b`);
   }, 45_000);
 

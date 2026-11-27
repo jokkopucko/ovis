@@ -18,10 +18,19 @@ export function canBlockAdmission(notice: DeviceNotice, own: OwnKey): notice is 
     notice.account !== null && notice.key !== own.public_spki && own.no < notice.no;
 }
 
-export async function notMeBlocks(notice: DeviceNotice, own: OwnKey, options: { now?: () => number } = {}): Promise<BlockRecord[]> {
+/**
+ * `accountNo`: the target's number in the account's order, which the account service holds `target_no` to; a notice's
+ * `no` is its PC's own admission number, which the PCs judge by and the service does not know. It only fills that
+ * claim: whether to sign stays canBlockAdmission's, and a lookup that fails or names nothing never holds the block back.
+ */
+export async function notMeBlocks(notice: DeviceNotice, own: OwnKey, options: { now?: () => number; accountNo?: (key: string) => Promise<number | null> } = {}): Promise<BlockRecord[]> {
   if (!canBlockAdmission(notice, own)) return [];
+  const accountNo = await options.accountNo?.(notice.key).catch((error: unknown) => {
+    console.warn("Ovis: the account service did not number the device to block", error instanceof Error ? error.name : error);
+    return null;
+  });
   return [await signSafetyRecord({
-    v: 1, kind: "block", account: notice.account, target: notice.key, target_no: notice.no, signer: own.public_spki, signer_no: own.no,
+    v: 1, kind: "block", account: notice.account, target: notice.key, target_no: accountNo ?? notice.no, signer: own.public_spki, signer_no: own.no,
     signed_at: new Date((options.now ?? Date.now)()).toISOString(), nonce: newRecordId(),
   }, own.private_key)];
 }

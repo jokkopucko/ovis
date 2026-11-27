@@ -244,6 +244,15 @@
   overflow-wrap: anywhere;
 }
 
+/* what a row says of its PC beside the way it is reached: a line of its own under the tags, never cut */
+.my-pc-note {
+  flex-basis: 100%;
+  min-width: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+}
+
 /* a row of several ways: the ways tag says enough on a phone; its address is a line of its own on a wide screen */
 .my-pc-address-more {
   display: none;

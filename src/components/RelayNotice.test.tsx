@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { createElement } from "react";
+import { act, createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 import type { RelayStatus } from "../../shared/protocol.ts";
 import { translate } from "../lib/i18n.ts";
 import { relayNoticeFromStatus, relayNoticeOf, useRelayNotice, type RelayNoticeInfo } from "../lib/relayNotice.ts";
@@ -185,34 +185,17 @@ function Probe({ scope, notice, seen }: ProbeProps) {
 describe("a dismissed relay notice before the announced date", () => {
   const now = Date.parse("2030-01-01T00:00:00.000Z");
   const future = "2030-02-01T00:00:00.000Z";
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let records: Map<string, string>;
-  let renderer: ReactTestRenderer | undefined;
+  let browser: Page;
 
-  beforeEach(() => {
-    for (const key of ["window", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    records = new Map();
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      localStorage: { getItem: (key: string) => records.get(key) ?? null, setItem: (key: string, value: string) => void records.set(key, value), removeItem: (key: string) => void records.delete(key) },
-    } });
-  });
-
-  afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
-    for (const [key, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    descriptors.clear();
-  });
+  beforeEach(() => { browser = openPage(); });
+  afterEach(async () => { await browser.close(); });
 
   async function load(status: RelayStatus) {
     const seen: ProbeProps["seen"] = [];
     const read = (answer: RelayStatus) => relayNoticeFromStatus(answer, true, now);
-    await act(async () => { renderer?.unmount(); renderer = create(createElement(Probe, { scope: "", notice: read(status), seen })); });
-    return { latest: () => seen.at(-1)!, answer: async (next: RelayStatus) => { await act(async () => { renderer!.update(createElement(Probe, { scope: "", notice: read(next), seen })); }); } };
+    await browser.render(null);
+    await browser.render(createElement(Probe, { scope: "", notice: read(status), seen }));
+    return { latest: () => seen.at(-1)!, answer: (next: RelayStatus) => browser.render(createElement(Probe, { scope: "", notice: read(next), seen })) };
   }
 
   const cases: { kind: RelayNoticeInfo["kind"]; pass: NonNullable<RelayStatus["pass"]>; error_code: NonNullable<RelayStatus["error_code"]> }[] = [
@@ -229,7 +212,7 @@ describe("a dismissed relay notice before the announced date", () => {
     await act(async () => { page.latest().dismiss(); });
     expect(page.latest().dismissed).toBe(true);
     await page.answer(trying);
-    expect(records.get("ovis:relay-notice-dismissed")).toBe(JSON.stringify([` ${kind}`]));
+    expect(browser.window.localStorage.getItem("ovis:relay-notice-dismissed")).toBe(JSON.stringify([` ${kind}`]));
     await page.answer(refused);
     expect(page.latest().dismissed).toBe(true);
     await page.answer(trying);

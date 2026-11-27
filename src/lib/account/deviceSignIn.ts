@@ -11,7 +11,7 @@
  */
 import { accountLabel, type AccountOs } from "../../../shared/account-asker.ts";
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
-import { AccountServiceError, failure, sessionOf, type DeviceProvider } from "./service.ts";
+import { AccountService, AccountServiceError, failure, sessionOf, SignedOutError, type DeviceProvider } from "./service.ts";
 import { SignInError } from "./signin.ts";
 import { accountLock } from "./store.ts";
 import type { AccountLock, AccountSession, AccountStore } from "./store.ts";
@@ -90,7 +90,8 @@ function requesterFields(requester: DeviceSignInOptions["requester"]): { label?:
   return { ...(label === "" ? {} : { label }), ...(requester.os === null ? {} : { os: requester.os }) };
 }
 
-export async function startDeviceSignIn(options: DeviceSignInOptions): Promise<DeviceSignIn> {
+export async function startDeviceSignIn(options: DeviceSignInOptions, generation?: string): Promise<DeviceSignIn> {
+  const startedUnder = generation ?? await AccountService.signInGeneration(options.store);
   const fetchImpl = options.fetch ?? ((input, init) => fetch(input, init));
   const now = options.now ?? Date.now;
   const wait = options.wait ?? waitFor;
@@ -104,8 +105,13 @@ export async function startDeviceSignIn(options: DeviceSignInOptions): Promise<D
     body: JSON.stringify({ code_challenge: challenge, code_challenge_method: "S256", ...extra }),
   });
   const told = provider === "ovis" ? requesterFields(options.requester) : {};
+  await AccountService.checkGeneration(options.store, startedUnder);
   let response = await start(told);
-  if (response.status === 400 && Object.keys(told).length > 0 && (await failure(response.clone())).code === "invalid_request") response = await start({});
+  if (response.status === 400 && Object.keys(told).length > 0 && (await failure(response.clone())).code === "invalid_request") {
+    await AccountService.checkGeneration(options.store, startedUnder);
+    response = await start({});
+  }
+  await AccountService.checkGeneration(options.store, startedUnder);
   if (!response.ok) throw await failure(response);
   const started: unknown = await response.json();
   const body = typeof started === "object" && started !== null ? started as Record<string, unknown> : {};
@@ -147,6 +153,7 @@ export async function startDeviceSignIn(options: DeviceSignInOptions): Promise<D
         if (now() >= expiresAt) throw new SignInError("expired", "The code ran out");
         pause = interval;
         let answer: Response;
+        await AccountService.checkGeneration(options.store, startedUnder);
         try {
           answer = await fetchImpl(new URL("/v1/token", options.service), {
             method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ grant_type: DEVICE_GRANT, device_code: deviceCode, code_verifier: verifier }),
@@ -157,23 +164,22 @@ export async function startDeviceSignIn(options: DeviceSignInOptions): Promise<D
           throw error;
         }
         if (answer.ok) {
-          const session = sessionOf(await answer.json(), options.service, now());
+          const session = { ...sessionOf(await answer.json(), options.service, now()), sign_in_generation: startedUnder };
           // under the lock sign-out and refresh take, and never once this sign-in was cancelled
           const kept = await lock(async () => {
-            if (signal.aborted) return false;
-            await options.store.set("session", session);
+            if (!await AccountService.storeSignIn(options.store, session, { wanted: () => !signal.aborted })) return false;
             if (!signal.aborted) return true;
             // cancelled while it was being written: take back exactly this session, never a newer one
             await options.store.update("session", (current) => current?.refresh_token === session.refresh_token ? undefined : current);
             return false;
           });
-          if (kept) return session;
+          if (kept && await options.store.get("generation") === startedUnder) return session;
           // a sign-in nobody keeps ends at the service too, so its tokens do not outlive the page
-          await fetchImpl(new URL("/v1/signout", options.service), { method: "POST", headers: { authorization: `Bearer ${session.access_token}` }, redirect: "manual" })
-            .catch((error: unknown) => console.warn("Ovis: a cancelled sign-in was not ended at the account service", error instanceof Error ? error.name : error));
+          await AccountService.revokeSession(session, { fetch: fetchImpl, now });
           signal.throwIfAborted();
-          return session;
+          throw new SignedOutError();
         }
+        await AccountService.checkGeneration(options.store, startedUnder);
         if (answer.status === 429) { pause = retryAfterMs(answer, interval); continue; }
         const refused = await failure(answer);
         switch (refused.code) {
@@ -193,13 +199,14 @@ export async function startDeviceSignIn(options: DeviceSignInOptions): Promise<D
  * reason to fall back, so a bad answer cannot push the sign-in off the link page.
  */
 export async function startLinkPageSignIn(options: DeviceSignInOptions, fallback: DeviceProvider): Promise<DeviceSignIn> {
+  const generation = await AccountService.signInGeneration(options.store);
   try {
-    return await startDeviceSignIn({ ...options, provider: "ovis" });
+    return await startDeviceSignIn({ ...options, provider: "ovis" }, generation);
   } catch (error) {
     const unusable = error instanceof TypeError
       || (error instanceof AccountServiceError && (error.status === 429 || error.status === 404 || error.status >= 500));
     if (!unusable) throw error;
     console.warn("Ovis: the link page could not start a sign-in; using the provider's device page", error instanceof AccountServiceError ? error.status : error.name);
-    return await startDeviceSignIn({ ...options, provider: fallback });
+    return await startDeviceSignIn({ ...options, provider: fallback }, generation);
   }
 }

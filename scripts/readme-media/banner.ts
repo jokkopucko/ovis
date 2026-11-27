@@ -8,6 +8,7 @@ import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { checkChromeTmpdir } from "../chrome-path.ts";
 
 const root = join(import.meta.dir, "../..");
 const stills = process.env["STILLS"] ?? join(root, "_film/footage/stills");
@@ -45,6 +46,7 @@ const jobs = ([
 ] satisfies Job[] as Job[]).filter((job) => want(job.kind));
 
 const template = readFileSync(join(import.meta.dir, "banner.html"), "utf8");
+checkChromeTmpdir();
 const browser = await chromium.launch({ executablePath: process.env["CHROME_PATH"] ?? "/usr/bin/google-chrome", headless: true, args: ["--no-sandbox", "--hide-scrollbars", "--allow-file-access-from-files"] });
 const page = await (await browser.newContext({ deviceScaleFactor: 1, colorScheme: "dark" })).newPage();
 for (const job of jobs) {

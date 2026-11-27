@@ -13,14 +13,14 @@ afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup();
 
 const settled = () => new Promise((resolve) => setImmediate(resolve));
 
-async function fixture() {
+async function fixture(drain: Promise<void> = Promise.resolve()) {
   const dir = mkdtempSync(join(tmpdir(), "ovis-hc-machines-"));
   const manager = new MachineManager(dir, {} as PushService, {} as CompletionTracker, async () => { throw new Error("isolated local offline"); });
   const observe = spyOn(manager as unknown as { observe(runtime: { machine: { state: string } }): Promise<void> }, "observe").mockImplementation(async (runtime) => { runtime.machine.state = "connected"; });
   const events: string[] = [];
   const start = async (machine: Pick<HcMachine, "id" | "name">): Promise<MachineBridge> => {
     events.push(`start ${machine.name}`);
-    return { endpoint: { url: "http://127.0.0.1:1", token: "t" }, exited: new Promise(() => {}), stop: () => events.push(`stop ${machine.name}`) };
+    return { endpoint: { url: "http://127.0.0.1:1", token: "t" }, exited: new Promise(() => {}), stop: async () => { events.push(`stop ${machine.name}`); await drain; } };
   };
   manager.watchHcMachines(async () => [], start, 3_600_000);
   await settled();
@@ -31,6 +31,60 @@ async function fixture() {
 const lab: HcMachine = { id: "a32c7763ba582b75", name: "lab", connected: true, why: null };
 
 describe("herdr-core's machines as PCs (#2497)", () => {
+  it("waits for a connected machine bridge to drain on shutdown", async () => {
+    const drain = Promise.withResolvers<void>();
+    const { manager, events } = await fixture(drain.promise);
+    try {
+      manager.syncHcMachines([lab]);
+      await settled();
+      let stopped = false;
+      const stopping = manager.stop().then(() => { stopped = true; });
+      await settled();
+      expect(events).toEqual(["start lab", "stop lab"]);
+      expect(stopped).toBe(false);
+      drain.resolve();
+      await stopping;
+      expect(stopped).toBe(true);
+    } finally {
+      drain.resolve();
+      await manager.stop();
+    }
+  });
+
+  it("stops without waiting for a machine bridge that has not answered yet", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ovis-hc-machines-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const manager = new MachineManager(dir, {} as PushService, {} as CompletionTracker, async () => { throw new Error("isolated local offline"); });
+    const starting = Promise.withResolvers<void>();
+    // a bridge that never reports ready: only the stop's abort ends its start
+    manager.watchHcMachines(async () => [], (_machine, signal) => {
+      starting.resolve();
+      return new Promise<MachineBridge>((_resolve, reject) => { signal?.addEventListener("abort", () => reject(new Error("stopped")), { once: true }); });
+    }, 3_600_000);
+    await settled();
+    manager.syncHcMachines([lab]);
+    await starting.promise;
+    await manager.stop();
+  }, 5_000);
+
+  it("drains the old bridge before opening the same machine under a new name", async () => {
+    const drain = Promise.withResolvers<void>();
+    const { manager, events } = await fixture(drain.promise);
+    try {
+      manager.syncHcMachines([lab]);
+      await settled();
+      manager.syncHcMachines([{ ...lab, name: "renamed" }]);
+      await settled();
+      expect(events).toEqual(["start lab", "stop lab"]);
+      drain.resolve();
+      await settled();
+      expect(events).toEqual(["start lab", "stop lab", "start renamed"]);
+    } finally {
+      drain.resolve();
+      await manager.stop();
+    }
+  });
+
   it("shows each machine of the core as a PC of its own, which starts its server and is never saved here", async () => {
     const { manager, events, dir } = await fixture();
     manager.syncHcMachines([lab]);

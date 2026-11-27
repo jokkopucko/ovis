@@ -259,6 +259,8 @@ function parseClaudeQuestion(screen: string): ParsedPrompt | null {
   }, {
     responder: "claude-question",
     ...(nav ? { claudeTabs: { identity: nav.identity, index: nav.index } } : {}),
+    // one question, no tab bar: the request Claude's hook holds for it is bound by its words (approvals/claude.ts)
+    ...(tabs === null ? { approvalCommand: question, approvalKind: "question" } : {}),
     menuLabels: submit ? [...rows.slice(0, -1).map((row) => row.label), "Submit", rows.at(-1)!.label] : rows.map((row) => row.label),
     selectedIndex,
     checkedOptionIndices: optionRows.flatMap((row, index) => row.checked ? [index] : []),

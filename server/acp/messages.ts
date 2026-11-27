@@ -69,11 +69,18 @@ export function parseLine(line: string): { client: number } | { row: Row; messag
   return { row: { seq, dir, raw, ...(typeof object["ts"] === "number" ? { ts: object["ts"] } : {}), ...(typeof object["client"] === "number" ? { client: object["client"] } : {}) }, message: body && validMessage(body) ? body : null };
 }
 
-export function approval(row: Row, keeperId: string, params: Record<string, unknown>): AcpApproval {
+/** What the agent announced for a tool call earlier in the session. */
+export interface AnnouncedToolCall { readonly kind: unknown; readonly rawInput: unknown; readonly content: unknown }
+
+/**
+ * A permission request's tool call is an update to the one the agent announced (ACP), so what the request leaves out
+ * is read from that announcement: Kiro CLI 3.6 names only a title ("Write File") and leaves the path to the tool call.
+ */
+export function approval(row: Row, keeperId: string, params: Record<string, unknown>, announced?: AnnouncedToolCall): AcpApproval {
   const toolCall = record(params["toolCall"]) ?? {};
   return {
     keeperId, seq: row.seq, raw: row.raw, sessionId: text(params["sessionId"]),
-    toolCall: { title: text(toolCall["title"]), kind: text(toolCall["kind"]), rawInput: toolCall["rawInput"] ?? null, content: toolCall["content"] ?? null },
+    toolCall: { title: text(toolCall["title"]), kind: text(toolCall["kind"] ?? announced?.kind), rawInput: toolCall["rawInput"] ?? announced?.rawInput ?? null, content: toolCall["content"] ?? announced?.content ?? null },
     options: parseOptions(params["options"]),
   };
 }

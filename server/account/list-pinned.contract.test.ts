@@ -13,6 +13,7 @@ import { FakeAccountService } from "../../shared/account-service-fake.ts";
 import { importPublicKey } from "../../shared/relay-e2ee.ts";
 import { loadRelayIdentity } from "../relay/identity.ts";
 import { readSave, writeSave } from "../../shared/account-list-follower.ts";
+import { entryFromText, entryHash } from "../../shared/account-list-entry.ts";
 import { ACCOUNT_LIST_FEATURE, ACCOUNT_OPENS_ALL_FEATURE } from "../../shared/relay-mux.ts";
 import { handleRequest } from "../dispatch.ts";
 import { bounded, deferred, relayAccountFixture, relayConnection, relayFixture, TestClock } from "../relay/test-helpers.ts";
@@ -41,7 +42,9 @@ function testTime() {
   const spy = spyOn(Date, "now").mockImplementation(() => now);
   closes.push(() => spy.mockRestore());
   const waits = new TestClock();
-  return { waits, advance(ms: number) { now += ms; waits.advance(ms); }, seconds: () => Math.floor(now / 1000) };
+  return { waits, advance(ms: number) { now += ms; waits.advance(ms); }, seconds: () => Math.floor(now / 1000),
+    /** The time of day alone, as a clock set by hand: the clock the waits run on does not move. */
+    wall(ms: number) { now += ms; } };
 }
 
 /**
@@ -53,9 +56,12 @@ async function listedPc() {
   const service = new FakeAccountService();
   service.opensAll = true;
   service.listAccounts = "*";
-  /** The account service as this PC reaches it: `away` makes every call fail, as a service that is down. */
-  const reach = { away: false };
-  const fetchService = async (request: Request) => { if (reach.away) throw new Error("The account service is away"); return await service.fetch(request); };
+  /** The account service as this PC reaches it: `away` makes every call fail, as a service that is down; `hook` answers a call first. */
+  const reach: { away: boolean; hook?: ((request: Request) => Promise<Response | undefined>) | undefined } = { away: false };
+  const fetchService = async (request: Request) => {
+    if (reach.away) throw new Error("The account service is away");
+    return await reach.hook?.(request) ?? await service.fetch(request);
+  };
   const accountService = { url: "https://account.test", fetch: fetchService };
   // as createListedPc: a bound PC with a member in devices.json, whose whole read has admitted one account row
   const { fixture, member } = await relayAccountFixture("drive", ACCOUNT, { accountOpensAll: true, accountService });
@@ -189,6 +195,181 @@ describe("a pinned PC lets its account's devices in by the list alone", () => {
     expect(await pc.signsIn(pc.idOf(pc.laptop))).toBe("drive");
     expect(await pc.signsIn(pc.idOf(watcher))).toBe("watch");
     expect(pc.services.devices.sessionRow(pc.idOf(watcher).id)?.role).toBe("watch");
+  });
+
+  test("its rows are named as the list seals each device's name, which this PC opens with the key it was given; one it cannot open stays Device", async () => {
+    const pc = await pinnedPc();
+    const tablet = await listMember();
+    const unnamed = await listMember();
+    await pc.account.addDevice(tablet, { names: { label: "Dana's tablet", os: "android" } });
+    await pc.account.addDevice(unnamed);
+    await pc.pull();
+    const labelOf = (key: string) => pc.services.accountRows!.rows().find((row) => row.key === key)?.label;
+    for (let turn = 0; turn < 50 && labelOf(tablet.key) !== "Dana's tablet"; turn++) await pc.list.settled();
+    expect(labelOf(tablet.key)).toBe("Dana's tablet");
+    expect(labelOf(unnamed.key)).toBe("Device");
+    // what a person at this PC named a row stays: only the list's placeholder is replaced
+    const renamed = pc.services.accountRows!.rows().find((row) => row.key === unnamed.key)!;
+    pc.services.accountRows!.store()!.rename(renamed.id, "My laptop");
+    await pc.pull();
+    expect(labelOf(unnamed.key)).toBe("My laptop");
+  });
+
+  test("a device the list names \"failed\" is named so: no name is mistaken for a service that could not answer", async () => {
+    const pc = await pinnedPc();
+    const tablet = await listMember();
+    await pc.account.addDevice(tablet, { names: { label: "failed", os: "android" } });
+    await pc.pull();
+    const labelOf = (key: string) => pc.services.accountRows!.rows().find((row) => row.key === key)?.label;
+    for (let turn = 0; turn < 50 && labelOf(tablet.key) !== "failed"; turn++) await pc.list.settled();
+    expect(labelOf(tablet.key)).toBe("failed");
+  });
+
+  test("a name whose key this PC was not given yet is opened once a later read finds the wrap, with no restart", async () => {
+    const pc = await pinnedPc();
+    const tablet = await listMember();
+    let given = false;
+    // the account service holds no wrap of the names' key for this PC yet (a PC just added gets it a moment later)
+    pc.reach.hook = async (request) => !given && new URL(request.url).pathname === "/v2/pc/list/wraps" ? Response.json({ wraps: [] }) : undefined;
+    const labelOf = (key: string) => pc.services.accountRows!.rows().find((row) => row.key === key)?.label;
+    try {
+      await pc.account.addDevice(tablet, { names: { label: "Dana's tablet", os: "android" } });
+      await pc.pull();
+      for (let turn = 0; turn < 20; turn++) await pc.list.settled();
+      expect(labelOf(tablet.key)).toBe("Device");
+      // the wrap is there now; the list did not move, and a pull a minute later reads it
+      given = true;
+      pc.time.wall(2 * 60_000);
+      await pc.pull();
+      for (let turn = 0; turn < 50 && labelOf(tablet.key) !== "Dana's tablet"; turn++) await pc.list.settled();
+      expect(labelOf(tablet.key)).toBe("Dana's tablet");
+    } finally { pc.reach.hook = undefined; }
+  });
+
+  test("a name sealed in an epoch before this PC's own wraps is final (sealed before it joined): it is not asked for again", async () => {
+    const pc = await pinnedPc();
+    const tablet = await listMember();
+    let wraps = 0;
+    // the service holds this PC's wrap of a later epoch only: the PC came into the list after the tablet's name was sealed
+    pc.reach.hook = async (request) => {
+      if (new URL(request.url).pathname !== "/v2/pc/list/wraps") return undefined;
+      wraps++;
+      return Response.json({ wraps: [{ epoch: 99, wrap: "A".repeat(10) }] });
+    };
+    const labelOf = (key: string) => pc.services.accountRows!.rows().find((row) => row.key === key)?.label;
+    try {
+      await pc.account.addDevice(tablet, { names: { label: "Dana's tablet", os: "android" } });
+      await pc.pull();
+      for (let turn = 0; turn < 20; turn++) await pc.list.settled();
+      expect(labelOf(tablet.key)).toBe("Device");
+      const asked = wraps;
+      expect(asked).toBeGreaterThan(0);
+      pc.time.wall(2 * 60_000);
+      await pc.pull();
+      for (let turn = 0; turn < 20; turn++) await pc.list.settled();
+      expect(wraps).toBe(asked);
+      expect(labelOf(tablet.key)).toBe("Device");
+    } finally { pc.reach.hook = undefined; }
+  });
+
+  /**
+   * A PC added to the list after its epoch moved: `early` was let in, named, under epoch 0 and `gone` too, `gone` was
+   * removed and the next epoch opened, and only then the PC came in, given a wrap of the epoch it came in at alone.
+   */
+  async function laterPc(link: "good" | "broken") {
+    const pc = await listedPc();
+    const early = await listMember();
+    const gone = await listMember();
+    await pc.account.addDevice(early, { names: { label: "Early tablet", os: "android" } });
+    await pc.account.addDevice(gone, { names: { label: "Gone phone", os: "android" } });
+    await pc.account.remove(gone.key);
+    await pc.account.nextEpoch(link);
+    let wraps = 0;
+    pc.reach.hook = async (request) => { if (new URL(request.url).pathname === "/v2/pc/list/wraps") wraps++; return undefined; };
+    closes.push(() => { pc.reach.hook = undefined; });
+    expect(await pc.list.wantList(pc.account.id)).toMatchObject({ status: { pinned: false, want: pc.account.id } });
+    await pc.account.addPostedPc(pc.endpoint);
+    await pc.pull();
+    expect(pc.list.status()).toMatchObject({ pinned: true, standing: "in", list: pc.account.id });
+    pc.time.advance(JOIN_HOLD_MS + 1_000);
+    const labels = () => new Map(pc.services.accountRows!.rows().map((row) => [row.key, row.label]));
+    return { pc, early, gone, labels, wraps: () => wraps };
+  }
+
+  test("a PC added after the epoch moved names a device sealed in an earlier epoch, walking the list's links back from the wrap it holds; a removed device it never names", async () => {
+    const { pc, early, gone, labels } = await laterPc("good");
+    for (let turn = 0; turn < 50 && labels().get(early.key) !== "Early tablet"; turn++) await pc.list.settled();
+    expect(labels().get(early.key)).toBe("Early tablet");
+    expect(labels().has(gone.key)).toBe(false);
+    expect([...labels().values()]).not.toContain("Gone phone");
+  });
+
+  test("a link that does not open leaves the row Device for good: no error, and no call for it again", async () => {
+    const { pc, early, labels, wraps } = await laterPc("broken");
+    for (let turn = 0; turn < 20; turn++) await pc.list.settled();
+    expect(labels().get(early.key)).toBe("Device");
+    const asked = wraps();
+    pc.time.wall(2 * 60_000);
+    await pc.pull();
+    for (let turn = 0; turn < 20; turn++) await pc.list.settled();
+    expect(labels().get(early.key)).toBe("Device");
+    expect(wraps()).toBe(asked);
+    expect(pc.list.status().error).toBeNull();
+  });
+
+  test("opening names never holds up a read: with names to open and the wraps route held, then failing, a removal is read before a session opens", async () => {
+    const pc = await pinnedPc();
+    const victim = await listMember();
+    await pc.account.addDevice(victim);
+    await pc.pull();
+    expect(pc.list.role(victim.key)).toBe("drive");
+    const named = [await listMember(), await listMember(), await listMember(), await listMember()];
+    for (const [at, device] of named.entries()) await pc.account.addDevice(device, { names: { label: `Phone ${at}`, os: "android" } });
+    let wraps = 0;
+    let answer = (): void => undefined;
+    const answered = new Promise<void>((resolve) => { answer = resolve; });
+    // the account service holds the wraps route until the test lets it answer, then fails it (a service under load)
+    pc.reach.hook = async (request) => {
+      if (new URL(request.url).pathname !== "/v2/pc/list/wraps") return undefined;
+      wraps++;
+      await answered;
+      return Response.json({ error: { code: "unavailable" } }, { status: 503 });
+    };
+    try {
+      await pc.services.accountMailbox.pull();
+      const deadline = Date.now() + 10_000;
+      while (wraps === 0) { if (Date.now() > deadline) throw new Error("no name was asked for"); await Bun.sleep(20); }
+      // a member removes the victim at the account service; the victim signs in well after the PC's last read
+      await pc.account.remove(victim.key);
+      pc.time.wall(10 * 60_000);
+      await pc.list.beforeSession(5_000);
+      expect(pc.list.role(victim.key)).toBeNull();
+      answer();
+      await pc.list.settled();
+      // one call for the epoch, however many names it seals
+      expect(wraps).toBe(1);
+    } finally { answer(); pc.reach.hook = undefined; }
+  });
+
+  test("a name the service could not give yet is asked for again, and a copy of the same list read meanwhile keeps the names opened", async () => {
+    const pc = await pinnedPc();
+    const tablet = await listMember();
+    let failing = true;
+    pc.reach.hook = async (request) => failing && new URL(request.url).pathname === "/v2/pc/list/wraps" ? Response.json({ error: { code: "unavailable" } }, { status: 503 }) : undefined;
+    const labelOf = (key: string) => pc.services.accountRows!.rows().find((row) => row.key === key)?.label;
+    try {
+      await pc.account.addDevice(tablet, { names: { label: "Dana's tablet", os: "android" } });
+      await pc.pull();
+      for (let turn = 0; turn < 20; turn++) await pc.list.settled();
+      expect(labelOf(tablet.key)).toBe("Device");
+      // the service answers again; a sign-in a second later reads a new copy of the same list
+      failing = false;
+      pc.time.wall(2 * 60_000);
+      pc.list.role(tablet.key);
+      await pc.pull();
+      for (let turn = 0; turn < 50 && labelOf(tablet.key) !== "Dana's tablet"; turn++) await pc.list.settled();
+      expect(labelOf(tablet.key)).toBe("Dana's tablet");
+    } finally { pc.reach.hook = undefined; }
   });
 
   test("a device the snapshot let in and the list does not hold goes at the pin, its session closed", async () => {
@@ -528,6 +709,318 @@ describe("a removal the PC has seen is final", () => {
     await expect(next.auth(pc.idOf(pc.laptop))).rejects.toThrow();
   });
 
+  test("over its session, a device says where the list stands and hands the PC the removal the service withholds", async () => {
+    const pc = await pinnedPc();
+    const held = pc.list.status().head!;
+    pc.service.tamperList(pc.account.id, { reader: pc.reader, withholdAfter: held.seq });
+    const removal = await pc.account.remove(pc.laptop.key);
+    await pc.pull();
+    const laptop = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    expect(await laptop.auth(pc.idOf(pc.laptop))).toMatchObject({ role: "drive" });
+    const member = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await member.auth(pc.idOf(pc.first));
+    // the two say where they stand: the PC is behind
+    const heads = await ask(member, "/api/account/list/head", { method: "POST", body: { list: pc.account.id, place: pc.account.place } });
+    expect([heads.status, heads.body]).toEqual([200, { list: pc.account.id, place: held, asks: { list: pc.account.id, after: held.seq } }]);
+    const handed = await ask(member, "/api/account/list/page", { method: "POST", body: { list: pc.account.id, after: held.seq, entries: [removal], head: pc.account.place } });
+    expect([handed.status, handed.body]).toEqual([200, { verdict: "caught_up", list: pc.account.id, place: pc.account.place }]);
+    expect(await bounded(laptop.serverError, 2000)).toBe("auth_revoked");
+    expect(await pc.signsIn(pc.idOf(pc.laptop))).toBeNull();
+  });
+
+  test("a device that only watches may hand entries over too, and what no member signed is taken from nobody", async () => {
+    const pc = await pinnedPc();
+    const tablet = await listMember();
+    await pc.account.addDevice(tablet, { role: "watch", power: "bound" });
+    await pc.pull();
+    pc.time.advance(JOIN_HOLD_MS + 1_000);
+    const held = pc.list.status().head!;
+    pc.service.tamperList(pc.account.id, { reader: pc.reader, withholdAfter: held.seq });
+    const watching = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    expect(await watching.auth(pc.idOf(tablet))).toMatchObject({ role: "watch" });
+    // an entry a stranger signed, at the place after the PC's head
+    const stranger = await listMember();
+    const forged = await pc.account.sign({ kind: "remove", ends: pc.laptop.key }, stranger, held);
+    const refused = await ask(watching, "/api/account/list/page", { method: "POST", body: { list: pc.account.id, after: held.seq, entries: [forged], head: { seq: held.seq + 1, hash: "ab".repeat(32) } } });
+    // kept beside the list at most, never in it: the PC stands where it stood
+    expect([refused.status, refused.body]).toEqual([200, { verdict: "asks_after", asks: { list: pc.account.id, after: held.seq }, list: pc.account.id, place: held }]);
+    expect(await pc.signsIn(pc.idOf(pc.laptop))).toBe("drive");
+    // and a member's own removal, carried by the same device
+    const removal = await pc.account.remove(pc.laptop.key);
+    const handed = await ask(watching, "/api/account/list/page", { method: "POST", body: { list: pc.account.id, after: held.seq, entries: [removal], head: pc.account.place } });
+    expect(handed.body).toMatchObject({ verdict: "caught_up", place: pc.account.place });
+    expect(await pc.signsIn(pc.idOf(pc.laptop))).toBeNull();
+    // nothing else of the account opens to it
+    expect((await ask(watching, "/api/account/list/pin", { method: "POST", body: { list: pc.account.id } })).status).toBe(403);
+  });
+
+  test("a device that is behind is handed the entries it lacks, and the PC asks a device that is ahead for what it lacks itself", async () => {
+    const pc = await pinnedPc();
+    const member = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await member.auth(pc.idOf(pc.first));
+    const head = pc.list.status().head!;
+    const entries = pc.service.accountList(ACCOUNT)!.entries;
+    // the device stands at entry 0: the PC hands it everything after
+    const behind = await ask(member, "/api/account/list/head", { method: "POST", body: { list: pc.account.id, place: { seq: 0, hash: pc.account.id } } });
+    expect(behind.body).toEqual({ list: pc.account.id, place: head, page: { list: pc.account.id, after: 0, entries: entries.slice(1), head } });
+    // the device stands where the PC does: only the PC's head
+    expect((await ask(member, "/api/account/list/head", { method: "POST", body: { list: pc.account.id, place: head } })).body).toEqual({ list: pc.account.id, place: head });
+    // the device stands further: the PC asks it for the entries after its own place
+    pc.service.tamperList(pc.account.id, { reader: pc.reader, withholdAfter: head.seq });
+    await pc.account.addDevice(await listMember());
+    const ahead = await ask(member, "/api/account/list/head", { method: "POST", body: { list: pc.account.id, place: pc.account.place } });
+    expect(ahead.body).toEqual({ list: pc.account.id, place: head, asks: { list: pc.account.id, after: head.seq } });
+    // a head of another list: the PC's own, and nothing else
+    expect((await ask(member, "/api/account/list/head", { method: "POST", body: { list: "ef".repeat(32), place: null } })).body).toEqual({ list: pc.account.id, place: head });
+    expect((await ask(member, "/api/account/list/head", { method: "POST", body: { list: pc.account.id, place: { seq: "1" } } })).status).toBe(400);
+  });
+
+  test("a device asks the PC for its own entries after a place it names, as any member answers a read, and gets nothing of another list", async () => {
+    const pc = await pinnedPc();
+    const member = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await member.auth(pc.idOf(pc.first));
+    const head = pc.list.status().head!;
+    const entries = pc.service.accountList(ACCOUNT)!.entries;
+    const heads = (body: unknown) => ask(member, "/api/account/list/head", { method: "POST", body });
+    // where both stand at one entry, the PC still answers the read the device asks for: its entries after that place
+    expect((await heads({ list: pc.account.id, place: head, asks: { list: pc.account.id, after: 0 } })).body)
+      .toEqual({ list: pc.account.id, place: head, page: { list: pc.account.id, after: 0, entries: entries.slice(1, head.seq + 1), head } });
+    // from entry 0, and over the page the device's own place would have given
+    expect((await heads({ list: pc.account.id, place: { seq: 0, hash: pc.account.id }, asks: { list: pc.account.id, after: null } })).body)
+      .toEqual({ list: pc.account.id, place: head, page: { list: pc.account.id, after: null, entries: entries.slice(0, head.seq + 1), head } });
+    // the PC still asks a device that stands further for what it lacks, beside what it answers
+    pc.service.tamperList(pc.account.id, { reader: pc.reader, withholdAfter: head.seq });
+    await pc.account.addDevice(await listMember());
+    expect((await heads({ list: pc.account.id, place: pc.account.place, asks: { list: pc.account.id, after: head.seq } })).body)
+      .toEqual({ list: pc.account.id, place: head, page: { list: pc.account.id, after: head.seq, entries: [], head }, asks: { list: pc.account.id, after: head.seq } });
+    // a read of another list, or a head of another list, is answered with the PC's own head and nothing else: wherever
+    // the device says it stands, behind the PC (no page of the PC's own), level, or further (no read asked of it)
+    const foreign = { list: "ef".repeat(32), after: 0 };
+    for (const place of [{ seq: 0, hash: pc.account.id }, head, pc.account.place]) {
+      expect((await heads({ list: pc.account.id, place, asks: foreign })).body).toEqual({ list: pc.account.id, place: head });
+    }
+    expect((await heads({ list: "ef".repeat(32), place: null, asks: { list: pc.account.id, after: 0 } })).body).toEqual({ list: pc.account.id, place: head });
+    // and a read out of form is refused, as a head out of form is; a read is left out, never sent as null
+    for (const asks of [{ list: pc.account.id, after: -1 }, { list: pc.account.id }, { list: 7, after: 0 }, "all", null]) {
+      expect((await heads({ list: pc.account.id, place: head, asks })).status).toBe(400);
+    }
+  });
+
+  test("the place the PC asks a device for is its footing: an entry no member signed above it is not counted as held", async () => {
+    const pc = await pinnedPc();
+    const held = pc.list.status().head!;
+    // the service withholds what follows from the PC and shows it one entry of a key that is no member (loose)
+    const stranger = await listMember();
+    const loose = await pc.account.sign({ kind: "remove", ends: pc.laptop.key }, stranger, held);
+    pc.service.tamperList(pc.account.id, { reader: pc.reader, withholdAfter: held.seq, inject: [loose] });
+    await pc.pull();
+    expect(pc.list.status().head).toEqual(held);
+    // a member removes the laptop at the place the loose entry stands, and tells the PC where it stands
+    const removal = await pc.account.remove(pc.laptop.key);
+    const member = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await member.auth(pc.idOf(pc.first));
+    const heads = await ask(member, "/api/account/list/head", { method: "POST", body: { list: pc.account.id, place: pc.account.place } });
+    // the PC states its footing and asks for what follows it, not for what follows the loose entry
+    expect(heads.body).toEqual({ list: pc.account.id, place: held, asks: { list: pc.account.id, after: held.seq } });
+    const handed = await ask(member, "/api/account/list/page", { method: "POST", body: { list: pc.account.id, after: held.seq, entries: [removal], head: pc.account.place } });
+    expect(handed.body).toMatchObject({ verdict: "caught_up", place: pc.account.place });
+    expect(await pc.signsIn(pc.idOf(pc.laptop))).toBeNull();
+  });
+
+  test("a read the PC goes on with inside another history past its footing is asked for at that very place, so the alarm comes", async () => {
+    const pc = await pinnedPc();
+    const footing = pc.list.status().head!;
+    // another history from entry 1: the first device lets devices in there, past the PC's footing, which alone would be a
+    // post its writer left behind; then the first of them signs on it, which makes it a second history members signed
+    const history = [pc.service.accountList(ACCOUNT)!.entries[0]!];
+    let at = { seq: 0, hash: pc.account.id };
+    const added: ListMember[] = [];
+    while (at.seq <= footing.seq) {
+      const device = await listMember();
+      added.push(device);
+      const text = await deviceEntry(pc.account, device, pc.first, at);
+      history.push(text);
+      at = { seq: at.seq + 1, hash: entryHash(entryFromText(text).body) };
+    }
+    const last = await pc.account.sign({ kind: "remove", ends: pc.laptop.key }, added[0]!, at);
+    history.push(last);
+    const top = { seq: at.seq + 1, hash: entryHash(entryFromText(last).body) };
+    const member = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await member.auth(pc.idOf(pc.first));
+    // the device says where it stands, then hands what the PC asks for: each page cut before its last entry, which it
+    // hands only where the PC asks for the place right before it
+    let said = await ask(member, "/api/account/list/head", { method: "POST", body: { list: pc.account.id, place: top } });
+    for (let round = 0; round < 16 && said.body.asks; round += 1) {
+      const after = (said.body.asks as { after: number | null }).after;
+      const from = after === null ? 0 : after + 1;
+      const entries = from >= history.length - 1 ? history.slice(from) : history.slice(from, history.length - 1);
+      said = await ask(member, "/api/account/list/page", { method: "POST", body: { list: pc.account.id, after, entries, head: top } });
+      expect([round, said.status]).toEqual([round, 200]);
+    }
+    expect(pc.list.status()).toMatchObject({ alarm: "fork", head: footing });
+  });
+
+  test("the PC answers a device's own read only for a key its list holds: a pairing of its own keeps the plain exchange", async () => {
+    const pc = await pinnedPc();
+    const head = pc.list.status().head!;
+    const entries = pc.service.accountList(ACCOUNT)!.entries;
+    const local = await listMember();
+    const paired = pc.services.devices.pairRelay(pc.services.devices.startPairing().code, "Local", local.key)!.device;
+    const pairing = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await pairing.auth({ keys: local.keys, publicKey: local.key, id: paired.id });
+    const read = { list: pc.account.id, place: head, asks: { list: pc.account.id, after: 0 } };
+    // the same head and the same read: what a key of no entry is told is E6's answer, the PC's head alone
+    expect((await ask(pairing, "/api/account/list/head", { method: "POST", body: read })).body).toEqual({ list: pc.account.id, place: head });
+    // and where it stands at an earlier place of the PC's history, the page the comparison gives, not the one it asked for
+    expect((await ask(pairing, "/api/account/list/head", { method: "POST", body: { ...read, place: { seq: 0, hash: pc.account.id } } })).body)
+      .toEqual({ list: pc.account.id, place: head, page: { list: pc.account.id, after: 0, entries: entries.slice(1, head.seq + 1), head } });
+    // a device the list holds gets the read it asked for
+    const member = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await member.auth(pc.idOf(pc.laptop));
+    expect((await ask(member, "/api/account/list/head", { method: "POST", body: read })).body)
+      .toEqual({ list: pc.account.id, place: head, page: { list: pc.account.id, after: 0, entries: entries.slice(1, head.seq + 1), head } });
+  });
+
+  test("a call that began while the PC was pinned and ends after it left its list is answered as a new call would be", async () => {
+    for (const path of ["/api/account/list/head", "/api/account/list/page"]) {
+      // a PC of its own for each route, each left while that route's body is on its way
+      const pc = await pinnedPc();
+      const head = pc.list.status().head!;
+      const reading = deferred<void>();
+      let body!: ReadableStreamDefaultController<Uint8Array>;
+      const stream = new ReadableStream<Uint8Array>({ start(controller) { body = controller; }, pull() { reading.resolve(); } });
+      const answer = handleRequest(new Request(`https://relay.ovis.invalid${path}`, {
+        method: "POST", headers: { origin: "https://relay.ovis.invalid", "x-herdr-machine": "1", "content-type": "application/json" }, body: stream, duplex: "half",
+      } as RequestInit), { ...pc.fixture.app.context, peer: { kind: "relay", device: { id: pc.idOf(pc.laptop).id, label: "Laptop", role: "drive" }, sessionId: `s-${path}`, serverId: pc.serverId, key: pc.laptop.key }, timeout: () => {} });
+      await bounded(reading.promise);
+      // the call was let in and its body is on its way: the PC leaves its account and its list
+      pc.services.devices.revokeAll();
+      body.enqueue(new TextEncoder().encode(JSON.stringify({ list: pc.account.id, place: head, after: head.seq, entries: [], head })));
+      body.close();
+      const answered = (await answer)!;
+      expect([path, answered.status, ((await answered.json()) as { error?: { code?: string } }).error?.code]).toEqual([path, 404, "not_found"]);
+    }
+  });
+
+  test("one session makes thirty of these calls a minute, and no more", async () => {
+    const pc = await pinnedPc();
+    const member = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await member.auth(pc.idOf(pc.first));
+    const head = pc.list.status().head!;
+    const call = () => ask(member, "/api/account/list/head", { method: "POST", body: { list: pc.account.id, place: head } });
+    for (let index = 0; index < 30; index++) expect((await call()).status).toBe(200);
+    const refused = await call();
+    expect([refused.status, refused.body.error?.code, refused.headers.get("retry-after")]).toEqual([429, "rate_limited", "60"]);
+    // another session has its own count, and a minute later this one may again
+    const other = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await other.auth(pc.idOf(pc.laptop));
+    expect((await ask(other, "/api/account/list/head", { method: "POST", body: { list: pc.account.id, place: head } })).status).toBe(200);
+    pc.time.advance(61_000);
+    expect((await call()).status).toBe(200);
+  });
+
+  test("the thirty calls are counted before the body is read, by a clock that only moves forward, and a live count is never forgotten", async () => {
+    const pc = await pinnedPc();
+    const member = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await member.auth(pc.idOf(pc.first));
+    const head = pc.list.status().head!;
+    const call = (body: unknown = { list: pc.account.id, place: head }) => ask(member, "/api/account/list/head", { method: "POST", body });
+    for (let index = 0; index < 30; index++) expect((await call()).status).toBe(200);
+    // a session already due its wait is told so before its body is read
+    expect((await call("no head")).status).toBe(429);
+    // the PC's clock set back a minute gives it no new one
+    pc.time.wall(-61_000);
+    expect((await call()).status).toBe(429);
+    // other sessions, as many as the PC keeps counts for, push no live count out
+    for (let other = 0; other < 64; other++) pc.list.peerBudget(`other-${other}`);
+    expect((await call()).status).toBe(429);
+    pc.time.advance(61_000);
+    expect((await call()).status).toBe(200);
+  });
+
+  test("a device on another history is followed back over its calls, by its key, until the PC sees where the two part", async () => {
+    const pc = await pinnedPc();
+    const member = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await member.auth(pc.idOf(pc.first));
+    // the device holds another history from entry 0: two entries no other member saw
+    const { texts } = await pc.account.forkFromStart();
+    const history = [texts[0], texts[1]];
+    const theirs = { seq: 2, hash: entryHash(entryFromText(texts[1]).body) };
+    let answer = await ask(member, "/api/account/list/head", { method: "POST", body: { list: pc.account.id, place: theirs } });
+    expect(answer.status).toBe(200);
+    // the device hands what the PC asks for, from the place it names, one call at a time
+    const asked: number[] = [];
+    for (let calls = 0; calls < 4 && answer.body.asks !== undefined && pc.list.status().alarm === null; calls++) {
+      const after = (answer.body.asks as { after: number }).after;
+      asked.push(after);
+      answer = await ask(member, "/api/account/list/page", { method: "POST", body: { list: pc.account.id, after, entries: history.slice(after), head: theirs } });
+      expect(answer.status).toBe(200);
+    }
+    // it took more than one call to find where the two histories part, and the PC found it
+    expect(asked.length).toBeGreaterThan(1);
+    expect(pc.list.status().alarm).toBe("fork");
+  });
+
+  test("a page nobody asked for whose first entry follows no entry this PC holds is refused before any of it is checked", async () => {
+    const pc = await pinnedPc();
+    const member = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await member.auth(pc.idOf(pc.first));
+    const head = pc.list.status().head!;
+    // entries a member signed, but after a place this PC's copy does not hold
+    const elsewhere = await pc.account.sign({ kind: "remove", ends: pc.laptop.key }, pc.first, { seq: head.seq + 5, hash: "ab".repeat(32) });
+    const handed = await ask(member, "/api/account/list/page", { method: "POST", body: { list: pc.account.id, after: head.seq, entries: [elsewhere], head: { seq: head.seq + 6, hash: "cd".repeat(32) } } });
+    expect([handed.status, handed.body.error?.code]).toEqual([409, "not_continued"]);
+    // and nothing of it counts: the laptop is in
+    expect(await pc.signsIn(pc.idOf(pc.laptop))).toBe("drive");
+  });
+
+  test("a page the disk does not take is acted on, and the device is told it was not saved", async () => {
+    const pc = await pinnedPc();
+    const held = pc.list.status().head!;
+    pc.service.tamperList(pc.account.id, { reader: pc.reader, withholdAfter: held.seq });
+    const removal = await pc.account.remove(pc.laptop.key);
+    const laptop = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await laptop.auth(pc.idOf(pc.laptop));
+    const member = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await member.auth(pc.idOf(pc.first));
+    const failing = spyOn(privateStateFs, "renameSync").mockImplementation((_from, to) => {
+      if (String(to).endsWith(ACCOUNT_LIST_FILE)) throw Object.assign(new Error("no space"), { code: "ENOSPC" });
+    });
+    try {
+      const handed = await ask(member, "/api/account/list/page", { method: "POST", body: { list: pc.account.id, after: held.seq, entries: [removal], head: pc.account.place } });
+      expect([handed.status, handed.body.error?.code]).toEqual([503, "not_saved"]);
+      // enforced all the same: the removed device's session ends, and it does not get in again
+      expect(await bounded(laptop.serverError, 2000)).toBe("auth_revoked");
+      expect(await pc.signsIn(pc.idOf(pc.laptop))).toBeNull();
+    } finally { failing.mockRestore(); }
+  });
+
+  test("the calls answer nothing to a page of another list or out of form, and a PC that only reads its list answers 404", async () => {
+    const pc = await pinnedPc();
+    const member = await relayConnection(pc.fixture, { serverId: pc.serverId });
+    await member.auth(pc.idOf(pc.first));
+    const head = pc.list.status().head!;
+    const page = (body: unknown) => ask(member, "/api/account/list/page", { method: "POST", body });
+    const other = await page({ list: "ef".repeat(32), after: 0, entries: [], head });
+    expect([other.status, other.body.error?.code]).toEqual([409, "not_my_list"]);
+    for (const body of [
+      { list: pc.account.id, after: 0, entries: "x", head },
+      { list: pc.account.id, after: -1, entries: [], head },
+      { list: pc.account.id, after: 0, entries: [], head: { seq: "1", hash: head.hash } },
+      { list: pc.account.id, after: 0, entries: Array<string>(257).fill("x"), head },
+    ]) expect([(await page(body)).status]).toEqual([400]);
+    expect(pc.list.status().head).toEqual(head);
+
+    const shadow = await listedPc();
+    // a device this PC paired itself
+    const laptop = await relayConnection(shadow.fixture, { serverId: shadow.serverId });
+    await laptop.auth({ keys: shadow.member.keys, publicKey: shadow.member.publicKey, id: shadow.member.id });
+    for (const path of ["/api/account/list/head", "/api/account/list/page"]) {
+      const none = await ask(laptop, path, { method: "POST", body: { list: shadow.account.id, place: shadow.account.place, after: 0, entries: [], head: shadow.account.place } });
+      expect([path, none.status, none.body.error?.code]).toEqual([path, 404, "not_found"]);
+    }
+  });
+
   test("what a stranger hands over proves nothing: an entry no member signed removes nobody", async () => {
     const pc = await pinnedPc();
     const stranger = await listMember();
@@ -685,6 +1178,65 @@ describe("a key the list holds, which this PC also holds by a pairing of its own
     await pc.account.addDevice(phone);
     await pc.pull();
     expect(await pc.signsIn(pc.idOf(phone))).toBeNull();
+  });
+});
+
+describe("the reset that makes a removed PC a new one", () => {
+  // from this PC's own window: loopback, with no proxy between
+  const reset = (pc: Awaited<ReturnType<typeof pinnedPc>>, body: unknown) => {
+    const base = `http://127.0.0.1:${pc.fixture.app.port}`;
+    return fetch(`${base}/api/relay/reset-identity`, { method: "POST", headers: { origin: base, "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify(body) });
+  };
+
+  test("names the identity the person was asked about: a second answer to an old question resets nothing", async () => {
+    const pc = await pinnedPc();
+    await pc.account.remove(pc.service.accountList(ACCOUNT)!.state.pcs[pc.endpoint]!.key!);
+    await pc.pull();
+    expect(pc.services.devices.account()).toBeNull();
+    const removed = { account: ACCOUNT, server_id: pc.serverId };
+    // not for a PC the list did not remove, and not for another identity than this PC has
+    const other = await reset(pc, { removed: { account: "acct_2", server_id: pc.serverId } });
+    expect([other?.status, ((await other!.json()) as { error: { code: string } }).error.code]).toEqual([409, "not_removed"]);
+    const wrong = await reset(pc, { removed: { account: ACCOUNT, server_id: "f".repeat(32) } });
+    expect([wrong?.status, ((await wrong!.json()) as { error: { code: string } }).error.code]).toEqual([409, "identity_changed"]);
+    expect(pc.services.relay.currentIdentity()!.server_id).toBe(pc.serverId);
+    // the first answer resets it
+    expect((await reset(pc, { removed }))?.status).toBe(200);
+    const next = pc.services.relay.currentIdentity()!.server_id;
+    expect(next).not.toBe(pc.serverId);
+    // the same answer again, from a second terminal that asked the same question: the PC it would reset is no longer that one
+    const again = await reset(pc, { removed });
+    expect([again?.status, ((await again!.json()) as { error: { code: string } }).error.code]).toEqual([409, "identity_changed"]);
+    expect(pc.services.relay.currentIdentity()!.server_id).toBe(next);
+  });
+
+  test("an old question to add the PC again resets nothing once the PC is in an account again under the same relay identity", async () => {
+    const pc = await pinnedPc();
+    await pc.account.remove(pc.service.accountList(ACCOUNT)!.state.pcs[pc.endpoint]!.key!);
+    await pc.pull();
+    const removed = { account: ACCOUNT, server_id: pc.serverId };
+    // the question was asked; meanwhile the PC joined another account, which its removal from this one does not bar
+    pc.services.devices.bindByService("acct_2");
+    const refused = await reset(pc, { removed });
+    expect([refused.status, ((await refused.json()) as { error: { code: string } }).error.code]).toEqual([409, "in_account"]);
+    expect(pc.services.devices.account()).toBe("acct_2");
+    expect(pc.services.relay.currentIdentity()!.server_id).toBe(pc.serverId);
+  });
+
+  test("a PC that joins an account while that reset closes its relay is not reset: the reset asks again in the turn that resets", async () => {
+    const pc = await pinnedPc();
+    await pc.account.remove(pc.service.accountList(ACCOUNT)!.state.pcs[pc.endpoint]!.key!);
+    await pc.pull();
+    const was = pc.services.relay.status().phase;
+    const relay = pc.services.relay as unknown as { disconnect(): Promise<void> };
+    const disconnect = relay.disconnect.bind(relay);
+    relay.disconnect = async () => { relay.disconnect = disconnect; await disconnect(); pc.services.devices.bindByService("acct_2"); };
+    const refused = await reset(pc, { removed: { account: ACCOUNT, server_id: pc.serverId } });
+    expect([refused.status, ((await refused.json()) as { error: { code: string } }).error.code]).toEqual([409, "in_account"]);
+    expect(pc.services.devices.account()).toBe("acct_2");
+    expect(pc.services.relay.currentIdentity()!.server_id).toBe(pc.serverId);
+    // and its relay is as the reset found it: not left closed
+    expect(pc.services.relay.status().phase === "off").toBe(was === "off");
   });
 });
 
@@ -928,10 +1480,12 @@ describe("one press, for an account that keeps a signed list", () => {
     closes.push(() => fixture.close());
     const { services } = fixture.app.context;
     services.relay.setRelayAccount(ACCOUNT);
+    // the PC heard a moment ago that the account keeps no list; the account made one since, and the service refuses the take
+    const named = spyOn(services.accountMailbox, "listNamed").mockResolvedValue(null);
     const refused = spyOn(services.accountMailbox, "admission").mockRejectedValue(new AccountServiceRefusal(409, "list_add", "/v1/pc/admission"));
     try {
       expect(await pressOnce(services, ACCOUNT)).toMatchObject({ refused: { code: "list_add", status: 409 } });
-    } finally { refused.mockRestore(); }
+    } finally { refused.mockRestore(); named.mockRestore(); }
     expect(services.devices.account()).toBeNull();
   });
 });

@@ -9,6 +9,7 @@ export const TERMINAL_JA: Record<string, string> = {
   "Searching…": "検索中…",
   "Pane changed. Search again.": "ペインの内容が変わりました。再検索してください。",
   "Search moves the pane for every client.": "検索すると接続中の全クライアントのペイン画面が移動します。",
+  "This terminal could not be drawn. Reload the page to try again.": "このターミナルを描画できませんでした。ページを再読み込みしてもう一度お試しください。",
   "Waiting for terminal input…": "端末の入力準備中…",
   "Paused while you use another window": "別のウィンドウを使っている間は一時停止中",
   "View only while you use another window · click to type": "別のウィンドウを使っている間は表示のみ · クリックで入力",

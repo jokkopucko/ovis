@@ -3,13 +3,15 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { testSocketPath } from "../scripts/test-herdr.ts";
+import { join } from "node:path";
+import { testConfigHome } from "../scripts/test-herdr.ts";
 import { createServer } from "./index.ts";
 import * as herdrClient from "./herdr/client.ts";
 import { herdrRpc, paneProcessInfo, sessionSnapshot, subscribeEvents, type Subscription, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 import { forgetTranscriptState, paneConversation } from "./conversation.ts";
 import { copilotHandoffSession, copilotProcessSession } from "./copilot-store.ts";
+import * as omo from "./omo.ts";
+import { readCopilotForeground } from "./copilot-foreground.ts";
 import { processEnviron } from "./omo.ts";
 import * as processOwner from "./process-owner.ts";
 
@@ -33,7 +35,7 @@ async function fixtureInFront(pane: string, session: string): Promise<number | u
 }
 
 function herdrLogTail(): string {
-  const log = join(dirname(testSocketPath()), "herdr-server.log");
+  const log = join(testConfigHome(), "herdr", "herdr-server.log");
   try {
     return fs.readFileSync(log, "utf8").split("\n").filter((line) => line && !line.includes('event="api.request.')).slice(-25).join("\n");
   } catch (error) { return `no herdr log at ${log}: ${error instanceof Error ? error.message : String(error)}`; }
@@ -85,7 +87,7 @@ const log = join(home, "logs", \`process-100-\${process.pid}.log\`);
 let selected = process.argv[2];
 const api = process.argv.includes("--ui-server");
 const sockets = new Set();
-let apiReject = false, apiRace = false, apiReads = 0, acknowledgements = 0;
+let apiReject = false, apiRace = false, badActivity = false, apiReads = 0, acknowledgements = 0;
 const frame = (value) => {
   const body = Buffer.from(JSON.stringify(value));
   return Buffer.concat([Buffer.from("Content-Length: " + body.length + "\\r\\n\\r\\n"), body]);
@@ -105,10 +107,12 @@ if (api) createServer((socket) => {
       if (bytes.length < boundary + 4 + length) return;
       const message = JSON.parse(bytes.subarray(boundary + 4, boundary + 4 + length));
       bytes = bytes.subarray(boundary + 4 + length);
-      if (!["connect", "session.getForeground"].includes(message.method)
-        || Object.keys(message.params).length !== 0) throw new Error("unexpected API write or credentials");
+      const activity = message.method === "session.metadata.isProcessing";
+      if (activity ? Object.keys(message.params).length !== 1 || message.params.sessionId !== selected
+        : !["connect", "session.getForeground"].includes(message.method) || Object.keys(message.params).length !== 0)
+        throw new Error("unexpected API write or credentials");
       const response = apiReject ? { error: { code: -32001, message: "Unauthorized" } }
-        : { result: message.method === "connect" ? { ok: true, protocolVersion: 4 } : { sessionId: selected } };
+        : { result: activity ? { processing: badActivity ? "unknown" : true } : message.method === "connect" ? { ok: true, protocolVersion: 4 } : { sessionId: selected } };
       const reply = frame({ jsonrpc: "2.0", id: message.id, ...response });
       if (apiRace && message.method === "session.getForeground" && ++apiReads % 2 === 0)
         socket.write(Buffer.concat([reply, lifecycleEvent("session.background"), lifecycleEvent("session.foreground")]));
@@ -142,6 +146,8 @@ process.stdin.on("data", (chunk) => {
         selected = line.slice(12);
         for (const socket of sockets) socket.write(lifecycleEvent("session.foreground"));
       } else if (line === ":api-reject") apiReject = true;
+      else if (line === ":api-bad-activity") badActivity = true;
+      else if (line === ":api-good-activity") badActivity = false;
       else if (line === ":api-allow") apiReject = false;
       else if (line === ":api-race") apiRace = true;
       else if (line === ":api-stable") apiRace = false;
@@ -353,6 +359,7 @@ it.skipIf(process.platform !== "linux")("reads the live API without a report, fo
     await startFixture(current, first, "--ui-server --no-proof");
     const pid = await fixtureInFront(current, first);
     if (pid === undefined) throw new Error("isolated API fixture has no foreground process");
+    expect(await readCopilotForeground(pid, true)).toMatchObject({ state: "selected", sessionId: first, processing: true });
     expect((await sessionSnapshot()).panes.find((p) => p.pane_id === current)?.agent_session).toBeFalsy();
     const initial = await read();
     expect(initial.source).toBe("copilot-transcript");
@@ -362,6 +369,17 @@ it.skipIf(process.platform !== "linux")("reads the live API without a report, fo
     const outputRef = initial.turns.flatMap((turn) => turn.parts).find((part) => part.kind === "tool")?.output_ref;
     if (outputRef === undefined) throw new Error("API fixture tool output has no reference");
     expect(await (await fetch(toolUrl(outputRef))).text()).toBe("output ".repeat(900));
+    await command(current, pid, ":api-bad-activity");
+    expect(await readCopilotForeground(pid, true)).toMatchObject({ state: "unavailable", diagnostic: "malformed_rpc" });
+    expect((await read()).history_id).toBe(initial.history_id);
+    expect(await (await fetch(toolUrl(outputRef))).text()).toBe("output ".repeat(900));
+    await command(current, pid, ":api-good-activity");
+    // The malformed response retired the activity connection. Reject its next handshake only.
+    await command(current, pid, ":api-reject");
+    expect(await readCopilotForeground(pid, true)).toMatchObject({ state: "unavailable", diagnostic: "rpc_rejected" });
+    await command(current, pid, ":api-allow");
+    expect(await readCopilotForeground(pid, true)).toMatchObject({ state: "selected", sessionId: first, processing: true });
+    expect((await read()).history_id).toBe(initial.history_id);
     await herdrRpc("pane.report_agent_session", { pane_id: current, agent: "copilot", source: "herdr:copilot",
       seq: Date.now() * 1000, agent_session_id: first });
     await command(current, pid, `:api-switch ${second}`);
@@ -379,6 +397,7 @@ it.skipIf(process.platform !== "linux")("reads the live API without a report, fo
     expect((await read()).history_id).not.toBe(returned.history_id);
     expect((await fetch(toolUrl(outputRef))).status).toBe(404);
     await command(current, pid, ":api-race");
+    expect((await readCopilotForeground(pid, true)).state).toBe("unavailable");
     expect(await read()).toEqual({ source: "scrollback", turns: [] });
     await command(current, pid, ":api-stable");
     expect((await read()).source).toBe("copilot-transcript");
@@ -387,6 +406,8 @@ it.skipIf(process.platform !== "linux")("reads the live API without a report, fo
     const realProcessInfo = herdrClient.paneProcessInfo;
     const answers: ("read" | "unread")[] = [];
     let unreadLeft = 1;
+    // the OmO check every read makes first is not the Copilot read under test: it keeps herdr's answer as it is
+    const omoRead = spyOn(omo, "processInfo").mockImplementation(async (paneId) => ({ process_info: await realProcessInfo(paneId) }));
     const unread = spyOn(herdrClient, "paneProcessInfo").mockImplementation(async (paneId, socketPath) => {
       const info = await realProcessInfo(paneId, socketPath);
       if (paneId !== current || info === undefined) return info;
@@ -404,7 +425,7 @@ it.skipIf(process.platform !== "linux")("reads the live API without a report, fo
       unreadLeft = 2;
       expect(await read()).toEqual({ source: "scrollback", turns: [] });
       expect(answers).toEqual(["unread", "unread"]);
-    } finally { unread.mockRestore(); }
+    } finally { unread.mockRestore(); omoRead.mockRestore(); }
     expect((await read()).source).toBe("copilot-transcript");
     await herdrRpc("pane.send_text", { pane_id: current, text: `:hold ${first}\n` });
     for (const deadline = Date.now() + 4000;;) {

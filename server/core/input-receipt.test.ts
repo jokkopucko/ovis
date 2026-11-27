@@ -4,6 +4,8 @@ import { type Client, connectionData } from "./connections.ts";
 import { createInputLane } from "./input.ts";
 import { KEY_SETTLE_MS, TYPED_SETTLE_MS } from "../index.ts";
 import { CoreAttachSession } from "../herdr-core/attach-session.ts";
+import { WindowsControl } from "../windows-control.ts";
+import * as paneContext from "../pane-context.ts";
 import type { AcpChildren } from "../acp/children.ts";
 import { KeeperClient } from "../acp/client.ts";
 import { keeperBuilt, keeperRoot, startKeeper, until } from "../acp/keeper.fake.ts";
@@ -37,13 +39,40 @@ function lane(ready = true, pty: unknown = "pty", acp?: Pick<AcpChildren, "forPa
   });
   spyOn(client, "paneSendText").mockImplementation(async (_pane, text) => { typed.push(`text ${text}`); });
   const clients = new Set([phone, other]);
-  const { inputFrames, typedInto } = createInputLane({
+  const { inputFrames, typedInto, serialize } = createInputLane({
     TYPED_SETTLE_MS, KEY_SETTLE_MS, clients, acp, sight: () => sighting, poke: () => {},
     terminalAttach: async () => false, terminalAttachKnown: () => true, mayType: () => true, authorizeSocket: () => {},
   });
   const results = () => told.filter((frame) => frame.type === "input-result");
-  return { typed, results, clients, phone, other, inputFrames, typedInto, keyStarted, answer };
+  return { typed, results, clients, phone, other, inputFrames, typedInto, serialize, keyStarted, answer };
 }
+
+it("brackets a fitted Windows agent's multiline paste before sending the following Enter", async () => {
+  const pane = "w:p1";
+  const live = lane(true, Object.create(WindowsControl.prototype));
+  const agent = Promise.withResolvers<string>();
+  spyOn(paneContext, "paneAgentOf").mockReturnValue(agent.promise);
+  live.inputFrames.input(live.phone, { type: "input", pane_id: pane, text: "first\rsecond", id: 1 });
+  live.inputFrames.input(live.phone, { type: "input", pane_id: pane, text: "\r", id: 2 });
+  agent.resolve("omp");
+  await live.serialize(pane, () => {});
+  expect(live.typed).toEqual(["pty \x1b[200~first\rsecond\x1b[201~", "pty \r"]);
+  expect(live.results()).toMatchObject([{ id: 1, ok: true }, { id: 2, ok: true }]);
+});
+
+it("counts a fitted Windows keystroke queued behind another send, but not a mouse report", async () => {
+  const pane = "w:p1";
+  const live = lane(true, Object.create(WindowsControl.prototype));
+  const blocked = Promise.withResolvers<void>();
+  void live.serialize(pane, () => blocked.promise);
+  live.inputFrames.input(live.phone, { type: "input", pane_id: pane, text: "a", id: 1 });
+  live.inputFrames.input(live.phone, { type: "input", pane_id: pane, text: "\x1b[<0;10;5M" });
+  const beforeTyping = live.typedInto(pane);
+  blocked.resolve();
+  await live.serialize(pane, () => {});
+  expect(live.results()).toMatchObject([{ id: 1, ok: true }]);
+  expect(live.typedInto(pane) - beforeTyping).toBe(1);
+});
 
 it.skipIf(!keeperBuilt)("Stop cancels the running ACP turn instead of typing into its terminal", async () => {
   const root = keeperRoot();

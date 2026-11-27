@@ -35,6 +35,7 @@ const KINDS: readonly (readonly [string, UnsentKind])[] = [
   [CARD_TEXT_PREFIX, "message"], [REPLY_COMMENTS_PREFIX, "message"],
 ];
 const LEASE_PREFIX = "ovis:composer-sending:";
+export const COMMAND_PREFIX = "ovis:composer-command:";
 const VIEW_PREFIX = "ovis:view:";
 /** a message box's agent-only mark (lib/composerDraft.ts), which goes with its draft */
 const AGENT_ONLY_PREFIX = "ovis:composer-agent-only:";
@@ -48,8 +49,9 @@ const carriedKey = (): string => `ovis:pane-carried:${typeof location === "undef
 type PaneStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
 export function paneStateKey(key: string): { machineId: string; paneId: string; kind: UnsentKind | null } | null {
-  const lease = key.startsWith(LEASE_PREFIX);
-  const rest = lease ? key.slice(LEASE_PREFIX.length) : key;
+  const marker = [LEASE_PREFIX, COMMAND_PREFIX].find((prefix) => key.startsWith(prefix));
+  const lease = marker !== undefined;
+  const rest = marker ? key.slice(marker.length) : key;
   const draft = KINDS.find(([prefix]) => rest.startsWith(prefix));
   const prefix = draft?.[0] ?? (lease ? null : [VIEW_PREFIX, AGENT_ONLY_PREFIX].find((other) => rest.startsWith(other)) ?? null);
   if (prefix === null) return null;

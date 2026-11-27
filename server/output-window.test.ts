@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { OutputWindow, OUTPUT_HARD_BYTES, OUTPUT_HIGH_BYTES, OUTPUT_JOIN_BYTES_PER_SECOND, OUTPUT_JOIN_MAX_MS, OUTPUT_LOW_BYTES, OUTPUT_PAUSE_MAX_MS, OUTPUT_STALL_MS, ReplayBuffer, wireBytes } from "./output-window.ts";
+import { OutputWindow, OUTPUT_HARD_BYTES, OUTPUT_HIGH_BYTES, OUTPUT_JOIN_BYTES_PER_SECOND, OUTPUT_JOIN_MAX_MS, OUTPUT_LOW_BYTES, OUTPUT_PAUSE_ALONE_MAX_MS, OUTPUT_PAUSE_MAX_MS, OUTPUT_STALL_MS, ReplayBuffer, wireBytes } from "./output-window.ts";
 
 describe("terminal output credit", () => {
   it("holds high-water backpressure until the low watermark, without duplicate credit", () => {
@@ -113,6 +113,25 @@ describe("terminal output credit", () => {
     honest.write(OUTPUT_HIGH_BYTES);
     expect(honest.check(0, OUTPUT_PAUSE_MAX_MS)).toBe("pause");
     expect(honest.check(0, OUTPUT_PAUSE_MAX_MS + 1)).toBe("pause");
+  });
+
+  it("lets the pane's only viewer hold its pty paused while it keeps acknowledging, up to a fixed bound", () => {
+    const window = new OutputWindow();
+    window.write(OUTPUT_HIGH_BYTES);
+    let at = 0;
+    let acknowledged = 0;
+    expect(window.check(0, at, 0, true)).toBe("pause");
+    while (at + OUTPUT_STALL_MS - 100 < OUTPUT_PAUSE_ALONE_MAX_MS) {
+      at += OUTPUT_STALL_MS - 100;
+      window.acknowledge(window.id, ++acknowledged);
+      expect(window.check(0, at, 0, true)).toBe("pause");
+    }
+    expect(at).toBeGreaterThan(OUTPUT_PAUSE_MAX_MS);
+    expect(window.check(0, OUTPUT_PAUSE_ALONE_MAX_MS, 0, true)).toBe("stop");
+    const silent = new OutputWindow();
+    silent.write(OUTPUT_HIGH_BYTES);
+    expect(silent.check(0, 0, 0, true)).toBe("pause");
+    expect(silent.check(0, OUTPUT_STALL_MS, 0, true)).toBe("stop");
   });
 
   it("sizes a joiner's budget by its serialized frame, where an ESC costs six bytes", () => {
@@ -271,6 +290,21 @@ describe("terminal output credit", () => {
     replay.append("");
     expect(replay.recent).toBe("x".repeat(1024));
     expect((replay as unknown as { bytes: Buffer }).bytes.length).toBeLessThanOrEqual(4 * 1024);
+  });
+
+  it("never restores ?2026h across a cut, and ignores an unmatched ?2026l on a stream that never opened a synchronized block", () => {
+    // cut inside an open ?2026h block restores ?2026l (never ?2026h) so the retained ?2026l cannot settle a partial frame
+    const midBlock = new ReplayBuffer(32);
+    midBlock.append(`\x1b[?2026h${"a".repeat(40)}tail\x1b[?2026l`);
+    expect(midBlock.truncated).toBe(true);
+    expect(midBlock.text().startsWith("\x1b[?2026l")).toBe(true);
+    expect(midBlock.text()).not.toContain("\x1b[?2026h");
+
+    // a herdr-core attach paint starts with ?2026l on a plain stream that never uses ?2026h: truncation must not emit ?2026l
+    const plainCore = new ReplayBuffer(32);
+    plainCore.append(`\x18\x1b[!p\x1b[?2026l${"b".repeat(40)}plain prompt`);
+    expect(plainCore.truncated).toBe(true);
+    expect(plainCore.text()).not.toContain("\x1b[?2026l");
   });
 
   it("replays byte for byte what re-encoding the whole tail on every append gave", () => {

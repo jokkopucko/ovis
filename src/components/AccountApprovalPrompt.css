@@ -114,6 +114,11 @@
   box-shadow: 0 0 0 1px var(--accent);
 }
 
+/* what to do first on the new device, under the numbers */
+.account-approval-choices + .account-approval-hint {
+  margin: var(--space-3) 0 0;
+}
+
 .account-approval-error {
   margin: var(--space-3) 0 0;
   font-size: var(--fs-sm);

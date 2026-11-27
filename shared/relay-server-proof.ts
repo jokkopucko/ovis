@@ -1,8 +1,9 @@
 /** Relay admission only. These keys and MACs never enter the phone's Noise channel. */
+import { x25519 } from "@noble/curves/ed25519.js";
+import { equalBytes } from "@noble/curves/utils.js";
 import { hmac } from "@noble/hashes/hmac.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, concatBytes, hexToBytes, utf8ToBytes } from "@noble/hashes/utils.js";
-import nacl from "tweetnacl";
 
 export const SERVER_PROOF_CLOSE = 4401;
 export const SERVER_PROOF_MS = 10_000;
@@ -33,16 +34,16 @@ export function proofKey(text: unknown): Uint8Array | null {
 }
 
 function mac(secret: Uint8Array, publicKey: Uint8Array, nonce: Uint8Array, route: ProofRoute): Uint8Array {
-  const dh = nacl.scalarMult(secret, publicKey);
-  // Reject low-order points; a public all-zero DH result proves no secret possession.
-  if (dh.every((byte) => byte === 0)) throw new Error("invalid proof public key");
+  let dh: Uint8Array;
+  // x25519 refuses low-order points, whose public DH result proves no secret possession.
+  try { dh = x25519.getSharedSecret(secret, publicKey); } catch { throw new Error("invalid proof public key"); }
   return hmac(sha256, dh, concatBytes(nonce, utf8ToBytes(
     `${route.server_id}\0${route.role}\0${route.connection_id ?? ""}\0ovis-relay-server-proof-v1`,
   )));
 }
 
 export function serverChallenge(publicKey: Uint8Array, route: ProofRoute) {
-  const ephemeral = nacl.box.keyPair();
+  const ephemeral = x25519.keygen();
   const nonce = crypto.getRandomValues(new Uint8Array(32));
   return {
     expected: bytesToHex(mac(ephemeral.secretKey, publicKey, nonce, route)),
@@ -70,6 +71,6 @@ export function verifyServerProof(frame: unknown, expected: string): boolean {
     const value: unknown = JSON.parse(frame);
     if (typeof value !== "object" || value === null || !("type" in value) || value.type !== "server_proof" || !("answer" in value)) return false;
     const answer = proofKey(value.answer);
-    return answer !== null && nacl.verify(answer, hexToBytes(expected));
+    return answer !== null && equalBytes(answer, hexToBytes(expected));
   } catch { return false; } // Malformed proof is a policy close, never a handler exception.
 }

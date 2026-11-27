@@ -14,17 +14,34 @@
  * SIGKILL, as a screen that cannot give the terminal back; `kill-first` dies by SIGKILL before it enters, holding
  * none of the terminal's modes. `job` ends only by a signal, and a Ctrl+Z byte sends SIGTSTP to
  * its own process group, as a shell's job control stops a foreground job. Not a terminal: one line on stderr, exit 3.
+ *
+ * HOST_FIXTURE_GATE names a FIFO that holds the fixture, at the first stop, until the test writes to it: with
+ * HOST_FIXTURE_GATE_AT=leave right after the host wrote its leave bytes (the stop given back, not yet taken), with
+ * `stop` right after `job` sent SIGTSTP (before the host's handler can run). So a test puts the shell's `fg` exactly
+ * there, whatever the machine's speed.
  */
-import { writeSync } from "node:fs";
+import { readFileSync, writeSync } from "node:fs";
+import { LEAVE } from "../host/guard.ts";
 import { createUnixHost } from "../host/unix.ts";
 
 const mode = process.argv[2] ?? "wait";
 const hash = process.env["HOST_FIXTURE_HASH_INPUT"] === "1" ? new Bun.CryptoHasher("sha256") : null;
 let failing = false;
+let gate = process.env["HOST_FIXTURE_GATE"] ?? null;
+const gateAt = process.env["HOST_FIXTURE_GATE_AT"];
+/** blocks until the test writes to the gate, once */
+const passGate = () => {
+  if (gate === null) return;
+  const fifo = gate;
+  gate = null;
+  readFileSync(fifo);
+};
 const host = createUnixHost({
   writeSync: (fd, buffer, offset, length) => {
     if (failing) throw Object.assign(new Error("EBADF: bad file descriptor, write"), { code: "EBADF" });
-    return writeSync(fd, buffer, offset, length);
+    const written = writeSync(fd, buffer, offset, length);
+    if (gateAt === "leave" && Buffer.from(buffer.subarray(offset, offset + length)).includes(LEAVE)) passGate();
+    return written;
   },
 });
 const say = (line: string) => host.write(`${line}\r\n`);
@@ -38,7 +55,10 @@ if (!host.enter()) {
 host.onInput((bytes) => {
   hash?.update(bytes);
   say(`INPUT ${bytes.length} ${Buffer.from(bytes.subarray(0, 32)).toString("hex")}`);
-  if (mode === "job" && bytes.includes(0x1a)) process.kill(0, "SIGTSTP");
+  if (mode === "job" && bytes.includes(0x1a)) {
+    process.kill(0, "SIGTSTP");
+    if (gateAt === "stop") passGate();
+  }
   if (!bytes.includes(0x71)) return;
   if (hash) say(`SHA256 ${hash.digest("hex")}`);
   if (mode === "exit") host.leave();
@@ -60,4 +80,5 @@ const asked = performance.now();
 const result = await host.probe();
 say(`PROBE ${Math.round(performance.now() - asked)} ${JSON.stringify(result)}`);
 say(`DEPTH ${host.colorDepth}`);
+if (mode === "job") say(`OVIS_TEST_SCREEN ${process.pid}`);
 say("READY");

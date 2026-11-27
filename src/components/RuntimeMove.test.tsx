@@ -1,38 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
-import type { ReactNode } from "react";
-import * as ReactDom from "react-dom";
-import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { act } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import { LOCAL_MACHINE } from "../../shared/machines.ts";
 import type { MovePane, MovePlanResponse, MoveStatus } from "../../shared/runtime-move.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 
-await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
-const { RuntimeMove } = await import("./RuntimeMove.tsx");
+import { RuntimeMove } from "./RuntimeMove.tsx";
 
-const descriptors = new Map<string, PropertyDescriptor | undefined>();
-let renderer: ReactTestRenderer | undefined;
+const savedElement = Object.getOwnPropertyDescriptor(globalThis, "HTMLElement");
+let page: Page;
 let requests: { method: string; path: string; body: unknown }[];
 let answers: Record<string, (body: unknown) => Response>;
 
 beforeEach(() => {
   requests = [];
   answers = {};
-  for (const key of ["window", "document", "navigator", "getComputedStyle", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-  Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: class {} });
-  Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
-  Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Mozilla/5.0 (X11; Linux x86_64)", maxTouchPoints: 0 } });
-  const events = new EventTarget();
-  Object.defineProperty(globalThis, "window", { configurable: true, value: {
-    location: { href: "http://127.0.0.1:7421/", origin: "http://127.0.0.1:7421", pathname: "/" },
-    addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), dispatchEvent: events.dispatchEvent.bind(events),
-    setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout, history: { state: null, pushState() {}, replaceState() {}, back() {} },
-  } });
-  Object.defineProperty(globalThis, "document", { configurable: true, value: {
-    documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
-    querySelector: () => null, activeElement: null, addEventListener() {}, removeEventListener() {},
-  } });
+  page = openPage("http://127.0.0.1:7421/");
+  Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: page.window.HTMLElement });
   const fetch = async (input: string | URL | Request, init?: RequestInit) => {
     const path = new URL(String(input instanceof Request ? input.url : input), "http://127.0.0.1:7421").pathname;
     const body = typeof init?.body === "string" ? JSON.parse(init.body) : null;
@@ -44,23 +29,25 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  await act(async () => { renderer?.unmount(); });
-  renderer = undefined;
+  await page.close();
   mock.restore();
-  for (const [key, descriptor] of descriptors) {
-    if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-    else Reflect.deleteProperty(globalThis, key);
-  }
-  descriptors.clear();
+  if (savedElement) Object.defineProperty(globalThis, "HTMLElement", savedElement);
+  else Reflect.deleteProperty(globalThis, "HTMLElement");
 });
 
-const text = (node: ReactTestInstance): string => node.children.map((child) => typeof child === "string" ? child : text(child)).join("");
+const body = () => document.body;
+function one<E extends Element>(found: Iterable<E>, label: string): E {
+  const [first, ...rest] = found;
+  if (!first || rest.length !== 0) throw new Error(`Expected one ${label}, found ${first ? rest.length + 1 : 0}`);
+  return first;
+}
+const alertText = () => one(body().querySelectorAll('[role="alert"]'), "alert").textContent;
 const mount = async (onOpenPane?: (machineId: string, paneId: string) => void) => {
-  await act(async () => { renderer = create(<SettingsProvider><RuntimeMove bootId="boot-1" hidden={false} {...(onOpenPane ? { onOpenPane } : {})} /></SettingsProvider>); });
+  await page.render(<SettingsProvider><RuntimeMove bootId="boot-1" hidden={false} {...(onOpenPane ? { onOpenPane } : {})} /></SettingsProvider>);
 };
-const buttons = (label: string) => renderer!.root.findAll((node) => node.type === "button" && text(node).trim() === label);
+const buttons = (label: string) => [...body().querySelectorAll("button")].filter((node) => node.textContent?.trim() === label);
 const button = (label: string) => { const found = buttons(label); expect(found).toHaveLength(1); return found[0]!; };
-const press = async (node: ReactTestInstance) => { await act(async () => { node.props.onClick(); }); };
+const press = async (node: HTMLElement) => { await act(async () => { node.click(); }); };
 const posts = () => requests.filter((request) => request.method === "POST");
 
 describe("the move to herdr-core where herdr-core is missing", () => {
@@ -72,14 +59,14 @@ describe("the move to herdr-core where herdr-core is missing", () => {
 
   it("shows the row with the version it installs, and keeps it with the reason when the install fails", async () => {
     await mount();
-    expect(text(renderer!.root)).toContain("Install herdr-core and move everything");
-    expect(text(renderer!.root)).toContain("herdr-core 0.1.17");
+    expect(body().textContent).toContain("Install herdr-core and move everything");
+    expect(body().textContent).toContain("herdr-core 0.1.17");
     const install = button("Install and move…");
 
     await press(install);
     expect(posts().map(({ method, path }) => ({ method, path }))).toEqual([{ method: "POST", path: "/api/runtime/move/install" }]);
-    expect(text(renderer!.root.find((node) => node.props.role === "alert"))).toContain("does not match its checksum");
-    expect(install.props.disabled).toBe(false);
+    expect(alertText()).toContain("does not match its checksum");
+    expect(install.disabled).toBe(false);
   });
 });
 
@@ -107,8 +94,9 @@ describe("ending busy panes from the move's wait", () => {
     await mount(onOpenPane);
     await press(button("Waiting…"));
   };
-  const row = (name: string) => renderer!.root.find((node) => node.props.className === "runtime-move-pane" && text(node).includes(name));
-  const rowButtons = (name: string) => row(name).findAll((node) => node.type === "button").map((node) => text(node).trim());
+  const row = (name: string) => one([...body().querySelectorAll('[class="runtime-move-pane"]')].filter((node) => node.textContent?.includes(name)), `pane named ${name}`);
+  const rowButtons = (name: string) => [...row(name).querySelectorAll("button")].map((node) => node.textContent?.trim());
+  const topButton = () => one(row("top running").querySelectorAll<HTMLButtonElement>("button"), "button for top");
 
   it("ends only the pane whose button is pressed, and offers an agent's pane only to open", async () => {
     const opened: [string, string][] = [];
@@ -116,7 +104,7 @@ describe("ending busy panes from the move's wait", () => {
     expect(rowButtons("top running")).toEqual(["End"]);
     expect(rowButtons("Answering")).toEqual(["Open the agent's pane"]);
 
-    await press(row("top running").find((node) => node.type === "button"));
+    await press(topButton());
     expect(posts()).toEqual([{ method: "POST", path: "/api/runtime/move/stop", body: { pane_id: "p1", command: "top" } }]);
 
     await press(button("Open the agent's pane"));
@@ -136,14 +124,15 @@ describe("ending busy panes from the move's wait", () => {
     await open();
     await press(button("End all and move now"));
     expect(posts()).toEqual([{ method: "POST", path: "/api/runtime/move/stop-all", body: {} }]);
-    expect(text(renderer!.root)).toContain("Ends 2 running commands. Unsaved work may be lost.");
+    expect(body().textContent).toContain("Ends 2 running commands. Unsaved work may be lost.");
     // the confirm names each pane the token covers (its command and folder), not what the last poll showed
-    const covered = renderer!.root.find((node) => node.props.className === "runtime-move-confirm-list").findAll((node) => node.type === "li").map(text);
+    const list = one(body().querySelectorAll('[class="runtime-move-confirm-list"]'), "list of commands to end");
+    const covered = [...list.querySelectorAll("li")].map((node) => node.textContent);
     expect(covered).toEqual(["top · /demo", "python3 · /demo/site"]);
 
     await press(button("Back"));
     expect(posts()).toHaveLength(1);
-    expect(text(renderer!.root)).not.toContain("Unsaved work may be lost.");
+    expect(body().textContent).not.toContain("Unsaved work may be lost.");
 
     await press(button("End all and move now"));
     await press(button("End and move"));
@@ -156,7 +145,7 @@ describe("ending busy panes from the move's wait", () => {
     await open();
     await press(button("End all and move now"));
     await press(button("End and move"));
-    expect(text(renderer!.root.find((node) => node.props.role === "alert"))).toContain("the panes changed since you looked");
+    expect(alertText()).toContain("the panes changed since you looked");
     expect(buttons("End and move")).toEqual([]);
     expect(buttons("End all and move now")).toHaveLength(1);
   });
@@ -165,9 +154,9 @@ describe("ending busy panes from the move's wait", () => {
     status = { state: "waiting", revision: "r1", stopping: [{ pane_id: "p1", force: false }] };
     await open();
     expect(rowButtons("top running")).toEqual(["Ending…"]);
-    expect(row("top running").find((node) => node.type === "button").props.disabled).toBe(true);
+    expect(topButton().disabled).toBe(true);
     expect(buttons("Force end")).toEqual([]);
-    await act(async () => { await renderer!.unmount(); });
+    await page.render(null);
 
     status = { state: "waiting", revision: "r1", stopping: [{ pane_id: "p1", force: true }] };
     await open();

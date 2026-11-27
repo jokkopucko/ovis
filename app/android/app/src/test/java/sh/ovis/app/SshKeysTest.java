@@ -55,6 +55,16 @@ public class SshKeysTest {
     }
 
     @Test
+    public void readsTraditionalPemWithAnOpenSshUtf8Passphrase() throws SshFailure {
+        readsAs("rsa-pem-utf8", "시험용-암호", "rsa", 2048, true);
+    }
+
+    @Test
+    public void stillReadsTraditionalPemWithALatin1Passphrase() throws SshFailure {
+        readsAs("ec-pem-latin1", "café", "ecdsa", 256, true);
+    }
+
+    @Test
     public void readsAKeyPastedWithSpaceAroundIt() throws SshFailure {
         assertEquals("ed25519", SshKeys.read("\n  " + key("ed25519") + "\n\n", null).type);
     }

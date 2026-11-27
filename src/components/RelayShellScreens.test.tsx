@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { createElement } from "react";
+import { act, createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { act, create as createRenderer, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, reactProps, type Page } from "../lib/page.fixture.ts";
 
 import { SettingsProvider } from "../lib/settings.ts";
 import {
@@ -14,16 +14,7 @@ import { CodeEntry, RelayShell, type RelayShellProps } from "./RelayShell.tsx";
 import { PROVIDER_NAMES } from "./AccountPcs.tsx";
 import { relayFailureText } from "./relayFailureText.ts";
 import { translate, type Vars } from "../lib/i18n.ts";
-
-/** every tree a test draws, still mounted: the test's end unmounts each one, not only the ones it unmounted itself */
-const drawn = new Set<ReactTestRenderer>();
-const create = (...args: Parameters<typeof createRenderer>): ReactTestRenderer => {
-  const tree = createRenderer(...args);
-  const unmount = tree.unmount.bind(tree);
-  tree.unmount = () => { drawn.delete(tree); unmount(); };
-  drawn.add(tree);
-  return tree;
-};
+import { endPairCodeComposition, typePairCode } from "../lib/pairCodeInput.ts";
 
 const none = () => {};
 const baseProps = (state: RelayShellProps["state"]): RelayShellProps => ({
@@ -42,88 +33,24 @@ const baseProps = (state: RelayShellProps["state"]): RelayShellProps => ({
   onCodeMatch: none,
 });
 
-const render = (node: ReturnType<typeof createElement>): string => {
-  const saved = Object.getOwnPropertyDescriptor(navigator, "languages");
-  Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
-  try {
-    return renderToStaticMarkup(createElement(SettingsProvider, { children: node }));
-  } finally {
-    if (saved) Object.defineProperty(navigator, "languages", saved);
-    else Reflect.deleteProperty(navigator, "languages");
-  }
-};
+const render = (node: ReturnType<typeof createElement>): string =>
+  renderToStaticMarkup(createElement(SettingsProvider, { children: node }));
 
-const textOf = (node: ReactTestInstance): string =>
-  node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
+const textOf = (node: Element): string => node.textContent ?? "";
 
 describe("RelayShellScreens", () => {
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let copiedText: string[] = [];
+  let page: Page;
+  let copiedText: string[];
+  const buttons = (label: string) => [...page.container.querySelectorAll("button")].filter((node) => textOf(node).trim() === label);
 
   beforeEach(() => {
+    page = openPage();
+    Object.defineProperty(page.window.navigator, "languages", { configurable: true, value: ["en"] });
     copiedText = [];
-    for (const key of ["window", "document", "navigator", "localStorage", "getComputedStyle", "matchMedia", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"]) {
-      descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    }
-    const events = new EventTarget();
-    const store = new Map<string, string>();
-    const storage = { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value); }, removeItem: (key: string) => { store.delete(key); }, key: () => null, length: 0, clear: () => store.clear() };
-    const matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
-    class HTMLElement { isConnected = true; focus(): void {} }
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: HTMLElement });
-    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
-    Object.defineProperty(globalThis, "navigator", {
-      configurable: true,
-      value: {
-        languages: ["en"],
-        userAgent: "Mozilla/5.0",
-        maxTouchPoints: 0,
-        clipboard: {
-          writeText: async (text: string) => { copiedText.push(text); },
-        },
-      },
-    });
-    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage });
-    Object.defineProperty(globalThis, "matchMedia", { configurable: true, value: matchMedia });
-    Object.defineProperty(globalThis, "window", {
-      configurable: true,
-      value: {
-        localStorage: storage,
-        matchMedia,
-        addEventListener: events.addEventListener.bind(events),
-        removeEventListener: events.removeEventListener.bind(events),
-        dispatchEvent: events.dispatchEvent.bind(events),
-        requestAnimationFrame: () => 1,
-        cancelAnimationFrame() {},
-        setTimeout: globalThis.setTimeout,
-        clearTimeout: globalThis.clearTimeout,
-      },
-    });
-    Object.defineProperty(globalThis, "document", {
-      configurable: true,
-      value: {
-        documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
-        activeElement: new HTMLElement(),
-        querySelector: () => null,
-        querySelectorAll: () => [],
-        addEventListener: events.addEventListener.bind(events),
-        removeEventListener: events.removeEventListener.bind(events),
-      },
-    });
+    Object.defineProperty(page.window.navigator.clipboard, "writeText", { configurable: true, value: async (text: string) => { copiedText.push(text); } });
   });
 
-  afterEach(async () => {
-    // every tree goes, then what its unmount left to run on a timer (a sheet leaving its history entry) runs while
-    // this window is still here
-    await act(async () => { for (const tree of [...drawn]) tree.unmount(); });
-    await act(async () => { for (let turn = 0; turn < 3; turn++) await new Promise((resolve) => setTimeout(resolve, 0)); });
-    for (const [key, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    descriptors.clear();
-  });
+  afterEach(async () => { await page.close(); });
 
   it("applies the system .input class, visible labels, and keeps the uncontrolled DOM input across lookup failures", async () => {
     const codeHtml = render(
@@ -162,65 +89,52 @@ describe("RelayShellScreens", () => {
     expect(compactHtml).not.toContain("relay-shell-copy");
 
     const submitted: string[] = [];
-    const fieldMock = { value: "7K3QD-M2XHA" };
-    let renderer: ReactTestRenderer | undefined;
-    try {
-      await act(async () => {
-        renderer = create(
-          createElement(SettingsProvider, {
-            children: createElement(CodeEntry, {
-              failure: null,
-              looking: false,
-              onSubmit: (code) => submitted.push(code),
-              back: createElement("button", { type: "button", className: "btn" }, "Cancel"),
-            }),
-          }),
-        );
-      });
-      const inputBefore = renderer!.root.findByType("input");
-      const form = renderer!.root.findByType("form");
-      await act(async () => {
-        form.props.onSubmit({
-          preventDefault() {},
-          currentTarget: { elements: { namedItem: () => fieldMock } },
-        });
-      });
-      expect(submitted).toEqual(["7K3QD-M2XHA"]);
-      expect(fieldMock.value).toBe("7K3QD-M2XHA");
+    await page.render(
+      createElement(SettingsProvider, {
+        children: createElement(CodeEntry, {
+          failure: null,
+          looking: false,
+          onSubmit: (code) => submitted.push(code),
+          back: createElement("button", { type: "button", className: "btn" }, "Cancel"),
+        }),
+      }),
+    );
+    const inputBefore = page.one<HTMLInputElement>("input");
+    await page.type(inputBefore, "7K3QD-M2XHA");
+    const form = page.one("form");
+    await act(async () => {
+      form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+    });
+    expect(submitted).toEqual(["7K3QD-M2XHA"]);
+    expect(inputBefore.value).toBe("7K3QD-M2XHA");
 
-      await act(async () => {
-        renderer!.update(
-          createElement(SettingsProvider, {
-            children: createElement(CodeEntry, {
-              failure: null,
-              looking: true,
-              onSubmit: (code) => submitted.push(code),
-              back: createElement("button", { type: "button", className: "btn" }, "Cancel"),
-            }),
-          }),
-        );
-      });
-      const inputDuring = renderer!.root.findByType("input");
-      expect(inputDuring).toBe(inputBefore);
+    await page.render(
+      createElement(SettingsProvider, {
+        children: createElement(CodeEntry, {
+          failure: null,
+          looking: true,
+          onSubmit: (code) => submitted.push(code),
+          back: createElement("button", { type: "button", className: "btn" }, "Cancel"),
+        }),
+      }),
+    );
+    const inputDuring = page.one<HTMLInputElement>("input");
+    expect(inputDuring).toBe(inputBefore);
+    expect([reactProps(inputBefore).onInput, reactProps(inputBefore).onCompositionEnd]).toEqual([typePairCode, endPairCodeComposition]);
 
-      await act(async () => {
-        renderer!.update(
-          createElement(SettingsProvider, {
-            children: createElement(CodeEntry, {
-              failure: "wrong",
-              looking: false,
-              onSubmit: (code) => submitted.push(code),
-              back: createElement("button", { type: "button", className: "btn" }, "Cancel"),
-            }),
-          }),
-        );
-      });
-      const inputAfter = renderer!.root.findByType("input");
-      expect(inputAfter).toBe(inputBefore);
-      expect(fieldMock.value).toBe("7K3QD-M2XHA");
-    } finally {
-      await act(async () => { renderer?.unmount(); });
-    }
+    await page.render(
+      createElement(SettingsProvider, {
+        children: createElement(CodeEntry, {
+          failure: "wrong",
+          looking: false,
+          onSubmit: (code) => submitted.push(code),
+          back: createElement("button", { type: "button", className: "btn" }, "Cancel"),
+        }),
+      }),
+    );
+    const inputAfter = page.one<HTMLInputElement>("input");
+    expect(inputAfter).toBe(inputBefore);
+    expect(inputAfter.value).toBe("7K3QD-M2XHA");
   });
 
   it("puts up Update the app with the store page of the app's platform, and no way into the PC", () => {
@@ -241,60 +155,44 @@ describe("RelayShellScreens", () => {
 
   it("leaves Update the app for the front page by Cancel where no PC's page is open", async () => {
     const cancelled: string[] = [];
-    let renderer: ReactTestRenderer | undefined;
-    try {
-      await act(async () => {
-        renderer = create(createElement(SettingsProvider, { children: createElement(RelayShellCardContent, {
-          props: { ...baseProps({ kind: "app-outdated", name: "Desk PC", platform: null }), scoped: false, onCancel: () => cancelled.push("cancel"), onBack: () => cancelled.push("back") },
-        }) }));
-      });
-      const back = renderer!.root.findAll((node) => node.type === "button" && textOf(node).trim() === "Back");
-      expect(back).toHaveLength(1);
-      await act(async () => { back[0]!.props.onClick(); });
-      expect(cancelled).toEqual(["cancel"]);
-    } finally {
-      await act(async () => { renderer?.unmount(); });
-    }
+    await page.render(createElement(SettingsProvider, { children: createElement(RelayShellCardContent, {
+        props: { ...baseProps({ kind: "app-outdated", name: "Desk PC", platform: null }), scoped: false, onCancel: () => cancelled.push("cancel"), onBack: () => cancelled.push("back") },
+      }) }));
+    const back = buttons("Back");
+    expect(back).toHaveLength(1);
+    await act(async () => { back[0]!.click(); });
+    expect(cancelled).toEqual(["cancel"]);
   });
 
   it("renders Copy buttons for both manual update command blocks and updates to Copied on click", async () => {
-    let renderer: ReactTestRenderer | undefined;
-    try {
-      const shown = baseProps({
-        kind: "outdated",
-        name: "Desk PC",
-        serverVersion: "0.4.0",
-        minVersion: "0.5.0",
-        update: { phase: "manual" },
-      });
-      await act(async () => {
-        renderer = create(
-          createElement(SettingsProvider, {
-            children: createElement(RelayShellCardContent, {
-              props: shown,
-            }),
-          }),
-        );
-      });
-      const copyBtns = renderer!.root.findAll(
-        (n) => n.type === "button" && textOf(n).trim() === "Copy",
-      );
-      expect(copyBtns).toHaveLength(2);
-      await act(async () => {
-        copyBtns[0]!.props.onClick();
-      });
-      expect(copiedText).toEqual([INSTALLER_COMMAND]);
-      expect(
-        renderer!.root.findAll((n) => n.type === "button" && textOf(n).trim() === "Copied"),
-      ).toHaveLength(1);
+    const shown = baseProps({
+      kind: "outdated",
+      name: "Desk PC",
+      serverVersion: "0.4.0",
+      minVersion: "0.5.0",
+      update: { phase: "manual" },
+    });
+    await page.render(
+      createElement(SettingsProvider, {
+        children: createElement(RelayShellCardContent, {
+          props: shown,
+        }),
+      }),
+    );
+    const copyBtns = buttons("Copy");
+    expect(copyBtns).toHaveLength(2);
+    await act(async () => {
+      copyBtns[0]!.click();
+    });
+    expect(copiedText).toEqual([INSTALLER_COMMAND]);
+    expect(
+      buttons("Copied"),
+    ).toHaveLength(1);
 
-      await act(async () => {
-        copyBtns[1]!.props.onClick();
-      });
-      expect(copiedText).toEqual([INSTALLER_COMMAND, PLUGIN_COMMANDS]);
-    } finally {
-      await act(async () => { renderer?.unmount(); });
-    }
+    await act(async () => {
+      copyBtns[1]!.click();
+    });
+    expect(copiedText).toEqual([INSTALLER_COMMAND, PLUGIN_COMMANDS]);
   });
 
   it("keeps the sign-in column mounted during signing-in with the busy provider marked, and the way past it held too", () => {
@@ -387,42 +285,30 @@ describe("RelayShellScreens", () => {
   });
 
   it("clears the uncontrolled TypedDigits input when a fresh challenge number arrives", async () => {
-    const fieldNode = { value: "123456" };
-    let renderer: ReactTestRenderer | undefined;
-    try {
-      await act(async () => {
-        renderer = create(
-          createElement(SettingsProvider, {
-            children: createElement(TypedDigits, {
-              pc: "Desk PC",
-              challenge: 1,
-              onSubmit: none,
-              cancel: createElement("button", { type: "button", className: "btn" }, "Cancel"),
-            }),
-          }),
-          {
-            createNodeMock: (el) => (el.type === "input" ? fieldNode : null),
-          },
-        );
-      });
-      expect(fieldNode.value).toBe("123456");
+    await page.render(
+      createElement(SettingsProvider, {
+        children: createElement(TypedDigits, {
+          pc: "Desk PC",
+          challenge: 1,
+          onSubmit: none,
+          cancel: createElement("button", { type: "button", className: "btn" }, "Cancel"),
+        }),
+      }),
+    );
+    await page.type(page.one<HTMLInputElement>("input"), "123456");
+    expect(page.one<HTMLInputElement>("input").value).toBe("123456");
 
-      await act(async () => {
-        renderer!.update(
-          createElement(SettingsProvider, {
-            children: createElement(TypedDigits, {
-              pc: "Desk PC",
-              challenge: 2,
-              onSubmit: none,
-              cancel: createElement("button", { type: "button", className: "btn" }, "Cancel"),
-            }),
-          }),
-        );
-      });
-      expect(fieldNode.value).toBe("");
-    } finally {
-      await act(async () => { renderer?.unmount(); });
-    }
+    await page.render(
+      createElement(SettingsProvider, {
+        children: createElement(TypedDigits, {
+          pc: "Desk PC",
+          challenge: 2,
+          onSubmit: none,
+          cancel: createElement("button", { type: "button", className: "btn" }, "Cancel"),
+        }),
+      }),
+    );
+    expect(page.one<HTMLInputElement>("input").value).toBe("");
   });
 
   // A marked pairing's sign-in and the confirm it comes back to: what can be pressed, where it goes, and what waits
@@ -430,43 +316,40 @@ describe("RelayShellScreens", () => {
     const en = (key: string, vars?: Vars): string => translate("en", key, vars);
     const failed = { kind: "failed" as const, failure: "sign-in-first" as const, name: "Desk", detail: null, server_id: "a".repeat(32) };
     const offered = { onSignIn: none, accountProviders: ["github", "google"] as const };
-    const draw = async (state: RelayShellProps["state"], extra: Partial<RelayShellProps> = {}): Promise<ReactTestRenderer> => {
-      let renderer: ReactTestRenderer | undefined;
-      await act(async () => {
-        renderer = create(createElement(SettingsProvider, { children: createElement(RelayShellCardContent, {
-          props: { ...baseProps(state), ...extra },
-        }) }));
-      });
-      return renderer!;
+    const draw = async (state: RelayShellProps["state"], extra: Partial<RelayShellProps> = {}): Promise<void> => {
+      await page.render(null);
+      await page.render(createElement(SettingsProvider, { children: createElement(RelayShellCardContent, {
+        props: { ...baseProps(state), ...extra },
+      }) }));
     };
-    const providerButtons = (renderer: ReactTestRenderer): ReactTestInstance[] => renderer.root.findAll((node) => node.type === "button" && typeof node.props["data-provider"] === "string");
+    const providerButtons = () => [...page.container.querySelectorAll<HTMLButtonElement>('button[data-provider]')];
 
     it("offers each provider the account service lists, by name, none drawn as the one to pick, and signs in with the one pressed", async () => {
       const pressed: string[] = [];
-      const screen = await draw(failed, { ...offered, onSignIn: (provider) => { pressed.push(provider); } });
-      const buttons = providerButtons(screen);
-      expect(buttons.map((button) => button.props["data-provider"])).toEqual(["github", "google"]);
+      await draw(failed, { ...offered, onSignIn: (provider) => { pressed.push(provider); } });
+      const buttons = providerButtons();
+      expect(buttons.map((button) => button.getAttribute("data-provider"))).toEqual(["github", "google"]);
       expect(buttons.map((button) => textOf(button))).toEqual([PROVIDER_NAMES.github, PROVIDER_NAMES.google]);
-      expect(buttons.filter((button) => String(button.props.className).split(" ").includes("btn-primary"))).toEqual([]);
-      await act(async () => { buttons[1]!.props.onClick(); });
+      expect(buttons.filter((button) => button.classList.contains("btn-primary"))).toEqual([]);
+      await act(async () => { buttons[1]!.click(); });
       expect(pressed).toEqual(["google"]);
-      expect(screen.root.findAllByType("a").map((link) => link.props.href)).toEqual(["https://ovis.sh/privacy/"]);
+      expect([...page.container.querySelectorAll("a")].map((link) => link.getAttribute("href"))).toEqual(["https://ovis.sh/privacy/"]);
     });
 
     it("holds every provider while one signs in, and offers the sign-in again after a refusal", async () => {
-      const busy = await draw({ ...failed, account: { kind: "signing-in", provider: "google" } }, offered);
-      expect(providerButtons(busy).map((button) => [button.props["data-provider"], button.props["aria-busy"] ?? null, button.props.disabled])).toEqual([["github", null, true], ["google", "true", true]]);
-      const refused = await draw({ ...failed, account: { kind: "signed-out", error: "refused", provider: "google" } }, offered);
-      expect(refused.root.findAll((node) => node.type === "button" && node.props["data-action"] === "retry-signin")).toHaveLength(1);
+      await draw({ ...failed, account: { kind: "signing-in", provider: "google" } }, offered);
+      expect(providerButtons().map((button) => [button.getAttribute("data-provider"), button.getAttribute("aria-busy"), button.disabled])).toEqual([["github", null, true], ["google", "true", true]]);
+      await draw({ ...failed, account: { kind: "signed-out", error: "refused", provider: "google" } }, offered);
+      expect(page.container.querySelectorAll('button[data-action="retry-signin"]')).toHaveLength(1);
     });
 
     it("names no provider where the page offers no sign-in, or once the code ran out during one", async () => {
-      const noService = await draw(failed);
-      expect(providerButtons(noService)).toEqual([]);
-      expect(noService.root.findAllByProps({ className: "relay-shell-copy" }).map(textOf)).toEqual([relayFailureText(en, "sign-in-first", "Desk").copy]);
-      const expired = await draw({ kind: "failed", failure: "scan-expired", name: "Desk", detail: null }, offered);
-      expect(providerButtons(expired)).toEqual([]);
-      expect(textOf(expired.root.findByType("h1"))).toBe(relayFailureText(en, "scan-expired", "Desk").title);
+      await draw(failed);
+      expect(providerButtons()).toEqual([]);
+      expect([...page.container.querySelectorAll('[class="relay-shell-copy"]')].map(textOf)).toEqual([relayFailureText(en, "sign-in-first", "Desk").copy]);
+      await draw({ kind: "failed", failure: "scan-expired", name: "Desk", detail: null }, offered);
+      expect(providerButtons()).toEqual([]);
+      expect(textOf(page.one("h1"))).toBe(relayFailureText(en, "scan-expired", "Desk").title);
     });
 
     it("keeps the PC's ID of an Add and pair confirm folded under Details, with the account on the PC's card", () => {

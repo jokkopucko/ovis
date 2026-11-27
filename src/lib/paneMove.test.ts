@@ -12,13 +12,13 @@ function fixture() {
 }
 it("carries the chat draft, the held terminal input and the picked lens to the pane's new ID, sending nothing", () => {
   const { data, drafts, storage, comments } = fixture();
-  drafts.set("ovis:composer-draft:w1:p1", "unsent question");
+  drafts.set("ovis:composer-draft:w1:p1", "unsent question", "replace");
   data.set("ovis:terminal-draft:w1:p1", JSON.stringify({ text: "echo held", at: 1 }));
   data.set("ovis:view:w1:p1", "terminal");
   data.set("ovis:reply-comments:w1:p1", JSON.stringify([{ id: "c1", quote: "q", comment: "c" }]));
   // another pane's state, and the same pane ID on another PC, stay where they are
   data.set("ovis:view:w1:p2", "chat");
-  drafts.set("ovis:composer-draft:remote:pc:w1%3Ap1", "other PC");
+  drafts.set("ovis:composer-draft:remote:pc:w1%3Ap1", "other PC", "replace");
   carryPaneState("local", "w1:p1", "w2:p4", drafts, storage, comments);
   expect(drafts.read("ovis:composer-draft:w2:p4")).toEqual({ text: "unsent question", sending: false });
   expect(drafts.read("ovis:composer-draft:w1:p1").text).toBe("");
@@ -31,7 +31,7 @@ it("carries the chat draft, the held terminal input and the picked lens to the p
 });
 it("carries no draft another tab sent before this one heard of it (#2369)", () => {
   const { data, drafts, storage } = fixture();
-  drafts.set("ovis:composer-draft:w1:p1", "deploy");
+  drafts.set("ovis:composer-draft:w1:p1", "deploy", "replace");
   data.delete("ovis:composer-draft:w1:p1");
   carryPaneState("local", "w1:p1", "w2:p4", drafts, storage);
   expect(data.has("ovis:composer-draft:w2:p4")).toBe(false);
@@ -39,7 +39,7 @@ it("carries no draft another tab sent before this one heard of it (#2369)", () =
 });
 it("leaves a draft whose send is on its way, and keeps what the new ID holds already", () => {
   const { data, drafts, storage } = fixture();
-  drafts.set("ovis:composer-draft:w1:p1", "on its way");
+  drafts.set("ovis:composer-draft:w1:p1", "on its way", "replace");
   expect(drafts.begin("ovis:composer-draft:w1:p1", "on its way")).toBe(true);
   data.set("ovis:view:w1:p1", "chat");
   data.set("ovis:view:w2:p4", "terminal");
@@ -68,7 +68,7 @@ it("removes the comments a send carried after another tab moved the pane during 
   const mover = { drafts: new ComposerDraftStore(storage), comments: new ReplyCommentStore(storage) };
   const before = "ovis:reply-comments:w1:p1", after = "ovis:reply-comments:w2:p4";
   sender.comments.add(before, "selected", "carried");
-  sender.drafts.set("ovis:composer-draft:w1:p1", "go");
+  sender.drafts.set("ovis:composer-draft:w1:p1", "go", "replace");
   expect(sender.drafts.claim("ovis:composer-draft:w1:p1", "go")).toBe(true);
   const carried = sender.comments.read(before);
   sender.comments.reserve(carried);
@@ -92,7 +92,7 @@ describe("comments moved while a send in another tab is on its way (#2356)", () 
   }
   function send(tab: { drafts: ComposerDraftStore; comments: ReplyCommentStore }, pane: string, text: string) {
     const carried = tab.comments.unreserved(tab.comments.read(list(pane)));
-    tab.drafts.set(draft(pane), text);
+    tab.drafts.set(draft(pane), text, "replace");
     expect(tab.drafts.claim(draft(pane), text)).toBe(true);
     tab.comments.reserve(carried);
     return carried;

@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 
 import { SHORTCUTS, bindingDisplayKeys, closePaneKeyStep, isAppShortcut, shortcutEventKey, isMacPlatform, matchShortcut, type ShortcutEventLike, keepsArrowsForText, keepsKeyForText, shortcutConflict, shortcutDisplayKeys, shortcutKeys } from "./shortcuts.ts";
 import { isReservedShortcutKey, sanitizeShortcutOverrides } from "./shortcutBindings.ts";
+import { sanitizeSettings } from "./settings.ts";
 
 function keyEvent(key: string, patch: Partial<ShortcutEventLike> = {}): ShortcutEventLike {
   return { key, ctrlKey: false, metaKey: false, shiftKey: true, altKey: false, ...patch };
@@ -13,6 +14,22 @@ describe("matchShortcut", () => {
     expect(matchShortcut(keyEvent("k", { ctrlKey: true }), false)).toBe("palette");
     expect(matchShortcut(keyEvent("k", { ctrlKey: true }), true)).toBeNull();
     expect(matchShortcut(keyEvent("k", { metaKey: true }), false)).toBeNull();
+  });
+
+  it("lists the editable chat quote binding without swallowing it in the terminal", () => {
+    const mac = keyEvent("(", { metaKey: true, code: "Digit9" });
+    const other = keyEvent("(", { ctrlKey: true, code: "Digit9" });
+    expect(matchShortcut(mac, true)).toBe("quote-chat");
+    expect(matchShortcut(other, false)).toBe("quote-chat");
+    expect(shortcutConflict("quote-chat", shortcutKeys("quote-chat", {}), {})).toBe(false);
+    expect(shortcutDisplayKeys("quote-chat", {})).toEqual(["Mod", "Shift", "9"]);
+    expect(isAppShortcut(isMacPlatform() ? mac : other)).toBe(false);
+  });
+
+  it.each(["8", null])("keeps the Quote shortcut setting %s instead of the default", (value) => {
+    const { shortcutOverrides } = sanitizeSettings({ shortcutOverrides: { "quote-chat": value } });
+    expect(matchShortcut(keyEvent("(", { ctrlKey: true, code: "Digit9" }), false, shortcutOverrides)).toBeNull();
+    expect(matchShortcut(keyEvent("*", { ctrlKey: true, code: "Digit8" }), false, shortcutOverrides)).toBe(value === null ? null : "quote-chat");
   });
 
   it("matches every terminal-safe key", () => {
@@ -123,6 +140,21 @@ it("matches shifted digits and detects alias and default-restoration conflicts",
 });
 
 describe("shortcutDisplayKeys", () => {
+  it.each([false, true])("leaves Quote unbound when a saved Close pane shortcut takes its default (exact: %s)", (exact) => {
+    const mac = isMacPlatform();
+    const { shortcutOverrides } = sanitizeSettings({ shortcutOverrides: { "close-pane": exact ? (mac ? "shift+meta+9" : "ctrl+shift+9") : "9" } });
+    const event = keyEvent("(", { ctrlKey: !mac, metaKey: mac, code: "Digit9" });
+
+    expect(matchShortcut(event, mac, shortcutOverrides)).toBe("close-pane");
+    expect(shortcutDisplayKeys("quote-chat", shortcutOverrides)).toEqual([]);
+  });
+
+  it("keeps Off for both fixed chords after loading device settings", () => {
+    const overrides = sanitizeShortcutOverrides({ voice: null, "hold-message": null });
+    expect(shortcutDisplayKeys("voice", overrides)).toEqual([]);
+    expect(shortcutDisplayKeys("hold-message", overrides)).toEqual([]);
+  });
+
   it("shows the default chord, custom chord, disabled state, and uncustomizable voice chord", () => {
     expect(shortcutDisplayKeys("palette", {})).toEqual(["Mod", "Shift", "K"]);
     expect(shortcutDisplayKeys("toggle-view", { "toggle-view": "p" })).toEqual(["Mod", "Shift", "P"]);

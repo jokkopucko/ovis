@@ -7,6 +7,9 @@ export const CLAUDE_FOLDED_DRAFT_MESSAGE = "Claude Code's input box holds a past
 /** The bridge's `agent_not_ready` message when no agent is in front of the pane at all (#511); the same code also says an agent's input state is unknown. */
 export const NO_AGENT_MESSAGE = "No agent is in front of this pane now; nothing was typed";
 
+/** The fallback paste finished, but the bridge deliberately did not send its separate Enter. */
+export const FALLBACK_ENTER_WITHHELD_MESSAGE = "The message was pasted, but the terminal menu could not be ruled out before Enter. Check the terminal before sending again.";
+
 /**
  * The bridge's `submit_changed` message when Send now queued its message in a working Grok and pressed nothing more
  * (server/core/grok-queue.ts): Grok's screen showed the message queued, but not as the one row of a queue empty before

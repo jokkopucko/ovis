@@ -196,19 +196,24 @@ export async function startRuntime(stateDir: string, find: (onRefused?: (bin: st
   serveRuntime(HERDR_CORE);
   return {
     socketPath: adapter.socketPath,
-    stop: () => {
+    stop: (options) => {
       children?.close();
       children = null;
-      adapter.stop();
-      hc.close();
-      connection = null;
-      marker = null;
-      terminalEnvironment = {};
-      serveRuntime(null);
-      found = null;
-      search = null;
-      lost = false;
-      searchedAt = 0;
+      const drained = adapter.stop(options);
+      if (drained) return drained.finally(finish);
+      finish();
     },
   };
+
+  function finish(): void {
+    hc.close();
+    connection = null;
+    marker = null;
+    terminalEnvironment = {};
+    serveRuntime(null);
+    found = null;
+    search = null;
+    lost = false;
+    searchedAt = 0;
+  }
 }

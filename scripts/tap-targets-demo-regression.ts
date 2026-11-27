@@ -17,27 +17,22 @@
  * Captures go to UI_EVIDENCE_DIR as tap-targets-<width>-<state>.png when it is set.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Browser, type Page } from "playwright-core";
+import type { Browser, Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { appFaces } from "./app-faces.ts";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
+import { appContext } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 import { DEMO_FILE_PREVIEW_SCRIPT } from "./demo-file-preview.ts";
 import { openMoreGroup } from "./header-more.ts";
 import { sheetRisen } from "./settings-page.ts";
-import { serveDemo } from "./demo-server.ts";
 
 const TARGET = 44;
 const POINTER = 24;
 /** the walk's step (measure): Chromium hit-tests on device pixels (3x here), so an edge reads up to a step either way */
 const RESOLUTION = 0.25;
 
-const app = mkdtempSync(join(tmpdir(), "ovis-tap-targets-demo-"));
 const evidence = process.env["UI_EVIDENCE_DIR"];
-if (evidence) mkdirSync(evidence, { recursive: true });
 
 interface Target { name: string; selector: string; neighbour?: boolean }
 interface Box { left: number; top: number; right: number; bottom: number }
@@ -195,7 +190,7 @@ async function floors(browser: Browser, server: { port: number }): Promise<strin
   const failures: string[] = [];
   const base = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/`;
   const open = async (width: number, height: number, phone: boolean, settings: Record<string, unknown>, filesPanel: boolean) => {
-    const context = await browser.newContext({ viewport: { width, height }, isMobile: phone, hasTouch: phone, deviceScaleFactor: phone ? 3 : 1, colorScheme: "dark", locale: "en-US" });
+    const context = await appContext(browser, { viewport: { width, height }, isMobile: phone, hasTouch: phone, deviceScaleFactor: phone ? 3 : 1, colorScheme: "dark" });
     await context.addInitScript(([settings, panel]) => {
       if (localStorage.getItem("ovis:settings") !== null) return;
       localStorage.setItem("ovis:settings", settings);
@@ -267,7 +262,7 @@ async function floors(browser: Browser, server: { port: number }): Promise<strin
 
 async function scenario(browser: Browser, server: { port: number }, width: number, height: number, phone: boolean, density: "comfortable" | "compact"): Promise<string[]> {
   const label = density === "compact" ? `${width} compact` : String(width);
-  const context = await browser.newContext({ viewport: { width, height }, isMobile: phone, hasTouch: phone, deviceScaleFactor: phone ? 3 : 1, colorScheme: "dark", locale: "en-US" });
+  const context = await appContext(browser, { viewport: { width, height }, isMobile: phone, hasTouch: phone, deviceScaleFactor: phone ? 3 : 1, colorScheme: "dark" });
   const failures: string[] = [];
   try {
     await context.addInitScript((density) => {
@@ -330,20 +325,11 @@ async function scenario(browser: Browser, server: { port: number }, width: numbe
   return failures;
 }
 
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>${DEMO_FILE_PREVIEW_SCRIPT}<script type="module"`));
-  const prefix = "/herdr-web-ui/demo/app/";
-  const server = serveDemo(app, { prefix });
-  try {
-    const browser = await chromium.launch({ executablePath: chromePath(), headless: true });
-    try {
-      const failures: string[] = [];
-      for (const [width, height, phone, density] of [[390, 844, true, "comfortable"], [412, 915, true, "comfortable"], [390, 844, true, "compact"], [1280, 900, false, "comfortable"]] as const) failures.push(...await scenario(browser, server, width, height, phone, density));
-      failures.push(...await floors(browser, server));
-      assert.deepEqual(failures, [], `hit areas:\n${failures.join("\n")}`);
-      console.log("PASS tap targets: every control takes a finger's 44x44 on a phone, wholly its own, and only its drawn box under a mouse; a sheet's Cancel, the Rename pane and Settings search fields take 44 on a short phone, Restore defaults and a docked file's modes 24 under a mouse");
-    } finally { await browser.close(); }
-  } finally { server.stop(true); }
-} finally { rmSync(app, { recursive: true, force: true }); }
+await withDemoBrowser({ tempPrefix: "ovis-tap-targets-demo-", afterTransport: DEMO_FILE_PREVIEW_SCRIPT }, async ({ browser, port }) => {
+  const server = { port };
+  const failures: string[] = [];
+  for (const [width, height, phone, density] of [[390, 844, true, "comfortable"], [412, 915, true, "comfortable"], [390, 844, true, "compact"], [1280, 900, false, "comfortable"]] as const) failures.push(...await scenario(browser, server, width, height, phone, density));
+  failures.push(...await floors(browser, server));
+  assert.deepEqual(failures, [], `hit areas:\n${failures.join("\n")}`);
+  console.log("PASS tap targets: every control takes a finger's 44x44 on a phone, wholly its own, and only its drawn box under a mouse; a sheet's Cancel, the Rename pane and Settings search fields take 44 on a short phone, Restore defaults and a docked file's modes 24 under a mouse");
+});

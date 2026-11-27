@@ -1,19 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { act, createElement } from "react";
-import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import { SettingsProvider } from "../lib/settings.ts";
 import { usageCounters } from "../lib/usageCounters.ts";
-import type { InboxRailProps } from "./InboxRail.tsx";
-
-const rowMenu = await import("./RowMenu.tsx");
-function RowMenu(_props: Parameters<typeof rowMenu.RowMenu>[0]) { return null; }
-await mock.module("./RowMenu.tsx", () => ({ ...rowMenu, RowMenu }));
-const { InboxRail } = await import("./InboxRail.tsx");
+import { InboxRail, type InboxRailProps } from "./InboxRail.tsx";
 
 describe("InboxRail", () => {
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
   let pressed: string[];
   let frames: FrameRequestCallback[];
   const runFrames = (): Promise<void> => act(async () => { for (const run of frames.splice(0)) run(0); });
@@ -21,25 +15,12 @@ describe("InboxRail", () => {
   beforeEach(() => {
     pressed = [];
     frames = [];
-    for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    const events = new EventTarget();
-    const on = { addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events) };
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en-US"] } });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: { ...on, matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }), requestAnimationFrame: (run: FrameRequestCallback) => frames.push(run), cancelAnimationFrame() {} } });
-    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: { ...on, body: { nodeType: 1, children: [] }, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, querySelector: () => null } });
+    page = openPage();
+    Object.defineProperty(page.window, "requestAnimationFrame", { configurable: true, value: (run: FrameRequestCallback) => frames.push(run) });
+    Object.defineProperty(page.window, "cancelAnimationFrame", { configurable: true, value: () => {} });
   });
 
-  afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
-    for (const [key, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    descriptors.clear();
-  });
+  afterEach(async () => { await page.close(); });
 
   const props = (change: Partial<InboxRailProps> = {}): InboxRailProps => ({
     onExit: () => pressed.push("exit"), onInbox: () => pressed.push("inbox"),
@@ -49,42 +30,49 @@ describe("InboxRail", () => {
     ...change,
   });
   const view = (change: Partial<InboxRailProps>) => createElement(SettingsProvider, null, createElement(InboxRail, props(change)));
-  const draw = async (change: Partial<InboxRailProps> = {}): Promise<ReactTestInstance> => {
-    await act(async () => { renderer = create(view(change)); });
-    return renderer!.root;
+  const draw = async (change: Partial<InboxRailProps> = {}) => {
+    await page.render(view(change));
+    return page.container;
   };
-  const redraw = (change: Partial<InboxRailProps>) => act(async () => { renderer!.update(view(change)); });
-  const buttons = (root: ReactTestInstance): ReactTestInstance[] => root.findAll((node) => node.type === "button");
-  const kind = (node: ReactTestInstance): string => String(node.props.className).split(" ").find((name) => name.startsWith("inbox-rail-") && name !== "inbox-rail-item") ?? "";
-  const button = (root: ReactTestInstance, name: string): ReactTestInstance => buttons(root).find((node) => kind(node) === `inbox-rail-${name}`)!;
-  const named = (node: ReactTestInstance): [name: unknown, tooltip: unknown] => [node.props["aria-label"], node.props.title];
-  const glyph = (node: ReactTestInstance): string => String(node.findByType("svg").props.className).split(" ").find((name) => name.startsWith("lucide-")) ?? "";
-  const press = (node: ReactTestInstance) => act(async () => { node.props.onClick(); });
+  const redraw = (change: Partial<InboxRailProps>) => page.render(view(change));
+  const buttons = (root: Element) => [...root.querySelectorAll("button")];
+  const kind = (node: Element): string => [...node.classList].find((name) => name.startsWith("inbox-rail-") && name !== "inbox-rail-item") ?? "";
+  const button = (root: Element, name: string) => {
+    const found = buttons(root).find((node) => kind(node) === `inbox-rail-${name}`);
+    if (!found) throw new Error(`Missing ${name} button`);
+    return found;
+  };
+  const named = (node: HTMLButtonElement) => [node.getAttribute("aria-label"), node.title];
+  const glyph = (node: Element): string => [...(node.querySelector("svg")?.classList ?? [])].find((name) => name.startsWith("lucide-")) ?? "";
+  const press = (node: HTMLButtonElement) => act(async () => { node.click(); });
 
   it("is a navigation landmark named for the mode, apart from the list's own", async () => {
-    const nav = (await draw()).findByType("nav");
-    expect(nav.props["aria-label"]).toBe("Inbox mode");
+    await draw();
+    const nav = page.one("nav");
+    expect(nav.getAttribute("aria-label")).toBe("Inbox mode");
   });
 
   it("holds the place at its top, then alerts, the main view and Settings, the last, in its lower group, each a plain button, and no magnifier", async () => {
     const root = await draw();
-    const groups = root.findAll((node) => node.type === "div" && String(node.props.className).split(" ").includes("inbox-rail-group"));
-    expect(root.findAll((node) => node.type === "svg").some((node) => String(node.props.className).split(" ").includes("lucide-search"))).toBe(false);
-    expect(groups.map((group) => [String(group.props.className).split(" ").at(-1), buttons(group).map(kind)])).toEqual([
+    const groups = [...root.querySelectorAll("div.inbox-rail-group")];
+    expect(root.querySelector("svg.lucide-search") !== null).toBe(false);
+    expect(groups.map((group) => [[...group.classList].at(-1), buttons(group).map(kind)])).toEqual([
       ["is-top", ["inbox-rail-place"]],
       ["is-lower", ["inbox-rail-alerts", "inbox-rail-main", "inbox-rail-settings"]],
     ]);
     expect(kind(buttons(root).at(-1)!)).toBe("inbox-rail-settings");
-    for (const node of buttons(root)) expect([node.props.type, node.props.tabIndex, node.props.disabled === true]).toEqual(["button", undefined, false]);
+    for (const node of buttons(root)) expect([node.getAttribute("type"), node.getAttribute("tabindex"), node.disabled]).toEqual(["button", null, false]);
   });
 
   it("takes the way back to the main view from the monitor right above Settings, named and titled for it, and opens no menu of PCs", async () => {
     const root = await draw();
     const main = button(root, "main");
-    expect([...named(main), glyph(main), main.props["aria-haspopup"], main.props["aria-expanded"]]).toEqual(["Back to main view", "Back to main view", "lucide-monitor", undefined, undefined]);
+    expect([...named(main), glyph(main), main.getAttribute("aria-haspopup"), main.getAttribute("aria-expanded")]).toEqual(["Back to main view", "Back to main view", "lucide-monitor", null, null]);
     expect(buttons(root).findIndex((node) => node === main)).toBe(buttons(root).length - 2);
-    expect(root.findAllByType(RowMenu)).toEqual([]);
+    const menus = () => page.window.document.body.querySelectorAll(".row-sheet, .row-menu");
+    expect(menus()).toHaveLength(0);
     await press(main);
+    expect(menus()).toHaveLength(0);
     expect(pressed).toEqual(["exit"]);
   });
 
@@ -92,7 +80,7 @@ describe("InboxRail", () => {
     const root = await draw();
     const place = button(root, "place");
     expect(named(place)).toEqual(["Agent inbox", "Agent inbox"]);
-    expect(buttons(root).filter((node) => node.props["aria-current"] !== undefined).map((node) => [kind(node), node.props["aria-current"]])).toEqual([["inbox-rail-place", "page"]]);
+    expect(buttons(root).filter((node) => node.hasAttribute("aria-current")).map((node) => [kind(node), node.getAttribute("aria-current")])).toEqual([["inbox-rail-place", "page"]]);
     await press(place);
     expect(pressed).toEqual(["inbox"]);
   });
@@ -112,12 +100,12 @@ describe("InboxRail", () => {
     const root = await draw();
     expect(buttons(root).map(kind)).not.toContain("inbox-rail-waiting");
     await redraw({ waiting: { count: 12, open: () => pressed.push("next") } });
-    const lower = root.findAll((node) => node.type === "div" && String(node.props.className).split(" ").includes("is-lower"))[0]!;
+    const lower = page.one("div.is-lower");
     expect(buttons(lower).map(kind)).toEqual(["inbox-rail-waiting", "inbox-rail-alerts", "inbox-rail-main", "inbox-rail-settings"]);
     const waiting = button(root, "waiting");
     expect(named(waiting)).toEqual(["12 waiting for you", "Open the next session waiting for you"]);
-    const pill = waiting.findByProps({ "data-count": 12 });
-    expect([pill.props.className, pill.props["aria-hidden"]]).toEqual(["header-more-dot is-waiting", "true"]);
+    const pill = page.one('.inbox-rail-waiting [data-count="12"]');
+    expect([pill.className, pill.getAttribute("aria-hidden")]).toEqual(["header-more-dot is-waiting", "true"]);
     await press(waiting);
     expect(pressed).toEqual(["next"]);
     await redraw({ waiting: null });
@@ -127,11 +115,11 @@ describe("InboxRail", () => {
   it("switches this device's alerts: pressed and a bell while on, not pressed and a struck bell while off, the bell's own sentence as its tooltip", async () => {
     const root = await draw();
     const alerts = () => button(root, "alerts");
-    expect([...named(alerts()), alerts().props["aria-pressed"], glyph(alerts())]).toEqual(["Alerts", "Alerts on in the app. Tap to turn them off", true, "lucide-bell"]);
+    expect([...named(alerts()), alerts().getAttribute("aria-pressed"), glyph(alerts())]).toEqual(["Alerts", "Alerts on in the app. Tap to turn them off", "true", "lucide-bell"]);
     await press(alerts());
     expect(pressed).toEqual(["alerts"]);
     await redraw({ alerts: { on: false, title: "Alerts off on this device. Tap to turn them on", toggle: () => pressed.push("alerts") } });
-    expect([...named(alerts()), alerts().props["aria-pressed"], glyph(alerts())]).toEqual(["Alerts", "Alerts off on this device. Tap to turn them on", false, "lucide-bell-off"]);
+    expect([...named(alerts()), alerts().getAttribute("aria-pressed"), glyph(alerts())]).toEqual(["Alerts", "Alerts off on this device. Tap to turn them on", "false", "lucide-bell-off"]);
   });
 
   it("opens Settings, its shortcut in the tooltip where one is set", async () => {
@@ -143,12 +131,12 @@ describe("InboxRail", () => {
   });
 
   describe("the connection", () => {
-    const main = (root: ReactTestInstance) => button(root, "main");
-    const dot = (root: ReactTestInstance): string | null => {
-      const [drawn] = main(root).findAll((node) => node.type === "span" && String(node.props.className).split(" ").includes("inbox-rail-dot"));
-      return drawn ? String(drawn.props.className).split(" ").find((name) => name.startsWith("is-")) ?? "" : null;
+    const main = (root: Element) => button(root, "main");
+    const dot = (root: Element): string | null => {
+      const drawn = main(root).querySelector("span.inbox-rail-dot");
+      return drawn ? [...drawn.classList].find((name) => name.startsWith("is-")) ?? "" : null;
     };
-    const status = (root: ReactTestInstance) => root.findAll((node) => node.props.role === "status").map((node) => [node.props.className, node.children.join("")]);
+    const status = (root: Element) => [...root.querySelectorAll('[role="status"]')].map((node) => [node.className, node.textContent]);
 
     it("draws its dot on the main view's monitor only while the connection has something to say, says a lost one in its name, and draws none while the open thread's chip says the same word", async () => {
       const root = await draw();
@@ -159,7 +147,7 @@ describe("InboxRail", () => {
       await redraw({ connection: "connected" });
       expect(dot(root)).toBe("is-connected");
       expect(named(main(root))).toEqual(["Back to main view", "Back to main view"]);
-      expect(main(root).findByProps({ className: "inbox-rail-dot is-connected" }).props["aria-hidden"]).toBe("true");
+      expect(page.one('.inbox-rail-main [class="inbox-rail-dot is-connected"]').getAttribute("aria-hidden")).toBe("true");
       await redraw({ connection: "reconnecting", saidByThread: true });
       expect(dot(root)).toBeNull();
       expect(named(main(root))[0]).toBe("Back to main view · Reconnecting…");

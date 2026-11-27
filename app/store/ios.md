@@ -12,8 +12,8 @@ Extension, a later build; see [Later builds](#later-builds)).
 | Setting | Value | Where |
 |---|---|---|
 | Bundle ID | `sh.ovis.app` | `PRODUCT_BUNDLE_IDENTIFIER`, `app/ios/App/App.xcodeproj` |
-| Version | `1.0.2` | `MARKETING_VERSION`, in the project's build settings, which the app and its extension share (not a target's General tab) |
-| Build | `11` | `CURRENT_PROJECT_VERSION`, in the project's build settings too; raise it by one for every upload, TestFlight included |
+| Version | `1.0.4` | `MARKETING_VERSION`, in the project's build settings, which the app and its extension share (not a target's General tab) |
+| Build | `13` | `CURRENT_PROJECT_VERSION`, in the project's build settings too; raise it by one for every upload, TestFlight included |
 | Devices | iPhone and iPad | `TARGETED_DEVICE_FAMILY = "1,2"`, so the listing needs iPad screenshots too |
 | Minimum iOS | 15.0 | `IPHONEOS_DEPLOYMENT_TARGET` |
 | Signing | Automatic, no team yet | the owner picks the team in Xcode (section 3) |
@@ -21,7 +21,7 @@ Extension, a later build; see [Later builds](#later-builds)).
 | Microphone text | "Dictate messages and commands to your agents with voice input." | `NSMicrophoneUsageDescription`, `Info.plist` |
 | Speech recognition text | "Turn what you say into text for your agents when no OpenAI key is set." | `NSSpeechRecognitionUsageDescription`, `Info.plist` |
 | Export compliance | no non-exempt encryption (only Apple's HTTPS) | `ITSAppUsesNonExemptEncryption = false`, so uploads skip the question |
-| Privacy manifest | no tracking; product interaction, device ID and coarse location collected for analytics, linked to the PC's install ID, not tracking (the PC's usage counts, section 5); user ID collected for app functionality, linked, not tracking (the account sign-in, section 5); UserDefaults for the app's own settings (reason `CA92.1`) | `app/ios/App/App/PrivacyInfo.xcprivacy` |
+| Privacy manifest | no tracking; product interaction, device ID and coarse location collected for analytics, linked to the PC's install ID, not tracking (the PC's usage counts, section 5); user ID and email address (a keyed hash of the verified address, for the sign-in hint) collected for app functionality, linked, not tracking (the account sign-in, section 5); UserDefaults for the app's own settings (reason `CA92.1`) | `app/ios/App/App/PrivacyInfo.xcprivacy` |
 
 ## 2. Apple's sites, click by click (the owner)
 
@@ -39,9 +39,11 @@ Extension, a later build; see [Later builds](#later-builds)).
 
 ## 3. Build and upload (the owner, on his Mac with Xcode)
 
-The last upload is version 1.0.2 build 11, built from main at `d30527fd` (the app opens on the
-account sign-in, #4256, with the privacy manifest of #4273), approved and on the App Store
-since 2026-11-20; build 10, from `0c4f0673`, came before it. Check App Store Connect before uploading in case a later build has already been uploaded. The App and OvisNotifications targets inherit the same project-level
+Version 1.0.4 build 13 is built from the tag `v0.5.12` with that release's shell, for internal TestFlight testing
+only. Before it, version 1.0.3 build 12, built from the tag `v0.5.11` (`ba4d41e3`) with that release's shell,
+was uploaded on 2026-11-27 for internal TestFlight testing only (not submitted for review). The App Store has version
+1.0.2 build 11, built from main at `d30527fd` (the app opens on the account sign-in, #4256, with the privacy manifest
+of #4273), approved and on sale since 2026-11-20; build 10, from `0c4f0673`, came before it. Check App Store Connect before uploading in case a later build has already been uploaded. The App and OvisNotifications targets inherit the same project-level
 build number in Debug and Release.
 
 The app carries the hosted shell of a release ([The shell inside the app](../../docs/native-app.md#the-shell-inside-the-app-ios)),
@@ -155,7 +157,9 @@ and the list of which of these controls were shown, never what was typed or whic
 A second route reaches the developer only once the user signs in (signing in is optional): the
 app signs in with the developer's account service, `account.ovis.sh` (`docs/account.md`), which
 keeps a random account ID and, for each sign-in method added, a one-way hash of that provider's
-ID for the user (never the email, name or the provider's tokens); one-way hashes of each signed-in
+ID for the user and, for GitHub and Google, a keyed fingerprint (HMAC) of the verified email
+address, used only to say that an account made with another provider may exist (never the address
+itself, a name or the provider's tokens); one-way hashes of each signed-in
 device's tokens and the push subscription it registered; for each PC added, its name, relay ID and
 public key; and, for a join or link-page request, the device's name and public key and the country
 and city Cloudflare saw it come from, deleted within about a day, so an approval can show roughly
@@ -172,12 +176,13 @@ data from this app.** Then declare:
 | Identifiers > Device ID (the random install ID the PC makes; once signed in, the account service's device push subscriptions and PC relay IDs and keys) | Analytics, App Functionality | Yes | No |
 | Location > Coarse Location (the country, two letters, of the usage counts; once signed in, the country and city of a join or link-page request) | Analytics, App Functionality | Yes | No |
 | Identifiers > User ID (the random account ID, only when signed in) | App Functionality | Yes | No |
+| Contact Info > Email Address (a keyed hash of the verified address, kept for the sign-in hint, only when signed in with GitHub or Google; Apple counts a hashed identifier as the data type) | App Functionality | Yes | No |
 
 The usage counts count as linked: Apple's definition covers data tied to a device-level identifier, and the
 receiver stores them with the PC's persistent install ID (random, with no account, name or contact
 behind it). None is used for tracking: nothing is combined with other companies' data or shared
 with data brokers or advertisers. What the account service keeps is
-linked to the account. The privacy manifest lists the same four types with the same purposes, and
+linked to the account. The privacy manifest lists the same five types with the same purposes, and
 `https://ovis.sh/privacy/` describes both routes in full. Privacy policy URL:
 `https://ovis.sh/privacy/`.
 
@@ -201,7 +206,7 @@ refuse addresses that are not an Ovis server, which is an app change, not a form
 > watch and control their coding agents and terminals (https://ovis.sh). The app connects only
 > to the user's own computer, directly or through the end-to-end encrypted Ovis relay that
 > computer turns on. Signing in is optional. To review the whole app without a computer: on the
-> first screen, Connect a PC, tap the SSH tab, then Add by address, type demo and tap Connect. With
+> first screen, Connect a PC, tap the Tailscale tab, type demo in the address field and tap Connect. With
 > no internet the app shows its own screen instead ("Can't connect to the internet"): type demo in
 > its address field and tap Connect. Either way it runs the full
 > interface with made-up agents and terminals, entirely on the phone. "Scan QR code" uses the camera only to read the
@@ -216,7 +221,7 @@ refuse addresses that are not an Ovis server, which is an app change, not a form
 - [ ] Team set in Xcode, build number raised if this is not the first upload
 - [ ] Archive uploaded, build processed, tried in TestFlight on a phone
 - [ ] Listing texts, URLs, category, screenshots (iPhone and iPad) filled in
-- [ ] App Privacy published (the three types in section 5)
+- [ ] App Privacy published (the five types in section 5)
 - [ ] Age rating answered
 - [ ] Review notes and contact filled in
 - [ ] Build selected on the version page > Add for Review > Submit

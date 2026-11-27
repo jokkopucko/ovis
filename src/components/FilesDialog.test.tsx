@@ -1,24 +1,21 @@
-import { expect, spyOn, test } from "bun:test";
-import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import { act } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import type { DirectoryListing } from "../../shared/directories.ts";
 import type { RepoDiffFileList, RepoDiffRefs } from "../../shared/repo-diff.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { FilesDialog } from "./FilesDialog.tsx";
 
+let page: Page;
+
+afterEach(async () => { await page.close(); });
+
 test("keeps Branch selected when Files moves to another pane (#3028)", async () => {
-  const listen = { addEventListener() {}, removeEventListener() {} };
-  const style = { setProperty() {}, removeProperty() {}, getPropertyValue: () => "", backgroundColor: "" };
-  const globals = {
-    IS_REACT_ACT_ENVIRONMENT: true,
-    HTMLElement: class HTMLElement {},
-    window: { ...listen, matchMedia: () => ({ ...listen, matches: false }) },
-    document: { ...listen, documentElement: { lang: "", dataset: {}, style }, querySelector: () => null },
-    getComputedStyle: () => style,
-    navigator: { languages: ["en"] },
-  };
-  const saved = Object.keys(globals).map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const);
-  Object.assign(globalThis, globals);
+  page = openPage();
+  Object.defineProperty(page.window.navigator, "languages", { configurable: true, value: ["en"] });
+  const savedHTMLElement = Object.getOwnPropertyDescriptor(globalThis, "HTMLElement");
+  Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: page.window.HTMLElement });
   const listing = (root: string) => ({
     repository: { root, branch: "feature", head: "a".repeat(40), detached: false, unborn: false },
     scope: "workspace", base: null, head: null, comparison: null, files: [], total: 0, truncated: false,
@@ -45,38 +42,34 @@ test("keeps Branch selected when Files moves to another pane (#3028)", async () 
   const dialog = (paneId: string) => <SettingsProvider>
     <FilesDialog start="/repo" paneId={paneId} viewing={false} onOpenFile={noop} onOpenDiff={noop} onBrowseFolders={noop} onClose={noop} />
   </SettingsProvider>;
-  const text = (node: ReactTestInstance | string): string => typeof node === "string" ? node : node.children.map(text).join("");
-  const button = (root: ReactTestInstance, name: string) => root.find((node) => node.type === "button" && text(node) === name);
-  let renderer: ReactTestRenderer | undefined;
+  const button = (name: string) => {
+    const matches = [...page.container.querySelectorAll("button")].filter((node) => node.textContent === name);
+    if (matches.length !== 1 || !matches[0]) throw new Error(`Expected one ${name} button`);
+    return matches[0];
+  };
+  const field = () => page.one<HTMLInputElement>('[role="combobox"]');
   try {
-    await act(async () => { renderer = create(dialog("p1")); });
-    if (!renderer) throw new Error("Files did not mount");
-    const view = renderer;
-    await act(async () => { button(view.root, "Changes").props.onClick(); });
-    expect(button(view.root, "Working tree").props["aria-pressed"]).toBe(true);
-    await act(async () => { button(view.root, "Branch").props.onClick(); });
-    expect(button(view.root, "Branch").props["aria-pressed"]).toBe(true);
-    await act(async () => {
-      view.root.findByProps({ role: "combobox" }).props.onChange({ target: { value: "main" } });
-    });
-    await act(async () => { view.root.findByType("form").props.onSubmit({ preventDefault() {} }); });
+    await page.render(dialog("p1"));
+    await act(async () => button("Changes").click());
+    expect(button("Working tree").getAttribute("aria-pressed")).toBe("true");
+    await act(async () => button("Branch").click());
+    expect(button("Branch").getAttribute("aria-pressed")).toBe("true");
+    await page.type(field(), "main");
+    await act(async () => { page.one("form").dispatchEvent(new page.window.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event); });
     expect(branchRequested).toBe(true);
-    await act(async () => { view.update(dialog("p2")); });
+    await page.render(dialog("p2"));
     await act(async () => {
       branchReply.resolve(Response.json({
         ...listing("/repo"), scope: "branch", total: 1,
         files: [{ path: "old-pane.txt", old_path: null, status: "added", additions: 1, deletions: 0, binary: false }],
       } satisfies RepoDiffFileList));
     });
-    expect(button(view.root, "Branch").props["aria-pressed"]).toBe(true);
-    expect(view.root.findByProps({ role: "combobox" }).props.value).toBe("");
-    expect(text(view.root)).not.toContain("old-pane.txt");
+    expect(button("Branch").getAttribute("aria-pressed")).toBe("true");
+    expect(field().value).toBe("");
+    expect(page.container.textContent).not.toContain("old-pane.txt");
   } finally {
-    await act(async () => { renderer?.unmount(); });
     fetch.mockRestore();
-    for (const [name, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
-      else Reflect.deleteProperty(globalThis, name);
-    }
+    if (savedHTMLElement) Object.defineProperty(globalThis, "HTMLElement", savedHTMLElement);
+    else Reflect.deleteProperty(globalThis, "HTMLElement");
   }
 });

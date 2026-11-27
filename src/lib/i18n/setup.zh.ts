@@ -1,29 +1,14 @@
 /**
- * Chinese for the keys only the agent setup files use: components/AgentSetupCard.tsx,
- * components/AddAgentPanel.tsx, components/AgentTile.tsx, components/AgentsSettings.tsx.
+ * Chinese for the keys only the agent setup files use: components/AddAgentPanel.tsx,
+ * components/AgentTile.tsx, components/AgentsSettings.tsx.
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const SETUP_ZH: Record<string, string> = {
-  "Set up {agent}": "设置 {agent}",
-  "Uses the official installer, on this PC.": "用官方安装程序安装到这台电脑。",
-  "This can take a few minutes. You can keep using Ovis.": "可能需要几分钟。期间可以继续使用 Ovis。",
-  "Installed. Sign in so it can use your plan.": "已安装。请登录以使用你的套餐。",
-  "Installed. New terminal tabs will find it.": "已安装。新打开的终端标签页能找到它。",
-  "Its folder is on PATH only for terminals opened after the install.": "只有安装之后打开的终端，它的文件夹才在 PATH 中。",
-  "Finish signing in": "完成登录",
-  "Follow the steps in the sign-in tab, then come back here.": "按登录标签页中的步骤操作，然后回到这里。",
-  "Version {version}": "版本 {version}",
-  "It did not finish": "没有完成",
-  "{agent} does not start": "{agent} 无法启动",
-  "Skip": "跳过",
-  "I've signed in": "我已登录",
-  "Start {agent}": "启动 {agent}",
-  "Hide details": "隐藏详情",
-  "Show details": "显示详情",
   "Agents you can install": "可安装的代理",
   "No other agents to install here.": "这里没有其他可安装的代理。",
   "An agent your shell's startup file (.zshrc) puts on PATH may be missing here: Ovis could not read that PATH. Check again reads it once more.": "由 shell 启动文件（.zshrc）加入 PATH 的智能体可能未在此显示：Ovis 无法读取该 PATH。点“重新检查”会再读一次。",
   "None on this PC yet.": "这台电脑上还没有。",
+  "Not installed on this PC. These settings apply once it is installed here.": "这台电脑未安装此代理。在这台电脑上安装后，这些设置才会生效。",
   "Ovis cannot tell which agents this PC has. Install them from a terminal on it.": "Ovis 无法得知这台电脑上有哪些智能体。请在这台电脑的终端里安装。",
   "Ovis needs {version} or later.": "Ovis 需要 {version} 或更高版本。",
   "This PC's Ovis cannot install agents yet. Update it, then try again.": "这台电脑上的 Ovis 还不能安装代理。请先更新，然后重试。",
@@ -54,7 +39,6 @@ export const SETUP_ZH: Record<string, string> = {
   "Copy the command for {name}": "复制 {name} 的命令",
   "This PC's bridge does not offer agent integrations yet. It will after its next runtime update.": "这台 PC 的桥接服务暂不提供代理集成。下次运行时更新后即可使用。",
   "Open setup guide": "打开向导",
-  "Expired": "已过期",
   "Edit": "编辑",
   "Remove hub?": "移除中心？",
   "Its accounts disappear from this list. The hub itself is not changed.": "中心账号将从列表中消失，中心本身不变。",
@@ -88,7 +72,7 @@ export const SETUP_ZH: Record<string, string> = {
   "None": "无",
   "A browser the agent can drive: Ovis adds an MCP server at a fixed version when it starts this agent. That browser uses a profile of its own, without your sign-ins, and Ovis does not watch or limit it. Applies from the next start; an agent started from a terminal is not changed.": "代理可以操作的浏览器：Ovis 启动该代理时会加上固定版本的 MCP 服务器。该浏览器使用单独的配置文件，不会用到你的登录信息，Ovis 也不会查看或限制它。从下次启动起生效；从终端直接启动的代理不受影响。",
   "Let agents call other agents": "允许 Agent 调用其他 Agent",
-  "On this PC only. You still answer every permission request.": "仅限此 PC。每个权限请求仍由你回答。",
+  "On this PC only. Only you can approve requests.": "仅限此电脑。只有你能批准权限请求。",
   "Agents they may call": "可调用的 Agent",
   "Not saved: this PC did not answer. Try again.": "未保存：此 PC 没有响应。请重试。",
 };

@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type { UsageProviderId } from "../shared/protocol.ts";
 import type { UsageLoginFollowed, UsageLoginPrompt, UsageLoginStarted } from "../shared/usage-login.ts";
+import { knownUsageProviders } from "../shared/usage.ts";
 import { paneClose, paneProcessInfo, paneSendKeys, paneSendText, sessionSnapshot, tabCreate, workspaceCreate } from "./herdr/client.ts";
 import { loginPrompt, screenText, type PromptProvider } from "./usage-login-prompt.ts";
 import { homeBefore, loginAccount, type LoginAccount, type LoginTarget } from "./usage-login-account.ts";
@@ -14,6 +15,7 @@ import { withOwnerGuard } from "./owner-guard.ts";
 import { writePrivateState } from "./private-state.ts";
 import { PtySession } from "./pty/session.ts";
 import { newOwnerRecord, ownerGone, parseBirth, type ProcessBirth } from "./process-owner.ts";
+import { processAlive } from "./process-start.ts";
 import { paneShell, shellCommandLine, type PaneShell } from "./shell-agent.ts";
 import { localSignInPlace, systemUsageContext, USAGE_PROVIDERS, type UsageContext } from "./usage.ts";
 
@@ -25,6 +27,8 @@ const LOGIN = {
   grok: { cli: "grok", binaries: ["grok"], args: ["login"] },
   antigravity: { cli: "Antigravity CLI (agy)", binaries: ["agy"], args: null },
   opencode: { cli: "opencode", binaries: ["opencode"], args: ["auth", "login"] },
+  devin: { cli: "Devin CLI (devin)", binaries: ["devin"], args: ["auth", "login"] },
+  kimi: { cli: "kimi", binaries: ["kimi"], args: ["login"] },
 } as const;
 
 /**
@@ -140,11 +144,6 @@ class LoginStateUnreadable extends Error {
 }
 
 /** Whether a process still runs (one of another user is still running too). */
-function processAlive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; }
-  catch (error) { return error instanceof Error && "code" in error && error.code === "EPERM"; }
-}
-
 export class UsageLoginService {
   private readonly panes = new Map<string, UsageProviderId>();
   /**
@@ -219,7 +218,7 @@ export class UsageLoginService {
       if (pathname.endsWith("/prompt")) {
         if (request.method !== "GET") return badRequest("method_not_allowed", "Use GET");
         const login = this.owned(searchParams.get("login") ?? "", request, owner);
-        if (login === undefined) return gone();
+        if (login === undefined || !knownUsageProviders(searchParams).has(login.provider)) return gone();
         if (login.ended) return jsonResponse({ provider: login.provider, url: null, user_code: null, wants_code: false, ended: true, succeeded: login.signedIn !== null, account: login.signedIn?.label ?? null } satisfies UsageLoginPrompt);
         login.read = true;
         return jsonResponse({ provider: login.provider, ...loginPrompt(login.provider, screenText(login.output)), ended: false } satisfies UsageLoginPrompt);
@@ -401,7 +400,8 @@ export class UsageLoginService {
   async handle(request: Request, trackPane?: (paneId: string) => void, owner: string | null = null): Promise<Response> {
     const executableFor = (id: UsageProviderId) => LOGIN[id].binaries.map((cli) => Bun.which(cli, { PATH: this.env["PATH"] ?? "" })).find(Boolean);
     if (request.method === "GET") {
-      const id = new URL(request.url).searchParams.get("provider");
+      const { searchParams } = new URL(request.url);
+      const id = searchParams.get("provider");
       if (id !== null) {
         const provider = USAGE_PROVIDERS.find((provider) => provider.id === id);
         if (!provider) return badRequest("invalid_provider", "Unknown usage provider");
@@ -410,7 +410,8 @@ export class UsageLoginService {
           return jsonResponse({ accounts: found.map((signIn) => signIn.account?.label ?? signIn.account?.id ?? null) });
         } catch (error) { return errorResponse(error); }
       }
-      return jsonResponse({ providers: USAGE_PROVIDERS.map(({ id }) => ({
+      const known = knownUsageProviders(searchParams);
+      return jsonResponse({ providers: USAGE_PROVIDERS.filter(({ id }) => known.has(id)).map(({ id }) => ({
         id, cli: LOGIN[id].cli, installed: Boolean(executableFor(id)), local: LOGIN[id].args !== null,
         separate_home: id === "claude" || id === "codex",
       })) });
@@ -524,7 +525,7 @@ export class UsageLoginService {
       if (id === "copilot") env["XDG_CONFIG_HOME"] = this.env["XDG_CONFIG_HOME"] || join(this.home, ".config");
       if (id === "cursor") env["NO_OPEN_BROWSER"] = "1";
       if (id === "copilot" && this.env["GH_CONFIG_DIR"]) env["GH_CONFIG_DIR"] = this.env["GH_CONFIG_DIR"];
-      if (id === "opencode") env["XDG_DATA_HOME"] = this.env["XDG_DATA_HOME"] || join(this.home, ".local", "share");
+      if (id === "opencode" || id === "devin") env["XDG_DATA_HOME"] = this.env["XDG_DATA_HOME"] || join(this.home, ".local", "share");
       if (follow && owner !== null) {
         // a CLI the browser cannot follow: an old Claude Code without `auth login` signs in inside the agent, and
         // a Codex without a device code answers on this PC's own localhost, out of a remote browser's reach

@@ -4,6 +4,7 @@
  * nothing here installs, updates or signs in. The dispatcher in index.ts runs the access gate first.
  */
 import { AGENT_CATALOG, catalogPlatform, catalogRow, type AgentCatalogResponse, type CatalogPlatform } from "../shared/agent-catalog.ts";
+import { knownUsageProviders } from "../shared/usage.ts";
 import type { AgentDetector } from "./agent-catalog-detect.ts";
 import { hcMachine } from "./herdr-core/runtime.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
@@ -24,10 +25,16 @@ export async function handleAgentCatalogRequest(request: Request, pathname: stri
   setRequestRoute(pathname);
   if (request.method !== "GET") return badRequest("method_not_allowed", "use GET");
   try {
+    const { searchParams } = new URL(request.url);
     const catalog: AgentCatalogResponse = hcMachine() !== null
       ? { platform: null, agents: AGENT_CATALOG.map((entry) => ({ ...catalogRow(entry, null, { ...UNKNOWN }), no_install: OTHER_MACHINE })) }
-      : await (!readOnly && new URL(request.url).searchParams.get("recheck") === "1" ? detector.refreshPath() : Promise.resolve()).then(() => agentCatalogFor(platform, detector));
-    return jsonResponse(catalog, 200, { "cache-control": "no-store" });
+      : await (!readOnly && searchParams.get("recheck") === "1" ? detector.refreshPath() : Promise.resolve()).then(() => agentCatalogFor(platform, detector));
+    const known = knownUsageProviders(searchParams);
+    const agents = catalog.agents.map((agent) => {
+      const signIn = agent.sign_in;
+      return signIn?.provider == null || known.has(signIn.provider) ? agent : { ...agent, sign_in: { ...signIn, provider: null } };
+    });
+    return jsonResponse({ ...catalog, agents }, 200, { "cache-control": "no-store" });
   } catch (error) {
     return errorResponse(error);
   }

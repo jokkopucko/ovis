@@ -1,0 +1,16 @@
+{
+  "server/input-guard.ts#pendingLease": "410fb0c7bcaf4b133bbe9e31e4b56124077b727bf88e02063772fcf34fecb92d",
+  "server/pending-input.ts#lease": "367518e866274ba295f32a9c51052e5b3e254a8e9271d1ff94ee5cf01ad7d775",
+  "server/core/connections.ts#lease": "a352f7f0ecf69cebe9dea1adb40a2b3efd7853ffa3964a3eba205809996c6279",
+  "server/herdr/client.ts#writeRequest": "6fdb19a253be86e2b49e6df975a65320579362ff5a62d0c931fca1328f4bf69a",
+  "server/approvals/codex.ts#write": "b3468ab109199e1b878b471693d8b5a9f5659fdb1c1f87a8cc5a47ceb7f8aece",
+  "server/core/composer.ts#lease": "9f1e8a8f440d1547eb27791cf4601880ecff35acfb18a3fd73611acf8579239d",
+  "server/opencode-skill-attach.ts#lease": "5a2381d280c3d6679d51a0fc91dec54730e28c106625632825dc439be42b26f0",
+  "server/core/input.ts#serialize": "5a19063395476d450f7b0db6b26979c7bf50fa1be2a3b733d1f54dcf5d345504",
+  "server/core/pending.ts#lease-calls": "5435731642eeffbec1971809cc03aab013a27b399441469695e4d3965b799e8b",
+  "server/core/terminals.ts#lease-calls": "22a432ea32ab74f3935188536b9932d5203162691b8fa16cf3b09cf0b8c71e5d",
+  "server/core/terminal-process.ts#lease-calls": "90855c9fa218c73e584280af88f3fb8bcbbe73b427d90cfccd9108bae96743a2",
+  "server/core/socket.ts#lease-calls": "ee99f5da4d0ea99d4a4cf73e3a7128f75837b740da5d902fb4c41500a29a904c",
+  "server/core/server-core.ts#lease-calls": "a75896e5474d8b0ffb9a7fc42fdd898462ec5fc36ad03d343e9fe37b8d8a8485",
+  "server/workspace-routes.ts#lease-calls": "715c544f4992546bc31d4b4f3a48ac50e40f15c1a17f1eb1d502739915f38ae0"
+}

@@ -199,8 +199,10 @@ export interface PushService {
   gone(panes: readonly HerdrPane[], newer: ReadonlySet<string>, machineId?: string): void;
   /** a pane closed with no exit of its own: its alerts are called off, silently (an exit's alert is `onEnded`'s) */
   closed(paneId: string, machineId?: string): void;
-  /** herdr gave a pane a new ID (moved to another workspace): its status and an alert waiting or under way go with it */
-  moved(from: string, to: string, machineId?: string): void;
+  /** herdr gave a pane a new ID: carry its alert unless the move says it resumed work after a question */
+  moved(from: string, to: string, status: AgentStatus, machineId?: string): void;
+  /** A local roster shows the same terminal waiting under a new pane ID, not a lifecycle move for other alerts. */
+  movedQuestion(from: string, to: string, destinationNewer: boolean): void;
   /**
    * A pane created while the server ran, first read at `status` by a snapshot, where nothing was heard of it yet: told
    * as a change from what it was `created` as, so a question or finish it reached before anyone listened alerts. Not
@@ -209,7 +211,7 @@ export interface PushService {
   firstStatus(paneId: string, created: AgentStatus, status: AgentStatus, machineId?: string): Promise<void>;
   onStatus(paneId: string, status: AgentStatus, machineId?: string): Promise<void>;
   onEnded(paneId: string, machineId?: string): Promise<void>;
-  onFailed(paneId: string, machineId?: string): Promise<void>;
+  onFailed(paneId: string, machineId?: string, failedBeforeQueuedTurn?: true): Promise<void>;
   mutesChanged(): void;
   settled(): Promise<void>;
 }
@@ -379,6 +381,7 @@ interface Scheduled {
   key: string;
   machineId: string;
   paneId: string;
+  questionAt?: symbol;
   silenced: boolean;
   cancel: () => void;
 }
@@ -765,7 +768,7 @@ export function createPushService(options: PushServiceOptions): PushService {
   const unsent = new Set<Scheduled>();
   const inFlight = new Set<Promise<void>>();
 
-  const changes = new Map<string, number>();
+  const changes = new Map<string, symbol>();
 
   function tellWebhook(key: string, machineId: string, paneId: string, message: PushPayload, generation?: number): void {
     const workspace = workspaces.get(key);
@@ -786,7 +789,7 @@ export function createPushService(options: PushServiceOptions): PushService {
   const bump = (key: string): void => { epochs.set(key, (epochs.get(key) ?? 0) + 1); };
 
   function callOff(key: string): void {
-    changes.set(key, (changes.get(key) ?? 0) + 1);
+    changes.set(key, Symbol());
     bump(key);
     waiting.get(key)?.cancel();
     waiting.delete(key);
@@ -799,6 +802,35 @@ export function createPushService(options: PushServiceOptions): PushService {
     changes.delete(key);
     turnStart.delete(key);
     lastStatus.delete(key);
+  }
+
+  function currentQuestion(key: string): Scheduled | undefined {
+    if (lastStatus.get(key) !== "blocked") return;
+    const at = changes.get(key);
+    if (at === undefined) return;
+    for (const entry of unsent) {
+      if (entry.key === key && !entry.silenced && entry.questionAt === at) return entry;
+    }
+  }
+
+  function rekeyAlert(entry: Scheduled, after: string, paneId: string): void {
+    if (waiting.get(entry.key) === entry) {
+      waiting.delete(entry.key);
+      waiting.set(after, entry);
+    }
+    entry.key = after;
+    entry.paneId = paneId;
+  }
+
+  function carryQuestion(question: Scheduled, after: string, paneId: string): void {
+    const before = question.key;
+    const at = changes.get(before);
+    if (at === undefined) return;
+    rekeyAlert(question, after, paneId);
+    changes.set(after, at);
+    lastStatus.set(after, "blocked");
+    const began = turnStart.get(before);
+    if (began !== undefined && !turnStart.has(after)) turnStart.set(after, began);
   }
 
   function gone(panes: readonly HerdrPane[], newer: ReadonlySet<string>, machineId: string): void {
@@ -826,7 +858,7 @@ export function createPushService(options: PushServiceOptions): PushService {
     return worked === null || worked >= timing.longTurn ? timing.long : null;
   }
 
-  function schedule(key: string, machineId: string, paneId: string, groups: Map<number, PushSubscriptionRecord[]>, send: (to: PushSubscriptionRecord[], silenced: () => boolean, delay: number, pane: Scheduled) => Promise<void>): void {
+  function schedule(key: string, machineId: string, paneId: string, groups: Map<number, PushSubscriptionRecord[]>, send: (to: PushSubscriptionRecord[], silenced: () => boolean, delay: number, pane: Scheduled) => Promise<void>, questionAt?: symbol): void {
     const cancels: Array<() => void> = [];
     let remaining = groups.size;
     let open = groups.size;
@@ -851,7 +883,7 @@ export function createPushService(options: PushServiceOptions): PushService {
         if (open === 0) unsent.delete(entry);
       });
     }
-    const entry: Scheduled = { key, machineId, paneId, silenced: false, cancel: () => { for (const cancel of cancels) cancel(); } };
+    const entry: Scheduled = { key, machineId, paneId, ...(questionAt === undefined ? {} : { questionAt }), silenced: false, cancel: () => { for (const cancel of cancels) cancel(); } };
     waiting.set(key, entry);
     unsent.add(entry);
   }
@@ -890,12 +922,11 @@ export function createPushService(options: PushServiceOptions): PushService {
       if (options.inUse?.() || muted(machineId, pane.paneId)) return;
       // only this PC's prompts are read here, and only a question's alert carries buttons
       const reading = status === "blocked" && machineId === "local" ? readActions(pane.paneId) : Promise.resolve(null);
-      const asked = changes.get(pane.key);
       const [{ title, agentKind }, answer] = await Promise.all([lookUp(pane.key, machineId, pane.paneId), reading]);
       if (options.inUse?.() || silenced() || muted(machineId, pane.paneId)) return;
       // a question whose pane changed while its prompt was read: the next asking's alert, under the same tag, holds what
       // the pane asks now, and this one's buttons must not replace it. A finish already under way still goes out
-      if (status === "blocked" && changes.get(pane.key) !== asked) return;
+      if (status === "blocked" && changes.get(pane.key) !== pane.questionAt) return;
       const kind: AlertKind = status === "blocked" ? blockedAlertKind(agentKind) : "done";
       // a device that dropped out meanwhile is not written to, nor one that does not want this kind
       const live = to.flatMap((subscription) => {
@@ -915,7 +946,7 @@ export function createPushService(options: PushServiceOptions): PushService {
         broadcast({ ...alert, ...(answer === null ? {} : { body: answer.body, prompt_id: answer.promptId, actions: answer.actions }) }, urgency, answering, true),
         broadcast(alert, urgency, live.filter((subscription) => !answering.includes(subscription)), true),
       ]);
-    });
+    }, status === "blocked" ? changes.get(key) : undefined);
   }
 
   return {
@@ -1041,20 +1072,57 @@ export function createPushService(options: PushServiceOptions): PushService {
       forget(paneStorageId(machineId, paneId));
     },
 
-    moved(from, to, machineId = "local") {
+    movedQuestion(from, to, destinationNewer) {
+      const before = paneStorageId("local", from);
+      const after = paneStorageId("local", to);
+      const question = currentQuestion(before);
+      if (before === after || !question) return;
+      const heard = changes.has(after);
+      if (destinationNewer && !heard) return;
+      // A first blocked reading is not a second alert. A destination that actually queued its
+      // own question keeps it; an already resolved destination must not inherit the old one.
+      if ((!heard || lastStatus.get(after) === "blocked") && !currentQuestion(after)) {
+        carryQuestion(question, after, to);
+      }
+      forget(before);
+    },
+
+    moved(from, to, status, machineId = "local") {
       const before = paneStorageId(machineId, from);
       const after = paneStorageId(machineId, to);
+      if (before === after || !lastStatus.has(before)) return;
+      const destination = lastStatus.get(after);
+      if (changes.has(after) && (lastStatus.get(before) === "blocked" || destination === "blocked")) {
+        // A question already reported at the new ID takes precedence over the move payload.
+        const question = currentQuestion(before);
+        if (question && destination === "blocked" && !currentQuestion(after)) carryQuestion(question, after, to);
+        for (const entry of unsent) {
+          if (entry.key !== before || entry.questionAt !== undefined) continue;
+          // An already-started finish still goes out. A timer must not replace the destination's question.
+          if (waiting.get(before) === entry && waiting.has(after)) {
+            entry.cancel();
+            waiting.delete(before);
+          }
+          rekeyAlert(entry, after, to);
+        }
+        forget(before);
+        return;
+      }
       forget(after);
-      for (const state of [lastStatus, turnStart, changes, titles, workspaces, kinds, waiting] as Map<string, unknown>[]) {
+      for (const state of [lastStatus, turnStart, changes, titles, workspaces, kinds] as Map<string, unknown>[]) {
         if (!state.has(before)) continue;
         state.set(after, state.get(before));
         state.delete(before);
       }
       // its alert reads the pane it is for when it goes out: under way already, it goes out under the new ID too
       for (const entry of unsent) {
-        if (entry.key !== before) continue;
-        entry.key = after;
-        entry.paneId = to;
+        if (entry.key === before) rekeyAlert(entry, after, to);
+      }
+      // The collector has already taken the move's working status as its baseline.
+      if (status === "working" && lastStatus.get(after) === "blocked") {
+        lastStatus.set(after, status);
+        bump(before); // A queued webhook still checks the old ID.
+        callOff(after);
       }
     },
 
@@ -1070,10 +1138,10 @@ export function createPushService(options: PushServiceOptions): PushService {
       return statusChanged(paneId, status, machineId, true);
     },
 
-    async onFailed(paneId, machineId = "local") {
+    async onFailed(paneId, machineId = "local", failedBeforeQueuedTurn) {
       const key = paneStorageId(machineId, paneId);
       const at = lastStatus.get(key);
-      if (at === "working" || at === "blocked" || muted(machineId, paneId)) return;
+      if ((at === "working" && !failedBeforeQueuedTurn) || at === "blocked" || muted(machineId, paneId)) return;
       const to = [...store().values()].filter((subscription) => {
         const prefs = subscription.alerts ?? DEFAULT_ALERTS;
         return alertKindAllowed(prefs, "error") && alertPcAllowed(prefs, ...pcKeys(machineId));
@@ -1096,6 +1164,9 @@ export function createPushService(options: PushServiceOptions): PushService {
         if (live.length === 0) return;
         await broadcast({ ...message, ...where(pane.key, machineId), tag: paneNotificationTag(pane.paneId, machineId) }, "normal", live, true);
       });
+      // told while a queued turn already runs: that turn's next status must not call this failure's alert off (a pane
+      // that is forgotten still silences it)
+      if (failedBeforeQueuedTurn) waiting.delete(key);
     },
 
     async onEnded(paneId, machineId = "local") {

@@ -1,5 +1,6 @@
 import Capacitor
 import Foundation
+import OvisHomeCore
 import OvisPushCore
 import UIKit
 import UserNotifications
@@ -45,7 +46,40 @@ public class OvisPushPlugin: CAPPlugin, CAPBridgedPlugin, NotificationHandlerPro
         [.banner, .list, .sound]
     }
 
-    public func didReceive(response: UNNotificationResponse) {}
+    public func didReceive(response: UNNotificationResponse) {
+        Self.tapped(response)
+    }
+
+    /// The alert last opened, by its request's identifier: a tap that launched the app may come both ways (the scene's
+    /// connection options and the notification centre's delegate), and opens once.
+    private static var lastTapped: String?
+
+    /// The person tapped an alert, here or as it launched the app (SceneDelegate): its pane opens on the PC that sent
+    /// it (HerdrBridgeViewController.openAlert). What decides is the PC's own encrypted alert, opened again here with
+    /// the phone's keys, never what the notification shows: nothing unencrypted in it steers the app, and a tap works
+    /// where the extension ran out of time. An alert's other actions, and a dismissal, open nothing.
+    static func tapped(_ response: UNNotificationResponse) {
+        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier else { return }
+        let request = response.notification.request
+        let open = {
+            guard request.identifier != lastTapped else { return }
+            lastTapped = request.identifier
+            guard let sealed = request.content.userInfo["ovis"] as? String, let message = Data(base64Encoded: sealed),
+                  let keys = try? keyStore().read(), let plain = try? WebPushDecrypt.decrypt(message, keys: keys),
+                  let alert = Alert.payload(plain) else { return }
+            HerdrBridgeViewController.openAlert(alert, stored: alert.endpoint.flatMap(pc(forEndpoint:)))
+        }
+        if Thread.isMainThread { open() } else { DispatchQueue.main.async(execute: open) }
+    }
+
+    /// The key of the PC whose page was given `endpoint` (subscribe), or nil: one the app forgot, or never had.
+    private static func pc(forEndpoint endpoint: String) -> String? {
+        for (key, value) in UserDefaults.standard.dictionaryRepresentation() where key.hasPrefix(endpointPrefix) {
+            guard let data = value as? Data, let saved = try? JSONDecoder().decode(Endpoint.self, from: data), saved.endpoint == endpoint else { continue }
+            return String(key.dropFirst(endpointPrefix.count))
+        }
+        return nil
+    }
 
     private func permission(_ status: UNAuthorizationStatus) -> String {
         switch status {
@@ -76,22 +110,22 @@ public class OvisPushPlugin: CAPPlugin, CAPBridgedPlugin, NotificationHandlerPro
     /// The PC whose page asks: the current one only where its own page is on screen. While the person chooses another
     /// way the PC stays current, but the page asking is the hosted Connect a PC screen or the app's own, which get
     /// what a page with no PC gets: no subscription to read, replace or forget.
-    private var shownPc: String? {
+    @MainActor private var shownPc: String? {
         (bridge?.viewController as? HerdrBridgeViewController)?.showsPc == true ? PCStore.current : nil
     }
 
     @objc func subscribe(_ call: CAPPluginCall) {
-        guard let origin = shownPc else {
-            call.reject("Push needs an open PC", "no_pc")
-            return
-        }
-        guard let vapidKey = call.getString("applicationServerKey"),
-              vapidKey.range(of: "^[A-Za-z0-9_-]+={0,2}$", options: .regularExpression) != nil,
-              let point = decodeURL(vapidKey), point.count == 65, point.first == 4 else {
-            call.reject("applicationServerKey must be the PC's VAPID public key", "invalid_key")
-            return
-        }
         Task { @MainActor in
+            guard let origin = shownPc else {
+                call.reject("Push needs an open PC", "no_pc")
+                return
+            }
+            guard let vapidKey = call.getString("applicationServerKey"),
+                  vapidKey.range(of: "^[A-Za-z0-9_-]+={0,2}$", options: .regularExpression) != nil,
+                  let point = decodeURL(vapidKey), point.count == 65, point.first == 4 else {
+                call.reject("applicationServerKey must be the PC's VAPID public key", "invalid_key")
+                return
+            }
             do {
                 let center = UNUserNotificationCenter.current()
                 var settings = await center.notificationSettings()
@@ -114,6 +148,10 @@ public class OvisPushPlugin: CAPPlugin, CAPBridgedPlugin, NotificationHandlerPro
                 } else {
                     endpoint = try await register(token: token, vapidKey: vapidKey, environment: environment)
                 }
+                guard shownPc == origin else {
+                    call.reject("Push needs an open PC", "no_pc")
+                    return
+                }
                 let entry = Endpoint(endpoint: endpoint, token: token, vapidKey: vapidKey, environment: environment)
                 UserDefaults.standard.set(try JSONEncoder().encode(entry), forKey: storageKey(origin))
                 call.resolve(["subscription": subscription(endpoint, keys)])
@@ -122,38 +160,50 @@ public class OvisPushPlugin: CAPPlugin, CAPBridgedPlugin, NotificationHandlerPro
     }
 
     @objc func getSubscription(_ call: CAPPluginCall) {
-        do {
-            guard let origin = shownPc, let saved = savedEndpoint(origin) else {
+        Task { @MainActor in
+            do {
+                guard let origin = shownPc, let saved = savedEndpoint(origin) else {
+                    call.resolve(["subscription": NSNull()])
+                    return
+                }
+                if call.getBool("endpointOnly") == true {
+                    call.resolve(["subscription": ["endpoint": saved.endpoint]])
+                    return
+                }
+                guard let keys = try keyStore().read() else {
+                    call.resolve(["subscription": NSNull()])
+                    return
+                }
+                call.resolve(["subscription": subscription(saved.endpoint, keys)])
+            } catch PushKeyStore.Failure.damaged {
                 call.resolve(["subscription": NSNull()])
-                return
-            }
-            if call.getBool("endpointOnly") == true {
-                call.resolve(["subscription": ["endpoint": saved.endpoint]])
-                return
-            }
-            guard let keys = try keyStore().read() else {
-                call.resolve(["subscription": NSNull()])
-                return
-            }
-            call.resolve(["subscription": subscription(saved.endpoint, keys)])
-        } catch PushKeyStore.Failure.damaged {
-            call.resolve(["subscription": NSNull()])
-        } catch { call.reject("The push keys could not be read", "failed") }
+            } catch { call.reject("The push keys could not be read", "failed") }
+        }
     }
 
     @objc func unsubscribe(_ call: CAPPluginCall) {
-        if let origin = shownPc { UserDefaults.standard.removeObject(forKey: storageKey(origin)) }
-        call.resolve()
+        Task { @MainActor in
+            if let origin = shownPc { Self.forgetEndpoint(origin) }
+            call.resolve()
+        }
     }
 
-    private func storageKey(_ origin: String) -> String { "ovis.push.endpoint." + origin }
+    private static let endpointPrefix = "ovis.push.endpoint."
+
+    static func forgetEndpoint(_ origin: String) {
+        UserDefaults.standard.removeObject(forKey: endpointPrefix + origin)
+    }
+
+    private func storageKey(_ origin: String) -> String { Self.endpointPrefix + origin }
 
     private func savedEndpoint(_ origin: String) -> Endpoint? {
         guard let data = UserDefaults.standard.data(forKey: storageKey(origin)) else { return nil }
         return try? JSONDecoder().decode(Endpoint.self, from: data)
     }
 
-    private func keyStore() throws -> PushKeyStore {
+    private func keyStore() throws -> PushKeyStore { try Self.keyStore() }
+
+    private static func keyStore() throws -> PushKeyStore {
         guard let group = Bundle.main.object(forInfoDictionaryKey: "OvisPushKeychainGroup") as? String,
               !group.isEmpty else { throw Failure.configuration }
         return PushKeyStore(accessGroup: group)

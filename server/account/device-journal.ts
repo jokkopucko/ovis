@@ -55,8 +55,12 @@ interface Doc {
   snapshot_lift_n?: number;
   /** Transfer slot: written with the notice, retained until its evidence receipt is durable. */
   last_row_drop?: RowDrop & { readonly journalled: number };
+  /** Transaction approval and refusal receipts are pending work, not bounded history. */
+  restamp?: { readonly digest: string; readonly audits: readonly string[] };
+  restamp_reconcile?: string;
 }
 
+const isDigest = (value: unknown): value is string => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 const isCount = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
 const isTextOrNull = (value: unknown) => value === null || typeof value === "string";
 
@@ -69,7 +73,7 @@ function isEntry(value: unknown): value is JournalEntry {
 }
 
 /** The journal as this PC writes it, whole: every entry, open notice and seen value, below the next number (S19). */
-function isDoc(value: unknown): value is Doc {
+export function isJournalDoc(value: unknown): value is Doc {
   if (typeof value !== "object" || value === null) return false;
   const doc = value as Partial<Doc>;
   if (doc.v !== 1 || !isCount(doc.next_seq) || doc.next_seq < 1 || !isCount(doc.trimmed) || doc.trimmed >= doc.next_seq) return false;
@@ -78,6 +82,44 @@ function isDoc(value: unknown): value is Doc {
   if (!doc.entries.every((entry) => isEntry(entry) && below(entry)) || !doc.open.every((entry) => isEntry(entry) && below(entry))) return false;
   if (doc.closed !== undefined && (!Array.isArray(doc.closed) || !doc.closed.every((entry) => isEntry(entry) && entry.kind === "admit" && below(entry)))) return false;
   return Object.values(doc.seen).every((seq) => isCount(seq) && seq < doc.next_seq!);
+}
+
+function receiptProblem(doc: Doc, drops: readonly RowDrop[]): string | null {
+  if (drops.length === 0) return null;
+  const known = new Map([...doc.open, ...doc.entries].map(entry => [entry.seq, entry]));
+  for (const { row, how, journalled: seq } of drops) {
+    if (seq === undefined) continue;
+    const entry = known.get(seq);
+    if (seq >= doc.next_seq || (entry ? entry.kind !== "drop" || entry.row !== row || entry.how !== how : seq > doc.trimmed)) {
+      return `contradicts the account row receipt for ${row} at sequence ${seq}`;
+    }
+  }
+  return null;
+}
+
+function documentProblem(doc: Doc, drops: readonly RowDrop[] = []): string | null {
+  if ((doc.restamp !== undefined && (!doc.restamp || !isDigest(doc.restamp.digest) ||
+      !Array.isArray(doc.restamp.audits) || !doc.restamp.audits.every(audit => typeof audit === "string"))) ||
+    (doc.restamp_reconcile !== undefined && !isDigest(doc.restamp_reconcile))) return "has invalid restamp receipts";
+  if (doc.last_row_drop !== undefined && (!isRowDrop(doc.last_row_drop) || doc.last_row_drop.journalled === undefined)) {
+    return "has an invalid account row receipt";
+  }
+  if (doc.snapshot_lift_n !== undefined && (!Number.isSafeInteger(doc.snapshot_lift_n) || doc.snapshot_lift_n < 1)) {
+    return "has an invalid snapshot lift number";
+  }
+  return receiptProblem(doc, [...(doc.last_row_drop ? [doc.last_row_drop] : []), ...drops]);
+}
+
+/** Validate on-disk journal bytes without opening a writer or changing the server's live copy. */
+export function restampJournalProblem(value: unknown, drops: readonly RowDrop[]): string | null {
+  if (value === undefined) return drops.some(drop => drop.journalled !== undefined) ? "is missing beside a durable row receipt" : null;
+  return isJournalDoc(value) ? documentProblem(value, drops) : "is not this PC's device journal";
+}
+
+export function endedJournalRows(entries: readonly JournalEntry[]): Set<string> {
+  const last = new Map<string, string>();
+  for (const entry of entries) if (entry.row !== null) last.set(entry.row, entry.kind);
+  return new Set([...last].flatMap(([row, kind]) => kind === "drop" || kind === "remove" ? [row] : []));
 }
 
 export class DeviceJournal {
@@ -97,15 +139,14 @@ export class DeviceJournal {
     }
     try {
       const doc = JSON.parse(text) as Partial<Doc>;
-      if (!isDoc(doc)) journal.problem = `${journal.path} is not this PC's device journal`;
-      else if (doc.last_row_drop !== undefined && (!isRowDrop(doc.last_row_drop) || doc.last_row_drop.journalled === undefined)) {
-        journal.problem = `${journal.path} has an invalid account row receipt`;
-      } else if (doc.snapshot_lift_n !== undefined && (!Number.isSafeInteger(doc.snapshot_lift_n) || doc.snapshot_lift_n < 1)) {
-        journal.problem = `${journal.path} has an invalid snapshot lift number`;
-      } else {
-        journal.doc = doc;
-        journal.exists = true;
-        if (doc.last_row_drop) journal.checkRowReceipts([doc.last_row_drop]);
+      if (!isJournalDoc(doc)) journal.problem = `${journal.path} is not this PC's device journal`;
+      else {
+        const problem = documentProblem(doc);
+        if (problem !== null) journal.problem = `${journal.path} ${problem}`;
+        else {
+          journal.doc = doc;
+          journal.exists = true;
+        }
       }
     } catch { journal.problem = `${journal.path} is not JSON`; }
     return journal;
@@ -117,18 +158,37 @@ export class DeviceJournal {
 
   entries(): readonly JournalEntry[] { return this.doc.entries; }
 
+  /** Refuse to replace a journal that was changed outside this server, without opening a second writer. */
+  restampRefusal(onDisk: unknown): string | null {
+    if (this.strict !== null) return this.strict;
+    return Bun.deepEquals(onDisk, this.exists ? this.doc : undefined) ? null : `${this.path} changed since it was opened; restart Ovis before restamping.`;
+  }
+
+  approveRestamp(digest: string, input: JournalInput): void {
+    this.appendEntry(input, undefined, undefined, undefined, { restamp: { digest, audits: [] } });
+  }
+
+  approvesRestamp(digest: string): boolean { return this.doc.restamp?.digest === digest; }
+
+  auditRestamp(digest: string, input: JournalInput): void {
+    const approved = this.doc.restamp;
+    if (approved?.digest !== digest) throw new Error("restamp.json does not match the approved plan in the device journal");
+    const receipt = JSON.stringify([input.how, input.label]);
+    if (approved.audits.includes(receipt)) return;
+    this.appendEntry(input, undefined, undefined, undefined, { restamp: { digest, audits: [...approved.audits, receipt] } });
+  }
+
+  approveRestampReconciliation(digest: string, input: JournalInput): void {
+    this.appendEntry(input, undefined, undefined, undefined, { restamp_reconcile: digest });
+  }
+
+  approvesRestampReconciliation(digest: string): boolean { return this.doc.restamp_reconcile === digest; }
+
   /** A trimmed notice need not survive its receipt, but an unallocated or contradictory sequence proves nothing. */
   checkRowReceipts(drops: readonly RowDrop[]): void {
-    if (this.problem !== null || drops.length === 0) return;
-    const known = new Map([...this.doc.open, ...this.doc.entries].map(entry => [entry.seq, entry]));
-    for (const { row, how, journalled: seq } of drops) {
-      if (seq === undefined) continue;
-      const entry = known.get(seq);
-      if (seq >= this.doc.next_seq || (entry ? entry.kind !== "drop" || entry.row !== row || entry.how !== how : seq > this.doc.trimmed)) {
-        this.problem = `${this.path} contradicts the account row receipt for ${row} at sequence ${seq}`;
-        return;
-      }
-    }
+    if (this.problem !== null) return;
+    const problem = receiptProblem(this.doc, drops);
+    if (problem !== null) this.problem = `${this.path} ${problem}`;
   }
 
   openNotices(): readonly JournalEntry[] { return this.doc.open; }
@@ -205,7 +265,7 @@ export class DeviceJournal {
     }
   }
 
-  private appendEntry(input: JournalInput, liftNumber?: number, decides?: string, drop?: RowDrop): JournalEntry {
+  private appendEntry(input: JournalInput, liftNumber?: number, decides?: string, drop?: RowDrop, restamp?: Pick<Doc, "restamp" | "restamp_reconcile">): JournalEntry {
     if (this.problem !== null) throw new Error(this.strict!);
     const entry: JournalEntry = { ...input, seq: this.doc.next_seq, id: randomBytes(16).toString("hex"), at: new Date().toISOString() };
     const remaining = this.doc.open.filter(notice => {
@@ -217,9 +277,9 @@ export class DeviceJournal {
     });
     const open = entry.kind === "admit" && !entry.awaitingListCheck ? [...remaining, entry] : remaining;
     if (!this.exists) this.companions();
-    this.write({ ...this.doc, next_seq: entry.seq + 1, entries: [...this.doc.entries, entry], open,
+    this.write({ ...this.doc, ...restamp, next_seq: entry.seq + 1, entries: [...this.doc.entries, entry], open,
       ...(drop && { last_row_drop: { ...drop, journalled: entry.seq } }),
-      ...(liftNumber === undefined ? {} : { snapshot_lift_n: liftNumber }) });
+      ...(liftNumber === undefined ? {} : { snapshot_lift_n: liftNumber }) }, restamp !== undefined);
     this.exists = true;
     return entry;
   }
@@ -267,7 +327,7 @@ export class DeviceJournal {
     return true;
   }
 
-  private write(doc: Doc): void {
+  private write(doc: Doc, preservePermissions = false): void {
     let next = doc;
     if (doc.open !== this.doc.open) {
       const kept = new Set(doc.open.map(entry => entry.id));
@@ -283,7 +343,7 @@ export class DeviceJournal {
       const closed = next.closed?.filter(n => n.seq > trimmed);
       next = { ...next, entries, trimmed, ...(closed && { closed }) };
     }
-    writePrivateState(this.path, next);
+    writePrivateState(this.path, next, undefined, preservePermissions);
     this.doc = next;
   }
 }

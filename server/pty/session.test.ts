@@ -1,5 +1,5 @@
 import { describe, expect, it, spyOn } from "bun:test";
-import { join } from "node:path";
+import { rustSidecar } from "./host.ts";
 import { PtySession, writeLine } from "./session.ts";
 
 /** Prints only whether the bridge token is present, plus the socket and TERM the attach would use. */
@@ -57,7 +57,7 @@ describe("PtySession", () => {
     expect(await printed).toContain("[" + sentinel + "]");
   }, 10000);
 
-  // The bridge's bearer token is for browsers: neither the Node sidecar nor the attach command needs it.
+  // The bridge's bearer token is for browsers: neither the PTY host nor the attach command needs it.
   it("omits bridge token from the sidecar after merging overrides", async () => {
     const overrideToken = fixtureToken();
     const run = await reportThroughSession({ OVIS_TOKEN: overrideToken });
@@ -74,7 +74,7 @@ describe("PtySession", () => {
     const token = fixtureToken();
     const socket = "/tmp/ovis-host-test.sock";
     const host = Bun.spawn(
-      ["node", join(import.meta.dir, "pty-host.mjs"), "80", "5", "node", ...REPORT_ENV],
+      [rustSidecar() ?? "no Rust PTY host", "80", "5", "node", ...REPORT_ENV],
       { stdin: "pipe", stdout: "pipe", stderr: "pipe", env: { ...process.env, OVIS_TOKEN: token, HERDR_SOCKET_PATH: socket } },
     );
     try {

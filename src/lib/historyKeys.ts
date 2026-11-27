@@ -60,3 +60,6 @@ export const sheetStep: {
   taking: (event: Event) => boolean;
   holds: (event: Event) => boolean;
 } = { lands: () => false, goingBack: () => false, dropped: () => {}, taking: () => false, holds: () => false };
+
+/** A sheet's own Back was confirmed by its destination key, without a popstate. */
+export const silentSheetLandings = new Set<() => void>();

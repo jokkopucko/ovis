@@ -91,3 +91,38 @@ test("the devices the account's list let in are told live to this PC's own windo
   for (const window of windows) window.admitFromList("pixel-row");
   expect(windows.map((window) => window.told)).toEqual([["pixel-row"], ["pixel-row"], [], [], [], []]);
 });
+
+test("what a device on the relay is told of the waiting joins is asked for again at every telling: one that lost the right is told once that nothing waits, and nothing after", () => {
+  const device = { id: "phone-own-pairing", label: "Phone", role: "drive" as const };
+  const waiting = [{ id: "join", label: "Tablet", intent: "account", choices: ["111111", "222222", "333333"], expires_at: JOINED_AT, key: "tablet-key" }];
+  for (const kind of ["member", "list"] as const) {
+    // the right as this PC holds it now: its devices' word for a member, its copy of the list's for a device of the list
+    let may = true;
+    const remote = new Set<(pairings: typeof waiting) => void>();
+    const subscribed = (listener: (pairings: typeof waiting) => void) => { remote.add(listener); listener(waiting); return () => remote.delete(listener); };
+    const changed = new Set<() => void>();
+    const devices = { onPaired: () => () => {}, onRemoved: () => () => {}, relayKeyOf: () => PHONE_KEY, isAccountApproverSession: () => kind === "member" && may,
+      onListedChange: (listener: () => void) => { changed.add(listener); return () => changed.delete(listener); } };
+    const joins = { waiting: () => [], onSeen: () => () => {}, onListed: () => () => {} };
+    const relay = { approvals: { subscribe: () => () => {}, subscribeRemote: subscribed, subscribeList: subscribed, remoteList: () => waiting, listJoins: () => waiting } };
+    const accountList = { allowsJoins: () => kind === "list" && may };
+    const ctx = { services: { devices, joins, relay, accountList, pendingRedemptions: undefined }, peer: { kind: "relay", device, sessionId: "s", serverId: "pc", key: PHONE_KEY } } as unknown as ServerContext;
+    const told: number[] = [];
+    machinePairingEvents(ctx, { level: "full", via: "relay", role: "drive", device }, [], { ownWindow: false, since: undefined })
+      .subscribe((event) => { if (event.type === "remote-pairings") told.push(event.pairings.length); });
+    expect(told).toEqual([1]);
+    // the PC pins a list that holds this key to watch, say: the subscription is older than that
+    may = false;
+    for (const listener of remote) listener(waiting);
+    for (const listener of remote) listener(waiting);
+    expect(told).toEqual([1, 0]);
+    may = true;
+    for (const listener of remote) listener(waiting);
+    expect(told).toEqual([1, 0, 1]);
+    // the list changes what it lets in while no join comes or goes: the device is told then
+    may = false;
+    for (const listener of changed) listener();
+    for (const listener of changed) listener();
+    expect(told).toEqual([1, 0, 1, 0]);
+  }
+});

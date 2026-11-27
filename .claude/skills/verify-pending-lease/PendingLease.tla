@@ -19,7 +19,10 @@ CONSTANTS
   BreakKeepRequester,     \* holdRequested keeps the page as the first message's typist
   BreakNoHoldOnLeave,     \* holdRequested does not hold the first message
   BreakRequeueLostLease,  \* dispatchPending queues again a message hold() marked on its way
-  BreakListAfterLeave     \* queueFirstMessage lists a first message as queued though its page left since the request
+  BreakListAfterLeave,    \* queueFirstMessage lists a first message as queued though its page left since the request
+  BreakTypeUnansweredData,  \* a message that went as data and got no answer is typed instead, as one that reached nothing is
+  BreakDrainBeforeTurnEnd,  \* next() gives out a message though a turn's own end, told by the agent, is still awaited
+  BreakNoWaitForTurn        \* the queue does not go behind the turn its message became (no pending.awaitTurn)
 
 VARIABLES
   \* server/core/terminals.ts and terminal-process.ts: the pane's attachment
@@ -45,19 +48,22 @@ VARIABLES
   askFault,   \* the request's `fault`: holdPendingPane found the pane's terminal restarting before then
   lane,       \* what runs in the pane's serialized lane (serialize), or NoLane
   req,        \* a frame that took a lease and waits for the lane, or NoReq
+  turnWait,   \* PendingInputs.turns has the pane: its queue waits for a turn's end the agent itself tells (awaitTurn)
+  toldTurn,   \* the agent runs a turn whose end it will tell, and can still tell it: what turnWait should know of
   \* what the rules are stated on; no code reads these
   armed,      \* the sender has not left since it queued Q
   pageOk,     \* the page has not left since its request
   laneIntact, \* who types in the lane has not left since the send was asked for
   reqIntact,  \* who sent the waiting frame has not left since
   pastes, enters,
-  typedAfterLoss, firstWithoutPage
+  typedAfterLoss, firstWithoutPage,
+  behindTurn  \* the queue itself wrote while a turn's end was awaited
 
 terminal == <<att, alive, ready, held, members>>
 leases == <<lease, laneLease, reqLease>>
-counts == <<pastes, enters, typedAfterLoss, firstWithoutPage>>
+counts == <<pastes, enters, typedAfterLoss, firstWithoutPage, behindTurn>>
 first == <<page, requester, askLeft, askFault>>
-vars == <<terminal, conn, mode, st, fl, leases, order, first, lane, req,
+vars == <<terminal, conn, mode, st, fl, leases, order, first, lane, req, turnWait, toldTurn,
           armed, pageOk, laneIntact, reqIntact, counts>>
 
 Msgs == {"Q", "F"}
@@ -96,12 +102,15 @@ LeaseFailRetries(c, l) ==
   ELSE IF held THEN FALSE                    \* attach_held
   ELSE TRUE                                  \* input_not_ready
 
-\* pending-input.ts next(pane), without the agent's status and the turn gate (see SKILL.md)
+\* pending-input.ts next(pane), without the agent's status and the turn gate of statuses (see SKILL.md): of what holds
+\* the queue for a turn, only the wait for an end the agent itself tells is here (turnWait)
 Queued == SelectSeq(order, LAMBDA m : st[m] = "queued")
-NextUp == IF (\E m \in Msgs : fl[m] \/ st[m] = "uncertain") \/ Queued = <<>> THEN "none" ELSE Head(Queued)
+\* "review": uncertain, kept for review alone (pending-input.ts reviewOnly): it does not stop the queue (blocksQueue)
+NextUp == IF (\E m \in Msgs : fl[m] \/ st[m] = "uncertain") \/ Queued = <<>> \/ (turnWait /\ ~BreakDrainBeforeTurnEnd)
+            THEN "none" ELSE Head(Queued)
 \* pending-input.ts claim(item, automatic)
 CanClaim(m, automatic) ==
-  /\ st[m] \notin Gone /\ ~fl[m] /\ st[m] # "uncertain"
+  /\ st[m] \notin Gone /\ ~fl[m] /\ st[m] \notin {"uncertain", "review"}
   /\ ~\E o \in Msgs : fl[o]
   /\ IF automatic THEN NextUp = m ELSE st[m] \in {"queued", "held"}
 \* pending-input.ts hold(owner, pane) on the messages in `ms`
@@ -149,10 +158,10 @@ Init ==
   /\ order = <<>> /\ requester = "none" /\ askLeft = FALSE /\ askFault = FALSE /\ pageOk = TRUE
   /\ fl = [m \in Msgs |-> FALSE]
   /\ lease = Dead /\ laneLease = Dead /\ reqLease = Dead
-  /\ lane = NoLane /\ req = NoReq
+  /\ lane = NoLane /\ req = NoReq /\ turnWait = FALSE /\ toldTurn = FALSE
   /\ armed = FALSE /\ laneIntact = FALSE /\ reqIntact = FALSE
   /\ pastes = [m \in Msgs |-> 0] /\ enters = [m \in Msgs |-> 0]
-  /\ typedAfterLoss = FALSE /\ firstWithoutPage = FALSE
+  /\ typedAfterLoss = FALSE /\ firstWithoutPage = FALSE /\ behindTurn = FALSE
 
 ----------------------------------------------------------------------------
 (* The terminal: terminals.ts terminalFrames.attach, detach, closeAttachment; *)
@@ -166,7 +175,7 @@ Attach(c) ==
             /\ \E mirrored \in BOOLEAN : ready' = mirrored   \* a mirrored pane is ready at once
        ELSE UNCHANGED <<att, alive, held, ready>>
   /\ members' = members \cup {c}
-  /\ UNCHANGED <<conn, mode, st, fl, leases, order, first, lane, req, counts>>
+  /\ UNCHANGED <<conn, mode, st, fl, leases, order, first, lane, req, counts, turnWait, toldTurn>>
   /\ NoLoss
 
 \* detach(pane, client): holdPending, then the membership, then closeAttachment when it was the last
@@ -179,7 +188,7 @@ Leave(c) ==
 Detach(c) ==
   /\ conn[c] = "open" /\ c \in members
   /\ Leave(c)
-  /\ UNCHANGED <<conn, mode, fl, order, page, askFault, lane, req, counts>>
+  /\ UNCHANGED <<conn, mode, fl, order, page, askFault, lane, req, counts, turnWait, toldTurn>>
   /\ Lose({c}, TRUE)
 
 \* closeAttachment: the pty or the mirror ended for good, the pane ended or moved, or the server stops
@@ -188,14 +197,14 @@ CloseAttachment ==
   /\ HoldPending(members)
   /\ NoAttachment
   /\ Age(TRUE, FALSE, Unauthorize(members))
-  /\ UNCHANGED <<conn, mode, fl, order, page, askFault, lane, req, counts>>
+  /\ UNCHANGED <<conn, mode, fl, order, page, askFault, lane, req, counts, turnWait, toldTurn>>
   /\ Lose(members, TRUE)
 
 \* took(): the attach has the terminal
 Took ==
   /\ att /\ alive /\ ~ready
   /\ ready' = TRUE /\ held' = FALSE
-  /\ UNCHANGED <<att, alive, members, conn, mode, st, fl, leases, order, first, lane, req, counts>>
+  /\ UNCHANGED <<att, alive, members, conn, mode, st, fl, leases, order, first, lane, req, counts, turnWait, toldTurn>>
   /\ NoLoss
 
 \* ended(): the attach process exited; holdPendingPane when it was ready. Another bridge may have the terminal now.
@@ -208,7 +217,7 @@ Ended ==
             /\ Age(FALSE, FALSE, {c \in Clients : conn[c] = "open"})
             /\ askFault' = (askFault \/ st["F"] = "asked")
        ELSE UNCHANGED <<st, leases, askFault>>
-  /\ UNCHANGED <<att, members, conn, mode, fl, order, page, requester, askLeft, lane, req, counts>>
+  /\ UNCHANGED <<att, members, conn, mode, fl, order, page, requester, askLeft, lane, req, counts, turnWait, toldTurn>>
   /\ Lose(members, FALSE)
 
 \* again() or relookup(): a new attach process for the same attachment
@@ -216,7 +225,7 @@ Restart ==
   /\ att /\ ~alive /\ members # {}
   /\ alive' = TRUE
   /\ Age(FALSE, TRUE, {})
-  /\ UNCHANGED <<att, ready, held, members, conn, mode, st, fl, order, first, lane, req, counts>>
+  /\ UNCHANGED <<att, ready, held, members, conn, mode, st, fl, order, first, lane, req, counts, turnWait, toldTurn>>
   /\ NoLoss
 
 ----------------------------------------------------------------------------
@@ -228,13 +237,13 @@ Observe(c) ==
   /\ HoldPending({c})
   /\ Age(FALSE, FALSE, Unauthorize({c}))
   /\ mode' = [mode EXCEPT ![c] = "observe"]
-  /\ UNCHANGED <<terminal, conn, fl, order, page, askFault, lane, req, counts>>
+  /\ UNCHANGED <<terminal, conn, fl, order, page, askFault, lane, req, counts, turnWait, toldTurn>>
   /\ Lose({c}, TRUE)
 
 Interact(c) ==
   /\ conn[c] = "open" /\ mode[c] = "observe"
   /\ mode' = [mode EXCEPT ![c] = "interact"]
-  /\ UNCHANGED <<terminal, conn, st, fl, leases, order, first, lane, req, counts>>
+  /\ UNCHANGED <<terminal, conn, st, fl, leases, order, first, lane, req, counts, turnWait, toldTurn>>
   /\ NoLoss
 
 \* end(client, "closed" or "stalled"): closeConnection (pending.close and holdRequested), then detachClaimed
@@ -248,7 +257,7 @@ Close(c) ==
           /\ askLeft' = (askLeft \/ (st["F"] = "asked" /\ page = c))
           /\ UNCHANGED <<terminal, leases>>
   /\ mode' = [mode EXCEPT ![c] = "interact"]   \* nothing reads the mode of a connection that ended
-  /\ UNCHANGED <<fl, order, page, askFault, lane, req, counts>>
+  /\ UNCHANGED <<fl, order, page, askFault, lane, req, counts, turnWait, toldTurn>>
   /\ Lose({c}, TRUE)
 
 \* end(client, "revoked" or "gated"): no closeConnection, only detachClaimed; its close event comes later (Close)
@@ -258,7 +267,7 @@ Revoke(c) ==
   /\ IF c \in members THEN Leave(c)
      ELSE UNCHANGED <<st, requester, askLeft, terminal, leases>>
   /\ mode' = [mode EXCEPT ![c] = "interact"]
-  /\ UNCHANGED <<fl, order, page, askFault, lane, req, counts>>
+  /\ UNCHANGED <<fl, order, page, askFault, lane, req, counts, turnWait, toldTurn>>
   /\ Lose({c}, TRUE)
 
 ----------------------------------------------------------------------------
@@ -273,7 +282,7 @@ FirstListed ==
         /\ requester' = IF gone THEN "none" ELSE page
   /\ order' = Append(order, "F")
   /\ askLeft' = FALSE /\ askFault' = FALSE
-  /\ UNCHANGED <<terminal, conn, mode, fl, leases, page, lane, req, counts, armed, pageOk, laneIntact, reqIntact>>
+  /\ UNCHANGED <<terminal, conn, mode, fl, leases, page, lane, req, counts, turnWait, toldTurn, armed, pageOk, laneIntact, reqIntact>>
 
 ----------------------------------------------------------------------------
 (* Frames that take a lease when they arrive and then wait for the lane: *)
@@ -284,7 +293,7 @@ TakeRequest(kind, m, c) ==
   /\ req' = [kind |-> kind, m |-> m, c |-> c]
   /\ reqLease' = Fresh
   /\ reqIntact' = TRUE
-  /\ UNCHANGED <<terminal, conn, mode, st, fl, lease, laneLease, order, first, lane, counts, armed, pageOk, laneIntact>>
+  /\ UNCHANGED <<terminal, conn, mode, st, fl, lease, laneLease, order, first, lane, counts, turnWait, toldTurn, armed, pageOk, laneIntact>>
 
 \* the sender queues Q for the agent's next turn, or holds it for its own Send now. A bound of the model: only
 \* once the first message is listed, so that the time before it holds the pages' and the terminal's events alone
@@ -300,22 +309,22 @@ SendNow(m, c) ==
 RequestRuns ==
   /\ lane = NoLane /\ req # NoReq
   /\ lane' = [m |-> req.m, by |-> req.c, auto |-> FALSE, direct |-> FALSE,
-              pc |-> IF req.kind = "steer" THEN "steer" ELSE req.kind, extra |-> FALSE]
+              pc |-> IF req.kind = "steer" THEN "steer" ELSE req.kind, extra |-> FALSE, data |-> "untried"]
   /\ laneLease' = reqLease /\ reqLease' = Dead
   /\ req' = NoReq /\ laneIntact' = reqIntact /\ reqIntact' = FALSE
-  /\ UNCHANGED <<terminal, conn, mode, st, fl, lease, order, first, counts, armed, pageOk>>
+  /\ UNCHANGED <<terminal, conn, mode, st, fl, lease, order, first, counts, turnWait, toldTurn, armed, pageOk>>
 
 \* pending.enqueue adds the record behind those there
 Accepted == order' = Append(order, "Q")
 Free == lane' = NoLane /\ laneLease' = Dead /\ laneIntact' = FALSE
-Still == UNCHANGED <<terminal, conn, mode, first, req, reqLease, counts, pageOk, reqIntact>>
+Still == UNCHANGED <<terminal, conn, mode, first, req, reqLease, counts, turnWait, toldTurn, pageOk, reqIntact>>
 
 \* pendingContext refused, the lease check among its reasons: nothing is accepted
 AcceptRefused ==
   /\ lane.m # "none" /\ lane.pc \in {"queue", "hold"}
   /\ Free /\ Still /\ UNCHANGED <<st, fl, lease, order, armed>>
 
-\* pending.enqueue right after pendingContext's last authorizePending passed
+\* pending.enqueue, with the authorizePending right after it passing
 AcceptEnqueue ==
   /\ lane.m # "none" /\ lane.pc \in {"queue", "hold"} /\ Authorized(lane.by, laneLease)
   /\ st' = [st EXCEPT !["Q"] = IF lane.pc = "queue" THEN "queued" ELSE "held"]
@@ -323,10 +332,20 @@ AcceptEnqueue ==
   /\ armed' = (lane.pc = "queue" /\ laneIntact)
   /\ Free /\ Still /\ UNCHANGED fl
 
+\* pending.enqueue after the lease was lost during the awaits since pendingContext's check (pinPiSession, a send put
+\* off): the authorizePending right after it refuses, and pending.hold holds the row, as holdPending would have
+AcceptHeld ==
+  /\ lane.m # "none" /\ lane.pc \in {"queue", "hold"} /\ ~Authorized(lane.by, laneLease)
+  /\ st' = [st EXCEPT !["Q"] = "held"]
+  /\ lease' = laneLease /\ Accepted
+  /\ armed' = FALSE
+  /\ Free /\ Still /\ UNCHANGED fl
+
 \* a queue request that finds the agent ready and nothing waiting is typed at once, with no record
 AcceptTypeNow ==
   /\ lane.m # "none" /\ lane.pc = "queue" /\ Authorized(lane.by, laneLease)
   /\ ~\E m \in Msgs : fl[m] \/ st[m] = "queued"
+  /\ ~turnWait
   /\ lane' = [lane EXCEPT !.pc = "typing", !.direct = TRUE]
   /\ Still /\ UNCHANGED <<st, fl, lease, laneLease, order, armed, laneIntact>>
 
@@ -356,9 +375,9 @@ DrainPick ==
   /\ lane = NoLane /\ NextUp # "none"
   /\ \E by \in Clients :
        /\ IF NextUp = "Q" THEN by = Sender ELSE requester = by /\ Typist(by)
-       /\ lane' = [m |-> NextUp, by |-> by, auto |-> TRUE, direct |-> FALSE, pc |-> "picked", extra |-> FALSE]
+       /\ lane' = [m |-> NextUp, by |-> by, auto |-> TRUE, direct |-> FALSE, pc |-> "picked", extra |-> FALSE, data |-> "untried"]
   /\ laneIntact' = FALSE
-  /\ UNCHANGED <<terminal, conn, mode, st, fl, leases, order, first, req, counts, armed, pageOk, reqIntact>>
+  /\ UNCHANGED <<terminal, conn, mode, st, fl, leases, order, first, req, counts, turnWait, toldTurn, armed, pageOk, reqIntact>>
 
 \* pending.claim(item, true) fails: the message was held, sent or discarded meanwhile
 DrainSkips ==
@@ -376,7 +395,7 @@ DrainClaim ==
   /\ lane' = [lane EXCEPT !.pc = "typing"]
   /\ laneLease' = IF lane.m = "Q" THEN lease ELSE Fresh
   /\ laneIntact' = (lane.m = "F")
-  /\ UNCHANGED <<terminal, conn, mode, lease, reqLease, order, first, req, counts, armed, pageOk, reqIntact>>
+  /\ UNCHANGED <<terminal, conn, mode, lease, reqLease, order, first, req, counts, turnWait, toldTurn, armed, pageOk, reqIntact>>
 
 \* the same claim for a first message whose typist cannot take a lease any more: pendingLease throws and the
 \* message is settled in the same step, queued again for its page or held
@@ -393,14 +412,14 @@ Settle(outcome) ==
                  /\ (BreakRequeueLostLease \/ ~(m = "Q" /\ st[m] = "uncertain"))
       new == IF lane.direct
                THEN (IF outcome = "sent" THEN "sent" ELSE IF outcome = "uncertain" THEN "lost" ELSE "none")
-               ELSE (IF outcome \in {"sent", "uncertain"} THEN outcome ELSE IF again THEN "queued" ELSE "held")
+               ELSE (IF outcome \in {"sent", "uncertain", "review"} THEN outcome ELSE IF again THEN "queued" ELSE "held")
       s1 == [st EXCEPT ![m] = new]
   IN /\ st' = IF outcome = "uncertain" /\ ~lane.direct THEN Hold(s1, Msgs \ {m}) ELSE s1
      /\ fl' = [fl EXCEPT ![m] = FALSE]
      /\ Free
 
 Typing == lane.m # "none" /\ lane.pc = "typing"
-Quiet == UNCHANGED <<terminal, conn, mode, lease, reqLease, order, first, req, counts, armed, pageOk, reqIntact>>
+Quiet == UNCHANGED <<terminal, conn, mode, lease, reqLease, order, first, req, counts, turnWait, toldTurn, armed, pageOk, reqIntact>>
 
 \* agent_blocked or pending_wait before anything was typed. agent_blocked is thrown inside pendingContext, after its
 \* awaits and before its last authorizePending; a queue request typed at once is kept only on pending_wait, which
@@ -414,12 +433,21 @@ TypeNowWaits ==
   /\ st' = [st EXCEPT !["Q"] = "queued"] /\ lease' = laneLease /\ Accepted
   /\ armed' = laneIntact
   /\ Free
-  /\ UNCHANGED <<terminal, conn, mode, fl, reqLease, first, req, counts, pageOk, reqIntact>>
+  /\ UNCHANGED <<terminal, conn, mode, fl, reqLease, first, req, counts, turnWait, toldTurn, pageOk, reqIntact>>
 
 \* any other refusal before anything was typed: the target changed, a draft in the box, the deadline
 RefusedForGood ==
   /\ Typing
   /\ Settle("held") /\ Quiet
+
+\* a refusal before anything was typed that holds every message of the pane with it: Codex's own screen (unannounced)
+\* on an automatic send, or Codex's app server reporting changed loaded threads on a Send now
+RefusedHoldPane ==
+  /\ Typing
+  /\ LET s1 == [st EXCEPT ![lane.m] = IF lane.direct THEN "none" ELSE "held"]
+     IN st' = Hold(s1, Msgs \ {lane.m})
+  /\ fl' = [fl EXCEPT ![lane.m] = FALSE]
+  /\ Free /\ Quiet
 
 \* authorizePending threw before the paste, or the paste's guard answered false before the first byte
 LeaseFailed ==
@@ -432,7 +460,8 @@ PageRight == lane.auto /\ lane.m = "F" => pageOk /\ lane.by = page
 Write ==
   /\ typedAfterLoss' = (typedAfterLoss \/ ~WriteRight)
   /\ firstWithoutPage' = (firstWithoutPage \/ ~PageRight)
-Wrote == UNCHANGED <<terminal, conn, mode, st, fl, leases, order, first, req, armed, pageOk, laneIntact, reqIntact>>
+  /\ behindTurn' = (behindTurn \/ (toldTurn /\ (lane.auto \/ lane.direct)))
+Wrote == UNCHANGED <<terminal, conn, mode, st, fl, leases, order, first, req, turnWait, toldTurn, armed, pageOk, laneIntact, reqIntact>>
 
 \* paneSendText with the guard `allowed`: the lease is asked at the write
 Paste ==
@@ -440,6 +469,38 @@ Paste ==
   /\ pastes' = [pastes EXCEPT ![lane.m] = Min(@ + 1, 2)]
   /\ lane' = [lane EXCEPT !.pc = "pasted"]
   /\ Write /\ Wrote /\ UNCHANGED enters
+
+\* The agent's data channel is asked before anything is typed, once per send: ACP `child.client.submit`, Codex's
+\* app-server `turn/steer` (`writing`) or `turn/start` (sendCodexTextAsData `mayWrite`). It took nothing (no
+\* connection, another thread loaded, a question waiting): the message is typed as before
+DataUnsent ==
+  /\ Typing /\ lane.data = "untried"
+  /\ lane' = [lane EXCEPT !.data = "unsent"]
+  /\ UNCHANGED <<terminal, conn, mode, st, fl, leases, order, first, req, turnWait, toldTurn, armed, pageOk, laneIntact, reqIntact, counts>>
+
+\* The message goes as data, in one step with `authorizePending` right before the socket write. It counts as its paste
+\* and its Enter: once it went, nothing of it is typed
+SubmitAsData ==
+  /\ Typing /\ lane.data = "untried" /\ Authorized(lane.by, laneLease)
+  /\ pastes' = [pastes EXCEPT ![lane.m] = Min(@ + 1, 2)]
+  /\ enters' = [enters EXCEPT ![lane.m] = Min(@ + 1, 2)]
+  /\ lane' = [lane EXCEPT !.pc = "entered", !.data = "sent"]
+  /\ Write /\ Wrote
+
+\* Codex's own server says its thread runs a turn, before anything went (Connection.startTurn "running"): the queue's
+\* send goes behind that turn's own end (pending.awaitTurn) and is put off; a queue request that was to be typed at once
+\* is listed, with the authorizePending right after pending.enqueue as in AcceptEnqueue and AcceptHeld. A Send now is the
+\* user's own: it is typed as before (DataUnsent)
+DataBusy ==
+  /\ Typing /\ lane.data = "untried" /\ (lane.auto \/ lane.direct)
+  /\ turnWait' = TRUE /\ toldTurn' = TRUE
+  /\ IF lane.direct
+       THEN /\ st' = [st EXCEPT !["Q"] = IF Authorized(lane.by, laneLease) THEN "queued" ELSE "held"]
+            /\ lease' = laneLease /\ Accepted
+            /\ armed' = (Authorized(lane.by, laneLease) /\ laneIntact)
+            /\ Free /\ UNCHANGED fl
+       ELSE Settle("retry") /\ UNCHANGED <<lease, order, armed>>
+  /\ UNCHANGED <<terminal, conn, mode, reqLease, first, req, counts, pageOk, reqIntact>>
 
 \* anything that fails after the paste (a check, the lease, herdr): submit_changed or pasted_not_sent, never tried again
 FailedAfterPaste ==
@@ -464,6 +525,36 @@ Sent ==
   /\ lane.m # "none" /\ lane.pc = "entered"
   /\ Settle("sent") /\ Quiet
 
+\* turn/start answered with the turn the message became (Connection.startTurn "started"): the queue waits for that
+\* turn's own end (pending.awaitTurn) from the step that settles the message sent
+SentAsTurn ==
+  /\ lane.m # "none" /\ lane.pc = "entered" /\ lane.data = "sent"
+  /\ Settle("sent") /\ toldTurn' = TRUE /\ turnWait' = ~BreakNoWaitForTurn
+  /\ UNCHANGED <<terminal, conn, mode, lease, reqLease, order, first, req, counts, armed, pageOk, reqIntact>>
+
+\* The data channel did not answer a request that went (startTurn or steer "unknown"): submit_changed. The message is
+\* kept uncertain and is never typed instead, as one that reached nothing is
+DataUnanswered ==
+  /\ lane.m # "none" /\ lane.pc = "entered" /\ lane.data = "sent"
+  /\ IF BreakTypeUnansweredData
+       THEN lane' = [lane EXCEPT !.pc = "typing", !.data = "unsent"] /\ UNCHANGED <<st, fl, laneLease, laneIntact>>
+       ELSE Settle("uncertain")
+  /\ Quiet
+
+\* The agent told the awaited turn's end (turn/completed for that turn), or can no longer tell it (its connection
+\* ended, the pane runs another thread): pending.turnOver. The queue goes on, by the agent's status again
+TurnOver ==
+  /\ turnWait \/ toldTurn
+  /\ turnWait' = FALSE /\ toldTurn' = FALSE
+  /\ UNCHANGED <<terminal, conn, mode, st, fl, leases, order, first, lane, req, armed, pageOk, laneIntact, reqIntact, counts>>
+
+\* a Codex Send now on the terminal whose Enter went, with nothing that proves Codex took this message (codex-steering.ts
+\* "unconfirmed", pending.ts keepTurnGate): settle(…, "preserve-turn") keeps it uncertain for review alone, and holds
+\* nothing else
+SentUnconfirmed ==
+  /\ lane.m # "none" /\ lane.pc = "entered" /\ ~lane.auto /\ ~lane.direct
+  /\ Settle("review") /\ Quiet
+
 \* every connection has closed and nothing runs: the end
 Over ==
   /\ \A c \in Clients : conn[c] = "closed"
@@ -475,10 +566,11 @@ Next ==
   \/ CloseAttachment \/ Took \/ Ended \/ Restart
   \/ \E kind \in {"queue", "hold"} : Submit(kind)
   \/ \E m \in Msgs, c \in Clients : SendNow(m, c)
-  \/ FirstListed \/ RequestRuns \/ AcceptRefused \/ AcceptEnqueue \/ AcceptTypeNow \/ SteerRefused \/ SteerClaim
+  \/ FirstListed \/ RequestRuns \/ AcceptRefused \/ AcceptEnqueue \/ AcceptHeld \/ AcceptTypeNow \/ SteerRefused \/ SteerClaim
   \/ DrainPick \/ DrainSkips \/ DrainClaim \/ DrainClaimNoLease
-  \/ RefusedForNow \/ TypeNowWaits \/ RefusedForGood \/ LeaseFailed
-  \/ Paste \/ FailedAfterPaste \/ Enter \/ LaterKey \/ Sent
+  \/ RefusedForNow \/ TypeNowWaits \/ RefusedForGood \/ RefusedHoldPane \/ LeaseFailed
+  \/ Paste \/ DataUnsent \/ SubmitAsData \/ DataBusy \/ FailedAfterPaste \/ DataUnanswered \/ Enter \/ LaterKey
+  \/ Sent \/ SentAsTurn \/ SentUnconfirmed \/ TurnOver
   \/ Over
 
 Spec == Init /\ [][Next]_vars
@@ -491,11 +583,15 @@ NoTypingAfterLeaseLoss == ~typedAfterLoss
 \* A first message is typed on its own only through the page that asked for it, and never once that page has left
 \* since its request came.
 FirstMessageOnlyByItsPage == ~firstWithoutPage
-\* A message is pasted once and gets one Enter, whatever fails.
+\* A message is pasted once and gets one Enter, whatever fails. One that went as data has had both: it is never typed
+\* as well, also when no answer to it came.
 TypedAtMostOnce == \A m \in Msgs : pastes[m] <= 1 /\ enters[m] <= 1
 \* A first message whose page left is held, so the pane's queue is not stuck behind it.
 FirstMessageHeldOncePageLeft == st["F"] = "queued" => pageOk \/ conn[page] = "revoked"
 \* A queued message whose sender left is held: its row never says it still waits for the agent's turn.
 LostLeaseStaysHeld == st["Q"] = "queued" => armed
+\* While the queue waits for a turn's end the agent itself tells, it types nothing on its own: no queued message, and
+\* none sent to the queue and typed at once. A Send now is the user's own.
+QueueWaitsForToldTurnEnd == ~behindTurn
 
 =============================================================================

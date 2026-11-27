@@ -79,8 +79,8 @@ keytool -printcert -jarfile app/build/outputs/bundle/release/app-release.aab   #
 | Field | Now | Rule |
 |---|---|---|
 | `applicationId` | `sh.ovis.app` | never changes once uploaded |
-| `versionCode` | `14` | raise it by one for every upload, test tracks included (`defaultConfig` in `app/android/app/build.gradle`); the last upload is 1.0.6 (14), built from main at `ab037b30` with PCs added over SSH (#3862), published to internal testing and sent to Google Play's production review on 2026-11-21; 1.0.5 (13), built from main at `d30527fd` (the scanned QR code lands on its PC, #4231; the app opens on the account sign-in, #4256; the app's list opens the hosted app on its PCs, #4266), is the version live on Google Play |
-| `versionName` | `1.0.6` | what people see; raise it for each public release |
+| `versionCode` | `17` | raise it by one for every upload, test tracks included (`defaultConfig` in `app/android/app/build.gradle`); 1.0.9 (17) is the build of the v0.5.12 tag, for internal testing; 1.0.8 (16) is the build of the v0.5.11 tag, carrying its shell (PCs open on phones whose WebView wrongly reports offline, #4810); 1.0.7 (15), the build of the v0.5.10 tag (Back on Your PCs stays in the app, #4435), went to internal testing only on 2026-11-26 and is not sent to review; before it, 1.0.6 (14), built from main at `ab037b30` with PCs added over SSH (#3862), published to internal testing and sent to Google Play's production review on 2026-11-21; 1.0.5 (13), built from main at `d30527fd` (the scanned QR code lands on its PC, #4231; the app opens on the account sign-in, #4256; the app's list opens the hosted app on its PCs, #4266), is the version live on Google Play |
+| `versionName` | `1.0.9` | what people see; raise it for each public release |
 | `targetSdkVersion` | 36 | Play asks new apps for a recent target |
 
 ## 3. Store listing
@@ -179,7 +179,9 @@ accesses" that data, and Ovis shows it, so it does not apply. Three routes leave
 - **To the developer's account service, from the phone**: only once the user signs in (signing
   in is optional), the app signs in with `account.ovis.sh` (`docs/account.md`), which keeps a random
   account ID and, for each sign-in method added, a one-way hash of that provider's ID for the user
-  (never the email, name or the provider's tokens); one-way hashes of each signed-in device's
+  and, for GitHub and Google, a keyed fingerprint (HMAC) of the verified email address, used only
+  to say that an account made with another provider may exist (never the address itself, a name
+  or the provider's tokens); one-way hashes of each signed-in device's
   tokens and the push subscription it registered; for each PC added, its name, relay ID and public
   key; and, for a join or link-page request, the device's name and public key and the country and
   city Cloudflare saw it come from, deleted within about a day. The device and PC names the user
@@ -214,6 +216,7 @@ Answers:
 | App activity > App interactions | the app settings the user chose (theme, font sizes, language, alert and voice options and the like), the kinds of screen the app was opened on and how they reached the PC, how many prompt answers were sent and alerts delivered and tapped, and how often the app's buttons were used each day, whether by button, menu, shortcut or palette, and which of these controls were shown (counts as ranges and a list of control names, never what was typed), in the PC's usage counts to the developer | optional (can be turned off) | Analytics |
 | Device or other IDs | the sign-in cookie a PC gives the phone when it is paired, or for a PC paired through the Ovis relay the public half of the key the phone makes for it (to the PC); that PC's relay ID, in the requests to the developer's `relay.ovis.sh` (or `relay-ap.ovis.sh`) and `app.ovis.sh` that open it; the random ID the PC makes for its usage counts (to the developer); the phone's FCM push token, kept by the developer's push relay to forward the PC's encrypted alerts, only once alerts are turned on; once signed in, the push subscription each device registers with the developer's account service and the relay ID and public key of each PC added | required (cookie); optional (ID, push token, account service) | App functionality (cookie, push token, account service); Account management (account service); Analytics (ID) |
 | Personal info > User IDs | the random account ID the developer's account service makes when the user signs in, and a one-way hash of the sign-in provider's ID for the user (GitHub, Google or Apple) | optional (only when signed in) | App functionality, Account management |
+| Personal info > Email address | a keyed fingerprint (HMAC) of the email address GitHub or Google reports as verified, kept by the developer's account service only to tell a person signing in with a new method that an account made with another provider may exist; the address itself is not stored | optional (only when signed in with GitHub or Google) | App functionality, Account management |
 | Location > Approximate location | the country (two letters) the developer's receiver reads from the address the usage counts come from; once signed in, the country and city the developer's account service keeps with a join or link-page request for about a day, so an approval shows roughly where it came from; the address is never stored | optional (counts can be turned off; signing in is optional) | Analytics (counts); App functionality, Account management (account service) |
 | App info and performance > Diagnostics | connection traces the page reports to the PC for troubleshooting | required | Analytics |
 

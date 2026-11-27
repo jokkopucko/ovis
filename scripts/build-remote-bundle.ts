@@ -1,14 +1,15 @@
 /**
- * A remote PC's runtime: the compiled server and what runs beside it (scripts/server-artifact.ts), plus checksum-pinned
- * Node and herdr. Every platform's bundle is assembled from the compile and verified downloads on any OS; only one built
- * for this PC runs its PTY smoke test here. A Windows bundle is the server alone: herdr has no `terminal attach` there
- * (no Node, no PTY), and herdr itself comes from its own installer, which setup runs (server/remote-host.ts).
+ * A remote PC's runtime: the compiled server and what runs beside it (scripts/server-artifact.ts), its Rust PTY host
+ * (HERDR_BUNDLE_PTY_SIDECAR, required on Linux and macOS) and checksum-pinned herdr. Every platform's bundle is assembled
+ * from the compile and verified downloads on any OS; only one built for this PC runs its PTY smoke test here. A Windows
+ * bundle is the server alone: herdr has no `terminal attach` there (no PTY), and herdr itself comes from its own
+ * installer, which setup runs (server/remote-host.ts).
  */
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { REMOTE_BUNDLE_VERSION } from "../shared/machines.ts";
-import { architectures } from "./pty-sidecar.ts";
+import { architectures, runsHere } from "./pty-sidecar.ts";
 import { binaryName, stageServerArtifact } from "./server-artifact.ts";
 import type { ServerPlatform } from "./server-manifest.ts";
 
@@ -23,13 +24,6 @@ const herdrPins: Record<string, [string, string]> = {
   "darwin-x64": ["herdr-macos-x86_64", "db62d548ff3e832b087a96b1894a08d26be3905f1830309cd556783f215d4054"],
   "darwin-arm64": ["herdr-macos-aarch64", "5173a3e0ae42d5d1ab7ebfa5d5e6329f7c3d23f8e1a3677c7ce3231da2884157"],
 };
-// Official release digests: nodejs.org/dist/v22.23.2/SHASUMS256.txt.
-const nodePins: Record<string, string> = {
-  "linux-x64": "b294a556e639d64338823920e5866c21c02741742d2e1529ee1a225c1ec9252a",
-  "linux-arm64": "013b59cfd2819703a6f4a14ab891fc46fc2a4e3f5bcd92de3fb4929b43e35b30",
-  "darwin-x64": "58e99022c2ff89395576cc7fd4d98cea24bb68081475d5f88b801ee8729fb026",
-  "darwin-arm64": "61130f394c1630d211dd50aecc4353d379480f36d3ac913cd85dbba1aed585c6",
-};
 const windows = platform === "win32-x64";
 const pin = herdrPins[platform];
 if (!pin && !windows) throw new Error(`Unsupported platform ${platform}`);
@@ -39,9 +33,7 @@ if (!existsSync(join(root, "dist/index.html"))) throw new Error("Run bun run bui
 
 const output = resolve(process.env["HERDR_BUNDLE_OUTPUT"] ?? join(root, "remote-bundles"));
 const stage = join(output, `stage-${platform}`);
-const downloads = join(output, `downloads-${platform}`);
 rmSync(stage, { recursive: true, force: true });
-mkdirSync(downloads, { recursive: true });
 const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 async function download(url: string, sha256: string): Promise<Uint8Array> {
   const response = await fetch(url, { signal: AbortSignal.timeout(120_000) });
@@ -87,40 +79,31 @@ try {
   for (const binary of [ptySidecar, acpKeeper]) {
     if (binary && !architectures(binary).includes(want)) throw new Error(`${binary} has no ${want} code: ${architectures(binary).join(", ")}`);
   }
-  if (!ptySidecar && !windows) console.log(`${platform}: HERDR_BUNDLE_PTY_SIDECAR is not set, so this bundle has no Rust PTY host`);
-  else if (ptySidecar && !acpKeeper) console.log(`${platform}: no ovis-acp-keeper beside ${ptySidecar}, so this bundle has no ACP keeper`);
-  // nothing native on Windows: without Node and node-pty the server finds no PTY sidecar and mirrors panes (server/pty/sidecar.ts)
+  // the bundle's only PTY host: without it no terminal of the PC could attach
+  if (!ptySidecar && !windows) throw new Error(`${platform}: set HERDR_BUNDLE_PTY_SIDECAR to the Rust PTY host for it (bun scripts/pty-sidecar.ts build <asset> <dir> builds one, or take ovis-pty-sidecar-<asset> from a release)`);
+  if (ptySidecar && !acpKeeper) console.log(`${platform}: no ovis-acp-keeper beside ${ptySidecar}, so this bundle has no ACP keeper`);
+  // nothing native on Windows: without a PTY host the server mirrors panes (server/pty/sidecar.ts)
   await stageServerArtifact({
-    platform: serverPlatform, dir: stage, nodePty: !windows, downloads,
+    platform: serverPlatform, dir: stage,
     ...(ptySidecar ? { ptySidecar: { binary: ptySidecar } } : {}),
     ...(acpKeeper ? { acpKeeper: { binary: acpKeeper } } : {}),
   });
   const bundle = { version: REMOTE_BUNDLE_VERSION, platform, server: (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string }).version, bun: Bun.version };
   if (windows) {
-    writeFileSync(join(stage, "bundle.json"), JSON.stringify({ ...bundle, herdr: null, node: null, native_smoke_tested: false }));
+    writeFileSync(join(stage, "bundle.json"), JSON.stringify({ ...bundle, herdr: null, native_smoke_tested: false }));
   } else {
-    // Use a reproducible LTS runtime instead of the builder's Node: newer local
-    // binaries can require extra system libraries absent on an otherwise supported PC.
-    const nodeVersion = "v22.23.2";
-    mkdirSync(join(stage, "bin"), { recursive: true });
-    const nodeArchive = join(downloads, "node.tar.gz");
-    writeFileSync(nodeArchive, await download(`https://nodejs.org/dist/${nodeVersion}/node-${nodeVersion}-${platform}.tar.gz`, nodePins[platform]!));
-    command(["tar", "xzf", nodeArchive, "-C", downloads, `node-${nodeVersion}-${platform}/bin/node`]);
-    cpSync(join(downloads, `node-${nodeVersion}-${platform}/bin/node`), join(stage, "bin/node"));
-    const ptyPackage = join(stage, "node_modules/@lydell", `node-pty-${platform}`);
-    if (mac) for (const name of ["pty.node", "spawn-helper"]) verifyMachO(join(ptyPackage, name));
     writeFileSync(join(stage, "bin/herdr"), await download(`https://github.com/herdrdev/herdr/releases/download/v0.9.3/${pin![0]}`, pin![1]), { mode: 0o755 });
-    for (const name of ["node", "herdr"]) {
-      chmodSync(join(stage, "bin", name), 0o755);
-      if (mac) verifyMachO(join(stage, "bin", name));
+    chmodSync(join(stage, "bin/herdr"), 0o755);
+    if (mac) for (const file of ["bin/herdr", binaryName(serverPlatform)]) verifyMachO(join(stage, file));
+    writeFileSync(join(stage, "bundle.json"), JSON.stringify({ ...bundle, herdr: "0.9.3", pty_sidecar: true, native_smoke_tested: platform === hostPlatform }));
+    // the host says it is the host, opens a pty and runs a command on it, as every attach will
+    if (platform === hostPlatform) {
+      if (!runsHere(join(stage, "bin/ovis-pty-sidecar"))) throw new Error(`${ptySidecar} does not answer as the Rust PTY host`);
+      command([join(stage, "bin/ovis-pty-sidecar"), "1", "1", "/bin/sh", "-c", ":"], stage);
     }
-    if (mac) verifyMachO(join(stage, binaryName(serverPlatform)));
-    writeFileSync(join(stage, "bundle.json"), JSON.stringify({ ...bundle, herdr: "0.9.3", node: nodeVersion, pty_sidecar: Boolean(ptySidecar), native_smoke_tested: platform === hostPlatform }));
-    if (platform === hostPlatform) command([join(stage, "bin/node"), join(stage, "pty-smoke.mjs")], stage);
     else console.log(`${platform}: verified binary architecture and checksums; PTY execution is checked on the destination before activation`);
   }
   await archive();
 } finally {
   rmSync(stage, { recursive: true, force: true });
-  rmSync(downloads, { recursive: true, force: true });
 }

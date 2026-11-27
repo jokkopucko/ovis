@@ -267,6 +267,8 @@ it.each(["connect", "default bridge", "default herdr", "default herdr chosen", "
       return;
     }
     expect(offer).toMatchObject({ phase: "failed", action_required: "choose_herdr", found_herdr_sessions: sessions, found_ovis: [{ socket_path: socket, runtime: "herdr-core" }] });
+    // its registered port tells it apart from another Ovis on that PC; it runs this app's release, so it is not marked newer
+    expect(offer.found_ovis).toEqual([{ socket_path: socket, runtime: "herdr-core", port: 12345 }]);
     expect(starts).toBe(0);
     if (quiet.includes(outcome)) {
       expect(offer.error).not.toContain("127.0.0.1");

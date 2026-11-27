@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, mock, spyOn } from "bun:test";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 import { Composer, type ComposerProps } from "./Composer.tsx";
 import * as settingsModule from "../lib/settings.ts";
 import * as commandsModule from "../lib/usePaneCommands.ts";
@@ -11,7 +12,7 @@ import { paneLifetimes } from "../lib/paneLifetime.ts";
 import type { SlashCommand } from "../../shared/protocol.ts";
 
 const pane = "bare-pick-pane", draftKey = `ovis:composer-draft:${pane}`;
-const globals = ["window", "document", "navigator", "requestAnimationFrame", "cancelAnimationFrame", "IS_REACT_ACT_ENVIRONMENT"];
+const globals = ["requestAnimationFrame", "cancelAnimationFrame"];
 const saved = new Map<string, PropertyDescriptor | undefined>();
 const COMMANDS: SlashCommand[] = [
   { name: "new", description: "a built-in without an argument", source: "builtin" },
@@ -21,16 +22,16 @@ const COMMANDS: SlashCommand[] = [
   { name: "review", description: "a server command", source: "builtin" },
   { name: "skill:shared", description: "a namespaced skill", source: "user" },
 ];
-let renderer: ReactTestRenderer | undefined;
+let page: Page;
 
 beforeEach(() => {
+  page = openPage("https://ovis.test/");
+  for (const [key, value] of Object.entries({ ResizeObserver: page.window.ResizeObserver, HTMLElement: page.window.HTMLElement, Event: page.window.Event, CustomEvent: page.window.CustomEvent })) {
+    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, { configurable: true, value });
+  }
   for (const key of globals) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-  const listen = { addEventListener() {}, removeEventListener() {} };
   const values: Record<string, unknown> = {
-    IS_REACT_ACT_ENVIRONMENT: true,
-    navigator: { languages: ["en"], userAgent: "test", maxTouchPoints: 0 },
-    window: { ...listen, location: { href: "https://ovis.test/" }, matchMedia: () => ({ matches: false, ...listen }), setTimeout, clearTimeout },
-    document: { ...listen, querySelector: () => null, getElementById: () => null },
     requestAnimationFrame: () => 1,
     cancelAnimationFrame: () => {},
   };
@@ -44,13 +45,12 @@ beforeEach(() => {
   spyOn(usageModule, "useUsage").mockReturnValue({ report: null } as ReturnType<typeof usageModule.useUsage>);
   spyOn(facesModule, "useFacesArrived").mockReturnValue(0);
   spyOn(voiceModule, "useDictation").mockReturnValue({ shown: false, voice: { state: "idle" }, forget() {} } as unknown as ReturnType<typeof voiceModule.useDictation>);
-  composerDrafts.set(draftKey, "");
+  composerDrafts.set(draftKey, "", "replace");
 });
 
-afterEach(() => {
-  act(() => { renderer?.unmount(); });
-  renderer = undefined;
-  composerDrafts.set(draftKey, "");
+afterEach(async () => {
+  await page.close();
+  composerDrafts.set(draftKey, "", "replace");
   mock.restore();
   for (const [key, descriptor] of saved) {
     if (descriptor) Object.defineProperty(globalThis, key, descriptor);
@@ -59,20 +59,22 @@ afterEach(() => {
   saved.clear();
 });
 
-const box = () => renderer!.root.findAll((node) => node.type === "textarea" && node.props.onKeyDown !== undefined)[0]!;
+const box = () => page.one<HTMLTextAreaElement>("textarea.composer-text");
 async function type(value: string): Promise<void> {
-  await act(async () => { box().props.onChange({ currentTarget: { value, selectionStart: value.length } }); });
+  await page.type(box(), value);
 }
 async function enter(): Promise<void> {
   await act(async () => {
-    box().props.onKeyDown({ key: "Enter", shiftKey: false, altKey: false, metaKey: false, ctrlKey: false, repeat: false, nativeEvent: { isComposing: false, keyCode: 13 }, preventDefault() {} });
+    const field = box();
+    const event = new page.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, keyCode: 13 });
+    Reflect.apply(field.dispatchEvent, field, [event]);
   });
 }
 
 async function pickAndSend(agent: string, typed: string, then?: string): Promise<unknown[]> {
   const sent: unknown[][] = [];
   const props: ComposerProps = { paneId: pane, agent, agentStatus: "idle", connected: true, autoFocus: false, onSend: (...args) => { sent.push(args); return true; }, onAbort() {}, onUploadImage: async () => "" };
-  await act(async () => { renderer = create(<Composer {...props} />); });
+  await page.render(<Composer {...props} />);
   await type(typed);
   await enter();
   if (then !== undefined) await type(then);
@@ -100,16 +102,16 @@ it.each([
   ["gentle-shell", 1],
   ["opencode", 0],
 ])("keeps the slash menu open past `/skill:` as %s's syntax does", async (agent, rows) => {
-  await act(async () => { renderer = create(<Composer paneId={pane} agent={agent} agentStatus="idle" connected autoFocus={false} onSend={() => true} onAbort={() => {}} onUploadImage={async () => ""} />); });
+  await page.render(<Composer paneId={pane} agent={agent} agentStatus="idle" connected autoFocus={false} onSend={() => true} onAbort={() => {}} onUploadImage={async () => ""} />);
   await type("/skill:");
-  expect(renderer!.root.findAll((node) => node.type === "button" && node.props.role === "option").length).toBe(rows);
+  expect(page.container.querySelectorAll('button[role="option"]').length).toBe(rows);
 });
 
 it("sends a pick the user changed afterwards as typed, trailing space and all", async () => {
   expect(await pickAndSend("opencode", "/ne", "/new  ")).toEqual(["/new  "]);
-  act(() => { renderer?.unmount(); });
+  await page.render(null);
   const sent: unknown[][] = [];
-  await act(async () => { renderer = create(<Composer paneId={pane} agent="opencode" agentStatus="idle" connected autoFocus={false} onSend={(...args) => { sent.push(args); return true; }} onAbort={() => {}} onUploadImage={async () => ""} />); });
+  await page.render(<Composer paneId={pane} agent="opencode" agentStatus="idle" connected autoFocus={false} onSend={(...args) => { sent.push(args); return true; }} onAbort={() => {}} onUploadImage={async () => ""} />);
   await type("/new ");
   await enter();
   expect(sent.map((call) => call[0])).toEqual(["/new "]);
@@ -117,7 +119,7 @@ it("sends a pick the user changed afterwards as typed, trailing space and all", 
 
 it("forgets a pick once it is sent: the same words typed by hand later go as typed", async () => {
   const sent: unknown[][] = [];
-  await act(async () => { renderer = create(<Composer paneId={pane} agent="opencode" agentStatus="idle" connected autoFocus={false} onSend={(...args) => { sent.push(args); return true; }} onAbort={() => {}} onUploadImage={async () => ""} />); });
+  await page.render(<Composer paneId={pane} agent="opencode" agentStatus="idle" connected autoFocus={false} onSend={(...args) => { sent.push(args); return true; }} onAbort={() => {}} onUploadImage={async () => ""} />);
   await type("/ne");
   await enter();
   await enter();

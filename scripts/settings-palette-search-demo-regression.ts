@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { chromium, type Page } from "playwright-core";
-import { buildDemoApp } from "./demo-build.ts";
+import type { Page } from "playwright-core";
+import { appContext } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 import { DEMO_FILE_PREVIEW_SCRIPT } from "./demo-file-preview.ts";
 import { sheetRisen } from "./settings-page.ts";
 import { PAGES, SETTINGS, openPalette, openSettings } from "./settings-pages-harness.ts";
@@ -12,7 +12,6 @@ import { JA } from "../src/lib/i18n.ja.ts";
 import { ZH } from "../src/lib/i18n.zh.ts";
 
 // All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
-const app = mkdtempSync(join(tmpdir(), "herdr-settings-demo-"));
 
 const MATRIX: readonly (readonly ["en" | "ko" | "ja" | "zh", string, string, string])[] = [
   ["en", "theme", "appearance", "-"],
@@ -97,7 +96,7 @@ async function settingsSearch(browser: import("playwright-core").Browser, url: s
     for (const language of ["en", "ko", "ja", "zh"] as const) {
       const strings: Record<string, string> = language === "ko" ? KO : language === "ja" ? JA : language === "zh" ? ZH : {};
       const label = (name: string): string => strings[name] ?? name;
-      const context = await browser.newContext(width === 390 ? { viewport: { width, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: language } : { viewport: { width, height: 900 }, locale: language });
+      const context = await appContext(browser, width === 390 ? { viewport: { width, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: language } : { viewport: { width, height: 900 }, locale: language });
       try {
         await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify({ ...SETTINGS, language }));
         const page = await context.newPage();
@@ -179,40 +178,7 @@ async function settingsSearch(browser: import("playwright-core").Browser, url: s
   console.log(`PASS ${MATRIX.length} settings searches at 1440 and 390px land on their page and group; no stale request in en, ko, ja, zh`);
 }
 
-try {
-  await buildDemoApp(app);
-  for (const [dir, extra] of [[app, ""]] as const) {
-    const index = join(dir, "index.html");
-    writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>${extra}${DEMO_FILE_PREVIEW_SCRIPT}\n    <script type="module"`));
-  }
-  const roots = { "/herdr-web-ui/demo/app/": app };
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
-    const path = new URL(request.url).pathname;
-    const [prefix, root] = Object.entries(roots).find(([prefix]) => path.startsWith(prefix)) ?? [];
-    if (prefix === undefined || root === undefined) return new Response("not found", { status: 404 });
-    let file: string;
-    try { file = decodeURIComponent(path.slice(prefix.length)); }
-    catch { return new Response("bad path", { status: 400 }); }
-    if (!file || file.endsWith("/")) file += "index.html";
-    if (file.split("/").includes("..") || file.includes("\\")) return new Response("bad path", { status: 400 });
-    const body = Bun.file(join(root, file));
-    return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
-  } });
-  const url = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/`;
-  try {
-    const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
-    try {
-      if (process.env.UI_EVIDENCE_DIR) mkdirSync(process.env.UI_EVIDENCE_DIR, { recursive: true });
-      await settingsSearch(browser, url);
-    } finally {
-      await browser.close();
-      console.log("CLEANUP browser closed");
-    }
-  } finally {
-    server.stop(true);
-    console.log("CLEANUP loopback demo server stopped");
-  }
-} finally {
-  rmSync(app, { recursive: true, force: true });
-  console.log("CLEANUP disposable demo apps removed");
-}
+await withDemoBrowser({ tempPrefix: "herdr-settings-demo-", afterTransport: DEMO_FILE_PREVIEW_SCRIPT }, async ({ browser, baseUrl: url }) => {
+  if (process.env.UI_EVIDENCE_DIR) mkdirSync(process.env.UI_EVIDENCE_DIR, { recursive: true });
+  await settingsSearch(browser, url);
+});

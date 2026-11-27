@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, type Dispatch, type RefObject, type SetStateAction } from "react";
-import type { Terminal } from "@xterm/xterm";
+import type { GhosttyTerminal } from "./ghostty/terminal.ts";
 import { hasModifiers, navigationSequence, stepModifier, terminalChord, type ModifierLatch, type StickyModifiers } from "./keys.ts";
 import { keyBarInputSequence, type KeyBarKeyItem } from "./keyBar.ts";
 import { DOUBLE_ESCAPE_GAP_MS, hermesCtrlCTooSoon, stopKey } from "./hermesStop.ts";
+import { frameRows } from "./terminalScreen.ts";
 import type { Translate } from "./i18n.ts";
-import type { HerdrSocket } from "./ws.ts";
+import { markTyped, type HerdrSocket } from "./ws.ts";
 import type { AgentStatus } from "../../shared/protocol.ts";
 
 export interface TypedKeysDeps {
@@ -25,9 +26,9 @@ export interface TypedKeysDeps {
   reassertIfStaleRef: RefObject<() => void>;
   setInputError: Dispatch<SetStateAction<string | null>>;
   socketRef: RefObject<HerdrSocket | null>;
-  stopKeyRef: RefObject<boolean>;
+  stopKeyRef: RefObject<number | null>;
   tRef: RefObject<Translate>;
-  termRef: RefObject<Terminal | null>;
+  termRef: RefObject<GhosttyTerminal | null>;
 }
 
 export function useTypedKeys(deps: TypedKeysDeps) {
@@ -74,13 +75,16 @@ export function useTypedKeys(deps: TypedKeysDeps) {
   }, []);
   // one terminal serves the pane it is switched to: a pending Escape must not follow it there
   useEffect(() => dropSecondEscape, [paneId, agent, dropSecondEscape]);
+  useEffect(() => {
+    if (agentStatus !== "working" && agentStatus !== "blocked") dropSecondEscape();
+  }, [agentStatus, dropSecondEscape]);
   const abortTurn = useCallback(() => {
     const term = termRef.current;
     const socket = socketRef.current;
     if (!term || !socket || !socket.connected) return;
     const now = Date.now();
     const key = stopKey(agent, () => {
-      const buffer = term.buffer.active;
+      const buffer = frameRows(term);
       return Array.from({ length: term.rows }, (_, row) => buffer.getLine(buffer.baseY + row)?.translateToString(true) ?? "");
     }, hermesStopSentRef.current, hermesCtrlCAtRef.current, now);
     if (key === null) {
@@ -99,9 +103,11 @@ export function useTypedKeys(deps: TypedKeysDeps) {
       hermesStopSentRef.current = true;
       hermesCtrlCAtRef.current = now;
     }
+    // both Escapes of a Stop carry its mark: the second, sent after a gap, is refused if the link was lost since
+    const pressedAt = markTyped();
     const press = (sent: string): void => {
-      stopKeyRef.current = true;
-      try { term.input(sent); } finally { stopKeyRef.current = false; }
+      stopKeyRef.current = pressedAt;
+      try { term.input(sent); } finally { stopKeyRef.current = null; }
     };
     if (key !== "\u001b\u001b") return press(key);
     // two Escapes as two key presses: written together they read as one Alt+Escape
@@ -119,5 +125,5 @@ export function useTypedKeys(deps: TypedKeysDeps) {
     }, DOUBLE_ESCAPE_GAP_MS);
   }, [agent, paneId, dropSecondEscape]);
 
-  return { pressKey, toggleModifier, abortTurn };
+  return { pressKey, toggleModifier, abortTurn, dropSecondEscape };
 }

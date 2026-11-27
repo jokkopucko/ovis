@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { act, createElement } from "react";
-import { create, type ReactTestRenderer } from "react-test-renderer";
 
 import type { PaneLayoutSnapshot, SessionSnapshot } from "../../shared/protocol.ts";
 import type { AppActions } from "./actions.ts";
 import { layoutActions } from "./layoutActions.ts";
+import { openPage, type Page } from "./page.fixture.ts";
 import type { SelectionMark } from "./selectionMark.ts";
 import { SettingsProvider } from "./settings.ts";
 import { useShortcuts } from "./shortcuts.ts";
@@ -20,7 +20,6 @@ const rosterOf = (zoomed = false) => ({ current: {
 } as unknown as SessionSnapshot });
 const layout = (pc: keyof typeof OFFERS, selectedPaneId: string | null = "p1", paneSplits = true, roster = rosterOf()) =>
   layoutActions({ selectedPaneId, offer: OFFERS[pc], paneSplits, selection, roster, load: () => undefined, selectPane: () => {}, layoutRefused: () => {} });
-const chord = (key: string) => Object.assign(new Event("keydown", { cancelable: true }), { key, code: `Key${key.toUpperCase()}`, ctrlKey: true, shiftKey: true, altKey: false, metaKey: false, repeat: false });
 
 describe("layoutActions", () => {
   it("gives the palette and the shortcuts herdr's split and zoom on a TUI PC with a pane", () => {
@@ -42,35 +41,22 @@ describe("layoutActions", () => {
 });
 
 describe("the split and zoom shortcuts", () => {
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  const events = new EventTarget();
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
   let requested: string[];
   let bodies: unknown[];
 
   beforeEach(() => {
-    for (const key of ["window", "document", "navigator", "getComputedStyle", "localStorage", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    page = openPage();
     requested = [];
     bodies = [];
-    const stored = new Map<string, string>([[SETTINGS_STORAGE_KEY, JSON.stringify({ shortcutOverrides: { "split-right": "l", "zoom-pane": "z" } })]]);
-    const storage = { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => { stored.set(key, value); }, removeItem: (key: string) => { stored.delete(key); } };
+    page.window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ shortcutOverrides: { "split-right": "l", "zoom-pane": "z" } }));
     const media = { matches: false, addEventListener() {}, removeEventListener() {} };
-    const define = (key: string, value: unknown) => Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
-    define("IS_REACT_ACT_ENVIRONMENT", true);
-    define("localStorage", storage);
-    define("navigator", { languages: ["en-US"], platform: "Linux" });
-    define("window", { localStorage: storage, matchMedia: () => media, addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), setTimeout, clearTimeout });
-    define("document", { activeElement: null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, querySelector: () => null, addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events) });
-    define("getComputedStyle", () => ({ getPropertyValue: () => "" }));
+    Object.defineProperty(page.window, "matchMedia", { configurable: true, value: () => media });
+    Object.defineProperty(page.window.navigator, "platform", { configurable: true, value: "Linux" });
   });
 
   afterEach(async () => {
-    await act(async () => renderer?.unmount());
-    renderer = undefined;
-    for (const [key, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
+    await page.close();
   });
 
   function Shortcuts({ actions }: { actions: AppActions }) {
@@ -78,7 +64,7 @@ describe("the split and zoom shortcuts", () => {
     return null;
   }
   async function press(pc: keyof typeof OFFERS, key = "l", { pane = "p1", roster = rosterOf(), times = 1 } = {}): Promise<void> {
-    await act(async () => renderer?.unmount());
+    await page.render(null);
     selection.current = { ...selection.current, paneId: pane };
     const actions = { ...layout(pc, pane, true, roster) } as AppActions;
     const fetch = spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: string | URL | Request, init?: RequestInit) => {
@@ -87,8 +73,12 @@ describe("the split and zoom shortcuts", () => {
       return Response.json({ pane_id: "p2", workspace_id: "w1", tab_id: "t1", terminal_id: "p2:term", revision: 1, focused: true, agent_status: "idle" });
     }, { preconnect: globalThis.fetch.preconnect }));
     try {
-      await act(async () => { renderer = create(createElement(SettingsProvider, null, createElement(Shortcuts, { actions }))); });
-      await act(async () => { for (let press = 0; press < times; press++) events.dispatchEvent(chord(key)); });
+      await page.render(createElement(SettingsProvider, null, createElement(Shortcuts, { actions })));
+      await act(async () => {
+        for (let press = 0; press < times; press++) {
+          page.window.dispatchEvent(new page.window.KeyboardEvent("keydown", { key, code: `Key${key.toUpperCase()}`, ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true }));
+        }
+      });
     } finally {
       fetch.mockRestore();
     }

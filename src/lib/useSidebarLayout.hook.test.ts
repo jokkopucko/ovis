@@ -1,43 +1,25 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { createElement, type RefObject } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, createElement, type RefObject } from "react";
+import { openPage, type Page } from "./page.fixture.ts";
 import type { AppLink } from "./deepLink.ts";
 import { SECOND_TAP_MS, useSidebarLayout } from "./useSidebarLayout.ts";
 
 describe("useSidebarLayout", () => {
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
   let layout: ReturnType<typeof useSidebarLayout>;
   let wide: boolean;
 
   beforeEach(() => {
-    for (const key of ["window", "document", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    page = openPage();
     wide = false;
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    const events = new EventTarget();
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      matchMedia: (query: string) => ({ matches: query.includes("min-width: 769px") ? wide : query.includes("max-width: 768px") ? !wide : false, addEventListener() {}, removeEventListener() {} }),
-      localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
-      addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events),
-    } });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: {
-      addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events),
-    } });
+    Object.defineProperty(page.window, "matchMedia", { configurable: true, value: (query: string) => ({ matches: query.includes("min-width: 769px") ? wide : query.includes("max-width: 768px") ? !wide : false, addEventListener() {}, removeEventListener() {} }) });
   });
 
-  afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
-    for (const [key, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    descriptors.clear();
-  });
+  afterEach(async () => { await page.close(); });
 
   async function mount(drawerBlocked?: RefObject<boolean>, initialLink: AppLink | null = null): Promise<void> {
     function Probe() { layout = useSidebarLayout({ initialLink, drawerBlocked }); return null; }
-    await act(async () => { renderer = create(createElement(Probe)); });
+    await page.render(createElement(Probe));
   }
   const shownLink: AppLink = { machine: "local", workspace: null, pane: null, view: null, settings: null, sidebar: "shown" };
 
@@ -66,7 +48,7 @@ describe("useSidebarLayout", () => {
   it("starts with no drawer out for a link that asks for one while it is blocked", async () => {
     await mount({ current: true }, shownLink);
     expect(layout.drawerOpen).toBe(false);
-    await act(async () => { renderer?.unmount(); });
+    await page.render(null);
 
     await mount({ current: false }, shownLink);
     expect(layout.drawerOpen).toBe(true);

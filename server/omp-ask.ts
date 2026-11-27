@@ -2,6 +2,7 @@ import { askedQuestions, type AskedQuestion } from "../shared/askQuestions.ts";
 import type { InteractivePrompt } from "../shared/protocol.ts";
 import { parseInline, parseMarkdown, shownText, type InlineNode, type MarkdownBlock } from "../shared/markdown.ts";
 import { parsedByPublicPrompt, publicPrompt } from "./dialogs/shared.ts";
+import { bindFormChoiceGroup } from "./dialogs/omp-form.ts";
 import type { OmoAsks } from "./omo-ask.ts";
 
 export function ompOpenCall(open: OmoAsks, session: string): string | null {
@@ -34,6 +35,25 @@ export function ompCallPrompt(prompt: InteractivePrompt, open: OmoAsks, session:
   if (shown.length > 1 && (at === undefined || !shown.includes(at))) return { prompt, unverified: true };
   const position = shown.length > 1 ? `@${at}` : "";
   return { prompt: publicPrompt({ ...parsed, id: `${parsed.id}${position}`, ompCall: call }) };
+}
+
+/**
+ * omp 19's form (dialogs/omp-form.ts) is read off the screen alone; the pane's one open `ask` call that carries a form
+ * (`{ html }`) is the call it answers, so a key goes out only while that call is still open. An unchanged option list
+ * keeps the screen's id; a restored list gets its own id so old clicks cannot use the new option indexes.
+ * A choice group the scrolled box cuts is made whole from that call's HTML. Without such a call (no session to look
+ * in, none open, several, one asked another way), the card shows but the read authorizes no key.
+ */
+export function ompFormPrompt(prompt: InteractivePrompt, open: OmoAsks, session: string): { prompt: InteractivePrompt | null; unverified?: true } {
+  const parsed = parsedByPublicPrompt.get(prompt);
+  const call = ompOpenCall(open, session);
+  const args = open[0]?.args;
+  if (!parsed) return { prompt };
+  if (parsed.ompFormPositionUnverified || call === null || typeof args !== "object" || args === null || !("html" in args) || typeof args.html !== "string") {
+    return { prompt, unverified: true };
+  }
+  const bound = bindFormChoiceGroup(parsed, args.html);
+  return bound ? { prompt: publicPrompt({ ...bound, ompCall: call }) } : { prompt: null, unverified: true };
 }
 
 /**
@@ -114,7 +134,7 @@ function questionShown(prompt: InteractivePrompt, asked: AskedQuestion): boolean
     && shows(prompt.question, drawn(asked.question, true));
 }
 
-const alike = (text: string): string => flat(text.normalize("NFKC").replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "")).toLowerCase();
+export const alike = (text: string): string => flat(text.normalize("NFKC").replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "")).toLowerCase();
 
 /** omp adds ` (Recommended)` to the recommended option's label; the card read off the screen drops it (dialogs/omp.ts), and so does this one */
 const label = (text: string): string => text.replace(/ \(Recommended\)$/i, "");
@@ -128,7 +148,7 @@ const flat = (text: string): string => text.replace(/\s+/gu, " ").trim();
  * and every mark, so a call that differs from the menu by one `/`, `*`, `_` or letter is another call. Only a question omp says it cut (`cut`, dialogs/omp.ts)
  * may show just the start of the call's question, followed by omp's `…`.
  */
-function shows(screen: string, drawn: string | null, cut = false): boolean {
+export function shows(screen: string, drawn: string | null, cut = false): boolean {
   if (drawn === null) return false;
   const shown = flat(screen);
   const asked = flat(drawn);
@@ -143,13 +163,13 @@ function shows(screen: string, drawn: string | null, cut = false): boolean {
  * a backslash before an escaped mark, so the card would show other words than omp, and an option could
  * read as another one. Where they part, null: the card stays as drawn.
  */
-function drawn(markdown: string, question: boolean): string | null {
+export function drawn(markdown: string, question: boolean): string | null {
   const omp = ompDrawn(markdown, question);
   const card = cardDrawn(markdown, question);
   return omp !== null && card !== null && flat(omp) === flat(card) ? omp : null;
 }
 
-function cardDrawn(markdown: string, question: boolean): string | null {
+export function cardDrawn(markdown: string, question: boolean): string | null {
   try {
     return question ? parseMarkdown(markdown, 0, false).map(cardBlock).join("\n") : cardInline(parseInline(markdown, false), false);
   } catch (error) {

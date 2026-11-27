@@ -15,6 +15,15 @@ const STAGING_ENV = {
   OVIS_RELAY_APP_URL: "https://relay-0510.ovis-app.pages.dev",
 };
 
+/**
+ * The feed a build's updater reads (electron-builder writes it into app-update.yml). A preview build, the staging one,
+ * reads OVIS_PREVIEW_FEED alone, so it updates to the next preview and never to a release; every other build reads
+ * OVIS_UPDATE_FEED alone, so no release ever reads the preview feed. None when the one it reads is unset.
+ */
+export function updateFeed(env: Env, staging: boolean): string | null {
+  return (staging ? env["OVIS_PREVIEW_FEED"] : env["OVIS_UPDATE_FEED"])?.trim() || null;
+}
+
 export function writeStagingMarker(resources: string, enabled: boolean): void {
   const path = join(resources, MARKER);
   if (enabled) writeFileSync(path, JSON.stringify(STAGING_ENV));
@@ -51,5 +60,7 @@ export function readStagingProfile({ resources, env, user }: {
   const stagingHome = socketLength > CORE_SOCKET_LIMIT ? `/tmp/ost-${uid}` : preferred;
   if (env["HOME"] === undefined || env["HOME"] === homedir) resolved["HOME"] = stagingHome;
   resolved["CFFIXED_USER_HOME"] ??= stagingHome;
+  // its own Ovis lives in that home, so the one it finds on a PC over SSH is a released one: the server leaves it alone
+  resolved["OVIS_PREVIEW_PROFILE"] ??= "1";
   return { env: resolved, userData: posix.join(stagingHome, "app") };
 }

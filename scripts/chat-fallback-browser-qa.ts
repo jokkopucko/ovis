@@ -56,6 +56,8 @@ try {
       return response();
     }
     if (url.pathname === "/favicon.ico") return new Response(null, { status: 204 });
+    // the shortcut list loads the usage counters, which ask whether telemetry is on: a server without it answers 404
+    if (url.pathname === "/api/telemetry") return new Response(null, { status: 404 });
     return new Response(Bun.file(join(output, url.pathname === "/" ? "index.html" : url.pathname.slice(1))), { headers: { "content-security-policy": CONTENT_SECURITY_POLICY } });
   } });
   browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });

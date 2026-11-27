@@ -7,7 +7,7 @@
  */
 // first: this script runs before main.tsx, so it moves the settings saved under the old key itself
 import "./lib/legacyStorage.ts";
-import { applyThemeEntry, savedThemeEntry } from "./lib/themeBoot.ts";
+import { applyThemeEntry, savedMarkdownStyle, savedThemeEntry } from "./lib/themeBoot.ts";
 import { regionalAppReady, regionalAppUrl } from "../shared/relay-regions.ts";
 
 // a pairing link for a regional relay opens on the app's copy beside it once that copy answers with
@@ -25,3 +25,4 @@ const root = document.documentElement;
 const entry = savedThemeEntry(() => window.localStorage);
 applyThemeEntry(root, entry);
 root.style.backgroundColor = entry.bg;
+root.dataset["markdownStyle"] = savedMarkdownStyle(() => window.localStorage);

@@ -9,6 +9,14 @@ const local = (settings: Settings, pins: readonly string[], muted: readonly stri
 const light: Settings = { ...DEFAULT_SETTINGS, theme: "light" };
 
 describe("preferences sync", () => {
+  it("replaces the pre-upgrade cached view policy without writing it back", () => {
+    const cached: Settings = { ...DEFAULT_SETTINGS, agentHarnessTool: { level: "view", depth: 1, harnesses: [] } };
+    const remote = { revision: 0, settings: { agentHarnessTool: DEFAULT_SETTINGS.agentHarnessTool } };
+    const taken = takePreferences(base(cached, null), local(cached, []), remote, null);
+    expect(taken.patch.agentHarnessTool).toEqual(remote.settings.agentHarnessTool);
+    expect(preferencesChange(taken.base, local({ ...cached, ...taken.patch }, []))).toBeNull();
+  });
+
   it("sends the tab labels learned and dropped here, key by key", () => {
     const known: Baseline = { ...base(DEFAULT_SETTINGS, [], []), tabLabels: { "w1:p1|t1": "Server" } };
     expect(preferencesChange(known, { ...local(DEFAULT_SETTINGS, [], []), tabLabels: { "w1:p1|t1": "Server", "w1:p2|t2": "Learned" } })).toEqual({ settings: {}, tab_labels: { "w1:p2|t2": "Learned" } });
@@ -115,7 +123,7 @@ describe("preferences sync", () => {
     expect(preferencesChange(refused.base, { settings: sanitizeSettings({ ...local, ...refused.patch }), pins: refused.pins!, muted: null })).toEqual({ settings: { lightTheme: "catppuccin-latte" } });
     const pending = takePreferences(known, { settings: local, pins: ["local:w1:p1"], muted: null }, remote, null);
     expect(pending.patch).toEqual({});
-    expect(pending.pins).toBeNull();
+    expect(pending.pins).toEqual(["pc:w2:p4", "local:w1:p1"]);
   });
 
   it("a refused mute gives way to a list another browser saved since, and an unrefused one is laid over it pane by pane", () => {
@@ -155,8 +163,9 @@ describe("preferences sync", () => {
       const remote = { revision: 4, settings: { darkTheme, palette: darkTheme }, pins: ["pc:w2:p3", "pc:w2:p4"] };
       const taken = takePreferences(known, { settings: now, pins: ["pc:w2:p3", "local:w1:p2"], muted: null }, remote, null, false, body);
       expect(taken.patch).toEqual({});
-      expect(taken.pins).toBeNull();
-      expect(preferencesChange(taken.base, { settings: now, pins: ["pc:w2:p3", "local:w1:p2"], muted: null })).toEqual({ settings: { darkTheme: "kanagawa", palette: "kanagawa" }, pins: ["pc:w2:p3", "local:w1:p2"] });
+      const merged = ["pc:w2:p3", "pc:w2:p4", "local:w1:p2"];
+      expect(taken.pins).toEqual(merged);
+      expect(preferencesChange(taken.base, { settings: now, pins: taken.pins ?? [], muted: null })).toEqual({ settings: { darkTheme: "kanagawa", palette: "kanagawa" }, pins: merged });
     }
   });
 
@@ -176,7 +185,7 @@ describe("preferences sync", () => {
     });
   });
 
-  it("joins this browser's pins to the first the server holds, then follows the last write", () => {
+  it("joins this browser's pins to the first the server holds, then preserves only pending local edits", () => {
     const first = takePreferences(base(DEFAULT_SETTINGS, null), local(DEFAULT_SETTINGS, ["local:w1:p1"]), { revision: 1, settings: {}, pins: ["pc:w2:p3", "local:w1:p1"] }, null);
     expect(first.pins).toEqual(["pc:w2:p3", "local:w1:p1"]);
     expect(first.base.pins).toEqual(["pc:w2:p3", "local:w1:p1"]);
@@ -186,7 +195,7 @@ describe("preferences sync", () => {
     const later = takePreferences(base(DEFAULT_SETTINGS, ["pc:w2:p3"]), local(DEFAULT_SETTINGS, ["pc:w2:p3"]), { revision: 2, settings: {}, pins: [] }, null);
     expect(later.pins).toEqual([]);
     const pinning = takePreferences(base(DEFAULT_SETTINGS, ["pc:w2:p3"]), local(DEFAULT_SETTINGS, ["pc:w2:p3", "local:w1:p1"]), { revision: 2, settings: {}, pins: [] }, null);
-    expect(pinning.pins).toBeNull();
+    expect(pinning.pins).toEqual(["local:w1:p1"]);
     expect(pinning.base.pins).toEqual([]);
   });
 

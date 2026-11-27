@@ -1,7 +1,7 @@
 import type { StreamSource } from "./conversation-shared.ts";
 import { claudeHandback, claudePeerNotice, piMessage, piPromptImages } from "./transcript-records.ts";
 import type { TranscriptEntry } from "./claude-transcript.ts";
-import { claudeImages, isCommandEntry, senpiPrompt, withoutPictureBytes } from "./claude-transcript.ts";
+import { claudeImages, isClaudeStopEntry, isCommandEntry, senpiPrompt, withoutPictureBytes } from "./claude-transcript.ts";
 import { copilotPromptOpens, copilotRootRecord } from "./copilot.ts";
 import { musePrompt } from "./muse.ts";
 import { lettaPrompt } from "./letta.ts";
@@ -126,6 +126,7 @@ export function opensTurn(source: StreamSource, line: string, blobs: string | nu
   if (claudePeerNotice(entry) !== null) return claudeHandback(entry) === null;
   if (entry.type !== "user" || entry.isMeta || entry.isCompactSummary) return false;
   const content = entry.message?.content;
+  if (isClaudeStopEntry(entry, content)) return false;
   if (typeof content === "string") return !isCommandEntry(content, entry);
   if (!Array.isArray(content)) return false;
   // senpi's host tool results answer the calls before them and its notices are no one's typing: only a

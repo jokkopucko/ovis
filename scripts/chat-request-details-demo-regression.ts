@@ -1,21 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Browser } from "playwright-core";
+import type { Browser } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { searchPattern, searchTurns } from "../shared/conversation-search.ts";
 import type { ConversationTurn } from "../shared/protocol.ts";
 import { appFaces } from "./app-faces.ts";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
+import { appContext } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 import { openMoreGroup } from "./header-more.ts";
-import { serveDemo } from "./demo-server.ts";
 
 // All files and HTTP traffic stay in this disposable, loopback-only app and no herdr session is opened.
-const app = mkdtempSync(join(tmpdir(), "herdr-chat-request-details-demo-"));
 const evidence = process.env["UI_EVIDENCE_DIR"] || null;
-if (evidence !== null) mkdirSync(evidence, { recursive: true });
 
 const PANE = panes.omp;
 const ERRORS = [
@@ -35,34 +30,27 @@ const TURNS = [
 const QUERY = "connection error";
 const SEARCH = { history_id: "request-details", cursor: null, matches: searchTurns(TURNS, searchPattern(QUERY)!) };
 
-async function prepareDemo(): Promise<void> {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  const html = readFileSync(index, "utf8");
-  assert.match(html, /<script type="module"/);
-  const override = `<script>(() => {
-    const demo = window.fetch;
-    const turns = ${JSON.stringify(TURNS)};
-    window.fetch = (input, init) => {
-      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
-      if (url.pathname === "/api/pane/conversation/search" && url.searchParams.get("pane_id") === ${JSON.stringify(PANE)}) {
-        return Promise.resolve(new Response(${JSON.stringify(JSON.stringify(SEARCH))}, { headers: { "content-type": "application/json" } }));
-      }
-      if (url.pathname === "/api/pane/conversation" && url.searchParams.get("pane_id") === ${JSON.stringify(PANE)}) {
-        const body = { source: "omp-transcript", history_id: "request-details", cursor: null, turns: url.searchParams.has("before") ? [] : turns };
-        return Promise.resolve(new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } }));
-      }
-      return demo(input, init);
-    };
-  })();</script>`;
-  writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${override}\n    <script type="module"`));
-}
+const override = `<script>(() => {
+  const demo = window.fetch;
+  const turns = ${JSON.stringify(TURNS)};
+  window.fetch = (input, init) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
+    if (url.pathname === "/api/pane/conversation/search" && url.searchParams.get("pane_id") === ${JSON.stringify(PANE)}) {
+      return Promise.resolve(new Response(${JSON.stringify(JSON.stringify(SEARCH))}, { headers: { "content-type": "application/json" } }));
+    }
+    if (url.pathname === "/api/pane/conversation" && url.searchParams.get("pane_id") === ${JSON.stringify(PANE)}) {
+      const body = { source: "omp-transcript", history_id: "request-details", cursor: null, turns: url.searchParams.has("before") ? [] : turns };
+      return Promise.resolve(new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } }));
+    }
+    return demo(input, init);
+  };
+})();</script>`;
 
 async function check(browser: Browser, origin: string, width: number, theme: "light" | "dark", storedOff: boolean): Promise<void> {
   const phone = width <= 480;
-  const context = await browser.newContext(phone
-    ? { viewport: { width, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: "en-US", colorScheme: theme }
-    : { viewport: { width, height: 900 }, locale: "en-US", colorScheme: theme });
+  const context = await appContext(browser, phone
+    ? { viewport: { width, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, colorScheme: theme }
+    : { viewport: { width, height: 900 }, colorScheme: theme });
   const name = `${width}px ${theme}${storedOff ? " with the old switch stored off" : ""}`;
   try {
     // the demo's other agents finish turns now and then: their in-app alerts stay off over the transcript
@@ -128,19 +116,10 @@ async function check(browser: Browser, origin: string, width: number, theme: "li
   } finally { await context.close(); }
 }
 
-try {
-  await prepareDemo();
-  const server = serveDemo(app);
-  try {
-    const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-    try {
-      for (const width of [390, 1280]) {
-        for (const theme of ["light", "dark"] as const) {
-          for (const storedOff of [false, true]) await check(browser, `http://127.0.0.1:${server.port}`, width, theme, storedOff);
-        }
-      }
-    } finally { await browser.close(); }
-  } finally { await server.stop(true); }
-} finally {
-  rmSync(app, { recursive: true, force: true });
-}
+await withDemoBrowser({ tempPrefix: "herdr-chat-request-details-demo-", afterTransport: `\n    ${override}` }, async ({ browser, origin }) => {
+  for (const width of [390, 1280]) {
+    for (const theme of ["light", "dark"] as const) {
+      for (const storedOff of [false, true]) await check(browser, origin, width, theme, storedOff);
+    }
+  }
+});

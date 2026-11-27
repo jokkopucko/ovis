@@ -117,14 +117,29 @@ async function fixture(options: { bootId?: string; now?: () => number; serverId?
     disconnect(runtime: TestRuntime): void;
   };
   const rosters: string[] = [];
-  manager.subscribe((event) => {
+  const stopRecording = manager.subscribe((event) => {
     if (event.type === "machines") for (const machine of event.machines) {
       const status = machine.snapshot?.panes[0]?.agent_status;
       if (status) rosters.push(`${machine.id}:${status}`);
     }
   });
-  return { manager, drive, local, rosters };
+  return { manager, drive, local, rosters, stopRecording };
 }
+
+it("keeps internal machine listeners without counting them as roster viewers", async () => {
+  const { manager, stopRecording } = await fixture();
+  stopRecording();
+  const heard: string[] = [];
+  const unsubscribe = manager.subscribe((event) => { heard.push(event.type); }, { internal: true });
+  expect(manager.rosterWatched).toBe(false);
+  const stopWatching = manager.subscribe(() => {});
+  expect(manager.rosterWatched).toBe(true);
+  stopWatching();
+  expect(manager.rosterWatched).toBe(false);
+  manager.localMessage({ type: "session-changed" });
+  expect(heard).toEqual(["machines", "machine-message"]);
+  unsubscribe();
+});
 
 type TestRuntime = {
   machine: Machine;

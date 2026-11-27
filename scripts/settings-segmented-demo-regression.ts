@@ -1,18 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Browser, type BrowserContextOptions, type Locator, type Page } from "playwright-core";
-import { buildDemoApp } from "./demo-build.ts";
+import type { Browser, BrowserContextOptions, Locator, Page } from "playwright-core";
+import { appContext } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 import { openSettingsPage, sheetRisen } from "./settings-page.ts";
 import { PAGES, SETTINGS } from "./settings-pages-harness.ts";
 import { KO } from "../src/lib/i18n.ko.ts";
 import { JA } from "../src/lib/i18n.ja.ts";
 import { ZH } from "../src/lib/i18n.zh.ts";
-import { serveDemo } from "./demo-server.ts";
 
 // All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
-const app = mkdtempSync(join(tmpdir(), "herdr-settings-segmented-"));
 
 type Language = "en" | "ko" | "ja" | "zh";
 const WORDS: Record<Language, Record<string, string>> = { en: {}, ko: KO, ja: JA, zh: ZH };
@@ -90,7 +87,7 @@ const segmented = (page: Page): Promise<{ seen: number; defects: string[] }> => 
 const settled = (page: Page): Promise<void> => page.evaluate(() => document.fonts.ready.then(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done())))));
 
 async function settingsIn(browser: Browser, url: string, language: Language, width: number, options: BrowserContextOptions, settings: Record<string, unknown> = {}): Promise<{ page: Page; errors: string[]; close: () => Promise<void> }> {
-  const context = await browser.newContext({ viewport: { width, height: 800 }, locale: language, ...options });
+  const context = await appContext(browser, { viewport: { width, height: 800 }, locale: language, ...options });
   await context.addInitScript((stored) => { if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", stored); }, JSON.stringify({ ...SETTINGS, language, ...settings }));
   const page = await context.newPage();
   const errors: string[] = [];
@@ -152,125 +149,105 @@ async function everyPage(page: Page, language: Language, where: string): Promise
   return seen;
 }
 
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    <script type="module"`));
-  const prefix = "/herdr-web-ui/demo/app/";
-  const server = serveDemo(app, { prefix });
-  const url = `http://127.0.0.1:${server.port}${prefix}`;
-  try {
-    const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
+await withDemoBrowser({ tempPrefix: "herdr-settings-segmented-" }, async ({ browser, baseUrl: url }) => {
+  for (const language of ["en", "ko", "ja", "zh"] as const) {
+    const { page, errors, close } = await settingsIn(browser, url, language, 390, PHONE);
     try {
-      for (const language of ["en", "ko", "ja", "zh"] as const) {
-        const { page, errors, close } = await settingsIn(browser, url, language, 390, PHONE);
-        try {
-          assert.equal(await page.evaluate(() => matchMedia("(pointer: coarse)").matches), true, "the phone is a finger's device");
-          let seen = 0;
-          for (const width of [390, 360, 320]) {
-            await page.setViewportSize({ width, height: 800 });
-            seen += await everyPage(page, language, `on a ${width}px phone (${language})`);
-          }
-          assert.ok(seen > 0, `Settings draws segmented controls (${language})`);
-          assert.deepEqual(errors, []);
-        } finally {
-          await close();
-        }
+      assert.equal(await page.evaluate(() => matchMedia("(pointer: coarse)").matches), true, "the phone is a finger's device");
+      let seen = 0;
+      for (const width of [390, 360, 320]) {
+        await page.setViewportSize({ width, height: 800 });
+        seen += await everyPage(page, language, `on a ${width}px phone (${language})`);
       }
-      console.log("PASS on a phone at 390, 360 and 320px, in English, Korean, Japanese and Chinese, every Settings page's segmented controls draw inside their tracks and hold their labels, and no fact is squeezed");
-
-      {
-        const { page, errors, close } = await settingsIn(browser, url, "ko", 360, PHONE);
-        try {
-          await openSettingsPage(page, KO["Appearance"]!, KO["Back to settings"]!);
-          const four = page.locator(".settings-body:not([hidden]) .segmented").filter({ has: page.locator(":scope > button:nth-child(4)") }).first();
-          await four.scrollIntoViewIfNeeded();
-          const shapes: string[][] = [];
-          for (let index = 0; index < 4; index += 1) {
-            await choose(page, four.locator(":scope > button").nth(index));
-            assert.deepEqual((await segmented(page)).defects, [], `the four-option control with its option ${index + 1} chosen, on a 360px phone (ko)`);
-            shapes.push(await shapeOf(four));
-          }
-          for (const shape of shapes) assert.deepEqual(shape, shapes[0], "the control keeps one shape whichever option is chosen");
-          if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "settings-segmented-360-ko.png"), animations: "disabled" });
-          assert.deepEqual(errors, []);
-        } finally {
-          await close();
-        }
-      }
-      console.log("PASS at 360px in Korean each of the four-option control's choices holds its own label, in one shape");
-
-      {
-        const { page, errors, close } = await settingsIn(browser, url, "en", 430, PHONE);
-        try {
-          await openSettingsPage(page, "Terminal");
-          const control = page.locator(".settings-body:not([hidden]) .segmented").filter({ has: page.locator(":scope > button:nth-child(3)") }).first();
-          await control.scrollIntoViewIfNeeded();
-          assert.equal(await rowsOf(control), 1, "the three-option control is one line at 430px");
-          let width = 430;
-          while (width > 320 && await rowsOf(control) === 1) {
-            width -= 1;
-            await page.setViewportSize({ width, height: 800 });
-            await settled(page);
-          }
-          assert.ok(width > 320, "the three-option control takes rows somewhere above 320px");
-          await page.setViewportSize({ width: width + 1, height: 800 });
-          await settled(page);
-          const line = await shapeOf(control);
-          for (let index = 0; index < 3; index += 1) {
-            await choose(page, control.locator(":scope > button").nth(index));
-            assert.deepEqual(await shapeOf(control), line, `at ${width + 1}px, the last width of one line, choosing option ${index + 1} keeps the line`);
-          }
-          assert.deepEqual(errors, []);
-        } finally {
-          await close();
-        }
-      }
-      console.log("PASS at the narrowest width where three options share a line, choosing any of them keeps the line");
-
-      for (const [language, settings] of [["ja", { uiFontSize: 20 }], ["ko", { uiFontSize: 20 }], ["ko", { density: "compact" }]] as const) {
-        const { page, errors, close } = await settingsIn(browser, url, language, 320, PHONE, settings);
-        try {
-          assert.ok(await everyPage(page, language, `on a 320px phone with ${JSON.stringify(settings)} (${language})`) > 0);
-          assert.deepEqual(errors, []);
-        } finally {
-          await close();
-        }
-      }
-      console.log("PASS at 320px the largest interface text and the compact density keep every label in its option");
-
-      for (const options of [PHONE, {}]) {
-        const { page, errors, close } = await settingsIn(browser, url, "en", options === PHONE ? 360 : 1440, { ...options, contrast: "more" });
-        try {
-          assert.equal(await page.evaluate(() => matchMedia("(prefers-contrast: more)").matches), true, "the device asks for more contrast");
-          assert.ok(await everyPage(page, "en", `with more contrast (${options === PHONE ? "a 360px phone" : "1440px"})`) > 0);
-          assert.deepEqual(errors, []);
-        } finally {
-          await close();
-        }
-      }
-      console.log("PASS with more contrast asked for, on a phone and at 1440px, the chosen option still draws inside its track");
-
-      {
-        const { page, errors, close } = await settingsIn(browser, url, "en", 1440, {});
-        try {
-          assert.equal(await page.evaluate(() => matchMedia("(pointer: coarse)").matches), false, "the window is a mouse's");
-          assert.ok(await everyPage(page, "en", "at 1440px") > 0);
-          assert.deepEqual(errors, []);
-        } finally {
-          await close();
-        }
-      }
-      console.log("PASS at 1440px with a mouse every Settings page's segmented controls draw inside their tracks");
+      assert.ok(seen > 0, `Settings draws segmented controls (${language})`);
+      assert.deepEqual(errors, []);
     } finally {
-      await browser.close();
-      console.log("CLEANUP browser closed");
+      await close();
     }
-  } finally {
-    server.stop(true);
-    console.log("CLEANUP loopback demo server stopped");
   }
-} finally {
-  rmSync(app, { recursive: true, force: true });
-  console.log("CLEANUP disposable demo app removed");
-}
+  console.log("PASS on a phone at 390, 360 and 320px, in English, Korean, Japanese and Chinese, every Settings page's segmented controls draw inside their tracks and hold their labels, and no fact is squeezed");
+
+  {
+    const { page, errors, close } = await settingsIn(browser, url, "ko", 360, PHONE);
+    try {
+      await openSettingsPage(page, KO["Appearance"]!, KO["Back to settings"]!);
+      const four = page.locator(".settings-body:not([hidden]) .segmented").filter({ has: page.locator(":scope > button:nth-child(4)") }).first();
+      await four.scrollIntoViewIfNeeded();
+      const shapes: string[][] = [];
+      for (let index = 0; index < 4; index += 1) {
+        await choose(page, four.locator(":scope > button").nth(index));
+        assert.deepEqual((await segmented(page)).defects, [], `the four-option control with its option ${index + 1} chosen, on a 360px phone (ko)`);
+        shapes.push(await shapeOf(four));
+      }
+      for (const shape of shapes) assert.deepEqual(shape, shapes[0], "the control keeps one shape whichever option is chosen");
+      if (process.env.UI_EVIDENCE_DIR) await page.screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "settings-segmented-360-ko.png"), animations: "disabled" });
+      assert.deepEqual(errors, []);
+    } finally {
+      await close();
+    }
+  }
+  console.log("PASS at 360px in Korean each of the four-option control's choices holds its own label, in one shape");
+
+  {
+    const { page, errors, close } = await settingsIn(browser, url, "en", 430, PHONE);
+    try {
+      await openSettingsPage(page, "Terminal");
+      const control = page.locator(".settings-body:not([hidden]) .segmented").filter({ has: page.locator(":scope > button:nth-child(3)") }).first();
+      await control.scrollIntoViewIfNeeded();
+      assert.equal(await rowsOf(control), 1, "the three-option control is one line at 430px");
+      let width = 430;
+      while (width > 320 && await rowsOf(control) === 1) {
+        width -= 1;
+        await page.setViewportSize({ width, height: 800 });
+        await settled(page);
+      }
+      assert.ok(width > 320, "the three-option control takes rows somewhere above 320px");
+      await page.setViewportSize({ width: width + 1, height: 800 });
+      await settled(page);
+      const line = await shapeOf(control);
+      for (let index = 0; index < 3; index += 1) {
+        await choose(page, control.locator(":scope > button").nth(index));
+        assert.deepEqual(await shapeOf(control), line, `at ${width + 1}px, the last width of one line, choosing option ${index + 1} keeps the line`);
+      }
+      assert.deepEqual(errors, []);
+    } finally {
+      await close();
+    }
+  }
+  console.log("PASS at the narrowest width where three options share a line, choosing any of them keeps the line");
+
+  for (const [language, settings] of [["ja", { uiFontSize: 20 }], ["ko", { uiFontSize: 20 }], ["ko", { density: "compact" }]] as const) {
+    const { page, errors, close } = await settingsIn(browser, url, language, 320, PHONE, settings);
+    try {
+      assert.ok(await everyPage(page, language, `on a 320px phone with ${JSON.stringify(settings)} (${language})`) > 0);
+      assert.deepEqual(errors, []);
+    } finally {
+      await close();
+    }
+  }
+  console.log("PASS at 320px the largest interface text and the compact density keep every label in its option");
+
+  for (const options of [PHONE, {}]) {
+    const { page, errors, close } = await settingsIn(browser, url, "en", options === PHONE ? 360 : 1440, { ...options, contrast: "more" });
+    try {
+      assert.equal(await page.evaluate(() => matchMedia("(prefers-contrast: more)").matches), true, "the device asks for more contrast");
+      assert.ok(await everyPage(page, "en", `with more contrast (${options === PHONE ? "a 360px phone" : "1440px"})`) > 0);
+      assert.deepEqual(errors, []);
+    } finally {
+      await close();
+    }
+  }
+  console.log("PASS with more contrast asked for, on a phone and at 1440px, the chosen option still draws inside its track");
+
+  {
+    const { page, errors, close } = await settingsIn(browser, url, "en", 1440, {});
+    try {
+      assert.equal(await page.evaluate(() => matchMedia("(pointer: coarse)").matches), false, "the window is a mouse's");
+      assert.ok(await everyPage(page, "en", "at 1440px") > 0);
+      assert.deepEqual(errors, []);
+    } finally {
+      await close();
+    }
+  }
+  console.log("PASS at 1440px with a mouse every Settings page's segmented controls draw inside their tracks");
+});

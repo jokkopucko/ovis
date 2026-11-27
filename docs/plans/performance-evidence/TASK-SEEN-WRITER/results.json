@@ -1,0 +1,482 @@
+{
+  "runtime": "1.4.4",
+  "platform": "linux",
+  "arch": "x64",
+  "fixture": {
+    "records": 500,
+    "updates": 50,
+    "repetitions": 5,
+    "warmups": 0
+  },
+  "results": [
+    {
+      "answerLength": 128,
+      "mode": "sync-baseline",
+      "repetition": 0,
+      "writes": 50,
+      "bytes": 4744642,
+      "maxActive": 1,
+      "elapsedMs": 70.10432,
+      "eventLoopGapsMs": [
+        70.111093
+      ]
+    },
+    {
+      "answerLength": 128,
+      "mode": "sync-baseline",
+      "repetition": 1,
+      "writes": 50,
+      "bytes": 4744642,
+      "maxActive": 1,
+      "elapsedMs": 62.56725200000001,
+      "eventLoopGapsMs": [
+        62.555490000000006,
+        0.012222999999977446
+      ]
+    },
+    {
+      "answerLength": 128,
+      "mode": "sync-baseline",
+      "repetition": 2,
+      "writes": 50,
+      "bytes": 4744642,
+      "maxActive": 1,
+      "elapsedMs": 61.77136300000001,
+      "eventLoopGapsMs": [
+        61.75862900000001,
+        0.012924999999995634
+      ]
+    },
+    {
+      "answerLength": 128,
+      "mode": "sync-baseline",
+      "repetition": 3,
+      "writes": 50,
+      "bytes": 4744642,
+      "maxActive": 1,
+      "elapsedMs": 60.431348000000014,
+      "eventLoopGapsMs": [
+        60.42608799999999,
+        0.007985000000019227
+      ]
+    },
+    {
+      "answerLength": 128,
+      "mode": "sync-baseline",
+      "repetition": 4,
+      "writes": 50,
+      "bytes": 4744642,
+      "maxActive": 1,
+      "elapsedMs": 60.98394999999999,
+      "eventLoopGapsMs": [
+        60.97874999999999,
+        0.00742400000001453
+      ]
+    },
+    {
+      "answerLength": 128,
+      "mode": "async",
+      "repetition": 0,
+      "writes": 2,
+      "bytes": 189785,
+      "maxActive": 1,
+      "elapsedMs": 9.834075999999982,
+      "eventLoopGapsMs": [
+        2.5460160000000087,
+        1.0590550000000007,
+        1.057030999999995,
+        1.0750850000000014,
+        2.4992279999999596,
+        1.057202000000018,
+        0.5431929999999738
+      ]
+    },
+    {
+      "answerLength": 128,
+      "mode": "async",
+      "repetition": 1,
+      "writes": 2,
+      "bytes": 189785,
+      "maxActive": 1,
+      "elapsedMs": 6.326577999999984,
+      "eventLoopGapsMs": [
+        1.0993609999999876,
+        1.0562900000000468,
+        2.656633999999997,
+        1.0297299999999723,
+        0.4850640000000226
+      ]
+    },
+    {
+      "answerLength": 128,
+      "mode": "async",
+      "repetition": 2,
+      "writes": 2,
+      "bytes": 189785,
+      "maxActive": 1,
+      "elapsedMs": 7.1979089999999815,
+      "eventLoopGapsMs": [
+        1.0138000000000034,
+        1.058072999999979,
+        3.4789030000000025,
+        1.0570920000000115,
+        0.5907119999999964
+      ]
+    },
+    {
+      "answerLength": 128,
+      "mode": "async",
+      "repetition": 3,
+      "writes": 2,
+      "bytes": 189785,
+      "maxActive": 1,
+      "elapsedMs": 6.011213999999995,
+      "eventLoopGapsMs": [
+        1.0295389999999998,
+        1.0566510000000449,
+        2.4304879999999685,
+        1.0570920000000115,
+        0.43755399999997735
+      ]
+    },
+    {
+      "answerLength": 128,
+      "mode": "async",
+      "repetition": 4,
+      "writes": 2,
+      "bytes": 189785,
+      "maxActive": 1,
+      "elapsedMs": 4.689434000000006,
+      "eventLoopGapsMs": [
+        1.0114059999999654,
+        1.0567200000000412,
+        1.112675999999965,
+        1.057662999999991,
+        0.4469420000000355
+      ]
+    },
+    {
+      "answerLength": 128,
+      "mode": "slow-async",
+      "repetition": 0,
+      "writes": 2,
+      "bytes": 189785,
+      "maxActive": 1,
+      "elapsedMs": 4.8182860000000005,
+      "eventLoopGapsMs": [
+        1.0331770000000233,
+        1.0572109999999952,
+        1.1666779999999903,
+        1.0573219999999992,
+        0.5049109999999928
+      ]
+    },
+    {
+      "answerLength": 128,
+      "mode": "slow-async",
+      "repetition": 1,
+      "writes": 2,
+      "bytes": 189785,
+      "maxActive": 1,
+      "elapsedMs": 4.7201709999999935,
+      "eventLoopGapsMs": [
+        1.0275259999999662,
+        1.0572609999999827,
+        1.151800000000037,
+        1.062661999999989,
+        0.4244289999999751
+      ]
+    },
+    {
+      "answerLength": 128,
+      "mode": "slow-async",
+      "repetition": 2,
+      "writes": 2,
+      "bytes": 189785,
+      "maxActive": 1,
+      "elapsedMs": 4.639490000000023,
+      "eventLoopGapsMs": [
+        1.0076879999999733,
+        1.0575919999999996,
+        1.105653000000018,
+        1.0566410000000133,
+        0.4124259999999822
+      ]
+    },
+    {
+      "answerLength": 128,
+      "mode": "slow-async",
+      "repetition": 3,
+      "writes": 2,
+      "bytes": 189785,
+      "maxActive": 1,
+      "elapsedMs": 4.854865000000018,
+      "eventLoopGapsMs": [
+        1.0214839999999867,
+        1.0578029999999785,
+        1.2252680000000282,
+        1.0577819999999747,
+        0.49295900000004167
+      ]
+    },
+    {
+      "answerLength": 128,
+      "mode": "slow-async",
+      "repetition": 4,
+      "writes": 2,
+      "bytes": 189785,
+      "maxActive": 1,
+      "elapsedMs": 5.793723999999997,
+      "eventLoopGapsMs": [
+        2.152384999999981,
+        1.0565000000000282,
+        1.1167730000000233,
+        1.0573119999999676,
+        0.41142500000000837
+      ]
+    },
+    {
+      "answerLength": 2048,
+      "mode": "sync-baseline",
+      "repetition": 0,
+      "writes": 50,
+      "bytes": 52744642,
+      "maxActive": 1,
+      "elapsedMs": 128.44766499999997,
+      "eventLoopGapsMs": [
+        128.441885,
+        0.007784000000015112
+      ]
+    },
+    {
+      "answerLength": 2048,
+      "mode": "sync-baseline",
+      "repetition": 1,
+      "writes": 50,
+      "bytes": 52744642,
+      "maxActive": 1,
+      "elapsedMs": 112.03517799999997,
+      "eventLoopGapsMs": [
+        112.031251,
+        0.00684200000000601
+      ]
+    },
+    {
+      "answerLength": 2048,
+      "mode": "sync-baseline",
+      "repetition": 2,
+      "writes": 50,
+      "bytes": 52744642,
+      "maxActive": 1,
+      "elapsedMs": 104.91111899999999,
+      "eventLoopGapsMs": [
+        104.90708000000006,
+        0.007143999999925654
+      ]
+    },
+    {
+      "answerLength": 2048,
+      "mode": "sync-baseline",
+      "repetition": 3,
+      "writes": 50,
+      "bytes": 52744642,
+      "maxActive": 1,
+      "elapsedMs": 100.241983,
+      "eventLoopGapsMs": [
+        100.23782399999993,
+        0.008086000000048443
+      ]
+    },
+    {
+      "answerLength": 2048,
+      "mode": "sync-baseline",
+      "repetition": 4,
+      "writes": 50,
+      "bytes": 52744642,
+      "maxActive": 1,
+      "elapsedMs": 102.53372999999999,
+      "eventLoopGapsMs": [
+        102.53159599999992,
+        0.006843000000003485
+      ]
+    },
+    {
+      "answerLength": 2048,
+      "mode": "async",
+      "repetition": 0,
+      "writes": 2,
+      "bytes": 2109785,
+      "maxActive": 1,
+      "elapsedMs": 9.819688000000042,
+      "eventLoopGapsMs": [
+        2.2446080000000848,
+        1.0558489999999665,
+        1.0564200000000028,
+        3.1563059999999723,
+        1.0556790000000547,
+        1.0244089999999915,
+        0.2295329999999467
+      ]
+    },
+    {
+      "answerLength": 2048,
+      "mode": "async",
+      "repetition": 1,
+      "writes": 2,
+      "bytes": 2109785,
+      "maxActive": 1,
+      "elapsedMs": 11.134265000000028,
+      "eventLoopGapsMs": [
+        3.0061230000000023,
+        1.0583139999999958,
+        1.0039209999999912,
+        3.716831999999954,
+        1.05494699999997,
+        1.0035500000000184,
+        0.293282999999974
+      ]
+    },
+    {
+      "answerLength": 2048,
+      "mode": "async",
+      "repetition": 2,
+      "writes": 2,
+      "bytes": 2109785,
+      "maxActive": 1,
+      "elapsedMs": 8.82628699999998,
+      "eventLoopGapsMs": [
+        2.892608999999993,
+        1.0554389999999785,
+        1.0549170000000458,
+        1.6200619999999617,
+        1.0558490000000802,
+        1.0006849999999758,
+        0.15018299999996998
+      ]
+    },
+    {
+      "answerLength": 2048,
+      "mode": "async",
+      "repetition": 3,
+      "writes": 2,
+      "bytes": 2109785,
+      "maxActive": 1,
+      "elapsedMs": 8.615469000000076,
+      "eventLoopGapsMs": [
+        3.4285180000000537,
+        1.0559389999999667,
+        1.0149719999999434,
+        1.0269450000000688,
+        1.054977000000008,
+        1.0363019999999779
+      ]
+    },
+    {
+      "answerLength": 2048,
+      "mode": "async",
+      "repetition": 4,
+      "writes": 2,
+      "bytes": 2109785,
+      "maxActive": 1,
+      "elapsedMs": 10.90459199999998,
+      "eventLoopGapsMs": [
+        4.3343849999999975,
+        1.1194789999999557,
+        1.001987999999983,
+        2.251130000000103,
+        1.055898999999954,
+        1.0130690000000868,
+        0.13125700000000506
+      ]
+    },
+    {
+      "answerLength": 2048,
+      "mode": "slow-async",
+      "repetition": 0,
+      "writes": 2,
+      "bytes": 2109785,
+      "maxActive": 1,
+      "elapsedMs": 9.98120199999994,
+      "eventLoopGapsMs": [
+        4.500617999999804,
+        1.0551170000001093,
+        1.0558889999999792,
+        1.1735810000000129,
+        1.056440000000066,
+        1.015271999999868,
+        0.127962000000025
+      ]
+    },
+    {
+      "answerLength": 2048,
+      "mode": "slow-async",
+      "repetition": 1,
+      "writes": 2,
+      "bytes": 2109785,
+      "maxActive": 1,
+      "elapsedMs": 10.539164000000028,
+      "eventLoopGapsMs": [
+        2.8044330000000173,
+        1.0556689999998525,
+        1.057081000000153,
+        3.3329989999999725,
+        1.0560390000000552,
+        1.0185389999999188,
+        0.2178799999999228
+      ]
+    },
+    {
+      "answerLength": 2048,
+      "mode": "slow-async",
+      "repetition": 2,
+      "writes": 2,
+      "bytes": 2109785,
+      "maxActive": 1,
+      "elapsedMs": 8.602364999999963,
+      "eventLoopGapsMs": [
+        3.013827999999876,
+        1.055407999999943,
+        1.0011160000001382,
+        1.3613040000000183,
+        1.0559200000000146,
+        1.013058000000001,
+        0.10385499999983949
+      ]
+    },
+    {
+      "answerLength": 2048,
+      "mode": "slow-async",
+      "repetition": 3,
+      "writes": 2,
+      "bytes": 2109785,
+      "maxActive": 1,
+      "elapsedMs": 7.007771000000048,
+      "eventLoopGapsMs": [
+        1.746599999999944,
+        1.0553079999999682,
+        1.0230770000000575,
+        1.0606980000000021,
+        1.0410210000000006,
+        1.014160999999831,
+        0.07028200000013385
+      ]
+    },
+    {
+      "answerLength": 2048,
+      "mode": "slow-async",
+      "repetition": 4,
+      "writes": 2,
+      "bytes": 2109785,
+      "maxActive": 1,
+      "elapsedMs": 8.557620000000043,
+      "eventLoopGapsMs": [
+        3.4729620000000523,
+        1.0772300000000996,
+        1.0201919999999518,
+        1.0647950000000037,
+        1.0475340000000415,
+        0.8750279999999293
+      ]
+    }
+  ]
+}

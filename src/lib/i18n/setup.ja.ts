@@ -1,29 +1,14 @@
 /**
- * Japanese for the keys only the agent setup files use: components/AgentSetupCard.tsx,
- * components/AddAgentPanel.tsx, components/AgentTile.tsx, components/AgentsSettings.tsx.
+ * Japanese for the keys only the agent setup files use: components/AddAgentPanel.tsx,
+ * components/AgentTile.tsx, components/AgentsSettings.tsx.
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const SETUP_JA: Record<string, string> = {
-  "Set up {agent}": "{agent} をセットアップ",
-  "Uses the official installer, on this PC.": "公式インストーラーで、この PC にインストールします。",
-  "This can take a few minutes. You can keep using Ovis.": "数分かかることがあります。その間も Ovis を使えます。",
-  "Installed. Sign in so it can use your plan.": "インストールしました。プランを使えるようにサインインしてください。",
-  "Installed. New terminal tabs will find it.": "インストールしました。新しく開くターミナルタブで見つかります。",
-  "Its folder is on PATH only for terminals opened after the install.": "このフォルダーが PATH に入るのは、インストール後に開いたターミナルだけです。",
-  "Finish signing in": "サインインを完了",
-  "Follow the steps in the sign-in tab, then come back here.": "サインインタブの手順に従ってから、ここに戻ってください。",
-  "Version {version}": "バージョン {version}",
-  "It did not finish": "完了しませんでした",
-  "{agent} does not start": "{agent} が起動しません",
-  "Skip": "スキップ",
-  "I've signed in": "サインインしました",
-  "Start {agent}": "{agent} を開始",
-  "Hide details": "詳細を隠す",
-  "Show details": "詳細を表示",
   "Agents you can install": "インストールできるエージェント",
   "No other agents to install here.": "ここにインストールできるほかのエージェントはありません。",
   "An agent your shell's startup file (.zshrc) puts on PATH may be missing here: Ovis could not read that PATH. Check again reads it once more.": "シェルの起動ファイル（.zshrc）が PATH に追加するエージェントは、ここに表示されないことがあります。Ovis はその PATH を読み取れませんでした。再確認でもう一度読み取ります。",
   "None on this PC yet.": "このPCにはまだありません。",
+  "Not installed on this PC. These settings apply once it is installed here.": "このPCにはインストールされていません。ここにインストールすると、この設定が適用されます。",
   "Ovis cannot tell which agents this PC has. Install them from a terminal on it.": "OvisはこのPCにどのエージェントがあるか分かりません。このPCのターミナルからインストールしてください。",
   "Ovis needs {version} or later.": "Ovisには{version}以降が必要です。",
   "This PC's Ovis cannot install agents yet. Update it, then try again.": "このPCのOvisはまだエージェントをインストールできません。更新してから、もう一度お試しください。",
@@ -54,7 +39,6 @@ export const SETUP_JA: Record<string, string> = {
   "Copy the command for {name}": "{name} のコマンドをコピー",
   "This PC's bridge does not offer agent integrations yet. It will after its next runtime update.": "この PC のブリッジはまだエージェント連携に対応していません。次のランタイム更新後に利用できます。",
   "Open setup guide": "ガイドを開く",
-  "Expired": "期限切れ",
   "Edit": "編集",
   "Remove hub?": "ハブを削除しますか？",
   "Its accounts disappear from this list. The hub itself is not changed.": "一覧からハブのアカウントが消えます。ハブ自体は変わりません。",
@@ -88,7 +72,7 @@ export const SETUP_JA: Record<string, string> = {
   "None": "なし",
   "A browser the agent can drive: Ovis adds an MCP server at a fixed version when it starts this agent. That browser uses a profile of its own, without your sign-ins, and Ovis does not watch or limit it. Applies from the next start; an agent started from a terminal is not changed.": "エージェントが操作できるブラウザです。Ovis がこのエージェントを起動するときに、バージョンを固定した MCP サーバーを追加します。そのブラウザは専用のプロフィールを使うため、あなたのログインは使われません。Ovis はそのブラウザを監視も制限もしません。次の起動から適用され、ターミナルから直接起動したエージェントは変わりません。",
   "Let agents call other agents": "ほかのエージェントを呼び出す",
-  "On this PC only. You still answer every permission request.": "この PC のみ。許可のリクエストには常にあなたが答えます。",
+  "On this PC only. Only you can approve requests.": "この PC でのみ。承認はご自身で行います。",
   "Agents they may call": "呼び出せるエージェント",
   "Not saved: this PC did not answer. Try again.": "保存できませんでした: この PC が応答しませんでした。もう一度お試しください。",
 };

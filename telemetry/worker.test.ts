@@ -379,6 +379,33 @@ describe("telemetry receiver: active", () => {
     expect(JSON.parse(usageOf()!)).toEqual(usage);
   });
 
+  test("active: a newer sender's usage adds its agents and answers, and keeps them as sent; an older sender's still goes", async () => {
+    const withAgents: TelemetryUsage = { ...usage, agents: { claude: { ovis: 1, other: 2, versions: ["2.1", "2.10"] }, codex: { ovis: 0, other: 1, versions: [] } }, answers: { native: 1, screen: 2, terminal: 4 } };
+    expect(readActive({ ...active, usage: withAgents }, now)?.usage).toEqual(withAgents);
+    expect(readActive({ ...active, usage }, now)?.usage).toEqual(usage);
+    const db = new Database(":memory:");
+    db.exec(readFileSync(join(import.meta.dir, "schema.sql"), "utf8"));
+    const env: Env = { DB: { prepare: (query) => ({ bind: (...values) => ({ run: async () => db.prepare(query).run(...(values as (string | null)[])) }) }) } };
+    expect((await handle(postActive(JSON.stringify({ ...active, usage: withAgents })), env, now)).status).toBe(204);
+    expect(JSON.parse((db.query("SELECT usage FROM active").get() as { usage: string }).usage)).toEqual(withAgents);
+  });
+
+  test("active: agents and answers come together, from the fixed lists, with counts, at most four major.minor versions and buckets", () => {
+    const agents = { claude: { ovis: 0, other: 1, versions: ["2.1"] } };
+    for (const bad of [
+      { ...usage, agents },
+      { ...usage, answers: {} },
+      { ...usage, agents: { gemini: { ovis: 0, other: 1, versions: [] } }, answers: {} },
+      { ...usage, agents: { claude: { ovis: 0, other: 1, versions: ["2.1.330"] } }, answers: {} },
+      { ...usage, agents: { claude: { ovis: 0, other: 1, versions: ["2.2", "2.1"] } }, answers: {} },
+      { ...usage, agents: { claude: { ovis: 0, other: 1, versions: ["1.0", "1.1", "1.2", "1.3", "1.4"] } }, answers: {} },
+      { ...usage, agents: { claude: { ovis: -1, other: 1, versions: [] } }, answers: {} },
+      { ...usage, agents: { claude: { ovis: 0, other: 1, versions: [], pane: "w1:p1" } }, answers: {} },
+      { ...usage, agents, answers: { screen: 5 } },
+      { ...usage, agents, answers: { keys: 1 } },
+    ]) expect(readActive({ ...active, usage: bad }, now)).toBeNull();
+  });
+
   test("active: an existing table takes the usage only after the README's ALTER, keeping its rows", async () => {
     const db = new Database(":memory:");
     db.exec(readFileSync(join(import.meta.dir, "schema.sql"), "utf8").replace("  usage TEXT CHECK (usage IS NULL OR json_valid(usage)),\n", ""));

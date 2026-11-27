@@ -19,11 +19,12 @@
  *
  * Chosen over omp's Collab (a second client of the session, answering its dialogs the same way): Collab needs a relay
  * the session's host connects to, which Ovis would have to run (omp's own is a hosted service) and speak omp's guest
- * protocol to, for what one extension file does here. Measured on omp 18.14.0.
+ * protocol to, for what one extension file does here. Measured on omp 18.14.0 and 19.2.1 (19.2.0 moved the extensions'
+ * rendering to its own UI library; `ui.approve`, its prompt and the events this uses stayed as they were).
  */
 import { meetsMinVersion } from "../../shared/agent-catalog.ts";
 import type { ApprovalDecision } from "./hub.ts";
-import { extensionApprovals } from "./extension.ts";
+import { contextUsage, extensionApprovals } from "./extension.ts";
 
 export const OMP_HOOK_MIN_VERSION = "18.14.0";
 
@@ -62,7 +63,13 @@ export default function ovisApprovals(pi) {
   const done = (event) => { calls.delete(event?.toolCallId); };
   pi.on("tool_approval_resolved", done);
   pi.on("tool_result", done);
-  pi.on("session_start", (_event, ctx) => {
+  // omp rebinds the extension to its subagents, including depth-zero clones, under the same launch key.
+  const reportContext = (event, ctx) => { if (ctx?.agent?.kind === "main") tellContext(event, ctx); };
+  pi.on("agent_end", reportContext);
+  pi.on("session_compact", reportContext);
+  pi.on("session_switch", reportContext);
+  pi.on("session_start", (event, ctx) => {
+    reportContext(event, ctx);
     const ui = ctx?.ui;
     // omp's terminal UI only: in its RPC mode the dialogs are the RPC client's
     if (ctx?.mode !== "tui" || !ctx.hasUI || typeof ui?.approve !== "function" || wrapped.has(ui)) return;
@@ -98,8 +105,24 @@ function decision(label: string): ApprovalDecision | null {
   return label === APPROVE_LABEL ? "allow" : label === DENY_LABEL ? "deny" : null;
 }
 
-/** omp 18.x from the one measured on: a later major may change the UI context under the hook. */
+/** The majors measured on (omp 18.x from 18.14.0, and 19.x): a later major may change the UI context under the hook. */
+const OMP_HOOK_MAJORS = new Set(["18", "19"]);
+
+/**
+ * Whether a launch's own arguments, before any `--`, take every extension out (`--no-tools`, or `--no-tools=<any>`,
+ * which omp reads the same) or name the only one allowed (`--trusted-extension`): omp 19.2 refuses to start with one beside them (cli/args.ts), so the launch keeps
+ * its arguments as they are.
+ */
+function refusesExtensions(args: readonly string[] | undefined): boolean {
+  const own = args === undefined ? [] : args.slice(0, args.includes("--") ? args.indexOf("--") : args.length);
+  return own.some((arg) => /^--(?:no-tools|trusted-extension)(?:=|$)/u.test(arg));
+}
+
+const adapter = extensionApprovals("omp", (version) => meetsMinVersion(version, OMP_HOOK_MIN_VERSION) && OMP_HOOK_MAJORS.has(version.split(".")[0]!), GLUE);
+
 export const ompApprovals = {
-  ...extensionApprovals("omp", (version) => meetsMinVersion(version, OMP_HOOK_MIN_VERSION) && version.split(".")[0] === "18", GLUE),
+  ...adapter,
+  launchArgs: (...launch: Parameters<typeof adapter.launchArgs>) => refusesExtensions(launch[0]) ? null : adapter.launchArgs(...launch),
   decision,
+  context: contextUsage,
 };

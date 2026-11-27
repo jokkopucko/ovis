@@ -23,6 +23,38 @@ public class SavedImageTest {
     }
 
     @Test
+    public void takesAnyWellFormedFileType() {
+        assertTrue(SavedImage.isFileType("text/plain"));
+        assertTrue(SavedImage.isFileType("application/pdf"));
+        assertTrue(SavedImage.isFileType("application/vnd.openxmlformats-officedocument.wordprocessingml.document"));
+        assertTrue(SavedImage.isFileType("image/svg+xml"));
+        assertFalse(SavedImage.isFileType(null));
+        assertFalse(SavedImage.isFileType(""));
+        assertFalse(SavedImage.isFileType("text"));
+        assertFalse(SavedImage.isFileType("text/plain; charset=utf-8"));
+        assertFalse(SavedImage.isFileType("text/../plain"));
+    }
+
+    @Test
+    public void filesAFileUnderTheTypeItsNameStandsFor() {
+        java.util.Map<String, String> known = java.util.Map.of("md", "text/markdown", "pdf", "application/pdf", "ts", "video/mp2t");
+        assertEquals("text/markdown", SavedImage.typeForName("notes.md", known::get));
+        assertEquals("application/pdf", SavedImage.typeForName("Report.PDF", known::get));
+        // a TypeScript file is video/mp2t to Android: so it is filed, and keeps its name
+        assertEquals("video/mp2t", SavedImage.typeForName("main.ts", known::get));
+        assertEquals("application/octet-stream", SavedImage.typeForName("Makefile", known::get));
+        assertEquals("application/octet-stream", SavedImage.typeForName("data.unknownext", known::get));
+        assertEquals("application/octet-stream", SavedImage.typeForName("trailing.", known::get));
+    }
+
+    @Test
+    public void namesAFileWithNothingLeftOfItsName() {
+        assertEquals("file", SavedImage.fileName("..", "file"));
+        assertEquals("notes.md", SavedImage.fileName("/private/tmp/claude/notes.md", "file"));
+        assertEquals("image", SavedImage.fileName(null));
+    }
+
+    @Test
     public void decodesBase64UpToTheLimit() {
         byte[] bytes = { 0, 1, (byte) 255 };
         assertArrayEquals(bytes, SavedImage.decode(Base64.getEncoder().encodeToString(bytes)));

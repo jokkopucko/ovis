@@ -1,12 +1,11 @@
 import { afterEach, beforeEach, expect, it } from "bun:test";
-import { createElement, useRef } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, createElement, useRef } from "react";
 import type { Machine } from "../../shared/machines.ts";
+import { openPage, type Page } from "./page.fixture.ts";
 import { setPcNewness } from "./relay/newPcHere.ts";
 import { useSelectTarget } from "./useSelection.ts";
 
-let saved: PropertyDescriptor | undefined;
-let renderer: ReactTestRenderer | undefined;
+let page: Page;
 let picked: (string | null)[];
 
 const machine = {
@@ -15,17 +14,13 @@ const machine = {
 } as unknown as Machine;
 
 beforeEach(() => {
-  saved = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+  page = openPage();
   picked = [];
 });
 
 afterEach(async () => {
-  await act(async () => { renderer?.unmount(); });
-  renderer = undefined;
+  await page.close();
   setPcNewness(null);
-  if (saved) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", saved);
-  else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
 });
 
 function Probe() {
@@ -42,7 +37,7 @@ function Probe() {
 
 it("#16, C3 pin 1: nothing of the page's PC is selected by itself while it is new in the account, or not known yet", async () => {
   setPcNewness({ until: Date.now() + 3_600_000 });
-  await act(async () => { renderer = create(createElement(Probe)); });
+  await page.render(createElement(Probe));
   expect(picked.filter((pane) => pane !== null)).toEqual([]);
   await act(async () => { setPcNewness("unknown"); });
   expect(picked.filter((pane) => pane !== null)).toEqual([]);

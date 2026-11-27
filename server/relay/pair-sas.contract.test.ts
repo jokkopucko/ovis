@@ -99,7 +99,7 @@ async function phone(transport: Transport, serverKey: string) {
   const publicKey = Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url");
   const send = (frame: MuxFrame) => channel.send(encodeFrame(frame).slice().buffer).catch(() => {});
   return {
-    channel, inbox, publicKey, closed: closed.promise, send,
+    channel, inbox, publicKey, keys, closed: closed.promise, send,
     binding: () => { const binding = channelBinding(channel); if (!binding) throw new Error("No binding"); return binding; },
     async hello(features = [PAIR_SAS_FEATURE]) {
       await send({ type: FrameType.HELLO, flags: 0, stream_id: 0, payload: { protocol: "ovis-mux", versions: [1], features, required_features: [] } });
@@ -1070,6 +1070,48 @@ test("on a PC pinned to its account's signed list, a PC vouched for is taken onl
     expect((await askToJoin(f, (key) => admit(key), PAIR_INTENT_VOUCHED, identity)).refused).toBeUndefined();
     expect(await prompt).toMatchObject({ vouched: true, proven_server_id: deriveServerId(identity.keys.publicKey) });
   } finally { followed.mockRestore(); allows.mockRestore(); holds.mockRestore(); }
+});
+
+test("on a pinned PC, another PC of the account is let in to watch for as long as the list holds the relay key its join proved: at its comparison, at every later sign-in, and no longer", async () => {
+  const { f, member, admit } = await joinFixture(Date.now, true);
+  const { devices, accountList } = f.app.context.services;
+  const link = await signedIn(f, member);
+  const followed = spyOn(devices, "listFollowed").mockReturnValue(true);
+  const allows = spyOn(accountList!, "allowsJoins").mockReturnValue(true);
+  // the list holds no DEVICE under that PC's key: what it holds is the PC, by its relay key
+  const role = spyOn(devices, "listRoleOf").mockReturnValue(null);
+  const inList = { holds: true };
+  const asked: string[] = [];
+  const holds = spyOn(accountList!, "holdsPc").mockImplementation((endpoint) => { asked.push(endpoint); return inList.holds; });
+  try {
+    const identity = { keys: generateKeyPair() };
+    const prompt = remotePrompt(f);
+    const { p } = await askToJoin(f, (key) => admit(key), PAIR_INTENT_VOUCHED, identity);
+    const request = await prompt;
+    expect((await post(link, "/api/relay/pairing", { id: request.id, decision: "approve", proven_server_id: request.proven_server_id, pc_label: "Verified PC" })).status).toBe(200);
+    await confirm(p);
+    const admitted = await p.inbox.next();
+    expect(admitted).toMatchObject({ type: FrameType.AUTH_OK, payload: { role: "watch" } });
+    if (admitted.type !== FrameType.AUTH_OK) throw new Error("not let in");
+    // the row keeps which PC it is: the relay key the join proved
+    const registry = readDeviceRegistry(join(f.stateDir, "devices.json"));
+    const row = registry.kind === "ok" ? registry.devices.find((device) => device.relay_public_key === p.publicKey) : undefined;
+    expect(row).toMatchObject({ id: admitted.payload.device_id, role: "watch", vouched_pc: bytesToHex(identity.keys.publicKey) });
+    // it signs in again later, and the list is asked about that relay key each time
+    const pcDevice = { id: admitted.payload.device_id, keys: p.keys, publicKey: p.publicKey };
+    asked.length = 0;
+    const again = await relayConnection(f);
+    expect(await again.auth(pcDevice)).toMatchObject({ role: "watch" });
+    expect(asked).toContain(bytesToHex(identity.keys.publicKey));
+    // the list removes that PC: its session ends, and it signs in no more
+    inList.holds = false;
+    devices.recheckListedSessions();
+    expect(await bounded(again.serverError)).toBe("auth_revoked");
+    // refused by name, not left unanswered
+    const refused = await relayConnection(f);
+    void refused.auth(pcDevice).catch(() => undefined);
+    expect(await bounded(refused.serverError)).toBe("auth_failed");
+  } finally { followed.mockRestore(); allows.mockRestore(); role.mockRestore(); holds.mockRestore(); }
 });
 
 test("on a pinned PC, a PC vouched for whose relay key the list removed while its comparison waited is not taken: no row, no session", async () => {

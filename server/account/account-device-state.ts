@@ -4,6 +4,7 @@ import type { RemovalEvidence } from "./removal-evidence.ts";
 import type { RowDrop } from "./row-drop-evidence.ts";
 import type { Sayer } from "./join-hold.ts";
 import type { Readmission } from "./readmission.ts";
+import { isJsonObject } from "../http.ts";
 
 export type DropReason = "list" | "revoke_all" | "identity_reset" | "remove" | "block" | "revoke" | "expired" | "catching_up" | "promoted";
 
@@ -36,8 +37,12 @@ export interface AccountRowSource {
 
 export type AccountRow = AccountJoinedRow;
 
-/** A whole read's list, as S2-24's commit hands it over. */
-export type ListCommit = Pick<AccountSnapshot, "account" | "snapshot" | "version" | "devices" | "removed">;
+/**
+ * A whole read's list, as S2-24's commit hands it over. `moved`: a device of a signed list that handed its place on to
+ * another key of its own (`from` the key a row may hold, `to` the key it is in by now); never a snapshot's.
+ */
+/** `names`: the devices' labels are the names the account's signed list gives them (list-follow.ts listCommit), which a row still named by the placeholder takes. */
+export type ListCommit = Pick<AccountSnapshot, "account" | "snapshot" | "version" | "devices" | "removed"> & { readonly moved?: readonly { readonly from: string; readonly to: string }[]; readonly names?: true };
 
 export interface JournalEntry extends Pick<SnapshotDevice, "provider" | "two_step"> {
   readonly kind: "admit" | "drop" | "its_me";
@@ -104,6 +109,12 @@ export interface DevicesFile {
 
 export const CLEARED: DevicesFile = { account: null, snapshot: null, version: 1, devices: [] };
 
+export function parseAccountDevicesForIdentity(value: unknown, serverId: string) {
+  const foreign = isJsonObject(value) && value.server_id !== serverId;
+  // Still validate a foreign file: normal startup only clears a valid registry.
+  return { file: parseAccountDevicesFile(value), foreign };
+}
+
 export function loadAccountDevices(path: string, serverId: string): { file: DevicesFile; error: string | null; foreign?: true } {
   let value: unknown;
   try { value = JSON.parse(readFileSync(path, "utf8")); } catch (error) {
@@ -112,10 +123,10 @@ export function loadAccountDevices(path: string, serverId: string): { file: Devi
     return { file: CLEARED, error: `Cannot read ${path}: account-joined devices are refused until it is restored or fixed.` };
   }
   try {
-    const file = parseAccountDevicesFile(value);
+    const { file, foreign } = parseAccountDevicesForIdentity(value, serverId);
     // rows admitted under another relay identity name another PC: none of them is a row here
     return { file: { account: file.account, snapshot: file.snapshot, version: file.version, devices: [...file.devices] }, error: null,
-      ...(file.server_id !== serverId ? { foreign: true } : {}) };
+      ...(foreign ? { foreign: true } : {}) };
   } catch (error) {
     if (!(error instanceof AccountSnapshotError)) throw error;
     return { file: CLEARED, error: `${path} is not an account devices file (${error.message}): account-joined devices are refused until it is fixed.` };

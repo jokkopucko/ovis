@@ -10,6 +10,8 @@ interface SteeringIO {
   wait?: (ms: number) => Promise<void>;
 }
 
+const EMPTY_COMPOSER = /^[›»](?:\s+Ask Codex to do anything)?$/;
+const WORKING = /^[•◦]\s*(?:Working|Reconnecting(?:\.{3}|…)?(?: waiting for network)?)\s*\((?:\d+[hms]\s*)+•\s*esc to interrupt\)$/;
 const STEERING_HINT = "Messages to be submitted after next tool call (press esc to interrupt and send immediately)";
 const compact = (text: string) => text.replace(/\s/g, "");
 function lastLine<T>(lines: T[], matches: (line: T) => boolean): number {
@@ -25,18 +27,18 @@ export const FOOTER = /^(?:\S+(?:[ \t]+\S+){0,3}[ \t]+(?:default|minimal|none|lo
  * entry over indented rows and cuts a long one with a "…" row, so the entry is compared without
  * whitespace, and as the start of `text` when it was cut.
  */
-export function codexSteeringPending(screen: string, text: string): boolean {
+export function codexSteeringPending(screen: string, text: string, beforeEnter = false): boolean {
   // the indent is kept beside the trimmed text: Codex tells an entry from its continuation rows by it
   const rows = stripVTControlCharacters(screen).split(/\r?\n/).map((raw) => {
     const line = raw.replace(/^│/, "").replace(/\s*│\s*$/, "").trimEnd();
     return { indent: line.length - line.trimStart().length, text: line.trim() };
   }).filter((row) => row.text);
   const lines = rows.map((row) => row.text);
-  const composer = lastLine(lines, (line) => /^[›»](?:\s+Ask Codex to do anything)?$/.test(line));
+  const composer = lastLine(lines, (line) => beforeEnter ? /^[›»](?:\s|$)/.test(line) : EMPTY_COMPOSER.test(line));
   if (composer < 0) return false;
   const footer = lines.slice(composer + 1);
   if (footer.length > 4 || footer.some((line) => !FOOTER.test(line))) return false;
-  const status = lastLine(lines.slice(0, composer), (line) => /^[•◦]\s*(?:Working|Reconnecting(?:\.{3}|…)?(?: waiting for network)?)\s*\((?:\d+[hms]\s*)+•\s*esc to interrupt\)$/.test(line));
+  const status = lastLine(lines.slice(0, composer), (line) => WORKING.test(line));
   if (status < 0) return false;
   const panel = rows.slice(status + 1, composer);
   const isEntry = (row: { text: string }) => /^↳\s*\S/.test(row.text);
@@ -81,26 +83,37 @@ const SEND_NOW: Record<string, { pending: (screen: string, text: string) => bool
 };
 
 /** Enter can leave steering pending until a tool boundary. Only Send now may send it at once, and only for `text`. */
-export async function interruptCodexSteering(explicit: boolean, text: string, submitted: CodexSteeringContext, io: SteeringIO): Promise<void> {
+export async function interruptCodexSteering(explicit: boolean, text: string, submitted: CodexSteeringContext, io: SteeringIO): Promise<"unconfirmed" | undefined> {
   const agent = submitted.agent;
   const steer = agent !== null && Object.hasOwn(SEND_NOW, agent) ? SEND_NOW[agent] : undefined;
-  if (!explicit || !steer || !submitted.working) return;
+  if (!explicit || !steer) return;
+  const unconfirmed = () => new Error("Immediate delivery was not confirmed. Check the terminal before sending again.");
+  if (!submitted.working) {
+    if (!steer.restart) return;
+    // This could be Enter's own new turn or a turn that started before Enter landed. Do not interrupt it.
+    const current = await io.read();
+    if (current.agent !== agent) throw unconfirmed();
+    return current.working ? "unconfirmed" : undefined;
+  }
   const now = io.now ?? Date.now;
   const wait = io.wait ?? Bun.sleep;
   const deadline = now() + 1500;
-  const unconfirmed = () => new Error("Immediate delivery was not confirmed. Check the terminal before sending again.");
+  // The pane can already be holding identical text from its terminal, underneath our paste.
+  if (agent === "codex" && codexSteeringPending(submitted.screen, text, true)) throw unconfirmed();
   while (now() < deadline) {
     // The caller rechecks live identity, lease, authority and interactive prompts in this read.
     const current = await io.read();
     if (current.agent !== agent) throw unconfirmed();
     if (now() >= deadline) break;
-    if (!current.working) return;
+    // A successful Enter or Escape write is enough to keep its turn gate, not a delivery receipt.
+    if (!current.working) return steer.restart ? "unconfirmed" : undefined;
     if (steer.pending(current.screen, text)) {
       if (steer.restart) io.restarting();
       // the RPC's connect is awaited: by the time herdr is written to, the deadline may have passed
       await io.press(steer.key, () => now() < deadline);
-      return;
+      return steer.restart ? "unconfirmed" : undefined;
     }
+    // A user row in scrollback can belong to an earlier terminal send. It cannot acknowledge Enter.
     await wait(Math.min(50, deadline - now()));
   }
   // agy draws no queued row for a message it took straight away (e.g. its turn ended before the status

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { act, createElement } from "react";
-import { create, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, type Page } from "./page.fixture.ts";
 import type { TelemetryViewSource } from "../../shared/telemetry.ts";
 import type { PaneView } from "./actions.ts";
 import { usePaneViewPicks } from "./usePaneLens.ts";
@@ -9,17 +9,11 @@ type Picks = ReturnType<typeof usePaneViewPicks>;
 const noop = () => {};
 
 describe("chat/terminal switches in the usage counts", () => {
-  let renderer: ReactTestRenderer | undefined;
-  const previous = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-  afterEach(async () => {
-    await act(async () => renderer?.unmount());
-    renderer = undefined;
-    if (previous) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", previous);
-    else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-  });
+  let page: Page;
+  afterEach(async () => { await page.close(); });
 
   async function mount(view: PaneView, failing = false): Promise<{ picks: Picks; counted: string[]; picked: unknown[] }> {
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, writable: true, value: true });
+    page = openPage();
     const counted: string[] = [];
     const picked: unknown[] = [];
     const counters = { viewSwitch: (to: PaneView, agent: string | null | undefined, source: TelemetryViewSource | null, machineId: string) => {
@@ -35,7 +29,7 @@ describe("chat/terminal switches in the usage counts", () => {
       });
       return null;
     }
-    await act(async () => { renderer = create(createElement(Harness)); });
+    await page.render(createElement(Harness));
     return { picks: out.picks!, counted, picked };
   }
 

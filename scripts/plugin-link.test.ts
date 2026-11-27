@@ -678,6 +678,89 @@ describe("ovis link, on the PC itself", () => {
     expect(local.calls.map((call) => call.path).every((path) => path === "/api/account/status")).toBe(true);
   });
 
+  describe("on a PC in its account that the account's move left with no key of its own in the list", () => {
+    const LIST = "a".repeat(64);
+    const until = "2026-11-06T12:10:00Z";
+    /**
+     * `after`: what the PC's status says once its add said added: `keyed` (its key is in), `kept` (it still says it
+     * needs keys; it never does once its key is in), `left` (it left its account meanwhile: no account, no list)
+     */
+    const run = async (states: readonly Record<string, unknown>[], start: Response = Response.json({ state: "waiting", run: "r1", account: "acct_1", list: LIST, until }), after: "keyed" | "kept" | "left" = "keyed") => {
+      const time = clock();
+      const calls: { call: string; body: unknown }[] = [];
+      const left = [...states];
+      let keyed = false;
+      const local = localPc(async (request, path) => {
+        if (path === "/api/account/status" && keyed && after === "left") return Response.json({ account: null, enrolling: false, unlinked: [], removals: [], adds: [], blocked: [] });
+        if (path === "/api/account/status") return Response.json({ account: "acct_1", enrolling: false, unlinked: [], removals: [], adds: [], blocked: [], list: { pinned_list: LIST, standing: "in", reason: keyed ? null : "no key of its own", ...(keyed ? {} : { needs_keys: true }) } });
+        if (path === "/api/relay/link/close") return Response.json({ ok: true });
+        if (!path.startsWith("/api/account/list/add")) return undefined;
+        calls.push({ call: `${request.method} ${path}`, body: request.method === "GET" ? new URL(request.url).search : await request.json() });
+        if (request.method === "POST" && path === "/api/account/list/add") return start;
+        if (path === "/api/account/list/add/cancel") return Response.json({ state: "ended", run: "r1", account: "acct_1", why: "cancelled" });
+        const next = left.shift() ?? { state: "waiting", run: "r1", account: "acct_1", list: LIST, until };
+        if (next.state === "added" && after !== "kept") keyed = true;
+        return Response.json(next);
+      });
+      const out: string[] = [];
+      const code = await link([], { origin: ORIGIN, headers: {}, fetch: local.fetch, now: time.now, wait: async (ms, signal) => { time.pass(ms); await time.wait(ms, signal); },
+        signal: new AbortController().signal, accountService: SERVICE, lines: answers(), terminal: false, isTty: false, out: (text) => out.push(text),
+        serviceFetch: async () => { throw new Error("a PC in its account signs in to nothing for its keys"); } });
+      return { code, text: out.join(""), calls };
+    };
+
+    it("goes on to the add by the account's list, and is done once the device whose number was confirmed gave it its keys", async () => {
+      const { code, text, calls } = await run([
+        { state: "number", run: "r1", account: "acct_1", list: LIST, digits: "123456", until },
+        { state: "confirmed", run: "r1", account: "acct_1", list: LIST, until },
+        { state: "added", run: "r1", account: "acct_1", list: LIST },
+      ]);
+      expect(code).toBe(0);
+      expect(text).toContain("This PC is in your Ovis account (acct_1) and follows its signed list, but holds no key of its own in it yet: it came in as your account moved, so it lets your account's devices in and lets nobody new in itself.\n");
+      expect(text).toContain("This PC shows 123 456. If the device that adds it shows the same number, run ovis add --confirm 123456 on this PC within 2 minutes");
+      expect(text).toContain("Done: this PC holds its own keys in your account's list now, so a device that asks to join can be approved here too (ovis approve).\n");
+      expect(text).not.toContain("already in an Ovis account");
+      expect(calls[0]).toEqual({ call: "POST /api/account/list/add", body: { account: "acct_1" } });
+      expect(calls.slice(1).every((call) => call.call === "GET /api/account/list/add" && call.body === "?run=r1")).toBe(true);
+    });
+
+    it("says it still has no key of its own when nobody compared a number in time, and takes nothing off the account", async () => {
+      const { code, text, calls } = await run([]);
+      expect(code).toBe(1);
+      expect(text).toContain("No device of your account compared a number with this PC within 10 minutes, so it still holds no key of its own in your account's list. Run ovis add again");
+      expect(text).not.toMatch(/Added|taken off|Done/);
+      expect(calls.at(-1)?.call).toBe("POST /api/account/list/add/cancel");
+    });
+
+    it("says Done only once this PC no longer says it needs keys, whatever its add answered", async () => {
+      const { code, text } = await run([
+        { state: "number", run: "r1", account: "acct_1", list: LIST, digits: "123456", until },
+        { state: "confirmed", run: "r1", account: "acct_1", list: LIST, until },
+        { state: "added", run: "r1", account: "acct_1", list: LIST },
+      ], undefined, "kept");
+      expect(code).toBe(1);
+      expect(text).not.toContain("Done:");
+      expect(text).toContain("this PC still holds no key of its own in your account's list");
+    });
+
+    it("never says Done for a PC that left its account meanwhile: its status names no account and no list", async () => {
+      const { code, text } = await run([
+        { state: "number", run: "r1", account: "acct_1", list: LIST, digits: "123456", until },
+        { state: "confirmed", run: "r1", account: "acct_1", list: LIST, until },
+        { state: "added", run: "r1", account: "acct_1", list: LIST },
+      ], undefined, "left");
+      expect(code).toBe(1);
+      expect(text).not.toContain("Done:");
+      expect(text).toContain("This PC is no longer in Ovis account acct_1, so it holds no key of its own in that account's list.");
+    });
+
+    it("says why where this PC takes no keys by the list, and that it is still in its account", async () => {
+      const { code, text } = await run([], Response.json({ error: { code: "account_mismatch", message: "This PC was set up for another account. Sign in to that one, or add this PC again." } }, { status: 409 }));
+      expect(code).toBe(1);
+      expect(text).toContain("Could not give this PC its keys: This PC was set up for another account. Sign in to that one, or add this PC again. This PC is still in your account, and holds no key of its own in its list yet. Run ovis add again to finish.\n");
+    });
+  });
+
   it("does not sign in when this PC is already in an account, or when the account service is off", async () => {
     let account: string | null = "acct_1";
     const local = localPc((_request, path) => path === "/api/account/status" ? Response.json({ account, unlinked: [], removals: [], adds: [], blocked: [] }) : undefined);
@@ -762,7 +845,7 @@ describe("ovis link, on the PC itself", () => {
    * `said` hears every line, to `type` a line at that very moment or to `answer` after the next wait (two seconds: the
    * time a person takes to compare the digits), and `decide` may fail the call that carries an answer.
    */
-  async function prompting(options: { pending: (polls: number, decisions: { id: string; decision: string }[]) => string[]; said: (text: string, type: (line: string) => void, answer: (line: string) => void) => void; terminal?: boolean; decide?: (attempt: number) => void; joined?: (decisions: { id: string; decision: string }[]) => boolean; refuse?: (waits: number) => boolean; called?: (path: string, type: (line: string) => void, polls: number) => void; lines?: AsyncIterator<string>; request?: (id: string) => { label?: string; digits?: string }; discard?: (() => boolean) | null; keys?: ReturnType<typeof keyboard> }) {
+  async function prompting(options: { pending: (polls: number, decisions: { id: string; decision: string }[]) => string[]; said: (text: string, type: (line: string) => void, answer: (line: string) => void) => void; terminal?: boolean; decide?: (attempt: number) => void; joined?: (decisions: { id: string; decision: string }[]) => boolean; refuse?: (waits: number) => boolean; called?: (path: string, type: (line: string) => void, polls: number) => void; lines?: AsyncIterator<string>; request?: (id: string) => { label?: string; digits?: string; local_only?: true }; discard?: (() => boolean) | null; keys?: ReturnType<typeof keyboard> }) {
     const pc = identity();
     const time = clock();
     const service = new FakeAccountService(time.now);
@@ -948,6 +1031,31 @@ describe("ovis link, on the PC itself", () => {
       expect(out).not.toContain(NOT_AN_ANSWER);
     }
   }, 30_000);
+
+  it("asks about a device that adds this PC from its own add screen as that device shows it: the number is typed there, or compared", async () => {
+    // the device that adds this PC (AddPcSheet, "Add this PC") shows an input for this PC's number, not digits of its own
+    const ADDING = "Phone p1 wants to add this PC to your account. Type 111 222 on that device, or check that it shows the same number, then type 222 here to approve, or press Enter to decline: ";
+    const { code, out, decisions } = await prompting({
+      pending: (_polls, decisions) => decisions.length > 0 ? [] : ["p1"],
+      request: () => ({ local_only: true }),
+      said: (said, _type, answer) => { if (said.includes("Phone p1 wants")) answer("222"); },
+      joined: (decisions) => decisions.length > 0,
+    });
+    expect(code).toBe(0);
+    expect(out.filter((said) => said.includes("Enter to decline"))).toEqual([ADDING]);
+    expect(decisions).toEqual([{ id: "p1", decision: "approve" }]);
+  });
+
+  it("asks for all six digits of such a device as of any other, when another request ends in the same three", async () => {
+    const shown: string[] = [];
+    await prompting({
+      pending: (_polls, decisions) => decisions.length > 0 ? [] : ["p1", "p2"],
+      request: (id) => ({ digits: id === "p1" ? "111456" : "222456", local_only: true }),
+      said: (said, _type, answer) => { if (said.includes("Enter to decline")) { shown.push(said); answer(""); } },
+      joined: (decisions) => decisions.length > 1,
+    });
+    expect(shown[0]).toBe("Phone p1 wants to add this PC to your account. Type 111 456 on that device, or check that it shows the same number. Another request's digits end in 456 too, so type all six (111456) here to approve, or press Enter to decline: ");
+  });
 
   it("approves with the digits as an input method types them: full-width digits and its wide space are the same digits", async () => {
     for (const line of ["２２２", "１１１２２２", "１１１　２２２", "１１１ ２２２", "2２2", "　222　"]) {
@@ -1659,6 +1767,14 @@ describe("ovis link, on the PC itself", () => {
      * could be read). By default Enter is typed at the first question
      */
     watch?: (said: string, answer: (line: string, after?: number) => void, stop: () => void) => void;
+    /** this PC's answers on its add by the account's signed list (/api/account/list/add…); no such route by default */
+    list?: (call: { readonly action: "start" | "state" | "confirm" | "cancel"; readonly body: Record<string, unknown>; readonly count: number }) => Response | undefined;
+    /** each text the command writes, before this PC is added too; `type` types a line `after` ms later (2 s by default) */
+    said?: (text: string, type: (line: string, after?: number) => void) => void;
+    /** this PC's answer to a reset of its relay identity (POST /api/relay/reset-identity); no such route by default */
+    reset?: () => Response;
+    /** Ctrl+C once the command said the number was confirmed */
+    stopAfterConfirm?: boolean;
   } = {}) {
     const pc = identity();
     const time = clock();
@@ -1673,6 +1789,9 @@ describe("ovis link, on the PC itself", () => {
     const typed: { id: string; digits: string }[] = [];
     let joinReads = 0;
     let deviceReads = 0;
+    let resets = 0;
+    const resetBodies: unknown[] = [];
+    const listCalls: { action: string; body: Record<string, unknown> }[] = [];
     let added = false;
     let signedOutBeforeAdded: boolean | undefined;
     let token = "";
@@ -1705,6 +1824,18 @@ describe("ovis link, on the PC itself", () => {
         return options.join?.(body, typed.length) ?? Response.json({ ok: true });
       }
       if (path === "/api/devices" && options.devices !== undefined) return Response.json({ devices: options.devices(++deviceReads) });
+      if (path.startsWith("/api/account/list/add") && options.list !== undefined) {
+        const action = request.method === "GET" ? "state" : path.endsWith("/confirm") ? "confirm" : path.endsWith("/cancel") ? "cancel" : "start";
+        // a poll names its run in the query, every other call in its body
+        const body = request.method === "GET" ? Object.fromEntries(new URL(request.url).searchParams) : await request.json() as Record<string, unknown>;
+        listCalls.push({ action, body });
+        const answer = options.list({ action, body, count: listCalls.filter((call) => call.action === action).length });
+        if (answer !== undefined && answer.ok && (await answer.clone().json() as { state?: string }).state === "added") state.account = "acct_1";
+        return answer;
+      }
+      if (path === "/api/relay/reset-identity" && options.reset !== undefined) { resets++; resetBodies.push(await request.json()); return options.reset(); }
+      // which PC this is, as its health says it
+      if (path === "/api/health" && options.reset !== undefined) return Response.json({ ok: true, web_ui: { server_id: pc.server_id } });
       if (path === "/api/account/one-press") {
         const body = await request.json() as { account?: unknown };
         if (typeof body.account !== "string") return refuse("invalid_account", "Name the account", 400);
@@ -1748,6 +1879,8 @@ describe("ovis link, on the PC itself", () => {
         if (shown) service.approveDevice(shown[1]!, "acct_1");
         // typed once the question could be read
         if (text.includes("Is this your account? Type yes") && options.confirm !== false) { time.pass(2_000); keys.type(options.confirm ?? "yes"); }
+        options.said?.(text, (line, after = 2_000) => { setTimeout(() => { time.pass(after); keys.type(line); }, 0); });
+        if (options.stopAfterConfirm === true && text.includes("Confirmed. Press Add")) setTimeout(() => stop.abort(), 0);
         if (text.startsWith("Added")) added = true;
         if (added) {
           const answer = (line: string, after = 2_000): void => { setTimeout(() => { time.pass(after); keys.type(line); }, 0); };
@@ -1759,7 +1892,7 @@ describe("ovis link, on the PC itself", () => {
     const listed = () => service.pcs("acct_1").filter((entry) => entry.server_id === pc.server_id);
     // the sign-in ends with the run, whatever ended it
     const signedOut = (await service.fetch(new Request(`${SERVICE}/v1/session`, { headers: { authorization: `Bearer ${token}` } }))).status === 401;
-    return { code, text: out.join(""), askedAt, pressed, named, typed, service, pc, listed, signedOut, signedOutBeforeAdded, paths: local.calls.map((call) => `${call.method} ${call.path}`) };
+    return { code, text: out.join(""), askedAt, pressed, named, typed, service, pc, listed, signedOut, signedOutBeforeAdded, listCalls, resets: () => resets, resetBodies, paths: local.calls.map((call) => `${call.method} ${call.path}`) };
   }
 
   // the id first, with where to compare it; the PCs as what that account lists, which a decoy account can copy
@@ -1770,7 +1903,8 @@ describe("ovis link, on the PC itself", () => {
     "     That account lists no PCs yet.",
     "     Is this your account? Type yes to add this PC to it: ",
   ].join("\n");
-  const LISTED_AND_NAMED = "     This PC is listed in your account as old-desktop.\n\n2/2  Press Add on a device of your account\n     Open Ovis on your phone or another PC and press Add for old-desktop.\n";
+  // the step that says what to press comes once this PC said how its account adds it (POST /api/account/list/add)
+  const LISTED_AND_NAMED = "     This PC is listed in your account as old-desktop.\n     Asking your account how it adds this PC…\n\n2/2  Press Add on a device of your account\n     Open Ovis on your phone or another PC and press Add for old-desktop.\n";
   const NO_TERMINAL = "Not run in a terminal, so nobody here can confirm the account that signs in. Run ovis add --account <your account id> (ovis status on a PC already in your account shows the id, and so does Manage account in Settings), or run ovis add in a terminal.\n";
 
   it("without --qr, asks whether the account is yours, waits for Add on a device of that account, takes its admission here, and comes online", async () => {
@@ -1792,6 +1926,244 @@ describe("ovis link, on the PC itself", () => {
     expect(run.paths.lastIndexOf("POST /api/account/relay-account")).toBeGreaterThan(run.paths.lastIndexOf("POST /api/account/one-press"));
     expect(run.listed().map((entry) => entry.listed_by_device)).toEqual([false]);
     expect(run.signedOut).toBe(true);
+  });
+
+  describe("an account that keeps a signed list (POST /api/account/list/add)", () => {
+    const RUN = "0123456789abcdef";
+    const state = (body: Record<string, unknown>) => Response.json({ run: RUN, account: "acct_1", list: "ab".repeat(32), until: "2026-11-06T12:10:00.000Z", ...body });
+    const wrongNumber = () => Response.json({ error: { code: "wrong_number", message: "That is not the number this PC shows now" } }, { status: 409 });
+    const NUMBER = "This PC shows 482 913. Does the device that adds it show the same number? Type yes if it does, or press Enter if it does not: ";
+    /** this PC's add as its states go: waiting, the number until it is answered, confirmed, then added once Add was pressed */
+    const adding = (options: { added?: boolean; onConfirm?: (digits: unknown) => Record<string, unknown> | Response } = {}) => {
+      let confirmed = false;
+      let cancelled = false;
+      return ({ action, body, count }: { action: string; body: Record<string, unknown>; count: number }): Response => {
+        if (action === "start") return state({ state: "waiting" });
+        if (action === "cancel") { cancelled = true; return Response.json({ state: "ended", run: RUN, account: "acct_1", why: "cancelled" }); }
+        if (action === "confirm") {
+          const answer = options.onConfirm?.(body.digits) ?? { state: "confirmed" };
+          if (answer instanceof Response) return answer;
+          confirmed = answer.state === "confirmed";
+          return state(answer);
+        }
+        if (cancelled) return Response.json({ state: "ended", run: RUN, account: "acct_1", why: "cancelled" });
+        if (confirmed) return count >= 4 && options.added !== false ? Response.json({ state: "added", run: RUN, account: "acct_1", list: "ab".repeat(32) }) : state({ state: "confirmed" });
+        return state({ state: "number", digits: "482913" });
+      };
+    };
+
+    it("shows the number this PC and the adding device share, takes a typed yes for that number, and is added once Add is pressed", async () => {
+      const run = await pressing({ list: adding(), said: (text, type) => { if (text.endsWith(NUMBER)) type("yes"); } });
+      expect(run.code).toBe(0);
+      expect(run.text).toContain("Your account keeps a signed list of its devices: the device that adds this PC shows a number, and this PC shows it here. They must be the same before you press Add.\n");
+      expect(run.text).toContain(`${NUMBER}Confirmed. Press Add for old-desktop on that device now.\n`);
+      expect(run.text).toContain("Added. ");
+      // the yes carries the number it was typed under, and nothing asks for the account service's own admission
+      expect(run.listCalls.filter((call) => call.action === "confirm").map((call) => call.body)).toEqual([{ digits: "482913", run: RUN }]);
+      expect(run.listCalls[0]).toEqual({ action: "start", body: { account: "acct_1" } });
+      // every poll names the run this command started
+      expect(run.listCalls.filter((call) => call.action === "state").every((call) => call.body.run === RUN)).toBe(true);
+      expect(run.pressed).toEqual([]);
+      expect(run.named).toEqual(["acct_1", "acct_1"]);
+      expect(run.signedOut).toBe(true);
+    });
+
+    it("takes Enter at the number as a no: the add ends, and the PC is taken off the account's list", async () => {
+      const run = await pressing({ list: adding(), said: (text, type) => { if (text.endsWith(NUMBER)) type(""); } });
+      expect(run.code).toBe(1);
+      expect(run.listCalls.map((call) => call.action)).toContain("cancel");
+      expect(run.listCalls.map((call) => call.action)).not.toContain("confirm");
+      expect(run.text).toContain("Could not add this PC: the numbers were not the same, so nothing was added.");
+      expect(run.text).toContain("This PC was taken off your account's list; it is in no account.");
+      expect(run.listed()).toEqual([]);
+    });
+
+    it("takes nothing but yes or Enter, and no line typed before the number showed", async () => {
+      let typedAhead = false;
+      const lines = ["482913", "yes"];
+      const run = await pressing({ list: adding(), said: (text, type) => {
+        // typed before the number is there: the terminal's input is emptied as it shows
+        if (text.includes("Your account keeps a signed list") && !typedAhead) { typedAhead = true; type("yes", 0); }
+        if (text.endsWith(NUMBER)) type(lines.shift() ?? "yes");
+      } });
+      expect(run.code).toBe(0);
+      expect(run.text).toContain("That line answered nothing: type yes if that device shows the same number, or press Enter by itself if it does not. Answer again.\n");
+      expect(run.listCalls.filter((call) => call.action === "confirm")).toHaveLength(1);
+    });
+    it("says so when the number it was typed under is no longer the one this PC shows", async () => {
+      let asked = 0;
+      const run = await pressing({ list: adding({ onConfirm: () => ++asked === 1 ? wrongNumber() : { state: "confirmed" } }),
+        said: (text, type) => { if (text.endsWith(NUMBER)) type("yes"); } });
+      expect(run.code).toBe(0);
+      expect(run.text).toContain("That number is no longer the one this PC shows, so nothing was confirmed.\n");
+      expect(run.listCalls.filter((call) => call.action === "confirm")).toHaveLength(2);
+    });
+
+    it("where nobody can type, prints the number with the command that confirms it, and confirms nothing itself", async () => {
+      let reads = 0;
+      const run = await pressing({ args: ["--account", "acct_1"], terminal: false, isTty: false,
+        list: ({ action }) => action === "start" ? state({ state: "waiting" }) : ++reads < 3 ? state({ state: "number", digits: "482913" }) : ++reads < 6 ? state({ state: "confirmed" }) : Response.json({ state: "added", run: RUN, account: "acct_1", list: "ab".repeat(32) }) });
+      expect(run.code).toBe(0);
+      expect(run.text.split("This PC shows 482 913. If the device that adds it shows the same number, run ovis add --confirm 482913 on this PC within 2 minutes, then press Add on that device.").length).toBe(2);
+      expect(run.text).toContain("An agent adds a PC in one step with an invite: ovis join.");
+      expect(run.listCalls.map((call) => call.action)).not.toContain("confirm");
+    });
+
+    it("names the list's step, and never the one-press step, once this PC said the account keeps a list", async () => {
+      const run = await pressing({ list: adding(), said: (text, type) => { if (text.endsWith(NUMBER)) type("yes"); } });
+      expect(run.code).toBe(0);
+      expect(run.text).toContain([
+        "     This PC is listed in your account as old-desktop.",
+        "     Asking your account how it adds this PC…",
+        "",
+        "2/2  Compare a number with a device of your account",
+        "     Open Ovis on your phone or another PC and choose Add for old-desktop.",
+        "     Your account keeps a signed list of its devices: the device that adds this PC shows a number, and this PC shows it here. They must be the same before you press Add.",
+        "     Waiting… (up to 10:00, Ctrl+C to stop)",
+        "",
+      ].join("\n"));
+      expect(run.text).not.toContain("Press Add on a device of your account");
+      expect(run.text.split("Your account keeps a signed list").length).toBe(2);
+    });
+
+    it("waits while the account service does not say whether the account keeps a list, and binds nothing on its word meanwhile", async () => {
+      const run = await pressing({ pressAfter: 1, list: ({ action, count }) => action === "start" && count < 3 ? Response.json({ error: { code: "account_unavailable", message: "away" } }, { status: 503 }) : state({ state: "no_list" }) });
+      expect(run.code).toBe(0);
+      expect(run.text).toContain("The account service did not answer this PC just now. Still waiting…\n");
+      // what to press is said once this PC knows it, and once
+      expect(run.text.indexOf("2/2  Press Add on a device of your account")).toBeGreaterThan(run.text.indexOf("Still waiting…"));
+      expect(run.text.split("2/2  Press Add on a device of your account").length).toBe(2);
+      expect(run.text).not.toContain("Compare a number");
+      // only once the PC said the account keeps no list is the admission asked for
+      expect(run.paths.indexOf("POST /api/account/one-press", 2)).toBeGreaterThan(run.paths.lastIndexOf("POST /api/account/list/add"));
+      expect(run.listCalls.map((call) => call.action)).toEqual(["start", "start", "start"]);
+    });
+
+    it("gives its add up when it stops: a yes confirmed before joins nothing once the command is gone", async () => {
+      // the number is confirmed, and the command is stopped while it waits for Add on the device
+      const run = await pressing({ list: adding({ added: false }), said: (text, type) => { if (text.endsWith(NUMBER)) type("yes"); },
+        watch: () => undefined, stopAfterConfirm: true });
+      expect(run.code).toBe(1);
+      expect(run.listCalls.at(-1)).toEqual({ action: "cancel", body: { run: RUN } });
+    });
+
+    it("gives its add up also when its terminal fails after the number was confirmed", async () => {
+      const actions: string[] = [];
+      const answers = adding({ added: false });
+      let failed = false;
+      const ended = await pressing({ list: (call) => { actions.push(call.action); return answers(call); }, watch: () => undefined,
+        said: (text, type) => {
+          if (text.endsWith(NUMBER)) type("yes");
+          // the terminal the command writes to goes away as it says the number was confirmed
+          if (!failed && text.includes("Confirmed. Press Add")) { failed = true; throw new Error("The terminal is gone"); }
+        } }).then((run) => run.code, (error: unknown) => error);
+      expect(failed).toBe(true);
+      // the command ends, whichever way it reports that
+      expect(ended).not.toBe(0);
+      expect(actions.at(-1)).toBe("cancel");
+    });
+
+    it("reports nothing of an add that took its place on this PC", async () => {
+      const run = await pressing({ list: ({ action }) => action === "start" ? state({ state: "waiting" }) : Response.json({ state: "replaced" }) });
+      expect(run.code).toBe(1);
+      expect(run.text).toContain("Could not add this PC: another add was started on this PC meanwhile, which took this one's place.");
+      expect(run.text).not.toContain("Added");
+    });
+
+    it("ends with what this PC said when its add ended otherwise", async () => {
+      const run = await pressing({ list: ({ action }) => action === "start" ? state({ state: "waiting" }) : Response.json({ state: "ended", run: RUN, account: "acct_1", why: "attempts" }) });
+      expect(run.code).toBe(1);
+      expect(run.text).toContain("Could not add this PC: this PC showed three numbers in this run and none was confirmed.");
+    });
+
+    describe("ovis add --confirm <number>", () => {
+      const confirming = async (args: string[], answer?: (digits: unknown) => Response) => {
+        const sent: unknown[] = [];
+        const local = localPc(async (request, path) => {
+          if (path !== "/api/account/list/add/confirm" || answer === undefined) return undefined;
+          const { digits } = await request.json() as { digits?: unknown };
+          sent.push(digits);
+          return answer(digits);
+        });
+        const out: string[] = [];
+        const code = await link(args, { origin: ORIGIN, headers: {}, fetch: local.fetch, signal: new AbortController().signal, accountService: SERVICE, lines: keyboard().lines, out: (text) => { out.push(text); } });
+        return { code, text: out.join(""), sent, paths: local.calls.map((call) => `${call.method} ${call.path}`) };
+      };
+
+      it("confirms the number it carries, and nothing else is asked of this PC or the account service", async () => {
+        const run = await confirming(["--confirm", "482 913"], () => state({ state: "confirmed" }));
+        expect(run.code).toBe(0);
+        expect(run.sent).toEqual(["482913"]);
+        expect(run.paths).toEqual(["POST /api/account/list/add/confirm"]);
+        expect(run.text).toBe("Confirmed: this PC and that device show 482 913. Press Add for this PC on that device now; the ovis add that showed the number finishes when it is added.\n");
+      });
+
+      it("says so when that is not the number this PC shows now, which this PC then shows no more", async () => {
+        const run = await confirming(["--confirm=111111"], () => wrongNumber());
+        expect(run.code).toBe(1);
+        expect(run.text).toContain("111 111 is not the number this PC shows now, so nothing was confirmed, and that number is no longer shown");
+      });
+
+      it("says so when the add it would confirm has ended", async () => {
+        const run = await confirming(["--confirm=482913"], () => Response.json({ state: "ended", run: RUN, account: "acct_1", why: "timeout" }));
+        expect(run.code).toBe(1);
+        expect(run.text).toBe("The add this PC was running has ended (timeout), so nothing was confirmed. Run ovis add again.\n");
+      });
+
+      it("takes six digits only, and says so where this PC shows no number", async () => {
+        for (const given of ["yes", "48291", ""]) {
+          const run = await confirming(["--confirm", given], () => state({ state: "confirmed" }));
+          expect([run.code, run.sent]).toEqual([1, []]);
+        }
+        const none = await confirming(["--confirm", "482913"]);
+        expect(none.code).toBe(1);
+        expect(none.text).toBe("The Ovis on this PC shows no number to confirm. Run ovis add first.\n");
+      });
+    });
+
+    describe("a PC the account's list removed", () => {
+      const REMOVED = Response.json({ error: { code: "list_removed", message: "This PC was removed from this Ovis account." } }, { status: 409 });
+      const QUESTION = "This PC was removed from this Ovis account. It can come back only as a new PC: its relay identity is reset, so every device that opens it through the Ovis relay is let in again. Add it again as a new PC? Type yes: ";
+      const removedOnce = (inner: ReturnType<typeof adding>) => {
+        let reset = false;
+        return { reset: () => { reset = true; return Response.json({ phase: "connecting", blocked: null }); },
+          list: (call: { action: "start" | "state" | "confirm" | "cancel"; body: Record<string, unknown>; count: number }) => call.action === "start" && !reset ? REMOVED.clone() : inner(call) };
+      };
+
+      it("is added again as a new PC in one step a person confirms: its relay identity is reset, it is listed again, and the number follows", async () => {
+        const run = await pressing({ ...removedOnce(adding()), said: (text, type) => { if (text.endsWith(QUESTION) || text.endsWith(NUMBER)) type("yes"); } });
+        expect(run.code).toBe(0);
+        expect(run.resets()).toBe(1);
+        // the reset names the identity and the account the question was about
+        expect(run.resetBodies).toEqual([{ removed: { account: "acct_1", server_id: run.pc.server_id } }]);
+        expect(run.text).toContain("This PC has a new relay identity, and is listed in your account again.\n");
+        // reset before it is listed again, and only then is the add started anew
+        const reset = run.paths.indexOf("POST /api/relay/reset-identity");
+        expect(run.paths.indexOf("POST /api/relay/link", reset)).toBeGreaterThan(reset);
+        expect(run.paths.lastIndexOf("POST /api/account/list/add")).toBeGreaterThan(reset);
+      });
+
+      it("resets nothing when this PC is no longer the one the question was about", async () => {
+        const stale = { ...removedOnce(adding()), reset: () => Response.json({ error: { code: "identity_changed", message: "no longer that one" } }, { status: 409 }) };
+        const run = await pressing({ ...stale, said: (text, type) => { if (text.endsWith(QUESTION)) type("yes"); } });
+        expect(run.code).toBe(1);
+        expect(run.text).toContain("This PC is no longer the one that question was about (it was reset already), so nothing was reset.");
+      });
+
+      it("is not added again without that yes, and its relay identity stays", async () => {
+        const run = await pressing({ ...removedOnce(adding()), said: (text, type) => { if (text.endsWith(QUESTION)) type(""); } });
+        expect(run.code).toBe(1);
+        expect(run.resets()).toBe(0);
+        expect(run.text).toContain("This PC was removed from this Ovis account, and was not added again.");
+      });
+
+      it("is never added again where nobody can type", async () => {
+        const run = await pressing({ ...removedOnce(adding()), args: ["--account", "acct_1"], terminal: false, isTty: false });
+        expect(run.code).toBe(1);
+        expect(run.resets()).toBe(0);
+        expect(run.text).toContain("It can come back only as a new PC, which a person at this PC confirms: run ovis add in a terminal on it.");
+      });
+    });
   });
 
   it("lists this PC with the system it runs, which the card on a device of the account shows while it asks", async () => {
@@ -2042,6 +2414,28 @@ describe("ovis link, on the PC itself", () => {
     const first = (id: string, label: string, digits: string): OwnJoin => ({ id, label, asked_at: ASKED_AT, digits });
     const asks = (label: string) => `${label} asks to open this PC (from Ovis account acct_1, asked at ${at}). Type the six digits ${label} shows (one wrong entry ends this request), or press Enter to finish without: `;
     const after = (text: string) => text.slice(text.indexOf(WATCH));
+
+    it("says only that the approval was received where the account's signed list lets the device in", async () => {
+      const run = await pressing({
+        pressAfter: 2,
+        joins: (reads) => reads < 3 ? [] : [{ ...first("f1", "Pixel", "482913"), list: true }],
+        watch: (said, answer) => { if (said.endsWith(asks("Pixel"))) answer("482913"); },
+      });
+      expect(run.code).toBe(0);
+      expect(after(run.text)).toContain(`${asks("Pixel")}The approval of Pixel was received. It opens this PC once it is in your account's list, which takes a moment; if it does not, have it ask again.\n`);
+      expect(after(run.text)).not.toContain("is let in");
+    });
+
+    it("says that Ovis on this PC needs an update where it is behind its account's list, and promises nothing", async () => {
+      const run = await pressing({
+        pressAfter: 2,
+        joins: (reads) => reads < 3 ? [] : [{ ...first("f1", "Pixel", "482913"), list: true, list_behind: true }],
+        watch: (said, answer) => { if (said.endsWith(asks("Pixel"))) answer("482913"); },
+      });
+      expect(run.code).toBe(0);
+      expect(after(run.text)).toContain(`${asks("Pixel")}Pixel was not let in: Ovis on this PC is older than what a device wrote into your account's list`);
+      expect(after(run.text)).not.toContain("was received");
+    });
 
     it("asks about the first join that comes by its device, shows none of its digits, and lets it in with the six typed here", async () => {
       const run = await pressing({
@@ -4051,6 +4445,44 @@ describe("ovis approve, a members join typed with all six of its digits (#28)", 
     }
   });
 
+  it("never says a members join is approved where a block here keeps that device out, on a PC with no list", async () => {
+    const { code, out } = await joining({ joins: [{ ...joinOf("j1"), list_held: true }], said: (said, answer) => { if (said.includes("asks to join your account")) answer("123456"); } });
+    expect(code).toBe(0);
+    expect(out.at(-1)).toStartWith("Tablet one was not let in here: a device was blocked on this PC, and until that block is lifted this PC keeps out every device that came after it. Lift");
+    expect(out.join("")).not.toMatch(/Approved:|is let in;/);
+  });
+
+  it("never says a first or members join is let in or approved where this PC keeps the device out, and says each reason its own way", async () => {
+    // what GET /api/relay/joins names in held_why (server/devices.ts KeptOut), and one this command does not know yet
+    const reasons = ["block", "freeze", "account_hold", "account_removed", "untrusted", "closed", "locked", "a_later_reason"];
+    const said = new Set<string>();
+    for (const held_why of reasons) {
+      for (const join of [{ ...joinOf("j1"), held_why }, { ...joinOf("j1"), digits: "482913", held_why }]) {
+        const { code, out } = await joining({ joins: [join], said: (text, answer) => { if (prompt(text, "j1")) answer("482913"); } });
+        expect(code).toBe(0);
+        expect(out.join("")).not.toMatch(/Approved:|is let in;|was received/);
+        expect(out.at(-1)).toStartWith("Tablet one was not let in");
+        said.add(out.at(-1)!);
+      }
+    }
+    expect(said.size).toBe(reasons.length);
+  });
+
+  it("goes by what the approval's answer names, which may have come since the joins were read, and never says the device is let in", async () => {
+    for (const join of [joinOf("j1"), { ...joinOf("j1"), digits: "482913" }, { ...joinOf("j1"), list_held: true }]) {
+      const { code, out } = await joining({ joins: [join], said: (text, answer) => { if (prompt(text, "j1")) answer("482913"); }, approve: () => ({ held_why: "account_hold" }) });
+      expect(code).toBe(0);
+      expect(out.join("")).not.toMatch(/Approved:|is let in;|was received|blocked/);
+      expect(out.at(-1)).toStartWith("Tablet one was not let in here");
+    }
+  });
+
+  it("lets the answer say that nothing keeps the device out any more, whatever the joins said a moment before", async () => {
+    const lifted = async (join: OwnJoin) => (await joining({ joins: [join], said: (text, answer) => { if (prompt(text, "j1")) answer("482913"); }, approve: () => ({ held_why: null }) })).out.at(-1);
+    expect(await lifted({ ...joinOf("j1"), digits: "482913", held_why: "block", list_held: true })).toBe("Tablet one is let in; it opens this PC in a moment.\n");
+    expect(await lifted({ ...joinOf("j1"), held_why: "freeze", list_held: true })).toStartWith("Approved: Tablet one");
+  });
+
   it("approves nothing when its input is not a terminal: it reads no line and sends nothing", async () => {
     const { code, sent, reads } = await joining({ joins: [joinOf("j1")], terminal: false, said: (_said, answer) => answer("123456") });
     expect(code).toBe(1);
@@ -4078,6 +4510,67 @@ describe("ovis approve, a members join typed with all six of its digits (#28)", 
       expect(out.at(-1)).toBe("Pixel is let in; it opens this PC in a moment.\n");
     });
 
+    it("says only that the approval was received for a join the account's signed list lets in: the device is in once its entry is", async () => {
+      const { code, out } = await joining({
+        joins: [{ ...firstOf("f1", "482913"), list: true }], account: "acct_1a2b3c4d5e6f",
+        said: (said, answer) => { if (said === firstPrompt("Pixel")) answer("482913"); },
+      });
+      expect(code).toBe(0);
+      expect(out.at(-1)).toBe("The approval of Pixel was received. It opens this PC once it is in your account's list, which takes a moment; if it does not, have it ask again.\n");
+      expect(out.join("")).not.toContain("is let in");
+    });
+
+    it("says that Ovis on this PC needs an update where it is behind its account's list, and never that the device is let in", async () => {
+      const { code, out } = await joining({
+        joins: [{ ...firstOf("f1", "482913"), list: true, list_behind: true }], account: "acct_1a2b3c4d5e6f",
+        said: (said, answer) => { if (said === firstPrompt("Pixel")) answer("482913"); },
+      });
+      expect(code).toBe(0);
+      expect(out.at(-1)).toBe("Pixel was not let in: Ovis on this PC is older than what a device wrote into your account's list, and lets nobody new in until it is updated. Update Ovis on this PC (Settings → Updates), then have Pixel ask again; or allow it on another device of your account.\n");
+      expect(out.join("")).not.toMatch(/is let in|was received/);
+    });
+
+    it("says that this PC lets nobody into the list itself where it joined by an invite, and never that the approval was received", async () => {
+      const { code, out } = await joining({
+        joins: [{ ...firstOf("f1", "482913"), list: true, list_not_signer: true }], account: "acct_1a2b3c4d5e6f",
+        said: (said, answer) => { if (said === firstPrompt("Pixel")) answer("482913"); },
+      });
+      expect(code).toBe(0);
+      expect(out.at(-1)).toBe("Pixel was not let in: this PC joined your account by an invite, and a PC that did lets nobody into your account's list itself. Allow Pixel on another device of your account.\n");
+      expect(out.join("")).not.toMatch(/is let in|was received/);
+    });
+
+    it("says that this PC came in as its account moved and has no key of its own in the list, never an invite, and how it gets one", async () => {
+      const { code, out } = await joining({
+        joins: [{ ...firstOf("f1", "482913"), list: true, list_needs_keys: true }], account: "acct_1a2b3c4d5e6f",
+        said: (said, answer) => { if (said === firstPrompt("Pixel")) answer("482913"); },
+      });
+      expect(code).toBe(0);
+      expect(out.at(-1)).toBe("Pixel was not let in: this PC came into your account's list as your account moved, and holds no key of its own in it yet, so it lets nobody into the list itself. Allow Pixel on another device of your account, or run ovis add on this PC to give it its keys (compare the number with a device of your account), then have Pixel ask again.\n");
+      expect(out.join("")).not.toMatch(/invite|is let in|was received/);
+    });
+
+    it("says that this PC keeps that device out by a block here, whatever the list holds, and where the block is lifted", async () => {
+      const { code, out } = await joining({
+        joins: [{ ...firstOf("f1", "482913"), list: true, list_held: true }], account: "acct_1a2b3c4d5e6f",
+        said: (said, answer) => { if (said === firstPrompt("Pixel")) answer("482913"); },
+      });
+      expect(code).toBe(0);
+      expect(out.at(-1)).toBe("Pixel was not let in here: a device was blocked on this PC, and until that block is lifted this PC keeps out every device that came after it, whether or not your account's list holds it. Lift the block on a device of your account that is older than it and signs in with two-step sign-in, or run ovis recover on this PC, which lists the block with the command that lifts it. Pixel can open this PC after that.\n");
+      expect(out.join("")).not.toMatch(/is let in;|was received|not added/);
+    });
+
+    it("approves nothing for a join this PC cannot let in, from an app older than its account's list, and says to update that app", async () => {
+      const { code, out, sent, reads } = await joining({
+        joins: [{ ...firstOf("f1", "482913"), list_unknown: true }], account: "acct_1a2b3c4d5e6f",
+        said: (said, answer) => { if (said === firstPrompt("Pixel")) answer("482913"); },
+      });
+      expect(code).toBe(0);
+      expect(sent).toEqual([]);
+      expect(reads).toBe(0);
+      expect(out.join("")).toBe("Pixel cannot be let in here: this PC lets devices into your account by its signed list, and Pixel asked without its part of that list, as an Ovis older than 0.5.10 does. Update Ovis on Pixel, then have it ask to join again.\n");
+    });
+
     it("says so when the digits are wrong, which ends that join, and how to try again; Enter by itself skips the next and sends nothing", async () => {
       const { code, out, sent } = await joining({
         joins: [firstOf("f1", "482913"), firstOf("f2", "111222")], account: "acct_1a2b3c4d5e6f",
@@ -4091,6 +4584,16 @@ describe("ovis approve, a members join typed with all six of its digits (#28)", 
       expect(sent).toEqual([{ id: "f1", digits: "000000" }]);
       expect(out).toContain("That is not the number Pixel shows, so it was not let in. To try again, have Pixel ask again, then run ovis approve again.\n");
       expect(out).toContain("Galaxy is left waiting until its time runs out.\n");
+    });
+
+    it("says only that the approval was received for every join into the list, a join that is not a first one too, and that Ovis needs an update where this PC is behind", async () => {
+      const typed = (said: string, answer: (line: string) => void) => { if (prompt(said, "j1")) answer("123456"); };
+      const listed = await joining({ joins: [{ ...joinOf("j1"), list: true }], account: null, said: typed });
+      expect(listed.out.at(-1)).toBe("The approval of Tablet one was received. It opens this PC once it is in your account's list, which takes a moment; if it does not, have it ask again.\n");
+      expect(listed.out.join("")).not.toContain("joins your account");
+      const behind = await joining({ joins: [{ ...joinOf("j1"), list: true, list_behind: true }], account: null, said: typed });
+      expect(behind.out.at(-1)).toContain("Update Ovis on this PC");
+      expect(behind.out.join("")).not.toMatch(/joins your account|was received/);
     });
 
     it("leaves out the account when this PC did not say which, and asks about a members join as before", async () => {

@@ -196,6 +196,32 @@ fn restarts_in_the_same_root_and_loads_the_last_session() {
 }
 
 #[test]
+fn tool_stop_cancels_the_pending_approval_before_acknowledging_shutdown() {
+    let root = Root::new("stop-approval");
+    let mut keeper = Keeper::start(&root, &[]);
+    let mut client = Client::connect(&root);
+    let session = client.session();
+    client.send(&prompt(1, &session, "ask"));
+    let ask = client.wait("the approval request", |r| r["dir"] == "from-agent" && method(r) == Some("session/request_permission"));
+    client.send(&json!({"jsonrpc":"2.0","id":2,"method":"_keeper/tool_stop","params":{}}));
+
+    let mut resolution = None;
+    let receipt = client.wait("the stop receipt", |r| {
+        if method(r) == Some("_keeper/resolved") {
+            assert!(resolution.is_none(), "the approval was resolved twice");
+            resolution = Some(r["msg"]["params"].clone());
+        }
+        r["dir"] == "to-client" && r["msg"]["id"] == 2
+    });
+    assert_eq!(receipt["msg"]["result"], json!({"stopping": true}), "{receipt}");
+    let resolved = resolution.expect("the approval must close before stop is acknowledged");
+    assert_eq!(resolved["id"], ask["msg"]["id"]);
+    assert_eq!(resolved["outcome"], "cancelled");
+    assert_eq!(resolved["optionId"], serde_json::Value::Null);
+    assert!(keeper.wait_exit().success());
+}
+
+#[test]
 fn restart_expires_the_dead_agents_pending_approval() {
     let root = Root::new("expire");
     let mut first = Keeper::start(&root, &[]);

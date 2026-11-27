@@ -1,6 +1,6 @@
 /**
  * Japanese for the keys only the chat files use:
- * components/ChatView.tsx, components/Markdown.tsx, components/MermaidLightbox.tsx,
+ * components/ChatView.tsx, components/ChatWork.tsx, components/ChatTurn.tsx, components/Markdown.tsx, components/MermaidLightbox.tsx,
  * components/ChatMinimap.tsx, components/ImageLightbox.tsx, components/BackgroundTasks.tsx,
  * components/BackgroundAgentDetail.tsx, components/Artifacts.tsx, components/OmpBtw.tsx, components/MarkdownLinkMenu.tsx,
  * lib/workBlocks.ts (with CATEGORY_LABEL), lib/toolVerbs.ts (with VERB_LABEL), lib/outcomeChip.ts,
@@ -90,7 +90,6 @@ export const CHAT_JA: Record<string, string> = {
   "The list is empty.": "リストは空です。",
   "Every update, in order": "すべての更新（順番どおり）",
   "Loading conversation…": "会話を読み込んでいます…",
-  "Waiting for the PC…": "PC の応答を待っています…",
   "The PC isn't responding": "PC が応答しません",
   "Couldn't load the conversation": "会話を読み込めませんでした",
   "Couldn't load the terminal output": "ターミナル出力を読み込めませんでした",
@@ -117,6 +116,7 @@ export const CHAT_JA: Record<string, string> = {
   "Ran in terminal": "ターミナルで実行済み",
   "Open Terminal": "ターミナルを開く",
   "Background result delivered": "バックグラウンドの結果が届きました",
+  "Stopped|chat": "停止しました",
   "Background task ended": "バックグラウンドタスクが終了しました",
   "Goal continues": "目標の作業を再開",
   "background work": "バックグラウンド作業",
@@ -242,7 +242,6 @@ export const CHAT_JA: Record<string, string> = {
   "{n} of {count}": "{count} 枚中 {n} 枚目",
   "Couldn't copy the image. Download it instead.": "画像をコピーできませんでした。代わりにダウンロードしてください。",
   "Couldn't save the image.": "画像を保存できませんでした。",
-  "Saved to Downloads.": "ダウンロードに保存しました。",
   "Conversation turns": "会話のターン",
   "Go to turn {n}": "ターン {n} へ移動",
   "Show full message": "メッセージ全体を表示",

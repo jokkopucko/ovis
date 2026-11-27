@@ -52,7 +52,7 @@ async function fixture(serveOnly?: boolean, options: Partial<RelayServiceOptions
   cleanup.push(() => rmSync(stateDir, { recursive: true, force: true }));
   let synced = deferred<void>();
   let controlLost = deferred<void>();
-  let dataOpened = deferred<WebSocket>();
+  let dataServed = deferred<WebSocket>();
   const opened: { kind: "control" | "data" | "warm"; socket: WebSocket }[] = [];
   const heard: string[] = [];
   const warmOpened: ReturnType<typeof deferred<WebSocket>>[] = [deferred<WebSocket>(), deferred<WebSocket>()];
@@ -63,8 +63,10 @@ async function fixture(serveOnly?: boolean, options: Partial<RelayServiceOptions
       const socket = new WebSocket(`ws://127.0.0.1:${localRelay.port}${target.pathname}${target.search}`);
       const kind = target.searchParams.has("connection_id") ? "data" : target.searchParams.has("warm") ? "warm" : "control";
       opened.push({ kind, socket });
-      if (kind === "warm") {
-        const proved = warmOpened[opened.filter((entry) => entry.kind === "warm").length - 1];
+      if (kind !== "control") {
+        // A data socket serves its client once it sent the PC's proof: the relay ignores the close of one still
+        // proving (relay/core.ts finish), so a client must not be timed out before that.
+        const proved = kind === "warm" ? warmOpened[opened.filter((entry) => entry.kind === "warm").length - 1] : dataServed;
         const send = socket.send.bind(socket);
         socket.send = (data) => {
           send(data);
@@ -72,13 +74,11 @@ async function fixture(serveOnly?: boolean, options: Partial<RelayServiceOptions
         };
       }
       if (kind === "control") socket.addEventListener("message", (event) => { if (typeof event.data === "string") heard.push(event.data); });
-      if (target.searchParams.has("connection_id")) {
-        socket.addEventListener("open", () => dataOpened.resolve(socket));
-      } else if (target.searchParams.has("warm")) {
+      if (kind === "warm") {
         socket.addEventListener("message", (event) => {
-          if (typeof event.data === "string" && event.data.includes('"bound"')) dataOpened.resolve(socket);
+          if (typeof event.data === "string" && event.data.includes('"bound"')) dataServed.resolve(socket);
         });
-      } else socket.addEventListener("close", () => controlLost.resolve());
+      } else if (kind === "control") socket.addEventListener("close", () => controlLost.resolve());
       socket.addEventListener("message", (event) => {
         if (typeof event.data === "string" && JSON.parse(event.data).type === "sync") synced.resolve();
       });
@@ -98,7 +98,7 @@ async function fixture(serveOnly?: boolean, options: Partial<RelayServiceOptions
     get app() { return app; },
     get service() { return service; },
     get attempts() { return attempts; },
-    get dataOpened() { return dataOpened.promise; },
+    get dataServed() { return dataServed.promise; },
     get controlLost() { return controlLost.promise; },
     opened, heard, warmOpened: warmOpened.map((entry) => entry.promise),
     get base() { return `http://127.0.0.1:${app.port}`; },
@@ -139,7 +139,7 @@ async function fixture(serveOnly?: boolean, options: Partial<RelayServiceOptions
       await localRelay.stop();
       await bounded(lost);
       controlLost = deferred<void>();
-      dataOpened = deferred<WebSocket>();
+      dataServed = deferred<WebSocket>();
       localRelay = startBunRelay(hostOptions);
       expect(service.status().phase).toBe("error");
       clock.advance(999);
@@ -920,7 +920,7 @@ it("bounds a client's incomplete protected handshake to fifteen seconds", async 
   raw.onclose = (event) => closed.resolve(event.code);
   const opened = deferred<void>();
   raw.onopen = () => opened.resolve();
-  await bounded(Promise.all([f.dataOpened, opened.promise]));
+  await bounded(Promise.all([f.dataServed, opened.promise]));
   clock.advance(14_999);
   expect(raw.readyState).toBe(WebSocket.OPEN);
   clock.advance(1);

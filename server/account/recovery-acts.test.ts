@@ -92,6 +92,7 @@ function seams(options: { fingerprint?: string; admitted?: boolean } = {}) {
     removeKey: ({ target, user }) => { calls.push(`remove ${target} ${user}`); return { removed: [target] }; },
     appendLift: (block, forget, user) => { calls.push(`lift ${block} ${forget} ${user}`); return { outcome: "applied" }; },
     revokeAll: (user) => { calls.push(`revoke_all ${user}`); return ["a", "b"]; },
+    accountStatus: () => ({ account: null, members: 0 }),
   };
   return { made, calls, pending };
 }

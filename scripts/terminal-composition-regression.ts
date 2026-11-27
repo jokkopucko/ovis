@@ -2,7 +2,7 @@
  * At 412 and 720 wide, DPR 2.625, in Input line and Direct typing modes, with the
  * default font and with the bundled "JetBrains Mono Web": a long composition (CDP
  * Input.imeSetComposition, as Gboard's voice typing sends one) leaves the page and the terminal host
- * at scroll 0, keeps xterm's composition box inside the grid, and the grid is the pane's width less
+ * at scroll 0, keeps the composition box inside the grid, and the grid is the pane's width less
  * its padding and less than one cell.
  */
 import assert from "node:assert/strict";
@@ -68,7 +68,7 @@ export async function checkTerminalComposition(browser: Browser, origin: string)
         const layer = document.querySelector<HTMLElement>(".pane-terminal[data-renderer='ghostty'] .ghostty-layer");
         const cell = layer
           ? parseFloat(layer.style.getPropertyValue("--ghostty-cw"))
-          : screen.width / (document.querySelector(".xterm-rows")!.firstElementChild!.textContent!.length || 1);
+          : screen.width / (document.querySelector(".ghostty-row")!.textContent!.length || 1);
         const host = document.querySelector<HTMLElement>(".pane-terminal")!;
         const pad = getComputedStyle(document.querySelector(".pane-terminal .xterm")!);
         const room = host.clientWidth - parseFloat(pad.paddingLeft) - parseFloat(pad.paddingRight);

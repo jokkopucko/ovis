@@ -16,6 +16,8 @@ export type { AccountRow, AccountRowPorts, AccountRowSource, AccessAnswer, DropR
 export { accountRowsFor } from "./account-row-source.ts";
 
 export const ACCOUNT_DEVICES_FILE = "account-devices.json";
+/** The name a row of the list's devices has while this PC has not opened the name the list sealed for it (list-follow.ts LIST_DEVICE_LABEL). */
+const PLACEHOLDER_LABEL = "Device";
 export const ACCOUNT_DEVICES_MAX = 100;
 /** Section 5: a row this PC saw no sign-in of for this many days expires here, whatever the service says. */
 /** T56: with no whole read for this long, every account-joined row waits for one again. */
@@ -262,10 +264,10 @@ export class AccountDeviceStore implements AccountRowSource {
 
   /**
    * Applies a whole read's list: drops what it no longer names, then admits what it newly names and the guards let in.
-   * `settled`: the list is one a person at this PC has just taken as the account's (the PC pinned its signed list), so
-   * what it names is no news to them: its devices come in with no join hold.
+   * `settled`: the keys whose coming in is no news to a person at this PC, who has just taken the list as the
+   * account's (the PC pinned its signed list) or let that very device in here: they come in with no join hold.
    */
-  commitList(list: ListCommit, readmission?: Readmission, settled = false): { admitted: string[]; dropped: string[] } {
+  commitList(list: ListCommit, readmission?: Readmission, settled: (key: string) => boolean = () => false): { admitted: string[]; dropped: string[] } {
     this.admittedNow = [];
     try { return this.commit(list, readmission, settled); } finally {
       const rows = this.admittedNow;
@@ -274,11 +276,12 @@ export class AccountDeviceStore implements AccountRowSource {
     }
   }
 
-  private commit(list: ListCommit, readmission: Readmission | undefined, settled: boolean): { admitted: string[]; dropped: string[] } {
+  private commit(list: ListCommit, readmission: Readmission | undefined, settled: (key: string) => boolean): { admitted: string[]; dropped: string[] } {
     this.usable();
     const removed = new Set(list.removed.map((gone) => gone.key));
     const eligible = new Map(list.devices.filter((entry) => entry.eligible && !removed.has(entry.key)).map((entry) => [entry.key, entry]));
     const sameAccount = this.file.account === null || this.file.account === list.account;
+    if (sameAccount) this.move(list.moved ?? [], eligible);
     const stillListed = new Set(list.devices.map(entry => entry.key));
     const leaving = this.file.devices.filter(row => !sameAccount || removed.has(row.key) ||
       (!eligible.has(row.key) && !(row.state === "expired" && stillListed.has(row.key))));
@@ -296,19 +299,28 @@ export class AccountDeviceStore implements AccountRowSource {
       this.write({ ...this.file, devices: this.file.devices.map((candidate) => candidate.id === row.id ? { ...candidate, hold_until: candidate.hold_until === null ? null : until } : candidate) });
     }
 
-    // rows admitted from here on belong to this read's account and snapshot
-    this.write({ ...this.file, account: list.account, snapshot: list.snapshot, version: list.version });
+    // rows admitted from here on belong to this read's account and snapshot. A row still named by the list's placeholder
+    // (its name was not open to this PC when it came in) takes the name the list gives it now; one a person named stays
+    // (the list's commits alone: a PC that follows no list keeps the labels its rows came in with)
+    const named = new Map(list.names === true ? list.devices.filter((entry) => entry.label !== PLACEHOLDER_LABEL).map((entry) => [entry.key, entry.label]) : []);
+    const devices = this.file.devices.map((row) => row.label === PLACEHOLDER_LABEL && named.has(row.key) ? { ...row, label: named.get(row.key)! } : row);
+    this.write({ ...this.file, devices, account: list.account, snapshot: list.snapshot, version: list.version });
 
     const admitted: string[] = [];
     this.republish();
     const listKeys = list.devices.map((entry) => entry.key);
     for (const entry of eligible.values()) {
-      if (!this.ports.hasNoticeSlot()) break;
+      // whoever comes in new, or again, gets a notice; with none to give nobody does
+      const slot = this.ports.hasNoticeSlot();
       const existing = this.file.devices.find((row) => row.key === entry.key);
       if (existing) {
-        if (sameAccount && readmission?.(existing, list.account) && this.readmit(entry.key, list)) admitted.push(entry.key);
+        if (slot && sameAccount && readmission?.(existing, list.account) && this.readmit(entry.key, list)) admitted.push(entry.key);
+        // a person has just let this very key in: a row a read made for it a moment before waits no longer either.
+        // Its row is there already and takes no notice, so this holds while no notice can be made too
+        else if (existing.state === "hold" && settled(entry.key)) this.goLive(existing.id);
         continue;
       }
+      if (!slot) continue;
       // This new key needs a slot. A later proved replacement in the same list does not.
       if (this.file.devices.length >= ACCOUNT_DEVICES_MAX) continue;
       if (this.ports.heldByDevicesJson(entry.key) || !this.ports.admits(entry.key, list.account)) continue;
@@ -317,9 +329,28 @@ export class AccountDeviceStore implements AccountRowSource {
         key: entry.key, listKeys, removedKeys: [...removed], othersEver: first.othersEver(), firstListKey: first.listKey(),
         otherRows: first.otherRows() || this.file.devices.some((row) => row.key !== entry.key),
       });
-      if (this.admit(entry, bypass || settled)) admitted.push(entry.key);
+      if (this.admit(entry, bypass || settled(entry.key))) admitted.push(entry.key);
     }
     return { admitted, dropped };
+  }
+
+  /**
+   * A device that handed its place on to another key of its own keeps its row here, under the key it is in by now: the
+   * same name, age and admission, with no new hold and no notice, as it is the same device; a hold it is still in goes on. Its sessions under the key it
+   * handed over end as a row that changed under them, and it signs in again with the other.
+   */
+  private move(moved: NonNullable<ListCommit["moved"]>, eligible: ReadonlyMap<string, SnapshotDevice>): void {
+    for (const { from, to } of moved) {
+      const row = this.file.devices.find((candidate) => candidate.key === from && candidate.state !== "expired");
+      if (row === undefined || !eligible.has(to) || this.file.devices.some((candidate) => candidate.key === to)) continue;
+      if (this.ports.heldByDevicesJson(to) || !this.admits(to)) continue;
+      // while the row still stands under its old id, so each of its sessions ends as `auth_changed`
+      this.ports.closeSessions(row.id, "list");
+      const id = accountDeviceId(this.serverId, to);
+      // the same device: a hold it is still in goes on, and so does a wait for a whole read, which this commit then ends
+      this.write({ ...this.file, devices: this.file.devices.map((candidate) => candidate === row ? { ...row, id, key: to } : candidate) });
+      if (this.waiting.delete(row.id)) this.waiting.add(id);
+    }
   }
 
   /** The PC's account was cleared or its relay identity reset (T44): every account-joined row goes. */

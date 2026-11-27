@@ -1,15 +1,16 @@
 /* The card sits on the composer's column, directly above the input card and outside the
    transcript (PaneTerminal places it; the column and the space under it are Composer.css's).
    Its height is budgeted, and a phone's keyboard counts (--app-height): the larger of 60% of the
-   app and six touch rows, so a three-option approval is never cut. Only the reference text gives
-   way (.prompt-card-body); when that is not enough the card scrolls as a whole. The composer's
-   folder strip under the input card comes out of that 60% (--prompt-card-strip), so the transcript
-   keeps what it had without one. */
+   app (80% for questions without preceding terminal words) and six touch rows. Terminal words and
+   reference text can give way, but a question's own context (.is-prose) does not; when that is not
+   enough the card scrolls as a whole. The composer's folder strip under the input card comes out
+   of that budget (--prompt-card-strip), so the transcript keeps what it had without one. */
 .prompt-card {
   --prompt-card-strip: 0px;
+  --prompt-card-share: 0.6;
   flex: 0 1 auto;
   min-height: 0;
-  max-height: max(calc(var(--app-height, 100dvh) * 0.6 - var(--prompt-card-strip)), calc(var(--touch-target) * 6));
+  max-height: max(calc(var(--app-height, 100dvh) * var(--prompt-card-share) - var(--prompt-card-strip)), calc(var(--touch-target) * 6));
   padding: var(--space-3) var(--space-3) 0;
   display: flex;
   flex-direction: column;
@@ -21,6 +22,11 @@
   border: var(--hairline) solid var(--border-strong);
   border-radius: var(--radius-xl);
   background: var(--bg-elevated);
+}
+
+/* Preceding terminal words keep the standard budget so they give way on short screens. */
+.prompt-card.is-question:not(:has(> .prompt-card-words)) {
+  --prompt-card-share: 0.8;
 }
 
 .prompt-card > * {
@@ -339,6 +345,15 @@
   min-height: calc(1lh + 2 * var(--space-2));
 }
 
+/* a question's context is prose the answer depends on: body-size text, and its own height up to ten
+   lines (then it scrolls) rather than giving way to long options; the card scrolls as a whole instead */
+.prompt-card-body.is-prose {
+  flex-shrink: 0;
+  max-height: calc(10lh + 2 * var(--space-2));
+  font-family: inherit;
+  font-size: var(--fs-sm);
+}
+
 .prompt-card-body::after {
   content: "";
   position: sticky;
@@ -648,10 +663,10 @@
   }
 }
 
-/* a desktop always shows the tab strip (as herdr's TUI): the card's 60% is of what is under it,
+/* a desktop always shows the tab strip (as herdr's TUI): the card's share is of what is under it,
    so the transcript keeps two lines at 800x600. A phone hides a lone tab and keeps the rule above */
 @media (min-width: 769px) {
-  .prompt-card { max-height: max(calc((var(--app-height, 100dvh) - var(--control-h)) * 0.6 - var(--prompt-card-strip)), calc(var(--touch-target) * 6)); }
+  .prompt-card { max-height: max(calc((var(--app-height, 100dvh) - var(--control-h)) * var(--prompt-card-share) - var(--prompt-card-strip)), calc(var(--touch-target) * 6)); }
 }
 
 .prompt-dock:has(~ .composer > .composer-strip) > .prompt-card {

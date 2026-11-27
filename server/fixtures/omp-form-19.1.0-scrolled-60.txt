@@ -1,0 +1,30 @@
+
+                                                            
+ Run the form fixture.                                      
+                                                            
+╭─ Ask · 1 of 4 answered ──────────────────────────────────╮
+│ Pick how the fictional report is built.                █ │
+│                                                        █ │
+│ Transport                                              █ │
+│ Which route should carry the fictional session across a█ │
+│ narrow terminal that wraps long lines?                 █ │
+│ ❯ ○ Local socket that keeps the fictional session on   █ │
+│     this PC and wraps                                  █ │
+│   ○ Remote relay                                       █ │
+│   ○ Other: type your own                               █ │
+│                                                        █ │
+│ ○ Targets                                              █ │
+│    Desktop   Phone                                     █ │
+│                                                        █ │
+│ ✓ Region                                               █ │
+│    ✓ Europe   United States   Asia Pacific             █ │
+│                                                        █ │
+│ ○ Project name                                         █ │
+│   my-app                                               █ │
+│                                                        │ │
+╰──────────────────────────────────────────────────────────╯
+
+
+  ⎋ Working…                                                
+ ❓ 1s > ⬢ Form fixture > 📁 …mp-form-LS8usG/cwd ▶─6%─┃131K─
+╰─                                                          

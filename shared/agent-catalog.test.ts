@@ -1,10 +1,11 @@
 import { describe, expect, it } from "bun:test";
 
 import { AGENT_CATALOG, APPROVED_COMMANDS, CATALOG_PLATFORMS, catalogPlatform, COMMAND_TESTS, commandProblems, meetsMinVersion, parseVersion, type AgentCatalogEntry, type InstallMethod } from "./agent-catalog.ts";
+import { AGENT_DISPLAY_NAMES, agentDisplayName } from "./agent-names.ts";
 import { SUPPORTED_AGENT_KINDS } from "./supported-agents.ts";
 import type { UsageProviderId } from "./usage.ts";
 
-const PROVIDERS: Record<UsageProviderId, true> = { claude: true, codex: true, cursor: true, copilot: true, grok: true, antigravity: true, opencode: true };
+const PROVIDERS: Record<UsageProviderId, true> = { claude: true, codex: true, cursor: true, copilot: true, grok: true, antigravity: true, opencode: true, devin: true, kimi: true };
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const methods = (entry: AgentCatalogEntry): [string, InstallMethod][] => CATALOG_PLATFORMS.flatMap((platform) => {
   const install = entry.install[platform];
@@ -16,6 +17,8 @@ describe("agent catalog", () => {
     const ids = AGENT_CATALOG.map((entry) => entry.id);
     expect(new Set(ids).size).toBe(ids.length);
     for (const kind of [...SUPPORTED_AGENT_KINDS, "cmd", "muse"]) expect(ids).toContain(kind);
+    expect(AGENT_DISPLAY_NAMES).toEqual(Object.fromEntries(AGENT_CATALOG.map((entry) => [entry.id, entry.name])));
+    for (const kind of ["constructor", "toString", "__proto__"]) expect(agentDisplayName(kind)).toBe(kind);
   });
 
   it("gives every entry the fields the install flow reads, in their shape", () => {

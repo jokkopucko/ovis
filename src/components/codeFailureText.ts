@@ -1,12 +1,7 @@
 import type { Translate } from "../lib/i18n.ts";
-import { TYPED_CODE_FAILURES, type TypedCodeFailure } from "../../shared/relay-code-offer.ts";
+import type { TypedCodeFailure } from "../../shared/relay-code-offer.ts";
 
 export type { TypedCodeFailure };
-
-export function typedCodeFailure(code: string | null): TypedCodeFailure | null {
-  const failure = code?.startsWith("typed_code_") ? code.slice("typed_code_".length) : null;
-  return TYPED_CODE_FAILURES.find((known) => known === failure) ?? null;
-}
 
 export function codeFailureText(t: Translate, failure: TypedCodeFailure): string {
   switch (failure) {

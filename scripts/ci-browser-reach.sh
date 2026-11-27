@@ -8,6 +8,9 @@
 # native apps' own folders, the installers, the runner launcher, changelog fragments, and every workflow but
 # ci.yml. Any other path keeps the jobs, and so does a path this script cannot read: a new folder runs them
 # until it is added here, and scripts/ci-browser-reach.test.ts fails when a browser script names a path left out.
+# A change whose other paths are all under server/ (its fixtures aside) prints browser=live: the jobs run, but
+# without the scripts that check the static demo alone and load no file of the server (scripts/ci-browser-parallel.ts's
+# demoOnlyScripts, BROWSER_LIVE_ONLY).
 set -euo pipefail
 
 apart='^(tui|crates/ovis-tui|push-relay|ovis-site|app/(android|ios|mac|windows|store|assets)|scripts/self-hosted-runner|changelog\.d)/.'
@@ -16,12 +19,17 @@ tests='^((server|shared|relay|integrations)/.+\.test\.ts|src/.+\.test\.tsx?|scri
 ci='^\.github/(workflows/ci\.yml$|actions/)'
 
 seen=0
+server=0
 while IFS= read -r path || [ -n "$path" ]; do
   [ -n "$path" ] || continue
   seen=1
   if [[ $path == server/fixtures/* ]]; then echo "browser=true"; exit 0; fi
   if [[ $path =~ $ci ]]; then echo "browser=true"; exit 0; fi
   if [[ $path == .github/* ]] || [[ $path =~ $apart ]] || [[ $path =~ $files ]] || [[ $path =~ $tests ]]; then continue; fi
+  if [[ $path == server/?* ]]; then server=1; continue; fi
   echo "browser=true"; exit 0
 done
-if [ "$seen" = 1 ]; then echo "browser=false"; else echo "browser=true"; fi
+if [ "$seen" = 0 ]; then echo "browser=true"
+elif [ "$server" = 1 ]; then echo "browser=live"
+else echo "browser=false"
+fi

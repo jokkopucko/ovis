@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createElement, type RefObject } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import type { Terminal } from "@xterm/xterm";
+import { openPage, type Page } from "./page.fixture.ts";
+import type { GhosttyTerminal } from "./ghostty/terminal.ts";
 import { fontSettled } from "./fontFamily.ts";
 import { useTerminalRefits, type TerminalRefitsDeps } from "./useTerminalRefits.ts";
 import { HerdrSocket } from "./ws.ts";
@@ -25,17 +25,16 @@ const COLORS = {} as TerminalRefitsDeps["colors"];
 
 describe("useTerminalRefits under the inbox mode's list", () => {
   const saved = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
   let client: HerdrSocket;
   let socket: FakeSocket;
-  const termRef: RefObject<Terminal | null> = { current: null };
+  const termRef: RefObject<GhosttyTerminal | null> = { current: null };
 
   beforeEach(() => {
-    for (const key of ["IS_REACT_ACT_ENVIRONMENT", "WebSocket", "window", "document"]) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+    page = openPage();
+    saved.set("WebSocket", Object.getOwnPropertyDescriptor(globalThis, "WebSocket"));
     Object.defineProperty(globalThis, "WebSocket", { configurable: true, value: FakeSocket });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: globalThis });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: { visibilityState: "visible", hasFocus: () => true, addEventListener() {}, removeEventListener() {} } });
+    Object.defineProperty(page.window.document, "hasFocus", { configurable: true, value: () => true });
     termRef.current = null;
     client = new HerdrSocket("ws://test/ws");
     client.connect();
@@ -45,9 +44,9 @@ describe("useTerminalRefits under the inbox mode's list", () => {
   });
 
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
+    await page.render(null);
     client.close();
+    await page.close();
     for (const [key, descriptor] of saved) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
       else Reflect.deleteProperty(globalThis, key);
@@ -60,18 +59,15 @@ describe("useTerminalRefits under the inbox mode's list", () => {
     const deps: TerminalRefitsDeps = {
       activeRef: ref(false), autoSelected: false, baseFontRef: ref(13), pinchingRef: ref(false), fontSettledRef: ref(fontSettled()),
       chatView, chatViewRef: ref(chatView), coarseRef: ref(false), covered, findOpenRef: ref(false), fitRef: ref(null), fittedRef: ref(() => {}),
-      fixedGridRef: ref(false), follow: false, followCursorRef: ref(() => {}), keyboardHoldsRef: ref(() => false), narrowFont: false,
-      narrowFontFitted: ref(false), observeRef: ref(false), colors: COLORS, paneRef: ref(PANE), peekRef: ref(null),
+      fixedGridRef: ref(false), follow: false, followCursorRef: ref(() => {}), keyboardHoldsRef: ref(() => false),
+      observeRef: ref(false), colors: COLORS, paneRef: ref(PANE), peekRef: ref(null),
       sharedGridRef: ref(null), shown: true, sizesPty: () => true, socketRef: ref(client), termRef, terminalFontFamily: "", terminalFontSize: 13,
     };
     useTerminalRefits(deps);
     return null;
   }
   const draw = async (covered: boolean, chatView = false): Promise<void> => {
-    await act(async () => {
-      if (renderer) renderer.update(createElement(Probe, { covered, chatView }));
-      else renderer = create(createElement(Probe, { covered, chatView }));
-    });
+    await page.render(createElement(Probe, { covered, chatView }));
   };
   const sizing = (from: number) => socket.sent.slice(from).filter((frame) => ["attach", "resize", "release-size"].includes(frame.type));
 
@@ -81,7 +77,7 @@ describe("useTerminalRefits under the inbox mode's list", () => {
     const from = socket.sent.length;
     socket.open();
     expect(sizing(from)).toEqual([{ type: "attach", pane_id: PANE, cols: 100, rows: 30, flow_control: "ack", receipt_resume_id: expect.any(String), keep_size: true }]);
-    termRef.current = { cols: 100, rows: 30 } as Terminal;
+    termRef.current = { cols: 100, rows: 30 } as GhosttyTerminal;
     const shown = socket.sent.length;
     await draw(false);
     expect(sizing(shown)).toEqual([{ type: "resize", pane_id: PANE, cols: 100, rows: 30 }]);
@@ -91,7 +87,7 @@ describe("useTerminalRefits under the inbox mode's list", () => {
     let bottoms = 0;
     let selecting = false;
     await draw(false, true);
-    termRef.current = { cols: 100, rows: 30, hasSelection: () => selecting, scrollToBottom: () => { bottoms += 1; } } as unknown as Terminal;
+    termRef.current = { cols: 100, rows: 30, hasSelection: () => selecting, scrollToBottom: () => { bottoms += 1; } } as unknown as GhosttyTerminal;
     expect(bottoms).toBe(0);
     await draw(false, false);
     expect(bottoms).toBe(1);
@@ -107,7 +103,7 @@ describe("useTerminalRefits under the inbox mode's list", () => {
     await draw(false);
     const from = socket.sent.length;
     await draw(true);
-    termRef.current = { cols: 100, rows: 30 } as Terminal;
+    termRef.current = { cols: 100, rows: 30 } as GhosttyTerminal;
     await draw(false);
     expect(sizing(from)).toEqual([]);
   });

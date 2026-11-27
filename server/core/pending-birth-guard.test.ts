@@ -63,8 +63,11 @@ async function drain({ after = () => {}, afterPaste = () => {}, mode = "gjc", ta
     }
   });
 
-  const agent = mode === "skill" || mode === "missing" ? "gjc" : mode === "codex-queued" ? "codex" : mode === "devin-queued" ? "devin" : mode;
-  const pane = { pane_id: "p", terminal_id: "p", workspace_id: "w", tab_id: "t", agent, agent_status: "working", cwd: "/tmp", focused: false, revision: 0 } as HerdrPane;
+  const agent = mode === "skill" || mode === "missing" ? "gjc" : mode === "codex-queued" ? "codex" : mode === "devin-queued" ? "devin" : mode === "kiro-queued" ? "kiro" : mode;
+  const pane = {
+    pane_id: "p", terminal_id: "p", workspace_id: "w", tab_id: "t", agent, agent_status: "working", cwd: "/tmp", focused: false, revision: 0,
+    ...(mode === "pi" ? { agent_session: { agent: "pi", source: "herdr:pi", kind: "path", value: "/fixture/session-a.jsonl" } } : {}),
+  } as HerdrPane;
   const frames: ServerMessage[] = [];
   told = frames;
   const owner = { data: connectionData({ deviceId: undefined, readOnly: false }), getBufferedAmount: () => 0, send: (value: string) => { frames.push(JSON.parse(value) as ServerMessage); return 1; } } as unknown as Client;
@@ -105,7 +108,7 @@ async function drain({ after = () => {}, afterPaste = () => {}, mode = "gjc", ta
 let told: ServerMessage[] = [];
 const listed = (): Array<[string, string | undefined, string | undefined]> => told.flatMap((frame) => frame.type === "pending-messages" ? [frame.messages] : []).at(-1)
   ?.map((message) => [message.state, message.error?.code, message.error?.message]) ?? [];
-type Mode = "gjc" | "claude" | "pi" | "codex" | "codex-queued" | "devin-queued" | "skill" | "missing";
+type Mode = "gjc" | "claude" | "pi" | "codex" | "codex-queued" | "devin-queued" | "kiro-queued" | "skill" | "missing";
 interface Pane { birth: number | null; screen: string; foreground: Array<{ pid: number; name: string; argv: string[] }>; onProcessRead?: () => void; onScreenRead?: () => void }
 
 it("holds a queued message rather than pasting it over text typed in GJC's box (composer.ts freeAgentInput)", async () => {
@@ -302,6 +305,32 @@ it("types no queued message into Devin's folder trust when the turn ends with it
 
 it("types no queued message into Devin's folder trust that comes up during the last checks before the paste", async () => {
   expect(await drain({ mode: "devin-queued", screen: DEVIN_COMPOSER, after: (pane) => { pane.screen = DEVIN_TRUST; } })).toEqual([]);
+  expect(listed()).toEqual(HELD_FOR_PICKER);
+});
+
+// Kiro's tool approval: herdr reports it blocked, but a turn's end can be seen before that; a paste and its Enter would
+// pick the row under the cursor and run the tool. V2's rows (kiro-cli 2.35.2) have no card; V3's (dialogs/kiro.ts) have one
+const KIRO_APPROVAL = readFileSync(join(import.meta.dir, "../fixtures/kiro-2.35.2-approval.txt"), "utf8");
+const KIRO_V3_APPROVAL = " Print a test string requires approval\n shell → echo hello-permission-test\n\n ❯ Allow\n   Always allow\n   Deny\n   Always deny\n"
+  + `${"─".repeat(60)}\n esc to close · ↑↓ to navigate · ↵ to select · Tab to edit\n`;
+const KIRO_V3_6_APPROVAL = " Echo test requires approval\n shell → echo hello-permission-test\n\n ❯ Allow once\n   Deny once\n   Create allow rule to approve future similar actions\n   Create deny rule to block future similar actions\n"
+  + `${"─".repeat(60)}\n esc to close · ↑↓ to navigate · ↵ to select · Tab to edit\n`;
+const KIRO_V3_6_RULE_FOCUSED = " Echo test requires approval\n shell → echo hello-permission-test\n\n   Allow once\n   Deny once\n ❯ Create allow rule to approve future similar actions\n   Create deny rule to block future similar actions\n"
+  + `${"─".repeat(60)}\n esc to close · Enter to see more options\n`;
+const KIRO_COMPOSER = readFileSync(join(import.meta.dir, "../fixtures/kiro-2.35.2-composer.txt"), "utf8");
+
+it("pastes a queued message into Kiro's input and sends it", async () => {
+  expect(await drain({ mode: "kiro-queued", screen: KIRO_COMPOSER })).toEqual(["paste", "Enter"]);
+});
+
+it("types no queued message into Kiro's tool approval when the turn ends with it up, and holds the message with that reason", async () => {
+  expect(await drain({ mode: "kiro-queued", screen: KIRO_COMPOSER, beforeDrain: (pane) => { pane.screen = KIRO_APPROVAL; },
+    afterDrain: async (pane, turn) => { pane.screen = KIRO_COMPOSER; await turn(); } })).toEqual([]);
+  expect(listed()).toEqual(HELD_FOR_PICKER);
+});
+
+it.each([["V2", KIRO_APPROVAL], ["V3 (2.32)", KIRO_V3_APPROVAL], ["V3 (3.6.2)", KIRO_V3_6_APPROVAL], ["V3 (3.6.2 rule-focused)", KIRO_V3_6_RULE_FOCUSED]])("types no queued message into Kiro's %s tool approval that comes up during the last checks before the paste", async (_version, approval) => {
+  expect(await drain({ mode: "kiro-queued", screen: KIRO_COMPOSER, after: (pane) => { pane.screen = approval; } })).toEqual([]);
   expect(listed()).toEqual(HELD_FOR_PICKER);
 });
 

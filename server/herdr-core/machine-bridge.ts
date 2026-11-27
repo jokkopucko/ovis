@@ -27,12 +27,16 @@ export async function listHcMachines(hc: Pick<HcConnection, "call">): Promise<Hc
 export interface MachineBridge {
   endpoint: { url: string; token: string };
   exited: Promise<unknown>;
-  stop: () => void;
+  stop: () => Promise<void>;
 }
 
 const CORE_ENV = /^(?:HC_.*|HOME|USERPROFILE|APPDATA|LOCALAPPDATA|XDG_RUNTIME_DIR|XDG_CONFIG_HOME|XDG_STATE_HOME)$/;
 const PROGRAM_ENV = /^(?:PATH|PATHEXT|LANG|LC_.*|TMPDIR|TEMP|TMP|SystemRoot|SYSTEMROOT|WINDIR|ComSpec|COMSPEC)$/;
 const READY_MS = 30_000;
+// EOF lets the child drain its label writes and read receipts. One that does not stop is killed at this deadline,
+// below the 4 s the stopping server waits (server/index.ts SHUTDOWN_DRAIN_MS): a child that outlived it could
+// still replace seen.json under the next server's bridge for the same machine
+const STOP_MS = 3_000;
 
 /**
  * Starts a machine's server: this server's own code, in a process of its own, serving herdr's API from
@@ -41,7 +45,7 @@ const READY_MS = 30_000;
  * machine's, so no transcript of this PC can be taken for one of its panes. Its state lives under
  * `stateDir`; it ends with this server (it holds the stdin this one keeps open).
  */
-export async function startMachineBridge(machine: Pick<HcMachine, "id" | "name">, stateDir: string): Promise<MachineBridge> {
+export async function startMachineBridge(machine: Pick<HcMachine, "id" | "name">, stateDir: string, signal?: AbortSignal): Promise<MachineBridge> {
   const dir = join(stateDir, "hc-machines", machine.id);
   const home = join(dir, "home");
   mkdirSync(home, { recursive: true, mode: 0o700 });
@@ -64,19 +68,34 @@ export async function startMachineBridge(machine: Pick<HcMachine, "id" | "name">
       if (message?.type === "ready" && Number.isInteger(message.port) && typeof message.token === "string") ready.resolve({ port: message.port, token: message.token });
     },
   });
+  let stopTimer: ReturnType<typeof setTimeout> | undefined;
   const stop = () => {
-    try { child.stdin.end(); } catch {}
-    child.kill();
+    if (stopTimer === undefined && child.exitCode === null && child.signalCode === null) {
+      stopTimer = setTimeout(() => child.kill("SIGKILL"), STOP_MS);
+      stopTimer.unref();
+      try { child.stdin.end(); } catch { child.kill(); }
+    }
+    return child.exited.then(() => undefined);
   };
-  void child.exited.then((code) => ready.reject(new Error(`The server for ${machine.name} stopped before it answered (exit ${code})`)));
+  void child.exited.then((code) => {
+    clearTimeout(stopTimer);
+    ready.reject(new Error(`The server for ${machine.name} stopped before it answered (exit ${code})`));
+  });
   const timer = setTimeout(() => ready.reject(new Error(`The server for ${machine.name} did not start within ${READY_MS / 1000}s`)), READY_MS);
+  // this server is stopping: a child that has not answered yet is not waited for until READY_MS
+  const abort = () => ready.reject(new Error(`The server for ${machine.name} was stopped before it answered`));
+  if (signal?.aborted) abort();
+  else signal?.addEventListener("abort", abort, { once: true });
   try {
     const { port, token } = await ready.promise;
     return { endpoint: { url: `http://127.0.0.1:${port}`, token }, exited: child.exited, stop };
   } catch (error) {
-    stop();
+    // It never opened for requests and may not have reached the stdin reader.
+    child.kill("SIGKILL");
+    await child.exited;
     throw error;
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener("abort", abort);
   }
 }

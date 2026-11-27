@@ -27,7 +27,6 @@ export interface TypeAheadCatch {
 export interface TypeAhead {
   items: CaughtKey[];
   since: number;
-  at: number;
   /** held for review, never sent by itself: keys typed before the user went elsewhere, or around a paste */
   held: boolean;
   /** a paste was refused: it never reached the terminal's bracketed paste, so it is not kept at all (the user is told) */
@@ -44,7 +43,6 @@ interface Pending {
   field: HTMLTextAreaElement;
   items: CaughtKey[];
   since: number;
-  at: number;
   /** when the text now in the field began: its first input, or the composition it came from */
   textAt: number | null;
   held: boolean;
@@ -105,7 +103,7 @@ export function catchTypeAhead(): TypeAheadCatch | null {
   field.spellcheck = false;
   field.tabIndex = -1;
   Object.assign(field.style, { position: "fixed", left: "0", top: "0", width: "1px", height: "1px", opacity: "0", pointerEvents: "none" });
-  const caught: Pending = { field, items: [], since: performance.now(), at: Date.now(), textAt: null, held: false, pasteRefused: false, composing: false, later: null, pane: null, paneId: null, end: () => false };
+  const caught: Pending = { field, items: [], since: performance.now(), textAt: null, held: false, pasteRefused: false, composing: false, later: null, pane: null, paneId: null, end: () => false };
   const commit = (): void => {
     // a composition that commits nothing (cancelled, or its preedit deleted) leaves nothing to date
     if (field.value === "") {
@@ -218,8 +216,8 @@ export function takeTypeAhead(pane: string, later: TypeAheadLater): TypeAhead | 
   if (caught.composing && document.activeElement === caught.field) {
     caught.later = later;
     lingering = caught.field;
-    return { items, since: caught.since, at: caught.at, held: caught.held, pasteRefused: caught.pasteRefused, focused: false };
+    return { items, since: caught.since, held: caught.held, pasteRefused: caught.pasteRefused, focused: false };
   }
   const focused = caught.end();
-  return { items: [...items, ...caught.items.splice(0)], since: caught.since, at: caught.at, held: caught.held, pasteRefused: caught.pasteRefused, focused };
+  return { items: [...items, ...caught.items.splice(0)], since: caught.since, held: caught.held, pasteRefused: caught.pasteRefused, focused };
 }

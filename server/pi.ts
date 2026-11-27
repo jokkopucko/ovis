@@ -45,6 +45,7 @@ type PiTranscriptOptions = {
   environOf?: (pid: number) => readonly string[] | null;
   argvOf?: (pid: number) => readonly string[] | null;
   processesAfter?: () => Promise<readonly PiProcess[] | null>;
+  confirmExtensionSession?: boolean;
   home?: string;
 };
 
@@ -299,6 +300,7 @@ export async function piTranscriptPath(
         ? await options.processesAfter()
         : (await paneProcessInfo(paneId).catch(() => null))?.foreground_processes ?? null;
       if (!after?.some((entry) => entry.pid === pi.pid)) reported = null;
+      else if (options.confirmExtensionSession && await extensionSessionFile(pi, environOf(pi.pid), home) !== reported) reported = null;
     }
   }
   if (reported === null) return null;

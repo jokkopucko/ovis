@@ -17,7 +17,7 @@ export const expect = async ({ page, width, box, menu, scenario, clear, rowNames
   await scenario(`A: Devin commands and source groups (${width}px)`, `a-slash-${width}.png`, async (capture) => {
     await box.fill("/");
     await menu.locator(".menu-item").first().waitFor();
-    assert.deepEqual((await rowNames()).sort(), commands.map((command) => command.name).sort());
+    assert.deepEqual((await rowNames()).sort(), commands.filter((row) => !row.chatPaletteHidden).map(({ name }) => name).sort());
     const headings = await menu.locator(".menu-heading").allTextContents();
     assert.deepEqual(headings, ["Built in", "Your skills", "Project skills", "Plugin skills", "Terminal commands"]);
     await menuFits("A");

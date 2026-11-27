@@ -42,7 +42,7 @@ export function blockIntoComposer(paneKey: string, block: string): boolean {
   const next = draftWithBlock(draft, block);
   if (next.length > MAX_COMPOSER_CHARS) return false;
   composerDrafts.markAgentOnly(key);
-  composerDrafts.set(key, next);
+  composerDrafts.set(key, next, "append");
   for (const listener of listeners.get(paneKey) ?? []) listener();
   return true;
 }

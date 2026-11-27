@@ -1,30 +1,27 @@
 import { describe, expect, test } from "bun:test";
-import type { IBufferCell, IBufferLine } from "@xterm/xterm";
+import type { ScreenCell, ScreenLine } from "./terminalScreen.ts";
 import { cellStyle, columnAt, contrastRatio, dimmedColor, paletteColor, readableColor, rowHtml, webLinkAt, wideGridKey, wideGrids } from "./terminalFold.ts";
 
 interface Cell { chars: string; width?: number; fg?: number; bg?: number; bgRgb?: number; bold?: boolean; dim?: boolean; inverse?: boolean }
 
-function line(cells: Cell[], cols: number): IBufferLine {
+function line(cells: Cell[], cols: number): ScreenLine {
   const at = (x: number): Cell => cells[x] ?? { chars: "" };
-  const cell = (x: number): IBufferCell => {
+  const cell = (x: number): ScreenCell => {
     const c = at(x);
     return {
       getChars: () => c.chars,
       getWidth: () => c.width ?? 1,
-      getCode: () => c.chars.codePointAt(0) ?? 0,
       isBold: () => (c.bold ? 1 : 0),
-      isItalic: () => 0, isDim: () => (c.dim ? 1 : 0), isUnderline: () => 0, isBlink: () => 0, isInverse: () => (c.inverse ? 1 : 0),
+      isItalic: () => 0, isDim: () => (c.dim ? 1 : 0), isUnderline: () => 0, isInverse: () => (c.inverse ? 1 : 0),
       isInvisible: () => 0, isStrikethrough: () => 0, isOverline: () => 0,
       isFgDefault: () => c.fg === undefined, isBgDefault: () => c.bg === undefined && c.bgRgb === undefined,
       isFgRGB: () => false, isBgRGB: () => c.bgRgb !== undefined,
-      isFgPalette: () => c.fg !== undefined, isBgPalette: () => c.bg !== undefined,
       getFgColor: () => c.fg ?? 0, getBgColor: () => c.bgRgb ?? c.bg ?? 0,
-      getFgColorMode: () => 0, getBgColorMode: () => 0, isAttributeDefault: () => c.fg === undefined && c.bg === undefined && !c.bold,
-    } as unknown as IBufferCell;
+    };
   };
-  return { length: cols, isWrapped: false, getCell: (x: number) => (x < cols ? cell(x) : undefined), translateToString: () => "" } as unknown as IBufferLine;
+  return { length: cols, isWrapped: false, getCell: (x: number) => (x < cols ? cell(x) : undefined), translateToString: () => "" };
 }
-const scratch = {} as IBufferCell;
+const scratch = line([], 1).getCell(0)!;
 const plain = (text: string): Cell[] => [...text].map((chars) => ({ chars }));
 
 describe("the folded view of a mirrored grid", () => {
@@ -96,6 +93,19 @@ describe("the folded view of a mirrored grid", () => {
     const row = line([{ chars: "가", width: 2 }, { chars: "", width: 0 }, { chars: "" }, ...plain("ab")], 6);
     expect([0, 1, 2, 3].map((offset) => columnAt(row, 6, offset, scratch))).toEqual([0, 2, 3, 4]);
     expect(columnAt(row, 6, 9, scratch)).toBe(-1);
+  });
+
+  test("a folded row's character after a Kitty graphics placeholder is found in its grid column", () => {
+    const row = line([{ chars: "\u{10eeee}\u0305\u0305" }, ...plain("ab")], 4);
+    expect([0, 1, 2].map((offset) => columnAt(row, 4, offset, scratch))).toEqual([0, 1, 2]);
+  });
+
+  test("a folded Kitty graphics placeholder under reverse video paints its neighbour's background", () => {
+    const row = line([{ chars: "\u{10eeee}\u0305\u0305", fg: 1, bg: 4, inverse: true }, { chars: "x", fg: 1, bg: 4, inverse: true }], 2);
+    const html = rowHtml(row, 2, { foreground: "#d4d4d4", background: "#1e1e1e" }, scratch);
+    const backgrounds = [...html.matchAll(/background:([^;]*)/g)].map((m) => m[1]);
+    expect(new Set(backgrounds).size).toBe(1);
+    expect(html).not.toContain("\u{10eeee}");
   });
 
   test("a colour that cannot reach the contrast one way reaches it the other", () => {

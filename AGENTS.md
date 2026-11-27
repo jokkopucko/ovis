@@ -1,6 +1,6 @@
 # Ovis
 
-Browser UI for the herdr terminal multiplexer: a React 19 + xterm.js client (`src/`), a Bun
+Browser UI for the herdr terminal multiplexer: a React 19 + libghostty client (`src/`), a Bun
 backend (`server/`) that bridges herdr's unix-socket API, and the wire contract both import
 (`shared/`). herdr owns every pty, scrollback and agent state; this app is only a bridge.
 
@@ -17,7 +17,7 @@ to change. Also read [server/AGENTS.md](server/AGENTS.md) and [src/AGENTS.md](sr
 - `pane.process_info` takes `pane_id`, not `target` (with `target` herdr answers for the focused
   pane).
 - Never rebuild an attached terminal from `pane.read`: the attach stream is the truth. Only a
-  mirrored pane (Windows, or no PTY host: neither the Rust host nor Node) is drawn from
+  mirrored pane (Windows, or no PTY host: the Rust host cannot run there) is drawn from
   `pane.read`, so never assume a pty exists.
 - Nothing the user typed is sent automatically after a disconnect: it waits in a draft until the
   user sends or discards it.

@@ -1,124 +1,112 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
-import type { ReactNode } from "react";
-import * as ReactDom from "react-dom";
-import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { act } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import type { WorkspaceInfo } from "../../shared/protocol.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 
-await mock.module("react-dom", () => ({ ...ReactDom, createPortal: (node: ReactNode) => node }));
-const { WorktreeRequestDialog } = await import("./WorktreeDialog.tsx");
+import { WorktreeRequestDialog } from "./WorktreeDialog.tsx";
 
 const repository = (id: string): WorkspaceInfo => ({ workspace_id: id, label: id, active_tab_id: `${id}:t1`, number: 1, pane_count: 1, tab_count: 1, agent_status: "idle", focused: false,
   worktree: { repo_key: id, repo_name: id, repo_root: `/${id}`, checkout_path: `/${id}`, is_linked_worktree: false } });
 
 describe("the palette's worktree dialog", () => {
-  let renderer: ReactTestRenderer | undefined;
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let answerCreate: (body: unknown) => void = () => undefined;
+  let page: Page;
+  const browserGlobals = ["HTMLElement"] as const;
+  const savedBrowserGlobals = new Map(browserGlobals.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  let creates: ReturnType<typeof Promise.withResolvers<Response>>[];
 
   beforeEach(() => {
-    for (const key of ["window", "document", "navigator", "getComputedStyle", "matchMedia", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    const events = new EventTarget();
-    const matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
-    const define = (key: string, value: unknown) => Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
-    define("IS_REACT_ACT_ENVIRONMENT", true);
-    define("HTMLElement", class HTMLElement {});
-    define("navigator", { languages: ["en"], userAgent: "Test browser", maxTouchPoints: 0 });
-    define("matchMedia", matchMedia);
-    define("getComputedStyle", () => ({ getPropertyValue: () => "" }));
-    define("window", { location: { href: "http://ovis.test/" }, history: { state: null, pushState() {}, replaceState() {}, back() {} }, matchMedia, addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), requestAnimationFrame: () => 1, cancelAnimationFrame() {}, setTimeout, clearTimeout });
-    define("document", { documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, activeElement: null, querySelector: () => null, querySelectorAll: () => [], addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), body: {} });
-    spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: string | URL | Request) => String(input).includes("worktree/create")
-      ? new Promise<Response>((resolve) => { answerCreate = (body) => resolve(Response.json(body)); })
-      : Response.json({ agents: [] }), { preconnect: globalThis.fetch.preconnect }));
+    page = openPage("http://ovis.test/");
+    creates = [];
+    for (const key of browserGlobals) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value: page.window[key] });
+    Object.defineProperties(page.window, {
+      requestAnimationFrame: { configurable: true, value: () => 1 },
+      cancelAnimationFrame: { configurable: true, value: () => {} },
+    });
+    spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : input, "http://ovis.test/");
+      if (url.pathname !== "/api/worktree/create" || init?.method !== "POST") return Response.json({ agents: [] });
+      const reply = Promise.withResolvers<Response>();
+      creates.push(reply);
+      return reply.promise;
+    }, { preconnect: globalThis.fetch.preconnect }));
   });
 
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
-    mock.restore();
-    for (const [key, descriptor] of descriptors) {
+    await page.close();
+    for (const [key, descriptor] of savedBrowserGlobals) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
       else Reflect.deleteProperty(globalThis, key);
     }
-    descriptors.clear();
+    mock.restore();
   });
 
   const dialog = (workspace: WorkspaceInfo, onOpened: () => void = () => undefined) => <SettingsProvider>
     <WorktreeRequestDialog request={{ machineId: "local", workspace, mode: "create" }} onClose={() => undefined} onOpened={onOpened} onOpenPane={() => undefined} />
   </SettingsProvider>;
-  const branchField = (): ReactTestInstance => renderer!.root.findAll((node) => node.type === "input" && String(node.props.className).includes("worktree-code-input"))[0]!;
+  const branchField = () => {
+    const field = document.querySelector<HTMLInputElement>("input.worktree-code-input");
+    if (!field) throw new Error("Branch input did not mount");
+    return field;
+  };
+  const submit = async () => {
+    const form = document.querySelector("form");
+    if (!form) throw new Error("Worktree form did not mount");
+    await act(async () => { form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true })); });
+    expect(creates).toHaveLength(1);
+    const [reply] = creates;
+    if (!reply) throw new Error("Worktree creation did not start");
+    return reply;
+  };
 
   it("focuses the Branch field and selects the suggested branch in create mode (#1222)", async () => {
     const frames: FrameRequestCallback[] = [];
     spyOn(window, "requestAnimationFrame").mockImplementation((callback) => frames.push(callback));
-    class Input {
-      selectionStart = 0;
-      selectionEnd = 0;
-      constructor(readonly value: string) {}
-      focus() { Object.assign(document, { activeElement: this }); }
-      select() { this.selectionStart = 0; this.selectionEnd = this.value.length; }
-    }
-    const inputs = new Map<boolean, Input>();
-    await act(async () => {
-      renderer = create(dialog(repository("focus-fixture")), {
-        createNodeMock: ({ type, props }) => {
-          if (type === "form") return { querySelector: () => null };
-          if (type !== "input" || typeof props !== "object" || props === null || !("value" in props) || typeof props.value !== "string") return null;
-          const required = "required" in props && props.required === true;
-          const input = inputs.get(required) ?? new Input(props.value);
-          inputs.set(required, input);
-          return input;
-        },
-      });
-    });
+    await page.render(dialog(repository("focus-fixture")));
     for (const frame of frames) frame(0);
 
-    const branch = branchField().instance;
-    if (!(branch instanceof Input)) throw new Error("Branch input did not mount");
+    const branch = branchField();
     expect<unknown>(document.activeElement).toBe(branch);
     expect(branch.value).not.toBe("");
     expect([branch.selectionStart, branch.selectionEnd]).toEqual([0, branch.value.length]);
   });
 
   it("starts another repository from that repository's own draft, never the branch typed for the first", async () => {
-    await act(async () => { renderer = create(dialog(repository("api"))); });
-    await act(async () => { branchField().props.onChange({ target: { value: "feat/for-api" } }); });
-    await act(async () => { renderer!.update(dialog(repository("web"))); });
-    expect(branchField().props.value).not.toBe("feat/for-api");
-    await act(async () => { renderer!.update(dialog(repository("api"))); });
-    expect(branchField().props.value).toBe("feat/for-api");
+    await page.render(dialog(repository("api")));
+    await page.type(branchField(), "feat/for-api");
+    await page.render(dialog(repository("web")));
+    expect(branchField().value).not.toBe("feat/for-api");
+    await page.render(dialog(repository("api")));
+    expect(branchField().value).toBe("feat/for-api");
   });
 
   it("keeps a draft typed after a replaced dialog's creation was sent, when that creation answers", async () => {
-    await act(async () => { renderer = create(dialog(repository("api"))); });
-    await act(async () => { branchField().props.onChange({ target: { value: "feat/one" } }); });
-    await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); });
-    await act(async () => { renderer!.update(dialog(repository("web"))); });
-    await act(async () => { renderer!.update(dialog(repository("api"))); });
-    await act(async () => { branchField().props.onChange({ target: { value: "feat/two" } }); });
-    await act(async () => { answerCreate({ workspace_id: "w9", pane_id: "p9", agent_started: true }); await Promise.resolve(); await Promise.resolve(); });
-    await act(async () => { renderer!.update(dialog(repository("web"))); });
-    await act(async () => { renderer!.update(dialog(repository("api"))); });
-    expect(branchField().props.value).toBe("feat/two");
+    await page.render(dialog(repository("api")));
+    await page.type(branchField(), "feat/one");
+    const reply = await submit();
+    await page.render(dialog(repository("web")));
+    await page.render(dialog(repository("api")));
+    await page.type(branchField(), "feat/two");
+    await act(async () => { reply.resolve(Response.json({ workspace_id: "w9", pane_id: "p9", agent_started: true })); });
+    await page.render(dialog(repository("web")));
+    await page.render(dialog(repository("api")));
+    expect(branchField().value).toBe("feat/two");
   });
 
   it("names the PC it was asked for by its name in the title, not by its id", async () => {
-    await act(async () => {
-      renderer = create(<SettingsProvider>
+    await page.render(<SettingsProvider>
         <WorktreeRequestDialog request={{ machineId: "4f1c2d9e-0b7a-4c55-9a39-2f6d1e8b7c10", machineName: "Office PC", workspace: repository("api"), mode: "create" }} onClose={() => undefined} onOpened={() => undefined} onOpenPane={() => undefined} />
       </SettingsProvider>);
-    });
-    expect(renderer!.root.findByType("h2").props.children).toBe("New worktree · api · Office PC");
+    expect(document.querySelector("h2")?.textContent).toBe("New worktree · api · Office PC");
   });
 
   it("ignores the answer of a dialog that another repository's replaced", async () => {
     const opened: string[] = [];
-    await act(async () => { renderer = create(dialog(repository("api"), () => opened.push("api"))); });
-    await act(async () => { renderer!.root.findByType("form").props.onSubmit({ preventDefault() {} }); });
-    await act(async () => { renderer!.update(dialog(repository("web"), () => opened.push("web"))); });
-    await act(async () => { answerCreate({ workspace_id: "w9", pane_id: "p9", agent_started: true }); await Promise.resolve(); await Promise.resolve(); });
+    await page.render(dialog(repository("api"), () => opened.push("api")));
+    const reply = await submit();
+    await page.render(dialog(repository("web"), () => opened.push("web")));
+    await act(async () => { reply.resolve(Response.json({ workspace_id: "w9", pane_id: "p9", agent_started: true })); });
     expect(opened).toEqual([]);
   });
 });

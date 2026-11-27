@@ -3004,6 +3004,15 @@ button {
   }
 }
 
+/* Ovis for Mac's window folds its title bar away too (app/mac/Resources/title-bar.js), and marks the
+   traffic lights' corner as an iPad window's (the rules below): the wide header takes the bar's height,
+   which the app hands in with the lights' right edge. The narrow one keeps its own, which its 44px
+   buttons need. The app moves the window from the top bars itself. */
+:root[data-mac-title-bar] {
+  --header-h-wide: var(--mac-title-bar-h);
+  --window-controls-w: calc(var(--mac-title-bar-inset) + var(--space-3));
+}
+
 /* an iPad home-screen app in a window (iPadOS 26) has the window's controls over its top-left corner
    (lib/viewport.ts marks it and sizes --window-controls-w from the page zoom), so the header's first
    button moves clear of them */
@@ -3697,7 +3706,6 @@ button {
   .error-retry,
   .input,
   .select,
-  .find-bar .find-input,
   .conversation-search .search-input,
   .agent-picker .agent-picker-trigger {
     min-height: var(--touch-target);
@@ -3812,7 +3820,6 @@ button {
     background: transparent;
   }
 
-  .pill-version,
   .pill-offline,
   .pill-stale,
   .brand-name,
@@ -3885,7 +3892,6 @@ button {
   [contenteditable],
   .header-more-path,
   .row-sheet-sub,
-  .new-session-cwd-text,
   .worktree-path,
   .machine-state-detail,
   .machine-error,
@@ -3956,10 +3962,6 @@ button {
   outline-offset: var(--ring-offset);
 }
 
-.settings-switch input:checked + .settings-switch-track::after {
-  background: var(--switch-thumb-on);
-}
-
 .status-bar,
 .context-session,
 time {
@@ -3967,7 +3969,6 @@ time {
 }
 
 .sidebar .pane-select[aria-current="true"] .workspace-name,
-.sidebar .agent-row[aria-current="true"] .agent-row-title,
 .sidebar .machine-header.is-current .machine-name,
 .pane-slot.is-active .pane-slot-title,
 .command-palette .palette-filter[aria-checked="true"] {
@@ -3975,10 +3976,6 @@ time {
 }
 
 .chat-turn .chat-time,
-.chat-tool-empty,
-.command-palette .palette-group-heading,
-.command-palette .palette-item-sub,
-.md-docs .md-docs-meta,
 .runtime-move .runtime-move-tag,
 .runtime-move .runtime-move-cwd {
   font-size: var(--fs-meta);

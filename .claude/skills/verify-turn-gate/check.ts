@@ -7,7 +7,9 @@ import { cleanup, type Config, explore, type Result, type Rule, RULES, VARIANTS 
 // system can do, left out because a rule breaks with it. The finding-* and limit-* runs put them back one at a time.
 // A Send now past a turn's end, a second Send now during a Codex restart, a reconcile's baseline and a queue send typed
 // at once behind an open wait were such findings (#4118): the gate meets them now, and every run asks with them.
-const described = { free: false, rest: "idle" as const, overtake: false, lateEvents: false, steerPastEnd: true, sendNowDuringRestart: true, baseline: true, atOnce: true, slowEnter: false, ownQueue: false, others: 0 };
+// A Codex on the server Ovis started for it (`served`) is asked in runs of its own: with it, the Codex runs that ask with two
+// messages already ran close to their bounds.
+const described = { free: false, rest: "idle" as const, overtake: false, lateEvents: false, steerPastEnd: true, sendNowDuringRestart: true, baseline: true, atOnce: true, slowEnter: false, ownQueue: false, others: 0, served: false };
 const all: Rule[] = [...RULES];
 const gate: Rule[] = ["QueueWaitsForTurnEvidence"];
 const turn: Rule[] = ["NoAutomaticEnterIntoQueuedTurn"];
@@ -21,16 +23,23 @@ export const CONFIGS: Config[] = [
   { ...described, name: "turns-claude", agent: "claude", messages: 3, owners: ["a"], blocks: 1, gone: true, moves: false, holds: true, rules: all, expect: "holds" },
   { ...described, rest: "done", name: "turns-codex", agent: "codex", messages: 2, owners: ["a"], blocks: 1, gone: true, moves: false, holds: true, rules: all, expect: "holds" },
   { ...described, name: "turns-moved", agent: "codex", messages: 2, owners: ["a", "b"], blocks: 0, gone: false, moves: true, holds: true, rules: all, expect: "holds" },
+  // a Codex whose own server takes a message as a turn and tells that turn's end, or loses it: the queue goes by that end
+  { ...described, free: true, served: true, name: "gate-served", agent: "codex", messages: 2, owners: ["a"], blocks: 0, gone: true, moves: false, holds: true, rules: gate, expect: "holds" },
+  { ...described, served: true, rest: "done", name: "turns-served", agent: "codex", messages: 2, owners: ["a"], blocks: 0, gone: true, moves: false, holds: true, rules: all, expect: "holds" },
   // a snapshot ahead of status events that shows the status the queue already has can open the queue early, yet no Enter
   // of the queue's follows into the turn
   { ...described, overtake: true, rest: "done", name: "turns-ahead", agent: "codex", messages: 2, owners: ["a"], blocks: 1, gone: false, moves: false, holds: false, rules: turn, expect: "holds" },
   // each rule can fail: a broken copy of the class
   broken("claim-replaces-wait", "QueueWaitsForTurnEvidence", { free: true }),
   broken("sent-ends-wait", "QueueWaitsForTurnEvidence", { free: true }),
+  broken("uncertain-ends-wait", "QueueWaitsForTurnEvidence", { free: true }),
   broken("timeout-without-hold", "QueueWaitsForTurnEvidence", { free: true }),
   broken("deadline-at-once", "QueueWaitsForTurnEvidence", { free: true }),
   broken("restart-counts-old-working", "QueueWaitsForTurnEvidence", { free: true }),
   broken("observe-ignores-mark", "QueueWaitsForTurnEvidence", { free: true }),
+  broken("told-end-not-awaited", "QueueWaitsForTurnEvidence", { free: true, served: true }),
+  broken("lost-end-ends-wait", "QueueWaitsForTurnEvidence", { free: true, served: true }),
+  broken("told-wait-not-counted", "QueueWaitsForTurnEvidence", { free: true, served: true }),
   broken("ready-without-working", "NoAutomaticEnterIntoQueuedTurn"),
   // what the code does today: see SKILL.md, "What it has found"
   { ...small, name: "finding-late-status-events", agent: "claude", overtake: true, lateEvents: true, rules: turn, expect: "NoAutomaticEnterIntoQueuedTurn" },

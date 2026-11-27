@@ -1,28 +1,37 @@
-import { expect, it, jest, spyOn } from "bun:test";
+import { afterEach, expect, it, jest, spyOn } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act } from "react";
+import { openPage, type Page } from "./lib/page.fixture.ts";
 import { DeviceJournal, JOURNAL_MAX } from "../server/account/device-journal.ts";
 import { parseNoticeAnswer, type DeviceNotice } from "../shared/account-devices-api.ts";
 import { parseSafetyRecord, verifySafetyRecord, type BlockRecord } from "../shared/account-records.ts";
 import { FakeAccountService } from "../shared/account-service-fake.ts";
-import type { PendingKey } from "../shared/machines.ts";
+import type { OwnJoinRequest, PendingKey } from "../shared/machines.ts";
 import type { DeviceRole } from "../shared/access.ts";
 import { App } from "./App.tsx";
 import { indexedAccountService } from "./lib/account/service.ts";
 import { indexedAccountStore, memoryAccountStore, newKey } from "./lib/account/store.ts";
 import { DEVICE_NOTICE_FEATURE, DeviceNoticeWire, deviceNotice, NOTICE_SNAPSHOT } from "./lib/deviceNoticeWire.fixture.ts";
+import { GhosttyTerminal } from "./lib/ghostty/terminal.ts";
 import { translate } from "./lib/i18n.ts";
 import { MachineSessionRegistry } from "./lib/machineSession.ts";
 import { SettingsProvider } from "./lib/settings.ts";
 import { storeSelection } from "./lib/useSplitView.ts";
 import { backoffDelay } from "./lib/ws.ts";
 
+let closeFixture: (() => Promise<void>) | undefined;
+afterEach(async () => {
+  jest.useRealTimers();
+  await closeFixture?.();
+  closeFixture = undefined;
+});
+
 async function withDeviceNotices(
-  options: { readonly no?: number | null; readonly laptopId?: string; readonly remoteNotice?: boolean; readonly deskFeatures?: Parameters<DeviceNoticeWire["snapshot"]>[0]; readonly admission?: Partial<DeviceNotice>; readonly decline?: () => Promise<Response>; readonly role?: () => DeviceRole },
-  check: (fixture: { readonly tree: ReactTestRenderer; readonly laptop: DeviceNoticeWire; readonly desk: DeviceNoticeWire;
-    readonly admission: DeviceNotice;
+  options: { readonly no?: number | null; readonly laptopId?: string; readonly remoteNotice?: boolean; readonly deskFeatures?: Parameters<DeviceNoticeWire["snapshot"]>[0]; readonly admission?: Partial<DeviceNotice>; readonly decline?: () => Promise<Response>; readonly role?: () => DeviceRole; readonly ownJoins?: () => Response | Promise<Response> },
+  check: (fixture: { readonly page: Page; readonly laptop: DeviceNoticeWire; readonly desk: DeviceNoticeWire;
+    readonly admission: DeviceNotice; readonly blockPosted: Promise<void>;
     readonly delivered: readonly BlockRecord[]; readonly servicePosts: readonly { readonly body: unknown; readonly status: number }[] }) => void | Promise<void>,
 ) {
   const keys = memoryAccountStore();
@@ -41,17 +50,12 @@ async function withDeviceNotices(
     originals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
   };
-  const storage = new Map<string, string>();
-  const browserStorage = {
-    getItem: (key: string) => storage.get(key) ?? null,
-    setItem: (key: string, value: string) => storage.set(key, value),
-    removeItem: (key: string) => storage.delete(key),
-  };
   const location = new URL("http://localhost:4880/");
+  const page = openPage(location.href);
   const matchMedia = () => Object.assign(new EventTarget(), { matches: false });
-  const history = { replaceState() {}, pushState() {} };
   const wires = new Map<string, DeviceNoticeWire>();
   const delivered: BlockRecord[] = [];
+  const blockPosted = Promise.withResolvers<void>();
   const servicePosts: { readonly body: unknown; readonly status: number }[] = [];
   class Wire extends DeviceNoticeWire {
     constructor(url: string) { super(url); wires.set(new URL(url, location).searchParams.get("machine_id") ?? "local", this); }
@@ -66,39 +70,41 @@ async function withDeviceNotices(
       }) }));
     }
   }
-  install("window", Object.assign(new EventTarget(), { location, history, matchMedia, localStorage: browserStorage, sessionStorage: browserStorage, setTimeout, clearTimeout, setInterval, clearInterval,
-    requestAnimationFrame: (frame: FrameRequestCallback) => setTimeout(() => frame(performance.now()), 0), cancelAnimationFrame: clearTimeout, innerWidth: 1440, innerHeight: 900,
-  }));
-  install("document", Object.assign(new EventTarget(), {
-    visibilityState: "visible", documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} }, classList: { toggle() {} }, hasAttribute: () => false },
-    body: { dataset: {}, style: {}, classList: { toggle() {} } },
-    querySelector: () => null, querySelectorAll: () => [], getElementById: () => null, hasFocus: () => true,
-  }));
-  install("navigator", { language: "en-US", languages: ["en-US"], userAgent: "Test", platform: "Linux", onLine: true });
-  install("localStorage", browserStorage);
-  install("sessionStorage", browserStorage);
-  install("location", location);
-  install("history", history);
+  Object.defineProperty(page.window, "matchMedia", { configurable: true, value: matchMedia });
+  page.window.happyDOM.setViewport({ width: 1440, height: 900 });
+  Object.defineProperty(page.window.document, "visibilityState", { configurable: true, value: "visible" });
+  Object.defineProperty(page.window.document, "hasFocus", { configurable: true, value: () => true });
+  Object.defineProperty(page.window.navigator, "languages", { configurable: true, value: ["en-US"] });
+  Object.defineProperty(page.window.navigator, "userAgent", { configurable: true, value: "Test" });
+  Object.defineProperty(page.window.navigator, "platform", { configurable: true, value: "Linux" });
+  Object.defineProperty(page.window.navigator, "onLine", { configurable: true, value: true });
+  install("localStorage", page.window.localStorage);
+  install("sessionStorage", page.window.sessionStorage);
+  install("location", page.window.location);
+  install("history", page.window.history);
   install("matchMedia", matchMedia);
-  install("getComputedStyle", () => ({ getPropertyValue: () => "" }));
+  install("HTMLElement", page.window.HTMLElement);
+  install("requestAnimationFrame", page.window.requestAnimationFrame.bind(page.window));
+  install("cancelAnimationFrame", page.window.cancelAnimationFrame.bind(page.window));
   install("MutationObserver", class { observe() {} disconnect() {} });
   install("ResizeObserver", class { observe() {} disconnect() {} });
   install("__HERDR_TEST_HOOKS__", false);
   install("WebSocket", Wire);
   install("EventSource", class extends EventTarget { close() {} });
-  install("IS_REACT_ACT_ENVIRONMENT", true);
   install("fetch", async (input: string | URL, init?: RequestInit) => {
     const url = new URL(input, location);
     const { pathname } = url;
     if (url.origin === "https://account.example" && pathname === "/v1/safety-records" && typeof init?.body === "string") {
       const response = await service.fetch(url, init);
       servicePosts.push({ body: JSON.parse(init.body), status: response.status });
+      blockPosted.resolve();
       return response;
     }
     if (url.origin === "https://account.example" && pathname === "/v1/signout") return service.fetch(url, init);
     if (pathname === "/api/devices/pending/decline" && options.decline !== undefined) return options.decline();
+    if (pathname === "/api/relay/joins" && options.ownJoins !== undefined) return options.ownJoins();
     if (pathname === "/api/health") return Response.json({
-      auth: { required: false, authenticated: true, role: options.role?.() ?? "drive" },
+      auth: { required: false, authenticated: true, role: options.role?.() ?? "drive", ...(options.ownJoins === undefined ? {} : { via: "local" }) },
       web_ui: { boot_id: null, revision: null, server_id: options.laptopId },
     });
     if (pathname === "/api/machines") return Response.json({ machines: [
@@ -119,7 +125,8 @@ async function withDeviceNotices(
     }
     return new Response(null, { status: 404 });
   });
-  let tree: ReactTestRenderer | undefined;
+  // The notice fixture has no panes; do not start the placeholder terminal's WASM engine.
+  const terminal = spyOn(GhosttyTerminal.prototype, "open").mockImplementation(() => {});
   const sessions = spyOn(MachineSessionRegistry.prototype, "peek").mockImplementation(function (this: MachineSessionRegistry, id) {
     const session = this.get(id);
     session.connect();
@@ -128,24 +135,9 @@ async function withDeviceNotices(
   const account = spyOn(indexedAccountStore, "get").mockImplementation(keys.get);
   const accountUpdate = spyOn(indexedAccountStore, "update").mockImplementation(keys.update);
   const accountUpdateMany = spyOn(indexedAccountStore, "updateMany").mockImplementation(keys.updateMany);
-  try {
-    storeSelection(options.remoteNotice ? "desk" : "local", null);
-    await act(async () => { tree = create(<SettingsProvider><App /></SettingsProvider>); });
-    const laptop = wires.get("local");
-    const desk = wires.get("desk");
-    if (!tree || !laptop || !desk) throw new Error(`App sockets not connected: ${[...wires.keys()]}`);
-    const admission = deviceNotice({ label: "Laptop phone", key: target.public_spki, ...options.admission });
-    await act(async () => {
-      laptop.open();
-      desk.open();
-      laptop.snapshot();
-      desk.snapshot(options.deskFeatures);
-      laptop.read({ type: "device-notice", notice: admission });
-      desk.read({ type: "device-notice", notice: deviceNotice({ label: "Desk phone", key: target.public_spki }) });
-    });
-    await check({ tree, get laptop() { return wires.get("local") ?? laptop; }, desk, admission, delivered, servicePosts });
-  } finally {
-    await act(async () => { tree?.unmount(); });
+  closeFixture = async () => {
+    await page.close();
+    terminal.mockRestore();
     sessions.mockRestore();
     account.mockRestore();
     accountUpdate.mockRestore();
@@ -154,17 +146,92 @@ async function withDeviceNotices(
       if (previous) Object.defineProperty(globalThis, key, previous);
       else Reflect.deleteProperty(globalThis, key);
     }
-  }
+  };
+  storeSelection(options.remoteNotice ? "desk" : "local", null);
+  await page.render(<SettingsProvider><App /></SettingsProvider>);
+  const laptop = wires.get("local");
+  const desk = wires.get("desk");
+  if (!laptop || !desk) throw new Error(`App sockets not connected: ${[...wires.keys()]}`);
+  const admission = deviceNotice({ label: "Laptop phone", key: target.public_spki, ...options.admission });
+  await act(async () => {
+    laptop.open();
+    desk.open();
+    laptop.snapshot();
+    desk.snapshot(options.deskFeatures);
+    laptop.read({ type: "device-notice", notice: admission });
+    desk.read({ type: "device-notice", notice: deviceNotice({ label: "Desk phone", key: target.public_spki }) });
+  });
+  await check({ page, get laptop() { return wires.get("local") ?? laptop; }, desk, admission, blockPosted: blockPosted.promise, delivered, servicePosts });
 }
 
 it("T57, P15: Laptop's pane never shows Desk's device notice", async () => {
-  await withDeviceNotices({}, ({ tree, laptop, desk }) => {
-    const cards = tree.root.findAll((node) => node.type === "div" && node.props["data-testid"] === "device-notice");
+  await withDeviceNotices({}, ({ page, laptop, desk }) => {
+    const cards = page.container.querySelectorAll('div[data-testid="device-notice"]');
     expect(cards).toHaveLength(1);
-    expect(JSON.stringify(tree.toJSON())).toContain("Laptop phone");
-    expect(JSON.stringify(tree.toJSON())).not.toContain("Desk phone");
+    expect(page.container.textContent).toContain("Laptop phone");
+    expect(page.container.textContent).not.toContain("Desk phone");
     expect(laptop.seen()).toEqual([{ type: "notice-seen", seq: 1 }]);
     expect(desk.seen()).toEqual([]);
+  });
+});
+
+it.each(["local link reconnects", "page becomes visible"])("#4457: shows a waiting join without the next poll when the %s", async (trigger) => {
+  jest.useFakeTimers();
+  let waiting: readonly OwnJoinRequest[] = [];
+  await withDeviceNotices({ ownJoins: () => Response.json({ joins: waiting }) }, async (fixture) => {
+    const { page, laptop } = fixture;
+    const cards = () => page.container.querySelectorAll('[data-testid="own-join-card"]');
+    expect(cards()).toHaveLength(0);
+    if (trigger === "local link reconnects") {
+      await act(async () => { laptop.close(); jest.advanceTimersByTime(backoffDelay(0)); });
+      expect(fixture.laptop).not.toBe(laptop);
+    } else {
+      Object.defineProperty(page.window.document, "hidden", { configurable: true, value: true });
+      await act(async () => { page.window.document.dispatchEvent(new page.window.Event("visibilitychange")); });
+    }
+    waiting = [{ id: "waiting-join", label: "Phone", asked_at: new Date().toISOString(), left_ms: 60_000 }];
+    await act(async () => {
+      if (trigger === "local link reconnects") fixture.laptop.open();
+      else {
+        Object.defineProperty(page.window.document, "hidden", { configurable: true, value: false });
+        page.window.document.dispatchEvent(new page.window.Event("visibilitychange"));
+      }
+    });
+    expect([...cards()].map((card) => card.getAttribute("data-join"))).toEqual(["waiting-join"]);
+  });
+});
+
+it.each([
+  ["locked before reconnect", "locked", true],
+  ["locked while reconnect read is pending", "locked", false],
+  ["own window refusal while reconnect read is pending", "own_window_required", false],
+] as const)("#4457: a waiting join still appears after %s", async (_scenario, code, answerBeforeReconnect) => {
+  jest.useFakeTimers();
+  let readJoins: () => Response | Promise<Response> = () => Response.json({ joins: [] });
+  await withDeviceNotices({ ownJoins: () => readJoins() }, async (fixture) => {
+    const { page, laptop } = fixture;
+    await act(async () => { laptop.close(); jest.advanceTimersByTime(backoffDelay(0)); });
+    expect(fixture.laptop).not.toBe(laptop);
+    const visibility = Promise.withResolvers<Response>();
+    const reconnect = Promise.withResolvers<Response>();
+    let reconnectReads = 0;
+    readJoins = () => visibility.promise;
+    const show = () => { page.window.document.dispatchEvent(new page.window.Event("visibilitychange")); };
+    const refuse = () => { visibility.resolve(Response.json({ error: { code } }, { status: 403 })); };
+    await act(async () => { show(); });
+    if (answerBeforeReconnect) await act(async () => { refuse(); });
+    readJoins = () => { reconnectReads++; return reconnect.promise; };
+    await act(async () => { fixture.laptop.open(); });
+    if (!answerBeforeReconnect) await act(async () => { refuse(); });
+    await act(async () => {
+      reconnect.resolve(Response.json({ joins: [{ id: "waiting-join", label: "Phone", asked_at: new Date().toISOString(), left_ms: 60_000 }] }));
+    });
+    const card = '[data-testid="own-join-card"]';
+    expect(reconnectReads).toBe(1);
+    expect([...page.container.querySelectorAll(card)].map((node) => node.getAttribute("data-join"))).toEqual(["waiting-join"]);
+    readJoins = () => Response.json({ joins: [] });
+    await act(async () => { show(); });
+    expect(page.container.querySelectorAll(card)).toHaveLength(0);
   });
 });
 
@@ -175,8 +242,8 @@ it.each([
   ["unregistered", null, 0],
   ["missing", undefined, 0],
 ] as const)("T51: Not me is gated by a %s sign-in key", async (_label, no, count) => {
-  await withDeviceNotices(no === undefined ? {} : { no }, ({ tree }) => {
-    expect(tree.root.findAllByType("button").filter((button) => button.children.includes("Not me"))).toHaveLength(count);
+  await withDeviceNotices(no === undefined ? {} : { no }, ({ page }) => {
+    expect([...page.container.querySelectorAll("button")].filter((button) => button.textContent === "Not me")).toHaveLength(count);
   });
 });
 
@@ -185,10 +252,10 @@ it.each([
   ["unidentified", {}, "waiting", "Laptop: waiting for its answer"],
   ["identified with a flag-off roster PC", { laptopId: "a".repeat(32), deskFeatures: [] }, "applied", "Laptop: blocked"],
 ] as const)("G5, T51, T60, T65: %s notice PC takes one signed block and only enabled roster PCs get records POSTs", async (_label, identity, state, line) => {
-  await withDeviceNotices({ no: 3, ...identity }, async ({ tree, laptop, desk, delivered, servicePosts }) => {
-    const button = tree.root.findAllByType("button").find((node) => node.children.includes("Not me"));
+  await withDeviceNotices({ no: 3, ...identity }, async ({ page, laptop, desk, delivered, servicePosts, blockPosted }) => {
+    const button = [...page.container.querySelectorAll("button")].find((node) => node.textContent === "Not me");
     if (button === undefined) throw new TypeError("Missing Not me");
-    await act(async () => { await button.props.onClick(); });
+    await act(async () => { button.click(); await blockPosted; });
 
     const answers = laptop.sent.filter((frame) => frame.type === "notice-answer").map(parseNoticeAnswer);
     expect(answers).toHaveLength(1);
@@ -201,52 +268,59 @@ it.each([
     expect(servicePosts).toEqual([{ body: { record: answer.blocks[0] }, status: 200 }]);
     expect(delivered).toEqual("deskFeatures" in identity ? [] : answer.blocks);
 
-    const card = tree.root.findByProps({ "data-testid": "device-notice" });
-    expect(card.findAllByType("li").map((row) => [row.props["data-state"], row.children.join("")])).toEqual(
+    const card = page.one('[data-testid="device-notice"]');
+    expect([...card.querySelectorAll("li")].map((row) => [row.getAttribute("data-state"), row.textContent])).toEqual(
       "deskFeatures" in identity ? [[state, line]] : [[state, line], ["waiting", "Desk: waiting for its answer"]],
     );
   });
 });
 
 it("an admission with two-step unknown keeps the one-tap Not me (T51, T60)", async () => {
-  await withDeviceNotices({ no: 3, admission: { method: "google", two_step: "unknown" } }, ({ tree }) => {
-    const card = tree.root.findByProps({ "data-testid": "device-notice" });
-    const buttons = card.findAllByType("button").filter((button) => button.children.includes(translate("en", "Not me")));
-    expect(buttons.map((button) => button.props.disabled)).toEqual([false]);
+  await withDeviceNotices({ no: 3, admission: { method: "google", two_step: "unknown" } }, ({ page }) => {
+    const card = page.one('[data-testid="device-notice"]');
+    const buttons = [...card.querySelectorAll("button")].filter((button) => button.textContent === translate("en", "Not me"));
+    expect(buttons.map((button) => button.disabled)).toEqual([false]);
   });
 });
 
 it("T60: a remote notice counts the page PC’s own records receipt, not the proxy receipt", async () => {
-  await withDeviceNotices({ no: 3, laptopId: "a".repeat(32), remoteNotice: true }, async ({ tree, desk, laptop, delivered }) => {
-    const card = tree.root.findByProps({ "data-testid": "device-notice" });
-    const button = card.findAllByType("button").find((node) => node.children.includes("Not me"));
+  await withDeviceNotices({ no: 3, laptopId: "a".repeat(32), remoteNotice: true }, async ({ page, desk, laptop, delivered, blockPosted }) => {
+    const card = page.one('[data-testid="device-notice"]');
+    const button = [...card.querySelectorAll("button")].find((node) => node.textContent === "Not me");
     if (!button) throw new TypeError("Missing Not me");
-    await act(async () => { await button.props.onClick(); });
+    await act(async () => { button.click(); await blockPosted; });
     expect(laptop.sent.filter((frame) => frame.type === "notice-answer")).toEqual([]);
     const [answer] = desk.sent.filter((frame) => frame.type === "notice-answer").map(parseNoticeAnswer);
     if (answer?.answer !== "not_me") throw new TypeError("Missing remote notice answer");
     expect(delivered).toEqual(answer.blocks);
-    expect(card.findAllByType("li").map((row) => row.children.join("")).sort()).toEqual([
+    expect([...card.querySelectorAll("li")].map((row) => row.textContent).sort()).toEqual([
       "Desk: waiting for its answer", "Laptop: blocked",
     ]);
   });
 });
 
 it("T51: signing out hides Not me on an open admission without a fresh notice", async () => {
-  await withDeviceNotices({ no: 3 }, async ({ tree }) => {
-    const card = tree.root.findByProps({ "data-testid": "device-notice" });
-    const actions = () => card.findAllByType("button").filter((node) => node.children.includes("Not me"));
+  await withDeviceNotices({ no: 3 }, async ({ page }) => {
+    const card = page.one('[data-testid="device-notice"]');
+    const actions = () => [...card.querySelectorAll("button")].filter((node) => node.textContent === "Not me");
     expect(actions()).toHaveLength(1);
-    await act(async () => { await indexedAccountService.signOut(); });
+    const event = Object.getOwnPropertyDescriptor(globalThis, "Event");
+    Object.defineProperty(globalThis, "Event", { configurable: true, value: page.window.Event });
+    try {
+      await act(async () => { await indexedAccountService.signOut(); });
+    } finally {
+      if (event) Object.defineProperty(globalThis, "Event", event);
+      else Reflect.deleteProperty(globalThis, "Event");
+    }
     expect(await indexedAccountService.session()).toBeUndefined();
     expect(actions()).toHaveLength(0);
   });
 });
 
 it("T53: an open admission offers It's me and Not me", async () => {
-  await withDeviceNotices({ no: 3 }, ({ tree }) => {
-    const card = tree.root.findByProps({ "data-testid": "device-notice" });
-    const actionLabels = card.findAllByType("button").flatMap((button) => button.children.filter((child) => typeof child === "string"));
+  await withDeviceNotices({ no: 3 }, ({ page }) => {
+    const card = page.one('[data-testid="device-notice"]');
+    const actionLabels = [...card.querySelectorAll("button")].flatMap((button) => [...button.childNodes].filter((child) => child.nodeType === 3).map((child) => child.textContent));
     expect(actionLabels).toEqual([translate("en", "It's me"), translate("en", "Not me")]);
   });
 });
@@ -255,13 +329,13 @@ it("S2P-10, T53: replayed closes clear a refusal and stop a locked press from re
   jest.useFakeTimers();
   try {
     await withDeviceNotices({}, async (fixture) => {
-      const { tree, laptop, admission } = fixture;
+      const { page, laptop, admission } = fixture;
       const pending = deviceNotice({ id: "b".repeat(32), seq: 2, label: "Second phone" });
-      const actions = () => tree.root.findAllByType("button").filter((button) => button.children.includes("It's me"));
-      const refusals = () => tree.root.findAllByProps({ className: "settings-hint its-me-refused" });
+      const actions = () => [...page.container.querySelectorAll("button")].filter((button) => button.textContent === "It's me");
+      const refusals = () => page.container.querySelectorAll('[class="settings-hint its-me-refused"]');
       const [first] = actions();
       if (!first) throw new TypeError("Missing first admission action");
-      await act(async () => { first.props.onClick(); });
+      await act(async () => { first.click(); });
       await act(async () => { jest.advanceTimersByTime(5_000); });
       await act(async () => { jest.advanceTimersByTime(5_000); });
       expect(refusals()).toHaveLength(1);
@@ -270,8 +344,8 @@ it("S2P-10, T53: replayed closes clear a refusal and stop a locked press from re
       expect(laptop.seen()).toEqual([{ type: "notice-seen", seq: 1 }, { type: "notice-seen", seq: 2 }]);
       const [, second] = actions();
       if (!second) throw new TypeError("Missing second admission action");
-      await act(async () => { second.props.onClick(); });
-      expect(second.props.disabled).toBe(true);
+      await act(async () => { second.click(); });
+      expect(second.disabled).toBe(true);
       expect(laptop.sent.filter((frame) => frame.type === "notice-answer")).toHaveLength(3);
 
       await act(async () => { laptop.close(); jest.advanceTimersByTime(backoffDelay(0)); });
@@ -306,19 +380,19 @@ it.each(["refused", "locked"] as const)("S2P-10: a reconnect cut clears a %s ope
     const stale = journal.append(input);
     const survivor = journal.notice(journal.append({ ...input, row: "other", no: 3, label: "Still open phone" }));
     await withDeviceNotices({ admission: journal.notice(stale) }, async (fixture) => {
-      const { tree, laptop } = fixture;
-      const actions = () => tree.root.findAllByType("button").filter(button => button.children.includes("It's me"));
-      const refusals = () => tree.root.findAllByProps({ className: "settings-hint its-me-refused" });
+      const { page, laptop } = fixture;
+      const actions = () => [...page.container.querySelectorAll("button")].filter(button => button.textContent === "It's me");
+      const refusals = () => page.container.querySelectorAll('[class="settings-hint its-me-refused"]');
       await act(async () => { laptop.read({ type: "device-notice", notice: survivor }); });
       const [press] = actions();
       if (!press) throw new Error("Missing admission action");
-      await act(async () => { press.props.onClick(); });
+      await act(async () => { press.click(); });
       if (state === "refused") {
         await act(async () => { jest.advanceTimersByTime(5_000); });
         await act(async () => { jest.advanceTimersByTime(5_000); });
         expect(refusals()).toHaveLength(1);
       } else {
-        expect(press.props.disabled).toBe(true);
+        expect(press.disabled).toBe(true);
       }
       const observer = "observer";
       const ack = laptop.seen().at(-1)?.seq;
@@ -340,14 +414,14 @@ it.each(["refused", "locked"] as const)("S2P-10: a reconnect cut clears a %s ope
         reconnect.read({ type: "device-notice-replay", replay });
         reconnect.snapshot();
       });
-      expect(actions().map(action => action.props.disabled)).toEqual([false]);
-      expect(JSON.stringify(tree.toJSON())).not.toContain("Decided phone");
+      expect(actions().map(action => action.disabled)).toEqual([false]);
+      expect(page.container.textContent).not.toContain("Decided phone");
       expect(refusals()).toHaveLength(0);
       await act(async () => {
         reconnect.read({ type: "device-notice", notice: deviceNotice({ id: "c".repeat(32), seq: ack + JOURNAL_MAX + 2, kind: "method", open: false }) });
         jest.advanceTimersByTime(5_000);
       });
-      expect(actions().map(action => action.props.disabled)).toEqual([false]);
+      expect(actions().map(action => action.disabled)).toEqual([false]);
       expect(reconnect.sent.filter(frame => frame.type === "notice-answer")).toEqual([]);
     });
   } finally {
@@ -359,10 +433,10 @@ it.each(["refused", "locked"] as const)("S2P-10: a reconnect cut clears a %s ope
 it("T71, T72: a delayed decline reply cannot restore a key removed by a newer PC event", async () => {
   const reply = Promise.withResolvers<Response>();
   const started = Promise.withResolvers<void>();
-  await withDeviceNotices({ decline: () => { started.resolve(); return reply.promise; } }, async ({ tree, laptop }) => {
+  await withDeviceNotices({ decline: () => { started.resolve(); return reply.promise; } }, async ({ page, laptop }) => {
     const first: PendingKey = { id: "first", label: "Phone", fingerprint: "AB12-CD34", via: "relay", redeemed_at: "2026-11-20T04:00:00.000Z", slots: { used: 1, of: 5 } };
     const second: PendingKey = { ...first, id: "second", label: "Tablet" };
-    const declines = () => tree.root.findAllByType("button").filter((button) => button.children.includes("Decline"));
+    const declines = () => [...page.container.querySelectorAll("button")].filter((button) => button.textContent === "Decline");
     await act(async () => {
       laptop.snapshot([DEVICE_NOTICE_FEATURE, "machine-events"]);
       laptop.read({ type: "machine-event", event: { type: "pending-redemptions", pending: [first, second] } });
@@ -370,7 +444,7 @@ it("T71, T72: a delayed decline reply cannot restore a key removed by a newer PC
     const [decline] = declines();
     expect(declines()).toHaveLength(2);
     if (decline === undefined) throw new TypeError("Missing Decline button");
-    await act(async () => { decline.props.onClick(); await started.promise; });
+    await act(async () => { decline.click(); await started.promise; });
 
     await act(async () => { laptop.read({ type: "machine-event", event: { type: "pending-redemptions", pending: [] } }); });
     expect(declines()).toHaveLength(0);
@@ -381,19 +455,19 @@ it("T71, T72: a delayed decline reply cannot restore a key removed by a newer PC
 
 it("T71, T72: losing drive clears the waiting keys without needing another PC event", async () => {
   let role: DeviceRole = "drive";
-  await withDeviceNotices({ role: () => role }, async ({ tree, laptop }) => {
+  await withDeviceNotices({ role: () => role }, async ({ page, laptop }) => {
     const pending: PendingKey = { id: "waiting", label: "Phone", fingerprint: "AB12-CD34", via: "relay", redeemed_at: "2026-11-20T04:00:00.000Z", slots: { used: 1, of: 5 } };
-    const declines = () => tree.root.findAllByType("button").filter((button) => button.children.includes("Decline"));
+    const declines = () => [...page.container.querySelectorAll("button")].filter((button) => button.textContent === "Decline");
     await act(async () => {
       laptop.snapshot([DEVICE_NOTICE_FEATURE, "machine-events"]);
       laptop.read({ type: "machine-event", event: { type: "pending-redemptions", pending: [pending] } });
     });
     expect(declines()).toHaveLength(1);
 
-    await act(async () => { role = "watch"; document.dispatchEvent(new Event("visibilitychange")); });
+    await act(async () => { role = "watch"; page.window.document.dispatchEvent(new page.window.Event("visibilitychange")); });
     expect(declines()).toHaveLength(0);
     await act(async () => { laptop.read({ type: "machine-event", event: { type: "pending-redemptions", pending: [pending] } }); });
-    await act(async () => { role = "drive"; document.dispatchEvent(new Event("visibilitychange")); });
+    await act(async () => { role = "drive"; page.window.document.dispatchEvent(new page.window.Event("visibilitychange")); });
     expect(declines()).toHaveLength(0);
   });
 });

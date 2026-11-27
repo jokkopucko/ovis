@@ -1,29 +1,14 @@
 /**
- * Korean for the keys only the agent setup files use: components/AgentSetupCard.tsx,
- * components/AddAgentPanel.tsx, components/AgentTile.tsx, components/AgentsSettings.tsx.
+ * Korean for the keys only the agent setup files use: components/AddAgentPanel.tsx,
+ * components/AgentTile.tsx, components/AgentsSettings.tsx.
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const SETUP_KO: Record<string, string> = {
-  "Set up {agent}": "{agent} 설정",
-  "Uses the official installer, on this PC.": "이 PC에 공식 설치 프로그램으로 설치합니다.",
-  "This can take a few minutes. You can keep using Ovis.": "몇 분 걸릴 수 있어요. 그동안 Ovis를 계속 써도 됩니다.",
-  "Installed. Sign in so it can use your plan.": "설치했어요. 요금제를 쓸 수 있도록 로그인하세요.",
-  "Installed. New terminal tabs will find it.": "설치했어요. 새로 여는 터미널 탭에서 찾을 수 있어요.",
-  "Its folder is on PATH only for terminals opened after the install.": "설치한 뒤에 연 터미널에서만 이 폴더가 PATH에 있습니다.",
-  "Finish signing in": "로그인 마치기",
-  "Follow the steps in the sign-in tab, then come back here.": "로그인 탭의 안내를 따른 뒤 여기로 돌아오세요.",
-  "Version {version}": "버전 {version}",
-  "It did not finish": "끝나지 않았어요",
-  "{agent} does not start": "{agent}이(가) 실행되지 않아요",
-  "Skip": "건너뛰기",
-  "I've signed in": "로그인했어요",
-  "Start {agent}": "{agent} 시작",
-  "Hide details": "자세히 숨기기",
-  "Show details": "자세히 보기",
   "Agents you can install": "설치할 수 있는 에이전트",
   "No other agents to install here.": "여기 더 설치할 에이전트가 없어요.",
   "An agent your shell's startup file (.zshrc) puts on PATH may be missing here: Ovis could not read that PATH. Check again reads it once more.": "셸 시작 파일(.zshrc)이 PATH에 넣는 에이전트가 여기 없을 수 있어요. Ovis가 그 PATH를 읽지 못했습니다. 다시 확인을 누르면 한 번 더 읽어요.",
   "None on this PC yet.": "이 PC에는 아직 없어요.",
+  "Not installed on this PC. These settings apply once it is installed here.": "이 PC에는 설치되지 않았어요. 여기에 설치하면 이 설정이 적용돼요.",
   "Ovis cannot tell which agents this PC has. Install them from a terminal on it.": "Ovis는 이 PC에 어떤 에이전트가 있는지 알 수 없어요. 이 PC의 터미널에서 설치하세요.",
   "Ovis needs {version} or later.": "Ovis에는 {version} 이상이 필요해요.",
   "This PC's Ovis cannot install agents yet. Update it, then try again.": "이 PC의 Ovis는 아직 에이전트를 설치할 수 없어요. 업데이트한 뒤 다시 시도하세요.",
@@ -54,7 +39,6 @@ export const SETUP_KO: Record<string, string> = {
   "Copy the command for {name}": "{name} 명령 복사",
   "This PC's bridge does not offer agent integrations yet. It will after its next runtime update.": "이 PC의 브리지는 아직 에이전트 통합을 제공하지 않습니다. 다음 런타임 업데이트 후에 사용할 수 있습니다.",
   "Open setup guide": "안내 열기",
-  "Expired": "만료됨",
   "Edit": "수정",
   "Remove hub?": "허브를 제거할까요?",
   "Its accounts disappear from this list. The hub itself is not changed.": "허브 계정이 목록에서 사라져요. 허브 자체는 그대로예요.",
@@ -88,7 +72,7 @@ export const SETUP_KO: Record<string, string> = {
   "None": "없음",
   "A browser the agent can drive: Ovis adds an MCP server at a fixed version when it starts this agent. That browser uses a profile of its own, without your sign-ins, and Ovis does not watch or limit it. Applies from the next start; an agent started from a terminal is not changed.": "에이전트가 다룰 수 있는 브라우저입니다. Ovis가 이 에이전트를 띄울 때 버전을 고정한 MCP 서버를 붙입니다. 그 브라우저는 따로 만든 프로필을 써서 내 로그인은 쓰지 않고, Ovis가 지켜보거나 막지 않습니다. 다음에 띄울 때부터 적용되고, 터미널에서 직접 띄운 에이전트는 바뀌지 않습니다.",
   "Let agents call other agents": "다른 에이전트 부르기",
-  "On this PC only. You still answer every permission request.": "이 PC에서만. 승인은 항상 직접 합니다.",
+  "On this PC only. Only you can approve requests.": "이 PC에서만. 승인은 직접 해요.",
   "Agents they may call": "부를 수 있는 에이전트",
   "Not saved: this PC did not answer. Try again.": "저장하지 못했습니다: 이 PC가 답하지 않았습니다. 다시 시도하세요.",
 };

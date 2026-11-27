@@ -52,6 +52,36 @@ function fixture() {
 }
 
 describe("bridge pending input", () => {
+  it("holds the pane when a joined turn behind a review-only Send now never shows working, rather than releasing its queue (#4838)", () => {
+    const { queue, enqueue, advance } = fixture();
+    queue.status("p1", "working");
+    const sent = enqueue(1, "a", "p1", "steered");
+    const next = enqueue(2, "a", "p1", "behind it");
+    expect(queue.claim(sent, false)).toBe(true);
+    queue.committing(sent, true);
+    // an early ready inside the joined window: the wait goes on leniently for the Send's own turn
+    queue.status("p1", "idle");
+    queue.settle(sent, { code: "submit_changed", message: "Check the terminal" }, "preserve-turn");
+    expect(sent.message.state).toBe("uncertain");
+    advance(150);
+    expect(queue.next("p1")).toBeNull();
+    expect(next.message.state).toBe("held");
+  });
+
+  it("still releases a lenient wait with no review-only row on its pane (control #4838)", () => {
+    const { queue, enqueue, advance } = fixture();
+    queue.status("p1", "working");
+    const sent = enqueue(1, "a", "p1", "steered");
+    const next = enqueue(2, "a", "p1", "behind it");
+    expect(queue.claim(sent, false)).toBe(true);
+    queue.committing(sent, true);
+    queue.status("p1", "idle");
+    queue.settle(sent);
+    advance(150);
+    expect(next.message.state).toBe("queued");
+    expect(queue.next("p1")).toBe(next);
+  });
+
   it("holds a message with no reason only when its sender asked for the hold, and the page tells the two kinds apart by that for the copy's whole life", () => {
     let id = 0;
     const data = new Map<string, string>();
@@ -490,6 +520,128 @@ describe("bridge pending input", () => {
     expect(f.queue.next("p1")).toBeNull();
     f.queue.status("p1", "working"); f.queue.status("p1", "done");
     expect(f.queue.next("p1")).toBe(second);
+  });
+});
+
+describe("a turn whose end the agent itself tells", () => {
+  /** The first message's Enter is committed and its turn taken by the agent, which will tell its end. */
+  const taken = () => {
+    const f = fixture(); const first = f.enqueue(1); const second = f.enqueue(2);
+    f.queue.status("p1", "idle"); f.queue.claim(first, true); f.queue.committing(first);
+    const wait = f.queue.awaitTurn("p1"); f.queue.settle(first);
+    return { ...f, second, wait };
+  };
+
+  it("gives out the next message when that end is told, and not on the statuses or the start timeout before it", () => {
+    const f = taken();
+    f.queue.status("p1", "working"); f.queue.status("p1", "idle");
+    f.advance(1_000);
+    expect([f.queue.next("p1"), f.second.message.state]).toEqual([null, "queued"]);
+    f.queue.turnOver("p1", f.wait, true);
+    expect(f.queue.next("p1")).toBe(f.second);
+  });
+
+  it("ends the Enter's wait with it, whatever statuses its turn showed", () => {
+    const f = taken();
+    f.queue.turnOver("p1", f.wait, true);
+    expect(f.queue.next("p1")).toBe(f.second);
+    f.advance(1_000);
+    expect(f.second.message.state).toBe("queued");
+  });
+
+  /** The pane runs a turn the queue did not start, as the agent says; a message waits behind it. */
+  const running = () => {
+    const f = fixture();
+    f.queue.status("p1", "idle");
+    const wait = f.queue.awaitTurn("p1");
+    return { ...f, second: f.enqueue(2), wait };
+  };
+
+  it.each([taken, running].flatMap((begun) => [
+    { begun, seen: "its start and end", statuses: ["working", "idle"], after: "queued", offered: true },
+    { begun, seen: "its start", statuses: ["working"], after: "queued", offered: false },
+    { begun, seen: "nothing", statuses: [], after: "held", offered: false },
+  ] as const))("goes by the statuses again once the end can no longer be told: $begun.name, $seen seen", ({ begun, statuses, after, offered }) => {
+    const f = begun();
+    for (const status of statuses) f.queue.status("p1", status);
+    f.advance(1_000);
+    f.queue.turnOver("p1", f.wait, false);
+    expect(f.queue.next("p1") === f.second).toBe(offered);
+    // the start timeout runs from here for a turn no status showed to start
+    f.advance(99);
+    expect(f.second.message.state).toBe("queued");
+    f.advance(1);
+    expect(f.second.message.state).toBe(after);
+  });
+
+  it("has a message sent to the queue wait behind it, also once statuses have passed for that turn", () => {
+    const f = fixture(); const first = f.enqueue(1);
+    f.queue.status("p1", "idle"); f.queue.claim(first, true); f.queue.committing(first);
+    const wait = f.queue.awaitTurn("p1"); f.queue.settle(first);
+    f.queue.status("p1", "working"); f.queue.status("p1", "idle");
+    expect(f.queue.waiting("p1")).toBe(true);
+    f.queue.turnOver("p1", wait, true);
+    expect(f.queue.waiting("p1")).toBe(false);
+  });
+
+  it("counts a reading at work taken before the wait began, once the end can no longer be told", () => {
+    const f = fixture();
+    f.queue.status("p1", "working");
+    const wait = f.queue.awaitTurn("p1"); const second = f.enqueue(2);
+    f.queue.turnOver("p1", wait, false);
+    f.queue.status("p1", "idle");
+    expect(f.queue.next("p1")).toBe(second);
+    f.advance(1_000);
+    expect(second.message.state).toBe("queued");
+  });
+
+  it("waits behind a turn the queue did not start, and takes no end told for a wait a later one replaced", () => {
+    const f = running();
+    const later = f.queue.awaitTurn("p1");
+    f.queue.turnOver("p1", f.wait, true);
+    expect(f.queue.next("p1")).toBeNull();
+    f.queue.turnOver("p1", later, true);
+    expect(f.queue.next("p1")).toBe(f.second);
+  });
+
+  it("leaves a later Enter's wait alone when the earlier turn's end is told", () => {
+    const f = taken();
+    // a Send now joins the turn at work: its own wait is for a ready status after it
+    f.queue.status("p1", "working");
+    expect(f.queue.claim(f.second, false)).toBe(true); f.queue.committing(f.second, true); f.queue.settle(f.second);
+    const third = f.enqueue(3);
+    f.queue.turnOver("p1", f.wait, true);
+    f.advance(100);
+    expect(f.queue.next("p1")).toBeNull();
+    f.queue.status("p1", "idle");
+    expect(f.queue.next("p1")).toBe(third);
+  });
+
+  it("judges a Send now's start timeout only once that turn's wait is over, and holds what was queued behind it since", () => {
+    const f = running();
+    expect(f.queue.claim(f.second, false)).toBe(true); f.queue.committing(f.second); f.queue.settle(f.second);
+    f.advance(1_000);
+    const third = f.enqueue(3);
+    f.queue.turnOver("p1", f.wait, true);
+    expect(f.queue.next("p1")).toBeNull();
+    f.advance(0);
+    expect(third.message.state).toBe("held");
+  });
+
+  it("holds every page's messages of the pane, and goes on with another page's once the sender's page has left", () => {
+    const f = taken(); const other = f.enqueue(3, "b");
+    f.queue.hold("a");
+    expect(f.queue.next("p1")).toBeNull();
+    f.queue.turnOver("p1", f.wait, true);
+    expect(f.second.message.state).toBe("held");
+    expect(f.queue.next("p1")).toBe(other);
+  });
+
+  it("is forgotten with its pane", () => {
+    const f = taken();
+    f.queue.forget("p1");
+    f.queue.status("p1", "idle");
+    expect(f.queue.next("p1")).toBe(f.second);
   });
 });
 

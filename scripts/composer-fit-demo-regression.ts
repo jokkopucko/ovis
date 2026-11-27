@@ -25,6 +25,41 @@ try {
         await page.evaluate(() => (window as any).fitReply(true));
         await page.locator(".composer-stop").waitFor();
       });
+      // plan mode is the one mode drawn: on a phone an icon named for it, on a desktop its name in words, whole in the row
+      // at every width, with or without the plan chip, also with the chip's step in progress (which steps out where the
+      // mode needs its room); every other mode draws nothing
+      for (const width of [320, 360, 390, 800, 1280]) for (const chip of ["none", "idle", "step"] as const) for (const mode of ["plan", "default", "acceptEdits", "auto", "bypassPermissions", "dontAsk"]) {
+        if (mode !== "plan" && (width !== 390 || chip !== "idle")) continue;
+        await withCard(browser, width, { agent: "claude", model: "claude-opus-5-5", status: "idle", pending: false, mode, noChip: chip === "none", step: chip === "step" }, async (page) => {
+          const what = `${mode} at ${width}px, plan chip ${chip}`;
+          await page.waitForFunction((want) => (document.querySelector(".bg-tasks-toggle") !== null) === (want !== "none")
+            && (want !== "step" || document.querySelector(".bg-tasks-current") !== null), chip, { timeout: 5_000 });
+          const phone = width <= 640;
+          const icon = () => page.evaluate(() => {
+            const item = document.querySelector<HTMLElement>(".composer-mode");
+            if (!item) return null;
+            const status = document.querySelector(".composer-status")!.getBoundingClientRect();
+            const box = (item.querySelector("svg") ?? item).getBoundingClientRect();
+            return { name: item.getAttribute("aria-label") ?? item.textContent?.replace("·", "").trim() ?? null, icon: item.querySelector("svg") !== null, clipped: item.scrollWidth > item.clientWidth + 0.5,
+              width: box.width, inRow: box.left >= status.left - 0.5 && box.right <= status.right + 0.5 && box.top >= status.top - 0.5 && box.bottom <= status.bottom + 0.5 };
+          });
+          if (mode === "plan") {
+            // the fit answers a frame after the chip's step is drawn: wait for the mode to stand whole, never a fixed time
+            await page.waitForFunction(() => {
+              const item = document.querySelector<HTMLElement>(".composer-mode");
+              const box = (item?.querySelector("svg") ?? item)?.getBoundingClientRect(), status = document.querySelector(".composer-status")!.getBoundingClientRect();
+              return box !== undefined && box.width > 1.5 && box.left >= status.left - 0.5 && box.right <= status.right + 0.5;
+            }, undefined, { timeout: 5_000 }).catch(async () => assert.fail(`${what}: the plan mode is not drawn whole in the row: ${JSON.stringify(await icon())}`));
+            const drawn = await icon();
+            assert.equal(drawn?.name, "Plan mode", `${what}: the mode is named`);
+            assert.equal(drawn?.icon, phone, `${what}: an icon on a phone, words on a desktop`);
+            assert.equal(drawn?.clipped, false, `${what}: the mode is not cut short`);
+          } else assert.equal(await icon(), null, `${what}: no mode is drawn`);
+          const row = await measure(page);
+          assert.deepEqual(row.overlaps, [], `${what}: nothing overlaps its neighbour`);
+          assert.equal(row.overflowing, false, `${what}: the page does not scroll sideways`);
+        });
+      }
       // Typography is applied by SettingsProvider after the render. At this fixed card width,
       // the larger interface font must step effort out without needing a viewport resize.
       await withCard(browser, 1075, { agent: "codex", model: LONG_MODEL }, async (page) => {

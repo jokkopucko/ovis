@@ -19,7 +19,7 @@ export const expect = async ({ page, width, box, menu, scenario, clear, rowNames
     await box.fill("/");
     await menu.locator(".menu-item").first().waitFor();
     const rows = await rowNames();
-    assert.deepEqual([...rows].sort(), commands.map((command) => command.name).sort());
+    assert.deepEqual([...rows].sort(), commands.filter((row) => !row.chatPaletteHidden).map(({ name }) => name).sort());
     assert.ok(rows.includes("new") && rows.includes("status") && rows.includes("prompt"));
     // Hermes's terminal screens are listed, in the Terminal commands group; start is not a command of its own
     for (const screen of ["model", "resume", "sessions", "config", "agents", "plugins", "skills", "skin"]) assert.ok(rows.includes(screen), screen);

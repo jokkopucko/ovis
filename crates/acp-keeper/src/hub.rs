@@ -16,7 +16,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Map, Value};
 use tokio::sync::mpsc::UnboundedSender;
@@ -101,6 +101,12 @@ struct Route {
     change: Option<Change>,
 }
 
+struct ToolStop {
+    conn: u64,
+    id: Value,
+    deadline: Instant,
+}
+
 /// Why an answer to a permission request is not one (the request stays pending), or None. An error
 /// answer, a cancellation and a selection of one of the offered options are answers.
 fn invalid_answer(pending: &crate::model::Pending, answer: &Value) -> Option<&'static str> {
@@ -141,6 +147,7 @@ pub struct Hub {
     client_ids: HashSet<(u64, String)>,
     prompts: HashSet<String>,
     hold: Option<u64>,
+    stop: Option<ToolStop>,
     pub quit: bool,
     /// The pane was resized: paint the status line again.
     pub redraw: bool,
@@ -170,6 +177,7 @@ impl Hub {
             client_ids: HashSet::new(),
             prompts: HashSet::new(),
             hold: None,
+            stop: None,
             quit: false,
             redraw: false,
         }
@@ -194,7 +202,9 @@ impl Hub {
     }
 
     fn switch_blocker(&self) -> Option<&'static str> {
-        if self.mode != Mode::Acp {
+        if self.quit || self.stop.is_some() {
+            Some("the keeper is stopping")
+        } else if self.mode != Mode::Acp {
             Some("already switching")
         } else if !self.job_control {
             Some("the pane has no terminal with job control")
@@ -288,6 +298,7 @@ impl Hub {
         self.own.clear();
         self.prompts.clear();
         self.model.working = false;
+        self.finish_stop();
     }
 
     fn fail_routes(&mut self, message: &str) {
@@ -323,6 +334,9 @@ impl Hub {
         if self.opts.announce_subagents {
             capabilities["subagents"] = json!({});
         }
+        if self.opts.question_forms {
+            capabilities["elicitation"] = json!({"form": {}});
+        }
         self.request(
             "initialize",
             json!({"protocolVersion": 1, "clientCapabilities": capabilities, "clientInfo": {"name": "acp-keeper", "version": env!("CARGO_PKG_VERSION")}}),
@@ -330,11 +344,22 @@ impl Hub {
         );
     }
 
-    fn new_session(&mut self) {
-        let mut params = json!({"cwd": self.opts.cwd, "mcpServers": self.opts.mcp_servers});
+    /// What opens a session, new or loaded again (after the real TUI): the same launch settings both times, so a
+    /// reloaded session does not come back under settings the launch had left out.
+    fn session_params(&self, mut params: Value) -> Value {
+        params["cwd"] = json!(self.opts.cwd);
+        params["mcpServers"] = json!(self.opts.mcp_servers);
         if let Some(meta) = &self.opts.session_meta {
             params["_meta"] = meta.clone();
         }
+        if let Some(options) = &self.opts.config_options {
+            params["configOptions"] = Value::Array(options.clone());
+        }
+        params
+    }
+
+    fn new_session(&mut self) {
+        let params = self.session_params(json!({}));
         self.request("session/new", params, Own::NewSession);
     }
 
@@ -417,6 +442,9 @@ impl Hub {
         let method = msg.get("method").and_then(Value::as_str).map(str::to_string);
         match (method, msg.get("id").cloned()) {
             (Some(method), Some(id)) => {
+                if self.quit {
+                    return;
+                }
                 self.next += 1;
                 let ours = Value::String(format!("agent-{}", self.next));
                 msg.insert("id".into(), ours.clone());
@@ -434,11 +462,28 @@ impl Hub {
                     self.note_row("_keeper/auto_answered", json!({"id": ours, "method": method}));
                     return;
                 }
+                if self.opts.question_forms && method == "elicitation/create" {
+                    let params = msg.get("params");
+                    let session = params.and_then(|p| p.get("sessionId")).and_then(Value::as_str);
+                    if session.is_none() || session != self.model.session.as_deref() || params.and_then(|p| p.get("mode")).and_then(Value::as_str) != Some("form") {
+                        self.forward(&json!({"jsonrpc":"2.0","id":id,"error":{"code":-32602,"message":"Only current-session question forms are supported"}}).to_string());
+                        self.note_row("_keeper/auto_answered", json!({"id":ours,"method":method}));
+                        return;
+                    }
+                }
                 self.agent_ids.insert(key_of(&ours), id);
                 self.model.request(key_of(&ours), ours, seq, &msg);
+                if self.stop.is_some() && matches!(method.as_str(), "session/request_permission" | "elicitation/create") {
+                    self.cancel_pending(None, "tool-stop");
+                }
             }
             (Some(method), None) => {
                 self.archive.append("from-agent", &text);
+                if method == "$/cancel_request" {
+                    if let Some(id) = msg.get("params").and_then(|p| p.get("requestId")) {
+                        self.withdraw_question(id);
+                    }
+                }
                 if method == "session/update" {
                     let params = msg.get("params").unwrap_or(&Value::Null);
                     self.model.update(params);
@@ -492,11 +537,8 @@ impl Hub {
                     }
                     Some(id) if can_load => {
                         self.model.session = Some(id.clone());
-                        self.request(
-                            "session/load",
-                            json!({"sessionId": id, "cwd": self.opts.cwd, "mcpServers": self.opts.mcp_servers}),
-                            Own::LoadSession { resumed: self.resumed },
-                        );
+                        let params = self.session_params(json!({"sessionId": id}));
+                        self.request("session/load", params, Own::LoadSession { resumed: self.resumed });
                     }
                     _ => self.new_session(),
                 }
@@ -543,6 +585,11 @@ impl Hub {
     }
 
     fn apply(&mut self, change: &Change, result: &Value) {
+        if let Change::Config { config, value } = change {
+            if config == "allow_all" {
+                self.model.allow_all = value != "off";
+            }
+        }
         let (selector, value) = match change {
             Change::Mode(id) => (self.model.modes.as_mut(), id),
             Change::Model(id) => (self.model.models.as_mut(), id),
@@ -567,14 +614,27 @@ impl Hub {
     fn selections_note(&self) {
         self.note_row(
             "_keeper/selections",
-            json!({"mode":self.model.modes.as_ref().map(|s| &s.current),"model":self.model.models.as_ref().map(|s| &s.current)}),
+            json!({"mode":self.model.modes.as_ref().map(|s| &s.current),"model":self.model.models.as_ref().map(|s| &s.current),"allowAll":self.model.allow_all}),
         );
+    }
+
+    fn permits_tool_mode(&self, expected: Option<&str>) -> bool {
+        expected.is_some_and(|mode| !mode.is_empty())
+            && !self.model.allow_all
+            && expected == self.model.modes.as_ref().map(|m| m.current.as_str())
+            && !self.routes.values().any(|route| route.change.is_some())
     }
 
     fn on_client(&mut self, conn: u64, line: String) {
         let Some(mut msg) = rpc(&line) else { return };
         let by = format!("client-{conn}");
         let method = msg.get("method").and_then(Value::as_str).map(str::to_string);
+        if self.stop.is_some() || self.quit {
+            if let (Some(_), Some(id)) = (method, msg.get("id")) {
+                self.reply(conn, &json!({"jsonrpc":"2.0","id":id,"error":{"code":-32603,"message":"the keeper is stopping"}}));
+            }
+            return;
+        }
         match (method, msg.get("id").cloned()) {
             (None, Some(id)) => self.answer(&key_of(&id), &line, &by),
             (Some(_), Some(id)) if self.client_ids.contains(&(conn, key_of(&id))) => {
@@ -589,18 +649,27 @@ impl Hub {
                 self.reply(conn, &answer);
             }
             (Some(method), Some(id)) if method == "_keeper/tool_stop" => {
-                let reply = if self.mode != Mode::Acp || self.hold.is_some() {
-                    json!({"error":{"code":-32002,"message":"held by a person"}})
-                } else if !self.model.pending.is_empty() || !self.answering.is_empty() {
-                    json!({"error":{"code":-32003,"message":"a person's decision is pending"}})
+                if self.mode != Mode::Acp || self.hold.is_some() {
+                    self.reply(conn, &json!({"jsonrpc":"2.0","id":id,"error":{"code":-32002,"message":"held by a person"}}));
                 } else {
-                    self.quit = true;
-                    json!({"result":{"stopping":true}})
-                };
-                let mut message = reply;
-                message["id"] = id;
-                message["jsonrpc"] = json!("2.0");
-                self.reply(conn, &message);
+                    self.stop = Some(ToolStop {
+                        conn,
+                        id,
+                        deadline: Instant::now() + Duration::from_secs(1),
+                    });
+                    self.cancel_pending(None, &by);
+                    if self.answering.is_empty() {
+                        self.finish_stop();
+                    }
+                }
+            }
+            (Some(method), Some(id)) if method == "_keeper/tool_check" => {
+                let params = msg.get("params").unwrap_or(&Value::Null);
+                let permitted = self.mode == Mode::Acp
+                    && self.model.session.is_some()
+                    && params.get("sessionId").and_then(Value::as_str) == self.model.session.as_deref()
+                    && self.permits_tool_mode(params.get("expectedMode").and_then(Value::as_str));
+                self.reply(conn, &json!({"jsonrpc":"2.0","id":id,"result":permitted}));
             }
             (Some(_), Some(id)) if self.mode != Mode::Acp => {
                 self.note_row("_keeper/rejected", json!({"id": id, "by": by, "reason": "terminal mode"}));
@@ -657,10 +726,7 @@ impl Hub {
                         self.reply(conn, &json!({"jsonrpc":"2.0","id":id,"error":{"code":-32005,"message":"a turn or decision is already pending"}}));
                         return;
                     }
-                    if self.model.modes.is_none()
-                        || self.routes.values().any(|r| r.change.is_some())
-                        || expected.as_ref().and_then(Value::as_str) != self.model.modes.as_ref().map(|m| m.current.as_str())
-                    {
+                    if !self.permits_tool_mode(expected.as_ref().and_then(Value::as_str)) {
                         self.client_ids.remove(&(conn, key_of(&id)));
                         self.reply(conn, &json!({"jsonrpc":"2.0","id":id,"error":{"code":-32004,"message":"permission ceiling not proven"}}));
                         return;
@@ -702,6 +768,19 @@ impl Hub {
     fn answer(&mut self, key: &str, raw: &str, by: &str) {
         let mut answer: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
         let id: Value = serde_json::from_str(key).unwrap_or(Value::Null);
+        if let Some(expected) = answer.as_object_mut().and_then(|msg| msg.remove("expectedMode")) {
+            // Only parent answers carry this keeper-local field. A mode change may have
+            // reached the keeper since the broker read its last selections note.
+            if self.hold.is_some()
+                || self.mode != Mode::Acp
+                || !self.permits_tool_mode(expected.as_str())
+                || !self.model.pending.iter().any(|p| p.key == key && p.method == "elicitation/create")
+                || self.model.pending.iter().any(|p| p.method == "session/request_permission")
+            {
+                self.note_row("_keeper/dropped", json!({"id":id,"by":by,"reason":"question or permission ceiling changed"}));
+                return;
+            }
+        }
         if let Some(reason) = self.model.pending.iter().find(|p| p.key == key).and_then(|p| invalid_answer(p, &answer)) {
             self.note_row("_keeper/dropped", json!({"id": id, "by": by, "reason": reason}));
             return;
@@ -741,21 +820,58 @@ impl Hub {
         self.note_row("_keeper/resolved", json!({"id": pending.id, "by": by, "optionId": option, "outcome": outcome, "seq": pending.seq}));
         let chosen = option.or(outcome).unwrap_or_else(|| "error".into());
         self.model.note(format!("승인 답함 ({by}): {chosen}"));
+        if self.answering.is_empty() {
+            self.finish_stop();
+        }
+    }
+
+    pub fn stop_deadline(&self) -> Option<Instant> {
+        self.stop.as_ref().map(|stop| stop.deadline)
+    }
+
+    pub fn finish_stop(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            // A closed or stuck pipe cannot acknowledge cancellation. Expire those cards
+            // without recording a delivered answer, and still end the child.
+            self.expire_pending("the keeper is stopping");
+            self.quit = true;
+            self.reply(stop.conn, &json!({"jsonrpc":"2.0","id":stop.id,"result":{"stopping":true}}));
+        }
     }
 
     fn cancel_pending(&mut self, session: Option<&str>, by: &str) {
-        let keys: Vec<(String, Value)> = self
+        let keys: Vec<(String, Value, bool)> = self
             .model
             .pending
             .iter()
-            .filter(|p| p.method == "session/request_permission" && p.session.as_deref() == session)
-            .map(|p| (p.key.clone(), p.id.clone()))
+            .filter(|p| {
+                matches!(p.method.as_str(), "session/request_permission" | "elicitation/create") && (self.stop.is_some() || p.session.as_deref() == session) && !self.answering.contains(&p.key)
+            })
+            .map(|p| (p.key.clone(), p.id.clone(), p.method == "elicitation/create"))
             .collect();
-        for (key, id) in keys {
-            let raw = json!({"jsonrpc": "2.0", "id": id, "result": {"outcome": {"outcome": "cancelled"}}}).to_string();
+        for (key, id, form) in keys {
+            let result = if form { json!({"action":"cancel"}) } else { json!({"outcome":{"outcome":"cancelled"}}) };
+            let raw = json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string();
             self.answer(&key, &raw, "keeper-cancel");
         }
         self.model.note(format!("취소 보냄 ({by})"));
+    }
+
+    /// The adapter withdrew its own elicitation (e.g. Codex's auto-resolution deadline).
+    /// Its JSON-RPC id is in the agent's namespace, not the id on the person's card.
+    fn withdraw_question(&mut self, wire_id: &Value) {
+        let key = self
+            .model
+            .pending
+            .iter()
+            .find(|p| p.method == "elicitation/create" && self.agent_ids.get(&p.key) == Some(wire_id))
+            .map(|p| p.key.clone());
+        let Some(key) = key.filter(|k| !self.answering.contains(k)) else { return };
+        if let Some(pending) = self.model.resolve(&key) {
+            self.agent_ids.remove(&key);
+            self.forward(&json!({"jsonrpc":"2.0","id":wire_id,"result":{"action":"cancel"}}).to_string());
+            self.note_row("_keeper/expired", json!({"id":pending.id,"seq":pending.seq,"reason":"question withdrawn"}));
+        }
     }
 }
 
@@ -771,6 +887,76 @@ mod tests {
         let (tx, rx) = unbounded_channel();
         let opts = crate::parse(vec!["keeper".into(), dir.display().to_string(), "--".into(), "agent".into()]).unwrap();
         (Hub::new(Arc::new(archive), tx, opts, false, false), rx)
+    }
+
+    #[test]
+    fn parent_cannot_resume_in_an_unproven_mode_and_stop_sends_only_cancel() {
+        let dir = std::env::temp_dir().join(format!("ak-question-stop-{}", std::process::id()));
+        let (mut hub, mut sent) = hub(&dir);
+        hub.model.session = Some("s".into());
+        hub.handle(Ev::Agent(
+            0,
+            json!({"jsonrpc":"2.0","id":"child-id","method":"elicitation/create","params":{"sessionId":"s","mode":"form"}}).to_string(),
+        ));
+        let id = hub.model.pending[0].id.clone();
+        let answer = json!({"jsonrpc":"2.0","id":id,"expectedMode":"ask","result":{"action":"accept","content":{"q0":"yes"}}}).to_string();
+        hub.handle(Ev::Client { conn: 1, line: answer.clone() });
+        assert!(sent.try_recv().is_err(), "an unverified parent answer went to the child");
+        hub.model
+            .session_result(&json!({"modes":{"currentModeId":"ask"},"configOptions":[{"id":"allow_all","currentValue":"on"}]}));
+        hub.handle(Ev::Client { conn: 1, line: answer });
+        assert!(sent.try_recv().is_err(), "allow_all changed without a mode change");
+        hub.handle(Ev::Agent(
+            0,
+            json!({"jsonrpc":"2.0","id":"permission","method":"session/request_permission","params":{"sessionId":"s"}}).to_string(),
+        ));
+        hub.handle(Ev::Client {
+            conn: 1,
+            line: json!({"jsonrpc":"2.0","id":22,"method":"_keeper/tool_stop","params":{}}).to_string(),
+        });
+        hub.handle(Ev::Agent(
+            0,
+            json!({"jsonrpc":"2.0","id":"late","method":"elicitation/create","params":{"sessionId":"s","mode":"form"}}).to_string(),
+        ));
+        for (id, result) in [
+            ("child-id", json!({"action":"cancel"})),
+            ("permission", json!({"outcome":{"outcome":"cancelled"}})),
+            ("late", json!({"action":"cancel"})),
+        ] {
+            assert!(!hub.quit);
+            let wire = sent.try_recv().unwrap();
+            let cancel: Value = serde_json::from_slice(&wire.bytes).unwrap();
+            assert_eq!(cancel, json!({"jsonrpc":"2.0","id":id,"result":result}));
+            hub.handle(Ev::Written(0, wire.receipt.unwrap()));
+        }
+        assert!(hub.quit);
+        drop(hub);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_withdrawn_question_no_longer_accepts_an_answer_and_other_requests_stay_open() {
+        let dir = std::env::temp_dir().join(format!("ak-question-{}", std::process::id()));
+        let (mut hub, mut sent) = hub(&dir);
+        hub.model.session = Some("s".into());
+        hub.opts.question_forms = true;
+        for (id, method) in [(7, "elicitation/create"), (8, "session/request_permission")] {
+            hub.handle(Ev::Agent(0, json!({"jsonrpc":"2.0","id":id,"method":method,"params":{"sessionId":"s","mode":"form"}}).to_string()));
+        }
+        let question = hub.model.pending[0].id.clone();
+        hub.handle(Ev::Agent(0, json!({"jsonrpc":"2.0","method":"$/cancel_request","params":{"requestId":7}}).to_string()));
+        assert_eq!(hub.model.pending.len(), 1);
+        assert_eq!(hub.model.pending[0].method, "session/request_permission");
+        hub.handle(Ev::Client {
+            conn: 1,
+            line: json!({"jsonrpc":"2.0","id":question,"result":{"action":"accept"}}).to_string(),
+        });
+        assert!(!hub.answering.contains(&key_of(&question)));
+        let cancelled: Value = serde_json::from_slice(&sent.try_recv().unwrap().bytes).unwrap();
+        assert_eq!(cancelled["id"], 7);
+        assert_eq!(cancelled["result"]["action"], "cancel");
+        drop(hub);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

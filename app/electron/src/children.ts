@@ -1,25 +1,14 @@
-import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, cpSync, createWriteStream, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync, type WriteStream } from "node:fs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { ovisName } from "../../../server/legacy-env.ts";
+import type { Saved } from "../../../shared/desktop-command-listener.ts";
+import { isFile, processStart, runProcess, windowsProcessQuery, withoutInherited } from "../../../shared/desktop-process.ts";
 
 type Env = Record<string, string | undefined>;
-
-/**
- * Chromium keeps files, sockets and pipes open without close-on-exec, so a program the app starts
- * would hold them, and the core (which outlives the app) for good. Started through this, bash
- * closes every descriptor above stderr, then becomes the program (same pid). Without /bin/bash
- * (NixOS) the program starts directly. Windows hands a child only the handles marked inheritable,
- * and has no /bin/bash: there the program always starts directly.
- */
-const CLOSE_INHERITED = `for fd in $(ls /proc/$$/fd 2>/dev/null || ls /dev/fd); do if [ "$fd" -gt 2 ] 2>/dev/null; then eval "exec $fd>&-" 2>/dev/null; fi; done; exec "$@"`;
-
-export function withoutInherited(command: string, args: string[], bash = "/bin/bash", platform: NodeJS.Platform = process.platform): [string, string[]] {
-  return platform !== "win32" && isFile(bash) ? [bash, ["-c", CLOSE_INHERITED, "ovis", command, ...args]] : [command, args];
-}
 
 export interface Layout {
   bun: string;
@@ -35,6 +24,7 @@ export function layout(root: string, platform: NodeJS.Platform = process.platfor
 
 /** hc's session for the app's own core, apart from the `default` one another hc client may run. */
 export const HC_SESSION = "ovis";
+export const coreSession = (env: Env): string => env["HC_SESSION"]?.trim() || HC_SESSION;
 
 /** the lists an AppImage's AppRun puts its own folders in front of */
 const APPIMAGE_LISTS = ["PATH", "LD_LIBRARY_PATH", "XDG_DATA_DIRS", "GSETTINGS_SCHEMA_DIR"];
@@ -47,7 +37,7 @@ const APPIMAGE_LISTS = ["PATH", "LD_LIBRARY_PATH", "XDG_DATA_DIRS", "GSETTINGS_S
  * AppImage's settings the app was merely started under stay, as for any other program.
  */
 export function coreEnv(base: Env, execPath: string = process.execPath): Env {
-  const env: Env = { ...base, HC_SESSION: base["HC_SESSION"]?.trim() || HC_SESSION };
+  const env: Env = { ...base, HC_SESSION: coreSession(base) };
   // the app's own core: never one another client named with HC_SOCKET
   delete env["HC_SOCKET"];
   delete env["ELECTRON_RUN_AS_NODE"];
@@ -123,13 +113,13 @@ export async function installCore(bundled: string, dir: string, env: Env, log: W
   // an hc newer than this app's (left by a newer app, before a rollback) is kept: hc refuses to go back
   const [have, want] = await Promise.all([hcVersion(installed, env), hcVersion(bundled, env)]);
   if (have !== null && want !== null && compareVersions(have, want) >= 0) return installed;
-  const { code, output } = await run(installed, ["update", "--from", bundled], env, log, timeoutMs);
+  const { code, output } = await runProcess(installed, ["update", "--from", bundled], env, log, timeoutMs);
   if (code !== 0) throw new Error(`herdr-core in ${dir} could not be updated to this app's (${code === null ? "timed out" : `exit code ${code}`})\n${tail(output)}`);
   return installed;
 }
 
 export async function hcVersion(hc: string, env: Env): Promise<number[] | null> {
-  const { code, output } = await run(hc, ["--version"], env, null, 10_000);
+  const { code, output } = await runProcess(hc, ["--version"], env, null, 10_000);
   const match = code === 0 ? /^hc (\d+)\.(\d+)\.(\d+)/.exec(output.trim()) : null;
   return match ? match.slice(1, 4).map(Number) : null;
 }
@@ -156,7 +146,7 @@ function sameBytes(a: string, b: string): boolean {
  * is not there leaves it in the app's: a missing folder would keep the core from starting at all.
  */
 export async function startCore(hc: string, env: Env, log: WriteStream, timeoutMs = 30_000, home = homedir()): Promise<void> {
-  const { code, output } = await run(hc, ["server", "start"], env, log, timeoutMs, isDirectory(home) ? home : undefined);
+  const { code, output } = await runProcess(hc, ["server", "start"], env, log, timeoutMs, isDirectory(home) ? home : undefined);
   if (code !== 0) throw new Error(`herdr-core did not start (${code === null ? "timed out" : `exit code ${code}`})\n${tail(output)}`);
 }
 
@@ -251,28 +241,6 @@ export async function choosePort(saved: number | null): Promise<number> {
   return freePort();
 }
 
-export interface Saved {
-  port: number | null;
-  /**
-   * the server it ran last, so a run after a crash can end one left behind; `started` is its start time (`ps -o lstart=`).
-   * `bun` is the program it ran: the server's binary, or the bundled Bun of an app from before the binary.
-   */
-  server: { pid: number; bun: string; started: string | null } | null;
-}
-
-export function readSaved(path: string): Saved {
-  try {
-    const value = JSON.parse(readFileSync(path, "utf8")) as Partial<Saved>;
-    const port = typeof value.port === "number" ? value.port : null;
-    const server = value.server && typeof value.server.pid === "number" && typeof value.server.bun === "string"
-      ? { pid: value.server.pid, bun: value.server.bun, started: typeof value.server.started === "string" ? value.server.started : null }
-      : null;
-    return { port, server };
-  } catch {
-    return { port: null, server: null };
-  }
-}
-
 export function writeSaved(path: string, saved: Saved): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(`${path}.tmp`, JSON.stringify(saved));
@@ -291,78 +259,29 @@ const SERVES = /^"? serve$/;
  * server and started at the recorded time. A pid the system has since
  * given to another program, or to another server, is left alone.
  */
-export async function endLeftover(saved: Saved["server"], probe: ProcessProbe = { command: processCommand, started: processStart }): Promise<boolean> {
+export async function endLeftover(saved: Saved["server"], probe?: ProcessProbe): Promise<boolean> {
   if (saved === null) return false;
-  const line = await probe.command(saved.pid);
+  const line = await (probe?.command ?? processCommand)(saved.pid);
   // Windows writes the program's path in quotes when it has a space in it: `"C:\…\bun.exe" …`
   if (line === null) return false;
   const command = line.startsWith('"') ? line.slice(1) : line;
   // the binary's `serve`, or the server's source on Bun as an app from before the binary ran it
   if (!command.startsWith(saved.bun) || !(SERVES.test(command.slice(saved.bun.length)) || command.includes(join("server", "index.ts")))) return false;
   // without a start time it cannot be told from another process that got the pid since: left alone
-  if (saved.started === null || await probe.started(saved.pid) !== saved.started) return false;
+  if (saved.started === null) return false;
+  // Records made before the CLI used them stored ps's time in the desktop app's local time zone.
+  const started = probe ? await probe.started(saved.pid) : await processStart(saved.pid, saved.ready === undefined ? "legacy" : "utc");
+  if (started !== saved.started) return false;
   try { process.kill(saved.pid, "SIGTERM"); } catch { return false; }
   return true;
 }
 
-/**
- * Windows has no ps: a process's command line and start time come from CIM (Win32_Process), its
- * start as a UTC timestamp, which stays the same for one process and differs for a pid given out again.
- */
-export function windowsProcessQuery(pid: number, field: "command" | "started"): [string, string[]] {
-  const value = field === "command" ? "$p.CommandLine" : "$p.CreationDate.ToUniversalTime().ToString('o')";
-  return ["powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `[Console]::OutputEncoding = [Text.Encoding]::UTF8; $p = Get-CimInstance Win32_Process -Filter 'ProcessId=${Math.trunc(pid)}'; if ($p) { ${value} }`]];
-}
-
 const WINDOWS = process.platform === "win32";
 const psCommand = (pid: number): [string, string[]] => WINDOWS ? windowsProcessQuery(pid, "command") : ["ps", ["-o", "command=", "-p", String(pid)]];
-const psStart = (pid: number): [string, string[]] => WINDOWS ? windowsProcessQuery(pid, "started") : ["ps", ["-o", "lstart=", "-p", String(pid)]];
 
 export async function processCommand(pid: number): Promise<string | null> {
-  const { code, output } = await run(...psCommand(pid), process.env, null, WINDOWS ? 15_000 : 5_000);
+  const { code, output } = await runProcess(...psCommand(pid), process.env, null, WINDOWS ? 15_000 : 5_000);
   return code === 0 && output.trim() !== "" ? output.trim() : null;
-}
-
-export function processStartSync(pid: number): string | null {
-  try {
-    const [command, args] = psStart(pid);
-    const output = execFileSync(command, args, { env: { ...process.env, LC_ALL: "C" }, encoding: "utf8", timeout: WINDOWS ? 15_000 : 5_000, stdio: ["ignore", "pipe", "ignore"], windowsHide: true }).trim();
-    return output === "" ? null : output;
-  } catch {
-    return null;
-  }
-}
-
-export async function processStart(pid: number): Promise<string | null> {
-  const { code, output } = await run(...psStart(pid), { ...process.env, LC_ALL: "C" }, null, WINDOWS ? 15_000 : 5_000);
-  return code === 0 && output.trim() !== "" ? output.trim() : null;
-}
-
-async function run(command: string, args: string[], env: Env, log: WriteStream | null, timeoutMs: number, cwd?: string): Promise<{ code: number | null; output: string }> {
-  return new Promise((resolve) => {
-    let output = "";
-    const [program, argv] = withoutInherited(command, args);
-    const child = spawn(program, argv, { cwd, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-    const take = (chunk: Buffer) => {
-      log?.write(chunk);
-      output += chunk.toString("utf8");
-    };
-    child.stdout!.on("data", take);
-    child.stderr!.on("data", take);
-    const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
-    child.once("error", (error) => {
-      clearTimeout(timer);
-      resolve({ code: null, output: `${output}${error.message}` });
-    });
-    child.once("close", (code) => {
-      clearTimeout(timer);
-      resolve({ code, output });
-    });
-  });
-}
-
-export function isFile(path: string): boolean {
-  try { return statSync(path).isFile(); } catch { return false; }
 }
 
 function isDirectory(path: string): boolean {

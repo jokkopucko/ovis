@@ -1,8 +1,8 @@
-import { expect, it } from "bun:test";
+import { afterEach, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createElement, useEffect, useMemo, useRef, useState } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 import { endsWithTurn, stoppedTurn } from "../lib/compose.ts";
 import type { ConversationTurn } from "../../shared/protocol.ts";
 
@@ -27,7 +27,8 @@ const body = new Bun.Transpiler({ loader: "ts" }).transformSync(`
 type Props = { turns: ConversationTurn[]; restored: string | null; sentKey: number; unsentKey: number; capture: (shown: ConversationTurn[]) => void };
 const Harness = new Function("useState", "useEffect", "useMemo", "useRef", "stoppedTurn", "endsWithTurn", `return function Harness(props) { ${body} }`)(
   useState, useEffect, useMemo, useRef, stoppedTurn, endsWithTurn) as (props: Props) => null;
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+let browser: Page;
+afterEach(async () => { await browser.close(); });
 
 const earlier: ConversationTurn = { role: "assistant", ts: "2026-10-31T23:59:00Z", parts: [{ kind: "text", text: "earlier" }] };
 const stopped: ConversationTurn = { role: "user", ts: "2026-11-01T00:00:00Z", parts: [{ kind: "text", text: "stopped message" }] };
@@ -35,13 +36,13 @@ const page = [earlier, stopped];
 
 async function host() {
   let shown: ConversationTurn[] = [];
-  let tree: ReactTestRenderer | undefined;
+  browser = openPage();
   const capture = (value: ConversationTurn[]) => { shown = value; };
   const render = async (props: Omit<Props, "capture">) => {
-    await act(() => { if (tree) tree.update(createElement(Harness, { ...props, capture })); else tree = create(createElement(Harness, { ...props, capture })); });
+    await browser.render(createElement(Harness, { ...props, capture }));
     return shown;
   };
-  return { render, unmount: () => act(() => tree?.unmount()) };
+  return { render };
 }
 
 it("shows the stopped turn again once its copy leaves the box after a send refused with nothing typed", async () => {
@@ -50,7 +51,6 @@ it("shows the stopped turn again once its copy leaves the box after a send refus
   await chat.render({ turns: page, restored: "stopped message", sentKey: 1, unsentKey: 0 });
   expect(await chat.render({ turns: page, restored: "stopped message", sentKey: 1, unsentKey: 1 })).toEqual([earlier]);
   expect(await chat.render({ turns: page, restored: null, sentKey: 1, unsentKey: 1 })).toEqual(page);
-  await chat.unmount();
 });
 
 it("keeps the stopped turn out after a send that went, while it is still the last turn", async () => {
@@ -58,5 +58,4 @@ it("keeps the stopped turn out after a send that went, while it is still the las
   await chat.render({ turns: page, restored: "stopped message", sentKey: 0, unsentKey: 0 });
   await chat.render({ turns: page, restored: "stopped message", sentKey: 1, unsentKey: 0 });
   expect(await chat.render({ turns: page, restored: null, sentKey: 1, unsentKey: 0 })).toEqual([earlier]);
-  await chat.unmount();
 });

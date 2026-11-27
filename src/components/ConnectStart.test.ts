@@ -12,6 +12,13 @@ describe("the relay PCs of My PCs", () => {
     expect(rows.map((row) => [row.name, row.status ?? "", row.saved])).toEqual([["code-paired", "", true], ["pc-b", "online", false], ["pc-c", "off", false]]);
   });
 
+  it("keeps a PC the account's list holds that the account service names no way to: under its signed name, off, with nothing to open", () => {
+    const rows = relayTabPcs([], [accountPc("b", { byList: true }), { ...accountPc("c", { byList: true, state: "offline", name: "Laptop" }), join: undefined }]);
+    expect(rows.map((row) => [row.name, row.status, row.noWay ?? false])).toEqual([["pc-b", "online", false], ["Laptop", "off", true]]);
+    // a PC the account service alone names with no way to it is still left out: nothing says it is the account's
+    expect(relayTabPcs([], [{ ...accountPc("d"), join: undefined }])).toEqual([]);
+  });
+
   it("lists an account PC this phone also paired once, as the phone's own", () => {
     const rows = relayTabPcs([{ server_id: id("a"), name: "code-paired" }, { server_id: id("b"), name: "desk", status: "online" }], [accountPc("b", { paired: true }), accountPc("c")]);
     expect(rows.map((row) => row.server_id)).toEqual([id("a"), id("b"), id("c")]);

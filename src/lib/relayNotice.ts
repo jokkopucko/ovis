@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
 import type { RelayStatus } from "../../shared/protocol.ts";
 import type { HealthInfo } from "./api.ts";
+import { useScopedDismissal } from "./dismissedStorage.ts";
 
 const KEY = "ovis:relay-notice-dismissed";
 
@@ -9,22 +9,6 @@ export type RelayNoticeKind = "sign-in-grace" | "sign-in-required" | "not-listed
 export interface RelayNoticeInfo {
   readonly kind: RelayNoticeKind;
   readonly enforceAt: string | null;
-}
-
-const entry = (scope: string, kind: RelayNoticeKind) => `${scope} ${kind}`;
-
-function readDismissed(): string[] {
-  try {
-    const value: unknown = JSON.parse(window.localStorage.getItem(KEY) ?? "[]");
-    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-  } catch { return []; }
-}
-
-function writeDismissed(dismissed: readonly string[]): void {
-  try {
-    if (dismissed.length) window.localStorage.setItem(KEY, JSON.stringify(dismissed));
-    else window.localStorage.removeItem(KEY);
-  } catch {}
 }
 
 /**
@@ -85,19 +69,5 @@ export function relayNoticeOf(health: Pick<HealthInfo, "auth" | "relay" | "secur
 
 export function useRelayNotice(scope: string, notice: RelayNoticeInfo | null | undefined): { dismissed: boolean; dismiss: () => void } {
   const kind = notice === undefined ? undefined : notice?.kind ?? null;
-  const [dismissed, setDismissed] = useState(readDismissed);
-  useEffect(() => {
-    if (kind === undefined) return;
-    const stored = readDismissed();
-    const kept = stored.filter((item) => !item.startsWith(`${scope} `) || (kind !== null && item === entry(scope, kind)));
-    if (kept.length !== stored.length) writeDismissed(kept);
-    setDismissed(kept);
-  }, [scope, kind]);
-  const dismiss = useCallback(() => {
-    if (kind == null) return;
-    const next = [...readDismissed().filter((item) => item !== entry(scope, kind)), entry(scope, kind)];
-    setDismissed(next);
-    writeDismissed(next);
-  }, [scope, kind]);
-  return { dismissed: kind != null && dismissed.includes(entry(scope, kind)), dismiss };
+  return useScopedDismissal(KEY, scope, kind);
 }

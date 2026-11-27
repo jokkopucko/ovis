@@ -15,7 +15,11 @@ import { useT } from "../lib/i18n.ts";
 import type { MachineSessionRegistry } from "../lib/machineSession.ts";
 import { itsMeAnswer } from "../lib/relay/joinHold.ts";
 import { useDeviceNotices, type NoticeSocket } from "../lib/useDeviceNotices.ts";
+import { inList } from "../lib/account/listLeave.ts";
+import { pageAccountList } from "../lib/account/pageList.ts";
 import { BlockOutcomes, NotMeButton } from "./BlockOutcomes.tsx";
+import { ListDeviceNotices } from "./ListDeviceNotices.tsx";
+import { useListView } from "./ListDevices.tsx";
 import { DeviceNotices } from "./DevicePairedNotice.tsx";
 import { ItsMeButton } from "./JoinWait.tsx";
 
@@ -143,7 +147,8 @@ function BlockNoticeAction({ notice, pc, socket, fleet, own, inFlight, changed, 
       if (session === undefined) return;
       const current = await noticeIdentity(session);
       if (current === null || current.key === null || current.account !== notice.account || !socket.accountOpensAll()) return;
-      const blocks = await notMeBlocks(notice, current.key);
+      const service = indexedAccountService.forSignIn(session);
+      const blocks = await notMeBlocks(notice, current.key, { accountNo: (key) => service.deviceNo(key, AbortSignal.timeout(ANSWER_TIMEOUT_MS)) });
       if (blocks.length === 0) return;
       // kept before any PC or the service gets one, so a closed tab loses none (S32-1)
       setUnstored(false);
@@ -195,7 +200,6 @@ function BlockNoticeAction({ notice, pc, socket, fleet, own, inFlight, changed, 
         if (answer !== undefined) routes.relayed = new Map([[ownId, answer], ...routes.relayed]);
         routes.pcs.delete(ownId);
       }
-      const service = indexedAccountService.forSignIn(session);
       // Every route to a skipped PC: one that is open and reports no capability decides its line, whatever the order.
       const skipped = new Map<string, Machine[]>();
       for (const machine of fleet.machines) {
@@ -405,9 +409,14 @@ export function useAccountDeviceNotices({ machines, machineSessions, selectedMac
       (error: unknown) => console.warn("Ovis: a shown refusal could not be cleared", error instanceof Error ? error.name : error));
   };
 
+  // on an account whose signed list this device is in, the list says which devices came in (ListDeviceNotices.tsx),
+  // and a PC's notice of an admission is not told as well
+  const listed = useListView(pageAccountList());
+  const listNotices = <ListDeviceNotices key="list" />;
+
   const pc = machines.find((machine) => machine.id === selectedMachineId);
   const socket = sockets.find(({ id }) => id === selectedMachineId)?.socket;
-  if (pc === undefined) return null;
+  if (pc === undefined) return listNotices;
   const notices = new Map(shown?.notices.map((notice) => [notice.id, notice]));
   const detachedRetries: [string, BlockResult][] = [];
   for (const [id, result] of results) {
@@ -418,8 +427,11 @@ export function useAccountDeviceNotices({ machines, machineSessions, selectedMac
   }
   // this device's own admission, told to another row it holds on that PC: the notice is for the account's other devices
   const ownSpki = own?.key?.public_spki;
+  // a notice a person acted on keeps its outcome (a retry, a refusal to acknowledge), also once the list tells of admissions
+  const acted = new Set([...results.values()].filter((result) => result.pc === pc.id && result.signer === ownSpki).map((result) => result.notice.id));
   for (const [id, notice] of notices) {
     if (hidden.has(noticeKey(pc.id, id)) || (ownSpki !== undefined && notice.key === ownSpki)) notices.delete(id);
+    else if (notice.kind === "admit" && !acted.has(id) && listed !== null && notice.account !== null && inList(listed, notice.account)) notices.delete(id);
   }
   const renderOutcomes = (id: string, result: BlockResult, dismissed = false) => {
     const { retryService, ...delivered } = result.fleet;
@@ -436,8 +448,9 @@ export function useAccountDeviceNotices({ machines, machineSessions, selectedMac
       },
     })} />;
   };
-  if (notices.size === 0 && feed.cut === 0 && detachedRetries.length === 0 && (unsent.size === 0 || !capable)) return null;
+  if (notices.size === 0 && feed.cut === 0 && detachedRetries.length === 0 && (unsent.size === 0 || !capable)) return listNotices;
   return <>
+    {listNotices}
     <DeviceNotices key={pc.id} pc={pc.name} notices={[...notices.values()]} cut={feed.cut}
       onDismiss={(notice) => feed.dismiss(pc.id, notice)}
       onHide={(notice) => setHidden((current) => new Set([...current, noticeKey(pc.id, notice.id)]))}

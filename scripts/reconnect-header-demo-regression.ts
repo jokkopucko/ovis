@@ -2,20 +2,16 @@
  * by the return. The real client over owned demo fixtures; no live herdr session.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { chromium, type Page } from "playwright-core";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
+import type { Page } from "playwright-core";
+import { withDemoBrowser } from "./demo-browser.ts";
 import { appFaces } from "./app-faces.ts";
 import panes from "../site/demo/fixtures/panes.json";
-import { serveDemo } from "./demo-server.ts";
 
 type LineFacts = { header: number; text: string; whole: boolean; onRow: boolean; inHeader: boolean; inView: boolean; title: boolean; still: boolean };
 declare global { interface Window { herdrDemoLoseConnection(): void; herdrDemoRestoreConnection(): void; lineFacts(): LineFacts } }
 
-const app = mkdtempSync(join(tmpdir(), "ovis-reconnect-header-demo-"));
 const evidence = process.env.UI_EVIDENCE_DIR;
 const DRAFT = "kept as a draft while away";
 const MORE = ", and more typed offline";
@@ -114,75 +110,65 @@ async function desktopStatusBar(page: Page, width: number): Promise<void> {
   console.log(`PASS ${width}: Reconnecting… then Connected in the status bar, the draft kept`);
 }
 
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => '<script src="./demo-transport.js"></script><script type="module"'));
-  const prefix = "/herdr-web-ui/demo/app/";
-  const server = serveDemo(app, { prefix });
-  try {
-    const browser = await chromium.launch({ executablePath: chromePath(), headless: true });
+await withDemoBrowser({ tempPrefix: "ovis-reconnect-header-demo-" }, async ({ newContext, baseUrl }) => {
+  for (const width of [390, 412, 800, 1280]) {
+    const phone = width < 769;
+    const tablet = width === 800;
+    const context = await newContext({ viewport: { width, height: phone ? 844 : 900 }, isMobile: phone, hasTouch: phone || tablet, colorScheme: "dark" });
     try {
-      for (const width of [390, 412, 800, 1280]) {
-        const phone = width < 769;
-        const tablet = width === 800;
-        const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, isMobile: phone, hasTouch: phone || tablet, colorScheme: "dark", locale: "en-US" });
-        try {
-          await context.addInitScript(`window.lineFacts = ${measureLine.toString()};`);
-          await context.addInitScript(() => {
-            localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", darkTheme: "codex", defaultView: "chat", alertsOn: false }));
-          });
-          const page = await context.newPage();
-          page.setDefaultTimeout(15000);
-          const errors: string[] = [];
-          page.on("pageerror", (error) => errors.push(error.message));
-          await page.goto(`http://127.0.0.1:${server.port}${prefix}?pane=${encodeURIComponent(panes.hermes)}&view=chat&demo_connection=switch`);
-          await page.locator(".conn-live").waitFor({ state: "attached" });
-          if (tablet) { await tabletChip(page, width); assert.deepEqual(errors, []); continue; }
-          if (!phone) { await desktopStatusBar(page, width); assert.deepEqual(errors, []); continue; }
-          await page.locator(".context-title-text").waitFor();
-          await appFaces(page);
-          await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
-          assert.equal(await page.locator(".context-connection").count(), 0, `${width}: a page opening is not a reconnect`);
-          // the crumb, not the session's line (.context-session) that shares its class
-          const crumb = await page.locator(".context-sub:not(.context-session)").innerText();
-          const height = await page.locator(".app-header").evaluate((node) => node.getBoundingClientRect().height);
-          const composer = page.getByRole("textbox", { name: "Message", exact: true });
-          await composer.fill(DRAFT);
-          if (evidence) { mkdirSync(evidence, { recursive: true }); await page.screenshot({ path: join(evidence, `reconnect-header-${width}-live.png`) }); }
+      await context.addInitScript(`window.lineFacts = ${measureLine.toString()};`);
+      await context.addInitScript(() => {
+        localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", darkTheme: "codex", defaultView: "chat", alertsOn: false }));
+      });
+      const page = await context.newPage();
+      page.setDefaultTimeout(15000);
+      const errors: string[] = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      await page.goto(`${baseUrl}?pane=${encodeURIComponent(panes.hermes)}&view=chat&demo_connection=switch`);
+      await page.locator(".conn-live").waitFor({ state: "attached" });
+      if (tablet) { await tabletChip(page, width); assert.deepEqual(errors, []); continue; }
+      if (!phone) { await desktopStatusBar(page, width); assert.deepEqual(errors, []); continue; }
+      await page.locator(".context-title-text").waitFor();
+      await appFaces(page);
+      await page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
+      assert.equal(await page.locator(".context-connection").count(), 0, `${width}: a page opening is not a reconnect`);
+      // the crumb, not the session's line (.context-session) that shares its class
+      const crumb = await page.locator(".context-sub:not(.context-session)").innerText();
+      const height = await page.locator(".app-header").evaluate((node) => node.getBoundingClientRect().height);
+      const composer = page.getByRole("textbox", { name: "Message", exact: true });
+      await composer.fill(DRAFT);
+      if (evidence) { mkdirSync(evidence, { recursive: true }); await page.screenshot({ path: join(evidence, `reconnect-header-${width}-live.png`) }); }
 
-          await page.evaluate(() => window.herdrDemoLoseConnection());
-          await page.locator(".conn-reconnecting").waitFor({ state: "attached" });
-          await page.locator(".context-connection.is-reconnecting").waitFor();
-          const lost = await lineFacts(page);
-          assert.equal(lost.text, "Reconnecting…", `${width}: the title area says it is reconnecting`);
-          assert.ok(lost.whole && lost.onRow && lost.inView && lost.inHeader, `${width}: the word is whole, in the title area, inside the header, on screen (${JSON.stringify(lost)})`);
-          assert.ok(lost.title, `${width}: the pane title keeps its room (${JSON.stringify(lost)})`);
-          assert.equal(lost.header, height, `${width}: the header keeps its height`);
-          assert.ok(lost.still, `${width}: the line is not animated`);
-          assert.equal(await page.locator(".conn.conn-quiet").count(), 1, `${width}: the chip keeps only its dot while the title area says the word`);
-          assert.equal(await composer.inputValue(), DRAFT, `${width}: the draft stays while reconnecting`);
-          await composer.press("End");
-          await page.keyboard.insertText(MORE);
-          assert.equal(await composer.inputValue(), DRAFT + MORE, `${width}: text typed while reconnecting joins the draft`);
-          if (evidence) await page.screenshot({ path: join(evidence, `reconnect-header-${width}-reconnecting.png`) });
+      await page.evaluate(() => window.herdrDemoLoseConnection());
+      await page.locator(".conn-reconnecting").waitFor({ state: "attached" });
+      await page.locator(".context-connection.is-reconnecting").waitFor();
+      const lost = await lineFacts(page);
+      assert.equal(lost.text, "Reconnecting…", `${width}: the title area says it is reconnecting`);
+      assert.ok(lost.whole && lost.onRow && lost.inView && lost.inHeader, `${width}: the word is whole, in the title area, inside the header, on screen (${JSON.stringify(lost)})`);
+      assert.ok(lost.title, `${width}: the pane title keeps its room (${JSON.stringify(lost)})`);
+      assert.equal(lost.header, height, `${width}: the header keeps its height`);
+      assert.ok(lost.still, `${width}: the line is not animated`);
+      assert.equal(await page.locator(".conn.conn-quiet").count(), 1, `${width}: the chip keeps only its dot while the title area says the word`);
+      assert.equal(await composer.inputValue(), DRAFT, `${width}: the draft stays while reconnecting`);
+      await composer.press("End");
+      await page.keyboard.insertText(MORE);
+      assert.equal(await composer.inputValue(), DRAFT + MORE, `${width}: text typed while reconnecting joins the draft`);
+      if (evidence) await page.screenshot({ path: join(evidence, `reconnect-header-${width}-reconnecting.png`) });
 
-          const back = await restoreAndCatchConnected(page);
-          await page.locator(".conn-live").waitFor({ state: "attached" });
-          assert.equal(back.text, "Connected", `${width}: back, the title area says so`);
-          assert.ok(back.whole && back.onRow && back.inView && back.inHeader, `${width}: Connected is whole in the title area, inside the header (${JSON.stringify(back)})`);
-          assert.equal(back.header, height, `${width}: the header still keeps its height`);
-          assert.ok(back.title, `${width}: and the title its room (${JSON.stringify(back)})`);
-          if (evidence) await page.screenshot({ path: join(evidence, `reconnect-header-${width}-connected.png`) });
+      const back = await restoreAndCatchConnected(page);
+      await page.locator(".conn-live").waitFor({ state: "attached" });
+      assert.equal(back.text, "Connected", `${width}: back, the title area says so`);
+      assert.ok(back.whole && back.onRow && back.inView && back.inHeader, `${width}: Connected is whole in the title area, inside the header (${JSON.stringify(back)})`);
+      assert.equal(back.header, height, `${width}: the header still keeps its height`);
+      assert.ok(back.title, `${width}: and the title its room (${JSON.stringify(back)})`);
+      if (evidence) await page.screenshot({ path: join(evidence, `reconnect-header-${width}-connected.png`) });
 
-          await page.locator(".context-connection").waitFor({ state: "detached" });
-          assert.equal(await page.locator(".context-sub:not(.context-session)").innerText(), crumb, `${width}: then the crumb comes back`);
-          assert.equal(await composer.inputValue(), DRAFT + MORE, `${width}: the return sends nothing: the draft waits for the user`);
-          assert.equal(await page.locator(".chat-turn-user", { hasText: DRAFT }).count(), 0, `${width}: and no message was sent`);
-          assert.deepEqual(errors, []);
-          console.log(`PASS ${width}: Reconnecting… then Connected in the header's title area, the draft kept`);
-        } finally { await context.close(); }
-      }
-    } finally { await browser.close(); }
-  } finally { server.stop(true); }
-} finally { rmSync(app, { recursive: true, force: true }); }
+      await page.locator(".context-connection").waitFor({ state: "detached" });
+      assert.equal(await page.locator(".context-sub:not(.context-session)").innerText(), crumb, `${width}: then the crumb comes back`);
+      assert.equal(await composer.inputValue(), DRAFT + MORE, `${width}: the return sends nothing: the draft waits for the user`);
+      assert.equal(await page.locator(".chat-turn-user", { hasText: DRAFT }).count(), 0, `${width}: and no message was sent`);
+      assert.deepEqual(errors, []);
+      console.log(`PASS ${width}: Reconnecting… then Connected in the header's title area, the draft kept`);
+    } finally { await context.close(); }
+  }
+});

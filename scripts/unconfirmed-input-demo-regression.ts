@@ -7,18 +7,13 @@
  * written to storage.
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { chromium, type Page } from "playwright-core";
+import type { Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
+import { installClock } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 import { shownRows } from "./shown-rows.ts";
-import { serveDemo } from "./demo-server.ts";
 
 const SETTINGS_KEY = "ovis:settings";
-const PREFIX = "/herdr-web-ui/demo/app/";
 
 interface Frame { type: string; text?: string }
 type QaWindow = Window & {
@@ -51,12 +46,10 @@ const LOSSY = `<script>(() => {
   window.WebSocket = Lossy;
 })();</script>`;
 
-const app = mkdtempSync(join(tmpdir(), "herdr-unconfirmed-input-demo-"));
-
 const typedText = (frames: Frame[]): string => frames.filter((frame) => frame.type === "input").map((frame) => frame.text ?? "").join("");
 
 async function open(page: Page, origin: string): Promise<void> {
-  await page.clock.install();
+  await installClock(page);
   await page.goto(`${origin}?pane=${encodeURIComponent(panes.shell)}&view=terminal`);
   await page.locator(".conn-live").waitFor({ state: "attached" });
   await page.locator(shownRows(".pane-frame:not(.is-hidden)")).first().waitFor();
@@ -76,17 +69,9 @@ async function typeThenDrop(page: Page, text: string): Promise<{ held: string | 
   return { held, swallowed: typedText(swallowed) };
 }
 
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  const html = readFileSync(index, "utf8");
-  assert.match(html, /<script type="module"/);
-  writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${LOSSY}\n    <script type="module"`));
-  const server = serveDemo(app, { prefix: PREFIX });
-  const origin = `http://127.0.0.1:${server.port}${PREFIX}`;
-  const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
+await withDemoBrowser({ tempPrefix: "herdr-unconfirmed-input-demo-", afterTransport: `\n    ${LOSSY}` }, async ({ newContext, baseUrl: origin }) => {
   const scenario = async (text: string): Promise<{ held: string | null; swallowed: string; resent: string; stored: string[] }> => {
-    const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
+    const context = await newContext({ viewport: { width: 1280, height: 800 } });
     try {
       await context.addInitScript(({ key, pane }) => {
         localStorage.setItem(key, JSON.stringify({ language: "en", theme: "dark", terminalInputMode: "direct", defaultView: "terminal" }));
@@ -109,21 +94,19 @@ try {
       return { ...lost, ...after };
     } finally { await context.close(); }
   };
-  try {
-    const lost = await scenario("echo lost");
-    console.log(`lost typing: ${JSON.stringify(lost)}`);
-    assert.equal(lost.swallowed, "echo lost", "the typing left the page as input frames the server never read");
-    assert.equal(lost.held, "“echo lost”", "typing the server never confirmed comes back as held input");
-    console.log("PASS unconfirmed typing is held when the connection closes");
-    assert.ok(!lost.resent.includes("echo lost"), `nothing held is sent after the reconnect (${JSON.stringify(lost.resent)})`);
-    console.log("PASS the reconnect sends none of it");
-    assert.ok(lost.stored.some((value) => value.includes("echo lost")), "held input is kept across a reload");
+  const lost = await scenario("echo lost");
+  console.log(`lost typing: ${JSON.stringify(lost)}`);
+  assert.equal(lost.swallowed, "echo lost", "the typing left the page as input frames the server never read");
+  assert.equal(lost.held, "“echo lost”", "typing the server never confirmed comes back as held input");
+  console.log("PASS unconfirmed typing is held when the connection closes");
+  assert.ok(!lost.resent.includes("echo lost"), `nothing held is sent after the reconnect (${JSON.stringify(lost.resent)})`);
+  console.log("PASS the reconnect sends none of it");
+  assert.ok(lost.stored.some((value) => value.includes("echo lost")), "held input is kept across a reload");
 
-    const token = "export TOKEN=Ab12Cd34Ef56Gh78Ij90Kl12Mn34";
-    const key = await scenario(token);
-    console.log(`lost key: ${JSON.stringify({ ...key, stored: key.stored.length })}`);
-    assert.equal(key.held, `“${token}”`, "a key typed and lost is held on screen like any typing");
-    assert.ok(key.stored.every((value) => !value.includes("Ab12Cd34Ef56Gh78Ij90Kl12Mn34")), "but never written to storage");
-    console.log("PASS held text that looks like a key is never written to storage");
-  } finally { await browser.close(); server.stop(true); }
-} finally { rmSync(app, { recursive: true, force: true }); }
+  const token = "export TOKEN=Ab12Cd34Ef56Gh78Ij90Kl12Mn34";
+  const key = await scenario(token);
+  console.log(`lost key: ${JSON.stringify({ ...key, stored: key.stored.length })}`);
+  assert.equal(key.held, `“${token}”`, "a key typed and lost is held on screen like any typing");
+  assert.ok(key.stored.every((value) => !value.includes("Ab12Cd34Ef56Gh78Ij90Kl12Mn34")), "but never written to storage");
+  console.log("PASS held text that looks like a key is never written to storage");
+});

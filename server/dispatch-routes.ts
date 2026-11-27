@@ -36,6 +36,7 @@ export const DISPATCH_MUTATIONS = {
     "/api/devices/pair", "/api/devices/pair/start", "/api/devices/pair/cancel", "/api/devices/revoke-all", "/api/devices/joins/seen",
     "/api/devices/tailnet-nodes/block", "/api/devices/tailnet-nodes/answer",
     "/api/account/link", "/api/account/enroll", "/api/account/introduce", "/api/account/records",
+    "/api/account/list/head", "/api/account/list/page", "/api/account/list/name", "/api/account/list/card",
     "/api/account/relay-account", "/api/account/one-press", "/api/account/pc-proof", "/api/account/ssh-add", "/api/alerts/webhook", "/api/alerts/webhook/test",
     "/api/push/subscribe", "/api/push/status", "/api/push/test", "/api/runtime",
     "/api/runtime/move", "/api/runtime/move/install", "/api/runtime/move/stop", "/api/runtime/move/stop-all",
@@ -58,7 +59,7 @@ export function dispatchMutationRegistered(method: string, pathname: string): bo
 
 export const DISPATCH_READS: ReadonlySet<string> = new Set([
   "machines", "preferences", "seen", "session", "sessions/history", "health", "system", "herdr-ui", "devices", "access",
-  "account/introduction", "account/status", "push", "relay", "updates", "updates/notes", "updates/installed", "runtime/move",
+  "account/introduction", "account/status", "account/list/witness", "push", "relay", "updates", "updates/notes", "updates/installed", "runtime/move",
   "usage", "usage/statusline", "usage/login", "usage/login/prompt", "voice", "fonts", "cliproxy", "cliproxy/login", "telemetry",
   "agents", "agent-catalog", "integrations", "memory", "plugins/actions", "plugin/action", "agent/commands",
   "pane/read", "pane/scroll", "pane/selection", "pane/commands", "pane/files", "pane/docs",

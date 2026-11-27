@@ -11,6 +11,7 @@ describe("coreLaunchEnv", () => {
     ["Bun's switch to run as bare Bun", { BUN_BE_BUN: "1" }],
     ["the pane of another core: its terminal, that core's socket for its panes and its scope", { HC_TERMINAL_ID: "t-1", HC_TERMINAL_SOCKET: "/run/other/hc.sock", HC_SCOPE: "w1" }],
     ["an SSH login, its agent socket with it", { SSH_TTY: "/dev/pts/3", SSH_CONNECTION: "10.0.0.2 5000 10.0.0.1 22", SSH_CLIENT: "10.0.0.2 5000 22", SSH_AUTH_SOCK: "/tmp/ssh-x/agent.1" }],
+    ["an SSH login's forwarded X11 display", { SSH_CONNECTION: "10.0.0.2 5000 10.0.0.1 22", DISPLAY: "localhost:10.0", XAUTHORITY: "/home/me/.Xauthority" }],
     ["tmux, screen and the X window", { TMUX: "/tmp/tmux-1000/default,1,0", TMUX_PANE: "%1", STY: "1.pts-1.host", WINDOWID: "4194311" }],
     ["Ovis's SSH askpass: its token and socket, the helper ssh was told to use with them and its stand-in display", { HERDR_ASKPASS_TOKEN: "t0ken", HERDR_ASKPASS_SOCKET: "/run/ovis/ask", SSH_ASKPASS: "/ovis/askpass", SSH_ASKPASS_REQUIRE: "force", DISPLAY: "herdr:0" }],
     ["Ovis's askpass socket alone, with the helper that goes with it", { HERDR_ASKPASS_SOCKET: "/run/ovis/ask", SSH_ASKPASS: "/ovis/askpass", SSH_ASKPASS_REQUIRE: "force" }],
@@ -22,6 +23,10 @@ describe("coreLaunchEnv", () => {
     expect(coreLaunchEnv({ ...user, SSH_AUTH_SOCK: "/run/user/1000/keyring/ssh" })).toEqual({ ...user, SSH_AUTH_SOCK: "/run/user/1000/keyring/ssh" });
   });
 
+  it("keeps the local login's display and X authority", () => {
+    const local = { ...user, DISPLAY: ":0", XAUTHORITY: "/home/me/.Xauthority" };
+    expect(coreLaunchEnv(local)).toEqual(local);
+  });
   it("keeps the user's own askpass helper and display, set without Ovis's token or socket, and a real display beside them", () => {
     const own = { SSH_ASKPASS: "/usr/libexec/openssh/gnome-ssh-askpass", SSH_ASKPASS_REQUIRE: "prefer", DISPLAY: ":0" };
     expect(coreLaunchEnv({ ...user, ...own })).toEqual({ ...user, ...own });

@@ -6,15 +6,12 @@
  * may be added with no tap behind it.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Browser, type Page } from "playwright-core";
+import type { Browser, Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
+import { appContext } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 import { openSettingsPage } from "./settings-page.ts";
-import { serveDemo } from "./demo-server.ts";
 
 type Screen = { label: string; width: number; height: number };
 type Entry = { taps: number; keys: string };
@@ -24,11 +21,10 @@ const ON_ITS_SIDE: Screen = { label: "on its side", width: 844, height: 390 };
 const TABLET: Screen = { label: "a tablet", width: 1180, height: 820 };
 
 const evidence = process.env["UI_EVIDENCE_DIR"];
-if (evidence) mkdirSync(evidence, { recursive: true });
 const keep = async (page: Page, name: string): Promise<void> => { if (evidence) await page.screenshot({ path: join(evidence, `phone-back-${name}.png`) }); };
 
 async function open(browser: Browser, origin: string, screen: Screen, run: (page: Page, entries: Entry[]) => Promise<void>, settings: Record<string, string> = {}, navigationApi = true, pane = panes.api): Promise<void> {
-  const context = await browser.newContext({ viewport: { width: screen.width, height: screen.height }, isMobile: true, hasTouch: true, deviceScaleFactor: 2, locale: "en-US" });
+  const context = await appContext(browser, { viewport: { width: screen.width, height: screen.height }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 });
   const entries: Entry[] = [];
   try {
     if (!navigationApi) await context.addInitScript(() => { delete (window as unknown as { navigation?: unknown }).navigation; });
@@ -84,19 +80,9 @@ async function stillHere(page: Page, origin: string, shown: string | null, label
   assert.equal(await paneShown(page), shown, `${label}: the pane shown is the one it was`);
 }
 
-const app = mkdtempSync(join(tmpdir(), "ovis-phone-back-demo-"));
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  const html = readFileSync(index, "utf8");
-  assert.match(html, /<script type="module"/);
-  writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n<script type="module"`));
-  const server = serveDemo(app, { prefix: "/" });
-  const origin = `http://127.0.0.1:${server.port}`;
+await withDemoBrowser({ tempPrefix: "ovis-phone-back-demo-", prefix: "/" }, async ({ browser, origin }) => {
   const pages = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("<!doctype html><title>Report</title><h1>Report</h1>", { headers: { "content-type": "text/html; charset=utf-8" } }) });
-  let browser: Browser | undefined;
   try {
-    browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     await open(browser, origin, UPRIGHT, async (page) => {
       const shown = await paneShown(page);
       await page.locator(".drawer-toggle").tap();
@@ -411,15 +397,6 @@ try {
       await files.waitFor({ state: "detached" });
       await stillHere(page, origin, shown, "with no Navigation API, Files after Back closed a file opened from it");
     }, {}, false);
-  } finally {
-    // the servers go whatever else failed, a browser that did not start included: left up, they keep this script from ending
-    try { await browser?.close(); }
-    finally {
-      try { await server.stop(true); }
-      finally { await pages.stop(true); }
-    }
-  }
+  } finally { await pages.stop(true); }
   console.log("PASS a phone's Back closes the drawer, a menu over it, New workspace and its lists one at a time, Files after a file closed by its X or by Back and Add PC opened as Settings closed, upright and on its side; a tablet's closes a menu, a confirmation, Files with a document or a diff over it and a menu over a page beside the pane; with no Navigation API a menu over the drawer and Files after a file closed by Back close the same; and no entry is added with no tap behind it");
-} finally {
-  rmSync(app, { recursive: true, force: true });
-}
+});

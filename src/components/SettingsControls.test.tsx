@@ -1,116 +1,111 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 import { act, createElement, Fragment, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { create, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import { SettingsProvider } from "../lib/settings.ts";
 import { inputWas, placeSentence, sentenceHoles, sentenceRoom, SettingsBare, SettingsRow, Stepper, Toggle, typedStep, useRowSentence } from "./SettingsControls.tsx";
 
-const key = (name: string, composing: boolean) => ({
-  key: name,
-  nativeEvent: { isComposing: composing, keyCode: composing ? 229 : name === "Enter" ? 13 : 27 },
-  stopPropagation() {},
-});
-
 describe("the typed font size (G-179)", () => {
-  let renderer: ReactTestRenderer | undefined;
-  afterEach(() => { act(() => renderer?.unmount()); renderer = undefined; });
+  let page: Page;
+  beforeEach(() => { page = openPage(); });
+  afterEach(async () => { await page.close(); });
 
-  const mount = () => {
+  const mount = async () => {
     const changes: number[] = [];
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    act(() => {
-      renderer = create(createElement(Stepper, { label: "Terminal font size", value: 14, text: "14px", min: 10, max: 22, decreaseLabel: "Smaller", increaseLabel: "Larger", unit: "px", range: "Enter 10–22px", onChange: (value: number) => changes.push(value) }));
-    });
-    const field = () => renderer!.root.findByType("input");
-    const button = (name: string) => renderer!.root.findByProps({ "aria-label": name });
-    const range = () => renderer!.root.findByProps({ id: field().props["aria-describedby"] });
+    await page.render(createElement(Stepper, { label: "Terminal font size", value: 14, text: "14px", min: 10, max: 22, decreaseLabel: "Smaller", increaseLabel: "Larger", unit: "px", range: "Enter 10–22px", onChange: (value: number) => changes.push(value) }));
+    const field = () => page.one<HTMLInputElement>("input");
+    const button = (name: string) => page.one<HTMLButtonElement>(`button[aria-label="${name}"]`);
+    const range = () => page.one(`[id="${field().getAttribute("aria-describedby")}"]`);
     return { changes, field, button, range };
   };
+  const key = (field: HTMLInputElement, name: string, composing: boolean) => act(async () => {
+    const event = new page.window.KeyboardEvent("keydown", { key: name, isComposing: composing, bubbles: true, cancelable: true });
+    Object.defineProperty(event, "keyCode", { value: composing ? 229 : name === "Enter" ? 13 : 27 });
+    Reflect.apply(field.dispatchEvent, field, [event]);
+  });
 
-  it("keeps a valid size typed when the field goes without a blur, and nothing after Escape", () => {
-    const { changes, field } = mount();
-    act(() => field().props.onChange({ target: { value: "16" } }));
-    act(() => renderer!.unmount());
-    renderer = undefined;
+  it("keeps a valid size typed when the field goes without a blur, and nothing after Escape", async () => {
+    const { changes, field } = await mount();
+    await page.type(field(), "16");
+    await page.render(null);
     expect(changes).toEqual([16]);
 
-    const again = mount();
-    act(() => again.field().props.onChange({ target: { value: "18" } }));
-    act(() => again.field().props.onKeyDown(key("Escape", false)));
-    act(() => renderer!.unmount());
-    renderer = undefined;
+    const again = await mount();
+    await page.type(again.field(), "18");
+    await key(again.field(), "Escape", false);
+    await page.render(null);
     expect(again.changes).toEqual([]);
   });
 
-  it("steps from the size still in the field, not the saved one", () => {
-    const { changes, field, button } = mount();
-    act(() => field().props.onChange({ target: { value: "16" } }));
-    act(() => button("Larger").props.onClick());
+  it("steps from the size still in the field, not the saved one", async () => {
+    const { changes, field, button } = await mount();
+    await page.type(field(), "16");
+    await act(async () => button("Larger").click());
     expect(changes).toEqual([17]);
-    act(() => field().props.onBlur());
+    await act(async () => { field().focus(); field().blur(); });
     expect(changes).toEqual([17]);
   });
 
-  it("says an end's button goes no further without disabling it, and a press there changes nothing", () => {
-    const { changes, field, button } = mount();
-    expect(button("Larger").props["aria-disabled"]).toBeUndefined();
-    act(() => field().props.onChange({ target: { value: "22" } }));
-    expect(button("Larger").props["aria-disabled"]).toBe(true);
+  it("says an end's button goes no further without disabling it, and a press there changes nothing", async () => {
+    const { changes, field, button } = await mount();
+    expect(button("Larger").getAttribute("aria-disabled")).toBeNull();
+    await page.type(field(), "22");
+    expect(button("Larger").getAttribute("aria-disabled")).toBe("true");
     // a disabled button would drop the keyboard's focus to the page
-    expect(button("Larger").props.disabled).toBeUndefined();
-    act(() => button("Larger").props.onClick());
+    expect(button("Larger").hasAttribute("disabled")).toBe(false);
+    await act(async () => button("Larger").click());
     expect(changes).toEqual([]);
-    act(() => field().props.onChange({ target: { value: "10" } }));
-    expect(button("Smaller").props["aria-disabled"]).toBe(true);
-    expect(button("Larger").props["aria-disabled"]).toBeUndefined();
-    act(() => button("Smaller").props.onClick());
+    await page.type(field(), "10");
+    expect(button("Smaller").getAttribute("aria-disabled")).toBe("true");
+    expect(button("Larger").getAttribute("aria-disabled")).toBeNull();
+    await act(async () => button("Smaller").click());
     expect(changes).toEqual([]);
   });
 
-  it("names the range, and shows it under the field after a refused size until the next edit", () => {
-    const { field, range } = mount();
-    expect(range().props.children).toBe("Enter 10–22px");
-    expect(range().props.className).toBe("visually-hidden");
-    act(() => field().props.onChange({ target: { value: "30" } }));
-    act(() => field().props.onKeyDown(key("Enter", false)));
-    expect(range().props.className).toBe("settings-stepper-range");
-    expect(field().props["aria-invalid"]).toBe(true);
-    act(() => field().props.onChange({ target: { value: "1" } }));
-    expect(range().props.className).toBe("visually-hidden");
+  it("names the range, and shows it under the field after a refused size until the next edit", async () => {
+    const { field, range } = await mount();
+    expect(range().textContent).toBe("Enter 10–22px");
+    expect(range().className).toBe("visually-hidden");
+    await page.type(field(), "30");
+    await key(field(), "Enter", false);
+    expect(range().className).toBe("settings-stepper-range");
+    expect(field().getAttribute("aria-invalid")).toBe("true");
+    await page.type(field(), "1");
+    expect(range().className).toBe("visually-hidden");
   });
 
-  it("leaves Enter and Escape to an IME while it composes, then commits the finished number", () => {
-    const { changes, field } = mount();
-    act(() => field().props.onChange({ target: { value: "16" } }));
-    act(() => field().props.onKeyDown(key("Enter", true)));
+  it("leaves Enter and Escape to an IME while it composes, then commits the finished number", async () => {
+    const { changes, field } = await mount();
+    await page.type(field(), "16");
+    await key(field(), "Enter", true);
     expect(changes).toEqual([]);
-    expect(field().props.value).toBe("16");
-    act(() => field().props.onKeyDown(key("Escape", true)));
-    expect(field().props.value).toBe("16");
-    act(() => field().props.onKeyDown(key("Enter", false)));
+    expect(field().value).toBe("16");
+    await key(field(), "Escape", true);
+    expect(field().value).toBe("16");
+    await key(field(), "Enter", false);
     expect(changes).toEqual([16]);
   });
 
-  it("reads a pasted number whole and refuses one out of range", () => {
-    const { changes, field } = mount();
-    act(() => field().props.onChange({ target: { value: "200" } }));
-    act(() => field().props.onKeyDown(key("Enter", false)));
+  it("reads a pasted number whole and refuses one out of range", async () => {
+    const { changes, field } = await mount();
+    await page.type(field(), "200");
+    await key(field(), "Enter", false);
     expect(changes).toEqual([]);
-    expect(field().props.value).toBe("14");
+    expect(field().value).toBe("14");
   });
 
-  it("takes the full-width digits an IME types as the number, and shows it in plain digits once committed", () => {
-    const { changes, field, range } = mount();
-    act(() => field().props.onChange({ target: { value: "１６" } }));
-    expect(field().props.value).toBe("１６");
-    expect(field().props["aria-invalid"]).toBeUndefined();
-    act(() => field().props.onKeyDown(key("Enter", false)));
+  it("takes the full-width digits an IME types as the number, and shows it in plain digits once committed", async () => {
+    const { changes, field, range } = await mount();
+    await page.type(field(), "１６");
+    expect(field().value).toBe("１６");
+    expect(field().getAttribute("aria-invalid")).toBeNull();
+    await key(field(), "Enter", false);
     expect(changes).toEqual([16]);
-    expect(range().props.className).toBe("visually-hidden");
-    expect(field().props.value).toBe("14");
-    act(() => field().props.onChange({ target: { value: "１８" } }));
-    act(() => renderer!.root.findByProps({ "aria-label": "Larger" }).props.onClick());
+    expect(range().className).toBe("visually-hidden");
+    expect(field().value).toBe("14");
+    await page.type(field(), "１８");
+    await act(async () => page.one<HTMLButtonElement>('button[aria-label="Larger"]').click());
     expect(changes).toEqual([16, 19]);
   });
 });
@@ -182,87 +177,72 @@ describe("where a row's sentence goes (#3275)", () => {
 });
 
 describe("a row's sentence, as its hook keeps it (#3275)", () => {
-  const names = ["window", "document", "HTMLElement", "HTMLInputElement", "HTMLTextAreaElement", "IS_REACT_ACT_ENVIRONMENT"];
-  const saved = new Map<string, PropertyDescriptor | undefined>();
-  class HTMLElement {
-    isContentEditable = false;
-    constructor(readonly dialog: object | null) {}
-    closest(selector: string): object | null { return selector === "[aria-modal='true']" ? this.dialog : null; }
-    contains(other: unknown): boolean { return other === this; }
-    getBoundingClientRect(): { top: number; bottom: number } { return { top: 0, bottom: 40 }; }
-  }
-  class HTMLInputElement extends HTMLElement { type = "text"; }
-  class HTMLTextAreaElement extends HTMLElement {}
-  interface Key { key: string; isComposing: boolean; keyCode: number; stopped: boolean; preventDefault(): void; stopPropagation(): void }
-  interface Heard { type: string; run: (event: Key) => void; capture: boolean }
-  class Target {
-    heard: Heard[] = [];
-    addEventListener(type: string, run: Heard["run"], capture: boolean = false): void { this.heard.push({ type, run, capture }); }
-    removeEventListener(type: string, run: Heard["run"], capture: boolean = false): void { this.heard = this.heard.filter((one) => !(one.type === type && one.run === run && one.capture === capture)); }
-  }
-  const settings = { name: "Settings" };
-  const palette = { name: "the palette, opened over Settings" };
-  let win: Target & { setTimeout(run: () => void): number; clearTimeout(id?: number): void };
-  let doc: Target & { activeElement: HTMLElement | null };
-  let rests: Map<number, () => void>;
-  let renderer: ReactTestRenderer | undefined;
+  const descriptors = new Map<string, PropertyDescriptor | undefined>();
+  let page: Page;
   const rows = new Map<string, ReturnType<typeof useRowSentence>>();
   const row = (name = "a") => rows.get(name)!;
 
   function Row({ name, on }: { name: string; on: boolean }) {
-    rows.set(name, useRowSentence(on));
-    return null;
+    const sentence = useRowSentence(on);
+    rows.set(name, sentence);
+    return <div ref={sentence.row} data-row={name} {...sentence.rowEvents}><span className="settings-row-text">{name}</span></div>;
   }
-  async function draw(page: Record<string, boolean> = { a: true }): Promise<void> {
-    const tree = createElement(Fragment, null, ...Object.entries(page).map(([name, on]) => createElement(Row, { key: name, name, on })));
-    await act(async () => { if (renderer) renderer.update(tree); else renderer = create(tree); });
-    for (const name of Object.keys(page)) (row(name).row as { current: unknown }).current ??= new HTMLElement(settings);
+  async function draw(shown: Record<string, boolean> = { a: true }): Promise<void> {
+    await page.render(<><div aria-modal="true"><button id="settings-focus">Settings</button><input id="settings-input" />
+      {Object.entries(shown).map(([name, on]) => <Row key={name} name={name} on={on} />)}
+    </div><div aria-modal="true"><button id="palette-focus">Palette</button></div></>);
   }
   const does = (run: () => void): Promise<void> => act(async () => { run(); });
-  const focusAfter = (key: string, name = "a") => does(() => { inputWas({ key }); row(name).rowEvents.onFocus?.({} as never); });
-  const focusLeaves = (name = "a") => does(() => row(name).rowEvents.onBlur?.({ relatedTarget: null } as never));
-  const drawn = (is = true, name = "a"): void => { (row(name).drawn as { current: boolean }).current = is; };
-  const mouseEnters = (name = "a") => does(() => row(name).rowEvents.onPointerEnter?.({ pointerType: "mouse" } as never));
-  const restEnds = () => does(() => { for (const run of [...rests.values()]) run(); rests.clear(); });
+  const target = (name: string) => page.one(`[data-row="${name}"]`);
+  const focusRow = (name: string) => Reflect.apply(target(name).dispatchEvent, target(name), [new page.window.FocusEvent("focusin", { bubbles: true })]);
+  const focusAfter = (key: string, name = "a") => does(() => { inputWas({ key }); focusRow(name); });
+  const focusLeaves = (name = "a") => does(() => {
+    Reflect.apply(target(name).dispatchEvent, target(name), [new page.window.FocusEvent("focusout", { bubbles: true })]);
+  });
+  const drawn = (is = true, name = "a"): void => { row(name).drawn.current = is; };
+  const pointer = (node: Element, type: string, pointerType: string) => does(() => {
+    Reflect.apply(node.dispatchEvent, node, [new page.window.PointerEvent(type, { pointerType, bubbles: true })]);
+  });
+  const mouseEnters = (name = "a") => pointer(target(name), "pointerover", "mouse");
+  const restEnds = () => does(() => { jest.runOnlyPendingTimers(); });
   async function tapName(name = "a"): Promise<void> {
-    const target = { closest: (selector: string) => selector === ".settings-row-text" ? {} : null };
-    await does(() => row(name).rowEvents.onPointerDown?.({ pointerType: "touch", target } as never));
-    await does(() => row(name).rowEvents.onClick?.({ target, currentTarget: row(name).row.current, preventDefault() {} } as never));
+    const nameText = page.one(`[data-row="${name}"] .settings-row-text`);
+    await pointer(nameText, "pointerdown", "touch");
+    await does(() => nameText.click());
   }
-  async function escape(over: Partial<Key> = {}): Promise<boolean> {
+  async function escape({ isComposing = false }: { isComposing?: boolean } = {}): Promise<boolean> {
     let heard = false;
     const closeSettings = (): void => { heard = true; };
-    win.addEventListener("keydown", closeSettings);
-    const event: Key = { key: "Escape", isComposing: false, keyCode: 27, stopped: false, preventDefault() {}, stopPropagation() { this.stopped = true; }, ...over };
-    await act(async () => {
-      for (const [target, capture] of [[win, true], [doc, true], [doc, false], [win, false]] as const) {
-        if (event.stopped) break;
-        for (const one of [...target.heard]) if (one.type === "keydown" && one.capture === capture) one.run(event);
-      }
-    });
-    win.removeEventListener("keydown", closeSettings);
+    window.addEventListener("keydown", closeSettings);
+    try {
+      await does(() => {
+        const event = new page.window.KeyboardEvent("keydown", { key: "Escape", isComposing, bubbles: true, cancelable: true });
+        Reflect.apply((document.activeElement ?? document.body).dispatchEvent, document.activeElement ?? document.body, [event]);
+      });
+    } finally { window.removeEventListener("keydown", closeSettings); }
     return heard;
   }
 
   beforeEach(() => {
-    for (const name of names) saved.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
-    rests = new Map();
-    let last = 0;
-    win = Object.assign(new Target(), { setTimeout: (run: () => void) => { rests.set(++last, run); return last; }, clearTimeout: (id?: number) => { if (id !== undefined) rests.delete(id); } });
-    doc = Object.assign(new Target(), { activeElement: null as HTMLElement | null });
-    for (const [name, value] of Object.entries({ window: win, document: doc, HTMLElement, HTMLInputElement, HTMLTextAreaElement, IS_REACT_ACT_ENVIRONMENT: true })) Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
-    doc.activeElement = new HTMLElement(settings);
+    page = openPage();
+    jest.useFakeTimers();
+    Object.defineProperty(page.window, "setTimeout", { configurable: true, value: setTimeout });
+    Object.defineProperty(page.window, "clearTimeout", { configurable: true, value: clearTimeout });
+    for (const [name, value] of Object.entries({ HTMLElement: page.window.HTMLElement, HTMLInputElement: page.window.HTMLInputElement, HTMLTextAreaElement: page.window.HTMLTextAreaElement })) {
+      descriptors.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+      Object.defineProperty(globalThis, name, { configurable: true, value });
+    }
   });
 
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
+    jest.useRealTimers();
+    await page.close();
     rows.clear();
-    for (const name of names) {
-      const was = saved.get(name);
+    for (const [name, was] of descriptors) {
       if (was) Object.defineProperty(globalThis, name, was);
       else Reflect.deleteProperty(globalThis, name);
     }
+    descriptors.clear();
   });
 
   it("shows on a focus the keyboard moved, not on one the app gives back after Escape or Enter, nor on a pointer's", async () => {
@@ -271,7 +251,7 @@ describe("a row's sentence, as its hook keeps it (#3275)", () => {
     expect(row().shown).toBeNull();
     await focusAfter("Enter");
     expect(row().shown).toBeNull();
-    await does(() => { inputWas("pointer"); row().rowEvents.onFocus?.({} as never); });
+    await does(() => { inputWas("pointer"); focusRow("a"); });
     expect(row().shown).toBeNull();
     await focusAfter("Tab");
     expect(row().shown).toBe("focus");
@@ -285,7 +265,7 @@ describe("a row's sentence, as its hook keeps it (#3275)", () => {
     expect(row().shown).toBeNull();
 
     await show();
-    doc.activeElement = new HTMLInputElement(settings);
+    await does(() => page.one("#settings-input").focus());
     expect(await escape()).toBe(true);
     expect(row().shown).toBeNull();
 
@@ -293,11 +273,11 @@ describe("a row's sentence, as its hook keeps it (#3275)", () => {
     expect(await escape({ isComposing: true })).toBe(true);
     expect(row().shown).toBe("focus");
 
-    doc.activeElement = new HTMLElement(palette);
+    await does(() => page.one("#palette-focus").focus());
     expect(await escape()).toBe(true);
     expect(row().shown).toBeNull();
 
-    doc.activeElement = new HTMLElement(settings);
+    await does(() => page.one("#settings-focus").focus());
     await focusLeaves();
     await focusAfter("Tab");
     drawn(false);
@@ -344,7 +324,7 @@ describe("a row's sentence, as its hook keeps it (#3275)", () => {
     await restEnds();
     expect([row("a").shown, row("b").shown]).toEqual([null, "focus"]);
 
-    await does(() => row("a").rowEvents.onPointerLeave?.());
+    await pointer(target("a"), "pointerout", "mouse");
     await mouseEnters("a");
     await restEnds();
     expect([row("a").shown, row("b").shown]).toEqual(["hover", null]);

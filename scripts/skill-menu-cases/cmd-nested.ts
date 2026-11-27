@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,7 +25,7 @@ export const chips: string[] = [];
 export const widths = [1280, 390] as const;
 export const schemes = ["dark", "light"] as const;
 
-export const expect = async ({ box, menu, scenario, width, scheme, menuFits, rowsBrief }: CaseRun): Promise<void> => {
+export const expect = async ({ page, box, menu, scenario, width, scheme, menuFits, rowsBrief, submits }: CaseRun): Promise<void> => {
   await scenario(`nested command label at ${width}px ${scheme}`, `nested-${width}-${scheme}.png`, async (capture) => {
     await box.fill("/comp");
     const row = menu.locator(".menu-item").filter({ hasText: "component" });
@@ -35,13 +36,18 @@ export const expect = async ({ box, menu, scenario, width, scheme, menuFits, row
     await rowsBrief("nested command");
     await capture();
   });
-  for (const text of ["/mode:", "/mode:pl"]) {
-    await scenario(`mode completion ${text} at ${width}px ${scheme}`, `mode-${text.length}-${width}-${scheme}.png`, async (capture) => {
-      await box.fill(text);
-      const row = menu.locator(".menu-item-main").filter({ hasText: /^\/mode:plan$/ });
-      await row.waitFor();
-      await menuFits("mode completion");
-      await capture();
-    });
-  }
+  await scenario(`mode handoff stays listed and a hidden mode can still be typed at ${width}px ${scheme}`, `mode-${width}-${scheme}.png`, async (capture) => {
+    await box.fill("/mode");
+    const picker = menu.locator(".menu-item").filter({ has: page.getByText("/mode", { exact: true }) });
+    await picker.waitFor();
+    assert.deepEqual(await picker.locator(".composer-menu-badge").allTextContents(), ["Terminal"]);
+    await menuFits("mode handoff");
+    await capture();
+    await box.fill("/mode:plan");
+    await menu.waitFor({ state: "detached" });
+    assert.equal(await page.locator(".chat-inline-state", { hasText: "No command matches" }).count(), 0);
+    await page.getByRole("button", { name: "Send message", exact: true }).click();
+    await page.waitForFunction(() => "sentSubmits" in window && Array.isArray(window.sentSubmits) && window.sentSubmits.length > 0);
+    assert.deepEqual(await submits(), ["/mode:plan"]);
+  });
 };

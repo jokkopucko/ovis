@@ -9,6 +9,8 @@ export function startFakeCLIProxy(key = "test-management-key") {
     { name: "codex-b.json", provider: "codex", email: "codex-b@example.test", status: "ready", disabled: false, unavailable: false, auth_index: "b", id_token: { chatgpt_account_id: "workspace-b" } },
   ];
   const sessions = new Map<string, { provider: string; status: string }>();
+  /** what the provider answers an account's read, by its auth_index, in place of its usage */
+  const answers = new Map<string, { status_code: number; body: string }>();
   const calls: { path: string; body: unknown; authorization: string | null }[] = [];
   let sequence = 0;
   let held: { arrive: () => void; gate: Promise<void> } | null = null;
@@ -52,6 +54,8 @@ export function startFakeCLIProxy(key = "test-management-key") {
       if (hold) { hold.arrive(); await hold.gate; }
       if (!isJsonObject(body) || typeof body["url"] !== "string" || !isJsonObject(body["header"])) return json({ error: "bad request" }, 400);
       if (body["auth_index"] === "b" && body["header"]["chatgpt-account-id"] !== "workspace-b") return json({ status_code: 400, header: {}, body: "{}" });
+      const answer = answers.get(String(body["auth_index"]));
+      if (answer) return json({ ...answer, header: {} });
       return json({ status_code: 200, header: {}, body: JSON.stringify(body["url"].includes("anthropic") ? {
         five_hour: { utilization: 25, resets_at: "2026-10-17T12:00:00Z" }, seven_day: { utilization: 55, resets_at: "2026-10-20T12:00:00Z" },
       } : { plan_type: "pro", rate_limit: { primary_window: { used_percent: 32, limit_window_seconds: 18000, reset_at: 1792238400 } } }) });
@@ -69,5 +73,5 @@ export function startFakeCLIProxy(key = "test-management-key") {
     }
     return json({ error: "not found" }, 404);
   } });
-  return { server, calls, files, sessions, holdCredentials, holdRead, setKey: (value: string) => { acceptedKey = value; }, setDown: (value: boolean) => { down = value; } };
+  return { server, calls, files, sessions, answers, holdCredentials, holdRead, setKey: (value: string) => { acceptedKey = value; }, setDown: (value: boolean) => { down = value; } };
 }

@@ -14,6 +14,14 @@ The window is a WKWebView on the server's own address (`http://127.0.0.1:<port>`
 `scripts/plugin.ts status`). The server lets a loopback request in without pairing, and the page's
 cookies and drafts stay in the app's own WebKit store, apart from any browser's.
 
+- While it shows Ovis the window draws no title bar: the page's header takes its place, as in the
+  Codex and Claude apps, at the height of a compact toolbar's bar, which centres the traffic lights on
+  it (`Sources/OvisMac/TitleBar.swift`, `Resources/title-bar.js`), and every screen keeps clear of the
+  lights as an iPad window's does. A drag on a top bar's bare surface (the header, the inbox's), or
+  anywhere off a control within the bar's height of the window's top, moves the window, and a double
+  click there does what System Settings › Desktop & Dock says of a title bar. The View menu has no
+  toolbar items. The setup, and a window the page opens, keep a title bar of their own; in full
+  screen the bar hides with the menu bar.
 - **Ovis → Phone Setup…** opens the setup and the phone's QR code in a window of their own. After
   an Install from the app it opens by itself. **File → Open in Browser** opens the page as it is in
   the default browser, and **View → Reload** (Cmd+R) loads it again. No menu item takes a Cmd+Shift
@@ -58,7 +66,7 @@ cookies and drafts stay in the app's own WebKit store, apart from any browser's.
 
 | Button | What runs |
 | --- | --- |
-| **Install** | `install.sh`, downloaded fresh from https://ovis.sh/install.sh over HTTPS (following only a redirect to ovis.sh or herdrweb.dev, where it is served from), with `OVIS_NO_OPEN=1` and an empty stdin. Then a LaunchAgent, `~/Library/LaunchAgents/sh.ovis.herdr-server.plist`, runs `herdr server` at login. |
+| **Install** | `install.sh`, downloaded fresh from https://ovis.sh/install.sh over HTTPS (following only a redirect to ovis.sh or herdrweb.dev, where it is served from), with `OVIS_NO_OPEN=1` and an empty stdin. Then a LaunchAgent, `~/Library/LaunchAgents/sh.ovis.herdr-server.plist`, runs `herdr server` at login. Where herdr was not running, install.sh writes and loads that same LaunchAgent itself (unless given `--no-service`, which leaves one that is there), and the app then finds it loaded. |
 | Status (on open) | `herdr plugin list --json` finds the plugin, `scripts/plugin.ts status` gives its address, and `GET /api/access` gives the phone address, drawn as a QR code. The app asks only a loopback address, never through a redirect, and draws the code only for Tailscale's HTTPS name of this Mac (`https://<name>.ts.net`). |
 | **Make the phone address** | `scripts/plugin.ts phone`, the installer's Tailscale step, from the code the server runs now. Settings → Updates runs newer releases from the state dir while herdr's checkout stays at the first one, so the app reads it from the processes: `plugin.ts status` names the launcher (`server/managed.ts` of this checkout), whose supervisor runs the bridge (`server/index.ts`) in the code's dir. When that cannot be read, or the dir is neither the checkout nor a `release-*` dir with its own `plugin.ts`, the checkout's runs. When it fails, the window shows its output. |
 | **Restart** / **Start** | The plugin's `stop` and `start`, or the LaunchAgent when herdr is not running. herdr set up from a terminal has no LaunchAgent: Start then runs herdr for this login only and makes no login item. |

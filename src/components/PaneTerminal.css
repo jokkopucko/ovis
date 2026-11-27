@@ -67,9 +67,7 @@
   overflow: hidden;
 }
 
-.pane-terminal[data-folded] .xterm-rows,
-.pane-terminal[data-folded] .xterm-selection,
-.pane-terminal[data-folded] .xterm-decoration-container {
+.pane-terminal[data-folded] .xterm-selection {
   visibility: hidden;
 }
 
@@ -104,10 +102,55 @@
    much letter-spacing and the rest of its row drew right of its cells: OmO's side panel stood
    in a different column on each row, moving as scrolling brought other rows beside it (#739). */
 .pane-terminal .xterm {
+  cursor: text;
+  position: relative;
+  user-select: none;
+  -webkit-user-select: none;
   padding: var(--space-2) var(--space-2) 0;
   text-spacing-trim: space-all;
   text-autospace: no-autospace;
 }
+
+/* Input helpers adapted from xterm.js; the MIT notice ships with the client. */
+.pane-terminal .xterm .xterm-helpers {
+  position: absolute;
+  top: 0;
+  z-index: 5;
+}
+
+.pane-terminal .xterm .xterm-helper-textarea {
+  position: absolute;
+  left: -9999em;
+  top: 0;
+  width: 0;
+  height: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
+  opacity: 0;
+  z-index: -5;
+  white-space: nowrap;
+  overflow: hidden;
+  resize: none;
+}
+
+.pane-terminal .xterm .composition-view {
+  position: absolute;
+  display: none;
+  white-space: nowrap;
+  background: var(--term-bg);
+  color: var(--term-fg);
+  z-index: 2;
+}
+
+.pane-terminal .xterm .composition-view.active {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.pane-terminal .xterm .xterm-screen { position: relative; }
+.pane-terminal .xterm.enable-mouse-events { cursor: default; }
+.pane-terminal .xterm .xterm-cursor-pointer { cursor: pointer; }
 
 .terminal-surface {
   position: relative;
@@ -396,14 +439,6 @@
   }
 }
 
-/* xterm swaps its row elements on every redraw. A touch keeps its first target for the
-   whole gesture, so a finger that landed on a row lost every later move (and its end)
-   as soon as the first scroll redrew that row, and the browser took the drag. On touch
-   screens the rows take no touches: the gesture lands on the screen element, which stays. */
-@media (pointer: coarse) {
-  .pane-terminal .xterm-rows { pointer-events: none; }
-}
-
 /* under the chat lens the grid is covered: skip drawing it (xterm pauses its renderer while
    the screen is not intersecting, and repaints in full on return). The box keeps its size,
    so the grid never refits to zero */
@@ -449,7 +484,6 @@
   }
 }
 
-.pane-terminal[data-renderer="ghostty"] .xterm-rows { visibility: hidden; }
 .pane-terminal[data-folded] .ghostty-layer { visibility: hidden; }
 .pane-terminal .ghostty-layer { position: absolute; inset: 0 auto auto 0; pointer-events: none; overflow: hidden; z-index: 1; }
 .pane-terminal .ghostty-layer > * { position: absolute; inset: 0; }
@@ -462,4 +496,3 @@
 .pane-terminal .ghostty-icon { display: inline-block; width: var(--ghostty-cw); height: var(--ghostty-ch); vertical-align: top; overflow: hidden; text-align: center; letter-spacing: 0; text-decoration: inherit; }
 .pane-terminal .ghostty-image { position: absolute; image-rendering: auto; }
 .pane-terminal .ghostty-cursor { inset: auto; opacity: 0.6; }
-.pane-terminal[data-renderer="ghostty"] .composition-view { z-index: 2; }

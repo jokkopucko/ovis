@@ -46,7 +46,6 @@
     "scripts/held-rows-demo-regression.ts",
     "scripts/herdr-profiles-browser-qa.ts",
     "scripts/install-binary.test.ts",
-    "scripts/install-node-fallback.test.ts",
     "scripts/key-bar-customization-demo-regression.ts",
     "scripts/keyboard-viewport-demo-regression.ts",
     "scripts/keyboard-viewport-regression.ts",
@@ -125,7 +124,6 @@
     "scripts/ui-terminal-regression.ts",
     "scripts/usage-regression.ts",
     "scripts/web-panel-mobile-regression.ts",
-    "scripts/with-bun.test.ts",
-    "scripts/xterm-composition.test.ts"
+    "scripts/with-bun.test.ts"
   ]
 }

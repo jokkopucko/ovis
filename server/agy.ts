@@ -1,8 +1,9 @@
 /** Agy's append-only step ledger, reduced in physical order before shared paging. */
 import type { Database } from "bun:sqlite";
-import { createHash, randomUUID } from "node:crypto";
-import { closeSync, fstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
+import { createHash, randomUUID, type Hash } from "node:crypto";
+import { closeSync, fstatSync, openSync, read as readFd, readSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { promisify } from "node:util";
 import type { ConversationPart, ConversationTurn } from "../shared/protocol.ts";
 import { ConversationReadPending } from "./conversation-shared.ts";
 import { readSqliteSnapshot, type SnapshotCache } from "./sqlite-snapshot.ts";
@@ -18,15 +19,16 @@ const MAX_LINE = 16 * 1024 * 1024;
 const SCAN_BYTES = 32 * 1024 * 1024;
 // The catalog's database and WAL grow with the session's payloads, not its step count: a long
 // session passes 32 MiB during a turn (#2618). The copy repeats while a turn writes, on a file
-// thread since #2706, but it still holds that thread and the disk for its duration.
-export const AGY_CATALOG_BYTES = 64 * 1024 * 1024;
+// thread since #2706, but it still holds that thread and the disk for its duration. A session of
+// two days passed 64 MiB (48 MiB database, 33 MiB WAL) and its chat went blank.
+export const AGY_CATALOG_BYTES = 256 * 1024 * 1024;
 const CATALOG_BYTES = AGY_CATALOG_BYTES;
 const hash = (value: string): string => createHash("sha256").update(value).digest("base64url");
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 export class AgyUnavailable extends Error { constructor() { super("Agy history is unavailable"); } }
 interface StepModel { model: string; reasoning_effort: string | null; source: "settings" | "planner" }
 interface Step { index: number; start: number; end: number; type: string; status: string; digest: string; activity?: "working" | "idle"; model?: StepModel }
-interface Index { identity: string; size: number; changed: string; scanned: number; revision: string; steps: Step[]; visible: Step[]; retired: Set<number> }
+interface Index { identity: string; size: number; changed: string; scanned: number; prefix: Hash; revision: string; steps: Step[]; visible: Step[]; retired: Set<number> }
 const indexes = new Map<string, Index>();
 const catalogs = new Map<string, { key: string; rows: number[] }>();
 const MAX_CATALOGS = 32;
@@ -147,13 +149,31 @@ function stepModel(value: Record<string, unknown>): StepModel | undefined {
   return undefined;
 }
 
-function agyScan(path: string, fd: number): Index {
+const readLedger = promisify(readFd);
+
+async function agyScan(path: string, fd: number): Promise<Index> {
   const stat = fstatSync(fd);
   const identity = `${stat.dev}:${stat.ino}`;
   const changed = `${stat.mtimeMs}:${stat.ctimeMs}`;
   let index = indexes.get(path);
+  if (index?.identity === identity && index.scanned > 0 && stat.size > index.size) {
+    // A rewrite can preserve the old tail but move earlier rows. Verify every consumed byte
+    // through the held descriptor, in chunks off the server thread's synchronous I/O path.
+    const prefix = createHash("sha256");
+    const bytes = Buffer.alloc(256 * 1024);
+    for (let at = 0; at < index.scanned;) {
+      const length = Math.min(bytes.length, index.scanned - at);
+      const { bytesRead } = await readLedger(fd, bytes, 0, length, at);
+      if (bytesRead === 0) throw new ConversationReadPending();
+      prefix.update(bytes.subarray(0, bytesRead));
+      at += bytesRead;
+    }
+    const verified = fstatSync(fd);
+    if (verified.size !== stat.size || verified.mtimeMs !== stat.mtimeMs || verified.ctimeMs !== stat.ctimeMs) throw new ConversationReadPending();
+    if (prefix.digest("hex") !== index.prefix.copy().digest("hex")) index = undefined;
+  }
   if (!index || index.identity !== identity || stat.size < index.size || (stat.size === index.size && changed !== index.changed)) {
-    index = { identity, size: stat.size, changed, scanned: 0, revision: randomUUID(), steps: [], visible: [], retired: new Set() };
+    index = { identity, size: stat.size, changed, scanned: 0, prefix: createHash("sha256"), revision: randomUUID(), steps: [], visible: [], retired: new Set() };
   }
   index.size = stat.size; index.changed = changed;
   indexes.delete(path); indexes.set(path, index);
@@ -170,7 +190,9 @@ function agyScan(path: string, fd: number): Index {
     let start = 0;
     for (let newline = bytes.indexOf(10); newline !== -1; newline = bytes.indexOf(10, start)) {
       if (carried + newline - start > MAX_LINE) throw new AgyUnavailable();
-      const line = (carried ? Buffer.concat([...carry, bytes.subarray(start, newline)]) : bytes.subarray(start, newline)).toString("utf8");
+      const chunkLine = bytes.subarray(start, newline + 1);
+      const rawLine = carried ? Buffer.concat([...carry, chunkLine]) : chunkLine;
+      const line = rawLine.toString("utf8", 0, rawLine.length - 1);
       const lineStart = position + start - carried;
       const lineEnd = position + newline + 1;
       carry = []; carried = 0;
@@ -189,6 +211,7 @@ function agyScan(path: string, fd: number): Index {
           : undefined;
       index.steps.push({ index: number, start: lineStart, end: lineEnd, type: value.type as string, status: String(value.status ?? ""), digest: hash(line), activity, model: stepModel(value) });
       if (index.steps.length > MAX_ENTRIES) throw new AgyUnavailable();
+      index.prefix.update(rawLine);
       index.scanned = lineEnd;
       start = newline + 1;
     }
@@ -246,8 +269,8 @@ function agyReduce(index: Index, catalog: Set<number>): AgyProjection {
 const historyReads = new Map<string, Promise<unknown>>();
 
 /**
- * With `authorized`, only that file is read: another one at the path (renamed over it while this
- * read waited) is pending, for the next read to authorize afresh.
+ * With `authorized`, only that file at its originally canonical path is read. A replacement
+ * file or a link is pending, for the next read to authorize afresh.
  */
 export function withAgyHistory<T>(path: string, read: (projection: AgyProjection, fd: number) => T, authorized?: { dev: number; ino: number }): Promise<T> {
   const run = (historyReads.get(path) ?? Promise.resolve()).then(() => agyHistoryRead(path, read, authorized), () => agyHistoryRead(path, read, authorized));
@@ -260,10 +283,10 @@ export function withAgyHistory<T>(path: string, read: (projection: AgyProjection
 async function agyHistoryRead<T>(path: string, read: (projection: AgyProjection, fd: number) => T, authorized?: { dev: number; ino: number }): Promise<T> {
   const fd = openSync(path, "r");
   try {
-    if (realpathSync(path) !== path) throw new AgyUnavailable();
     const before = fstatSync(fd);
     if (authorized !== undefined && (before.dev !== authorized.dev || before.ino !== authorized.ino)) throw new ConversationReadPending();
-    const index = agyScan(path, fd);
+    if (realpathSync(path) !== path) throw authorized !== undefined ? new ConversationReadPending() : new AgyUnavailable();
+    const index = await agyScan(path, fd);
     const catalog = await agyCatalogOffThread(path);
     if (indexes.get(path) !== index) {
       indexes.delete(path); indexes.set(path, index);
@@ -272,6 +295,7 @@ async function agyHistoryRead<T>(path: string, read: (projection: AgyProjection,
     const projection = agyReduce(index, catalog);
     const result = read(projection, fd);
     const current = await agyCatalogOffThread(path);
+    if (realpathSync(path) !== path) throw authorized !== undefined ? new ConversationReadPending() : new AgyUnavailable();
     const after = statSync(path), pinned = fstatSync(fd);
     if (before.dev !== after.dev || before.ino !== after.ino || pinned.size < before.size
       || (pinned.size === before.size && (pinned.mtimeMs !== before.mtimeMs || pinned.ctimeMs !== before.ctimeMs))

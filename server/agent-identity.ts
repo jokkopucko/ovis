@@ -57,6 +57,49 @@ function scriptOf(argv: readonly string[]): string | null {
   return null;
 }
 
+const HERMES_ENV = `os.environ.pop('PYTHONHOME', None)
+os.environ.pop('PYTHONPATH', None)
+sys.path.insert(0, <install root>)
+`;
+const HERMES_MAIN = String.raw`from hermes_cli.main import main
+sys.argv[0] = re.sub(r'(-script\.pyw|\.exe)?$', '', sys.argv[0])
+sys.exit(main())
+`;
+const HERMES_EARLIER_MAIN_PATH = `import os, re, sys
+${HERMES_ENV}if sys.argv[1:2] == ['--print-runtime-command']: sys.dont_write_bytecode = True
+from hermes_constants import get_default_hermes_root
+os.environ['HERMES_HOME'] = os.environ.get('HERMES_HOME') or str(get_default_hermes_root())
+import hermes_bootstrap
+${HERMES_MAIN}`;
+const HERMES_RECOVERY_MAIN_PATH = `import os, re, sys
+import contextlib, hashlib, io, pathlib, shutil, subprocess
+${HERMES_ENV}sys._hermes_pin_default_home = True
+try:
+    import hermes_bootstrap
+except Exception:
+    _hermes_closure_repair()
+    raise
+if not os.environ.get('HERMES_HOME'):
+    from hermes_constants import get_default_hermes_root
+    os.environ['HERMES_HOME'] = str(get_default_hermes_root())
+${HERMES_MAIN}`;
+
+/** The POSIX installer's inline CLI entry point, not Python running a helper module or printing the runtime command. */
+export function isHermesInstalledLauncher(argv: readonly string[]): boolean {
+  const [program, isolate, inline, source, flag] = argv;
+  if (!program || !/^python(?:3(?:\.\d+)?)?$/u.test(nodePath.posix.basename(program)) || isolate !== "-I" || inline !== "-c"
+    || !source?.startsWith("import os, re, sys\n") || flag === "--run-module" || flag === "--print-runtime-command") return false;
+  if (/[\r\f\u2028\u2029]/u.test(source)) return false;
+  // Compare the normal execution path from hermes_cli/_launchers.py. The install root is a
+  // Python string literal; recovery and the two explicitly skipped modes can vary inside their bodies.
+  const mainPath = source
+    .replace(/^sys\.path\.insert\(0, (?:'\/(?:[^'\\\n]|\\.)*'|"\/(?:[^"\\\n]|\\.)*")\)\n/mu, "sys.path.insert(0, <install root>)\n")
+    .replace(/^def _hermes_closure_repair\(\):\n(?: {4}[^\n]*\n|\n)+/mu, "")
+    .replace(/^if sys\.argv\[1:2\] == \['--print-runtime-command'\]:\n(?: {4}[^\n]*\n|\n)+/mu, "")
+    .replace(/^if sys\.argv\[1:2\] == \['--run-module'\]:\n(?: {4}[^\n]*\n|\n)+/mu, "");
+  return mainPath === HERMES_EARLIER_MAIN_PATH || mainPath === HERMES_RECOVERY_MAIN_PATH;
+}
+
 /**
  * The catalog agent a foreground process is: one of its detect binaries run directly, or the
  * extensionless script by that name an interpreter runs (npm's bin, a Python entry point), never
@@ -68,6 +111,7 @@ function scriptOf(argv: readonly string[]): string | null {
  * reads it alike: neither `cmd` nor a shim names anyone there.
  */
 export function processAgent(argv: readonly string[], platform: ProgramPlatform): string | null {
+  if (isHermesInstalledLauncher(argv)) return "hermes";
   const named = new Set(candidatesOf(platform).map((candidate) => agentOn(argv, candidate)));
   return named.size === 1 ? [...named][0]! : null;
 }

@@ -28,6 +28,45 @@ const withRegistry = (dir: string): string => {
 };
 
 describe("the state dir from before the rename", () => {
+  it("adopts legacy state despite a leftover restamp marker when Step 2 is off", () => {
+    const config = configHome(), legacy = withDevices(join(config, "herdr-web-ui")), next = join(config, "ovis");
+    writeFileSync(join(legacy, "restamp-participant.json"), "{}");
+    const saved = process.env["OVIS_ACCOUNT_OPENS_ALL"];
+    try {
+      process.env["OVIS_ACCOUNT_OPENS_ALL"] = "0";
+      adoptLegacyDir(legacy, next);
+      expect(defaultStateDir({ XDG_CONFIG_HOME: config })).toBe(next);
+    } finally {
+      if (saved === undefined) delete process.env["OVIS_ACCOUNT_OPENS_ALL"];
+      else process.env["OVIS_ACCOUNT_OPENS_ALL"] = saved;
+    }
+  });
+  it("does not move a restamp participant into the unavailable origin's folder", () => {
+    const config = configHome();
+    const legacy = withDevices(join(config, "herdr-web-ui"));
+    const next = join(config, "ovis");
+    writeFileSync(join(legacy, "restamp-participant.json"), JSON.stringify({ origin: next, digest: "a".repeat(64) }));
+    adoptLegacyDir(legacy, next);
+    expect(existsSync(next)).toBe(false);
+    expect(defaultStateDir({ XDG_CONFIG_HOME: config })).toBe(legacy);
+  });
+
+  it("moves the old dir as before when Step 2 is turned off, a restamp leftover included", () => {
+    const config = configHome();
+    const legacy = withDevices(join(config, "herdr-web-ui"));
+    const next = join(config, "ovis");
+    writeFileSync(join(legacy, "restamp-participant.json"), JSON.stringify({ origin: next, digest: "a".repeat(64) }));
+    const before = process.env["OVIS_ACCOUNT_OPENS_ALL"];
+    process.env["OVIS_ACCOUNT_OPENS_ALL"] = "0";
+    try { adoptLegacyDir(legacy, next); }
+    finally {
+      if (before === undefined) delete process.env["OVIS_ACCOUNT_OPENS_ALL"];
+      else process.env["OVIS_ACCOUNT_OPENS_ALL"] = before;
+    }
+    expect(lstatSync(legacy).isSymbolicLink()).toBe(true);
+    expect(existsSync(join(next, "devices.json"))).toBe(true);
+  });
+
   it("keeps an installed supervisor on its checkout and port's state when both names hold files", () => {
     const config = configHome();
     const root = join(config, "checkout");

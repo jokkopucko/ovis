@@ -1,7 +1,8 @@
-import { agentRuns, type AgentCatalogRow, type AgentTabStarted } from "../../shared/agent-catalog.ts";
+import type { AgentCatalogRow, AgentTabStarted } from "../../shared/agent-catalog.ts";
+import { agentRuns } from "../../shared/agent-names.ts";
 
 /**
- * Where one agent's setup stands (AgentSetupCard): its install runs in a terminal tab, Ovis reads
+ * Where one agent's setup stands: its install runs in a terminal tab, Ovis reads
  * the catalog again until the agent is there, then its sign-in runs in a tab of its own. Installed
  * is decided by detection alone, never by the install tab's exit: an installer may end with an error
  * after installing (Devin's sign-in with no browser) or succeed without the agent on PATH yet.
@@ -46,16 +47,5 @@ export function setupStep(step: SetupStep, event: SetupEvent): SetupStep {
       return { kind: "failed", message: event.message, after: step.kind === "signing-in" || step.kind === "installed" ? "sign-in" : "install" };
     case "cancel":
       return { kind: "idle" };
-  }
-}
-
-export function setupProgress(step: SetupStep): { index: number; fraction: number } {
-  switch (step.kind) {
-    case "idle": return { index: 0, fraction: 0 };
-    case "installing": return { index: 0, fraction: 0.3 };
-    case "installed": return { index: 1, fraction: 0.6 };
-    case "signing-in": return { index: 1, fraction: 0.8 };
-    case "ready": return { index: 2, fraction: 1 };
-    case "failed": return { index: step.after === "install" ? 0 : 1, fraction: step.after === "install" ? 0.3 : 0.6 };
   }
 }

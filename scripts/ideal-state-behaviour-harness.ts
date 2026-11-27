@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
 import { chromePath } from "./chrome-path.ts";
+import { appContext, installClock } from "./app-context.ts";
 import { buildDemoApp } from "./demo-build.ts";
 
 export { panes };
@@ -76,14 +77,14 @@ export async function startDemo(): Promise<Demo> {
     const own = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     browser = own;
     const open = async ({ pane, phone = false, stage = {}, query = "", clock = false, ready = ".conn-live" }: OpenOptions): Promise<Visit> => {
-      const context = await own.newContext({ viewport: phone ? { width: 390, height: 844 } : { width: 1440, height: 900 }, locale: "ko-KR", serviceWorkers: "block", ...(phone ? { isMobile: true, hasTouch: true } : {}) });
+      const context = await appContext(own, { viewport: phone ? { width: 390, height: 844 } : { width: 1440, height: 900 }, locale: "ko-KR", ...(phone ? { isMobile: true, hasTouch: true } : {}) });
       await context.addInitScript((staged) => {
         if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify({ language: "ko", theme: "light" }));
         (window as unknown as { __probeStage: unknown }).__probeStage = staged;
       }, stage);
       const page = await context.newPage();
       page.setDefaultTimeout(15_000);
-      if (clock) await page.clock.install();
+      if (clock) await installClock(page);
       await page.goto(`${origin}${PREFIX}?pane=${encodeURIComponent(pane)}&view=chat${query}`);
       await page.locator(ready).first().waitFor({ state: "attached", timeout: 20_000 });
       return { context, page };

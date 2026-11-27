@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import nacl from "tweetnacl";
+import { x25519 } from "@noble/curves/ed25519.js";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
-import { entryFromText, entryHash, entryToText, signEntry, type EntryBody } from "./account-list-entry.ts";
+import { canonicalBase64Url, entryFromText, entryHash, entryToText, readBody, signEntry, verifySignature, type EntryBody } from "./account-list-entry.ts";
 import { kindBody, replayList, shownList, signCard, type ListKind, type Sealed } from "./account-list.ts";
-import { inviteRedeemBytes } from "./account-list-invite.ts";
+import { inviteRedeemBytes, lineChallenge, lineProofBytes } from "./account-list-invite.ts";
+import { linkBytes } from "./account-list-migrate.ts";
 import type { ListPlace } from "./account-list-signers.ts";
 import { newRecordId, pcAddSigningBytes, signSafetyRecord, type PcAddPurpose } from "./account-records.ts";
 import { FakeAccountService, LIST_CLAIM_MS, type ListAttempt, type ListWrap } from "./account-service-fake.ts";
@@ -56,7 +57,7 @@ const genesisOf = (owner: Key, account = ACCOUNT): ListKind => ({ kind: "genesis
 const deviceOf = async (key: Key, list: string, rotates = false, card?: string): Promise<ListKind> =>
   ({ kind: "device", key: key.key, power: "full", role: "drive", until: null, enc: key.enc, card: card ?? await cardOf(key, list), sealed: sealed(), rotates });
 const pcOf = async (key: Key, list: string, endpoint: string): Promise<ListKind> => ({ kind: "pc", key: key.key, endpoint, enc: key.enc, card: await cardOf(key, list, endpoint), sealed: sealed() });
-const inviteOf = (key: Key, exp: number, auto = true, uses = 2, names: Sealed | null = sealed()): ListKind => ({ kind: "invite", key: key.key, exp, uses, auto, sealed: names });
+const inviteOf = (key: Key, exp: number, auto = true, uses = 1, names: Sealed | null = sealed()): ListKind => ({ kind: "invite", key: key.key, exp, uses, auto, sealed: names });
 const joinOf = async (key: Key, list: string, endpoint: string, invite: Key, names: Sealed | null = sealed()): Promise<ListKind> =>
   ({ kind: "join", endpoint, pc: key.key, enc: key.enc, card: await cardOf(key, list, endpoint, invite.key), sealed: names });
 const removeOf = (key: Key): ListKind => ({ kind: "remove", ends: key.key });
@@ -118,7 +119,7 @@ const code = (called: Called) => called.body.error?.code;
 const refusal = (called: Called) => `${called.status} ${code(called)}`;
 
 function machine() {
-  const keys = nacl.box.keyPair();
+  const keys = x25519.keygen();
   return { keys, serverId: deriveServerId(keys.publicKey), endpoint: bytesToHex(keys.publicKey) };
 }
 type Machine = ReturnType<typeof machine>;
@@ -170,14 +171,16 @@ async function addPc(w: World, list: string, at: ListPlace): Promise<{ pc: Machi
   return { pc, key, head: added.head };
 }
 
-/** The account's own PC invite of `pool`'s key (POST /v1/pc-invites), redeemed by `pc` with the line's key: what a join's second lock asks. */
-async function redeem(w: World, pc: Machine, pool: Key): Promise<void> {
-  expect((await w.call("POST", "/v1/pc-invites", { invite_key: pool.key, auto: true }, w.service.issueToken(ACCOUNT))).status).toBe(200);
+/** `pc` redeems the service's invite of `pool`'s key (made when its `invite` entry was placed, D11.5) with the line's key. */
+async function redeemCall(w: World, pc: Machine, pool: Key, account = ACCOUNT): Promise<Called> {
   const proved = await proof(w, pc);
-  const bytes = inviteRedeemBytes({ account: ACCOUNT, server_id: pc.serverId, public_key: pc.endpoint, challenge_id: proved.challenge_id! });
+  const bytes = inviteRedeemBytes({ account, server_id: pc.serverId, public_key: pc.endpoint, challenge_id: proved.challenge_id! });
   const invite_signature = toBase64Url(new Uint8Array(await crypto.subtle.sign(SIGN, pool.pair.privateKey, bytes)));
-  const redeemed = await w.call("POST", "/v1/pc-invites/redeem", { invite_key: pool.key, invite_signature, relay: "wss://relay.test", label: "joined", ...proved });
-  expect(redeemed.status).toBe(200);
+  return await w.call("POST", "/v1/pc-invites/redeem", { invite_key: pool.key, invite_signature, relay: "wss://relay.test", label: "joined", ...proved });
+}
+/** The redeem a join's second lock asks for. */
+async function redeem(w: World, pc: Machine, pool: Key): Promise<void> {
+  expect((await redeemCall(w, pc, pool)).status).toBe(200);
 }
 
 /** A counter of the fake's, as it stands: what the service keeps in its counters table. */
@@ -190,6 +193,75 @@ function staleSignIn(w: World, key: Key): string {
   w.tick(11 * MINUTE);
   return bearer;
 }
+
+/** A sign-in of the account that registered its own device key (POST /v1/devices): Step 2 lets that key in unless said. */
+function signedIn(w: World, key: Key, eligible = true): string {
+  const bearer = w.service.issueToken(ACCOUNT);
+  if (!eligible) w.service.registerDevice(ACCOUNT, key.key, "device", false);
+  w.service.registerSessionKey(bearer, key.key, "device");
+  return bearer;
+}
+
+/** A link of the member key to the registered key `device` (D11.2): both keys' signatures over the library's bytes. */
+async function linkOf(list: string, member: Key, device: Key, account = ACCOUNT): Promise<{ member: string; device: string }> {
+  const bytes = new Uint8Array(linkBytes({ account, list, key: member.key, device: device.key }));
+  const by = async (key: Key) => toBase64Url(new Uint8Array(await crypto.subtle.sign(SIGN, key.pair.privateKey, bytes)));
+  return { member: await by(member), device: await by(device) };
+}
+
+/** The account's list started by a sign-in that registered its own key and links the owner's member key to it. */
+async function startLinked(w: World): Promise<{ list: string; head: ListPlace; ownerReg: Key; ownerTok: string }> {
+  const ownerReg = await newKey();
+  const ownerTok = signedIn(w, ownerReg);
+  const first = await sign(w.owner, { seq: 0, list: "", prev: "" }, genesisOf(w.owner), w.seconds());
+  const made = await w.call("POST", "/v2/lists", { entry: first.text, wraps: [{ epoch: 0, member: w.owner.enc, wrap: WRAP(1) }], link: await linkOf(first.head.hash, w.owner, ownerReg) }, ownerTok);
+  expect(made.status).toBe(201);
+  return { list: first.head.hash, head: made.body.head!, ownerReg, ownerTok };
+}
+
+/** A device the owner lets in after `at`: its own sign-in (which Step 2 does not let in unless said) claims it, with its link unless said. */
+async function addLinked(w: World, list: string, at: ListPlace, { eligible = false, link = true } = {}): Promise<{ key: Key; reg: Key; bearer: string; head: ListPlace }> {
+  const key = await newKey();
+  const reg = await newKey();
+  const bearer = signedIn(w, reg, eligible);
+  expect((await w.claim(list, key, bearer, link ? { link: await linkOf(list, key, reg) } : {})).status).toBe(200);
+  const added = await chain(list, at, [[w.owner, await deviceOf(key, list)]], w.seconds());
+  expect((await w.place(list, added.texts)).status).toBe(200);
+  return { key, reg, bearer, head: added.head };
+}
+
+/** What a PC the account lists reads in the snapshot's first page: each listed key's eligibility, and the removed keys. */
+async function snapshotOf(w: World, pc: Machine): Promise<{ eligible: Record<string, boolean>; removed: string[] }> {
+  const read = await pcCall(w, pc, "/v1/pc/snapshot", { account: ACCOUNT });
+  expect(read.status).toBe(200);
+  const page = read.body as unknown as { devices: { key: string; eligible: boolean }[]; removed: { key: string }[] };
+  return { eligible: Object.fromEntries(page.devices.map(({ key, eligible }) => [key, eligible])), removed: page.removed.map(({ key }) => key) };
+}
+
+const carriedKey = (key: Key): ListKind => ({ kind: "carried", key: key.key, role: "drive", sealed: sealed() });
+const carriedPc = (pc: Machine): ListKind => ({ kind: "carried", endpoint: pc.endpoint, sealed: sealed() });
+
+/** A birth's texts (F10b): entry 0 by `first`, a `carried` for each of `carried`, the hand-over to `next` and the epoch it opens. */
+async function birthOf(w: World, first: Key, next: Key, carried: readonly ListKind[], account = ACCOUNT): Promise<{ list: string; entry: string; entries: string[]; head: ListPlace }> {
+  const zero = await sign(first, { seq: 0, list: "", prev: "" }, genesisOf(first, account), w.seconds());
+  const list = zero.head.hash;
+  const run = await chain(list, zero.head, [...carried.map((kind) => [first, kind] as const), [first, await deviceOf(next, list, true)], [next, epochOf(0)]], w.seconds());
+  return { list, entry: zero.text, entries: run.texts, head: run.head };
+}
+
+/** The line's proof a PC that joined by a plain invite posts with its keys: the line key's signature over lineProofBytes for its card. */
+async function lineProof(list: string, pc: Machine, card: Key, line: Key, account = ACCOUNT): Promise<string> {
+  const bytes = lineProofBytes({ account, server_id: pc.serverId, list, card: { key: card.key, enc: card.enc, endpoint: pc.endpoint } });
+  return toBase64Url(new Uint8Array(await crypto.subtle.sign(SIGN, line.pair.privateKey, bytes)));
+}
+
+/** A redeem signature by the line over the line challenge of a card, which a lying service can ask a line for: never a line's proof. */
+async function redeemOverLineChallenge(list: string, pc: Machine, card: Key, line: Key): Promise<string> {
+  const bytes = inviteRedeemBytes({ account: ACCOUNT, server_id: pc.serverId, public_key: pc.endpoint, challenge_id: lineChallenge(list, { key: card.key, enc: card.enc, endpoint: pc.endpoint }) });
+  return toBase64Url(new Uint8Array(await crypto.subtle.sign(SIGN, line.pair.privateKey, bytes)));
+}
+
+const rowOf = <Row>(rows: { readonly [name: string]: Row }, name: string): Row | undefined => (Object.hasOwn(rows, name) ? rows[name] : undefined);
 
 describe("the fake account service's list routes (Part D)", () => {
   describe("the switch and what every answer carries", () => {
@@ -487,7 +559,7 @@ describe("the fake account service's list routes (Part D)", () => {
         return [refusal(refused), refused.body.error?.index, refused.body.error?.outcome, refused.body.error?.reason];
       };
       expect(await refusedAt([[w.owner, inviteOf(await newKey(), w.seconds() + 600)], [stranger, inviteOf(await newKey(), w.seconds() + 600)]])).toEqual(["400 entry_refused", 1, "passed_over", "signer_unknown"]);
-      expect(await refusedAt([[w.owner, inviteOf(await newKey(), w.seconds() + 600)], [w.owner, inviteOf(await newKey(), w.seconds() + 600, true, 2, sealed(1))]])).toEqual(["400 entry_refused", 1, "no_effect", "epoch_other"]);
+      expect(await refusedAt([[w.owner, inviteOf(await newKey(), w.seconds() + 600)], [w.owner, inviteOf(await newKey(), w.seconds() + 600, true, 1, sealed(1))]])).toEqual(["400 entry_refused", 1, "no_effect", "epoch_other"]);
       const phone = await newKey();
       expect(await refusedAt([[w.owner, await deviceOf(phone, list, false, await cardOf(stranger, list))]])).toEqual(["400 entry_refused", 0, "no_effect", "card_invalid"]);
       // carrying members in has no second lock yet: the service places no carried entry
@@ -512,9 +584,9 @@ describe("the fake account service's list routes (Part D)", () => {
       const named = await chain(list, added.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600)]], w.seconds());
       const stale = await w.place(list, named.texts);
       expect([refusal(stale), stale.body.error?.outcome, stale.body.error?.reason]).toEqual(["400 entry_refused", "service", "epoch_stale"]);
-      expect((await w.place(list, (await chain(list, added.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600, true, 2, null)]], w.seconds())).texts)).status).toBe(200);
+      expect((await w.place(list, (await chain(list, added.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600, true, 1, null)]], w.seconds())).texts)).status).toBe(200);
       const at = w.service.accountList(ACCOUNT)!.head;
-      const opened = await chain(list, at, [[w.owner, epochOf(0)], [w.owner, inviteOf(await newKey(), w.seconds() + 600, true, 2, sealed(1))]], w.seconds());
+      const opened = await chain(list, at, [[w.owner, epochOf(0)], [w.owner, inviteOf(await newKey(), w.seconds() + 600, true, 1, sealed(1))]], w.seconds());
       expect((await w.place(list, opened.texts)).status).toBe(200);
     });
 
@@ -540,7 +612,7 @@ describe("the fake account service's list routes (Part D)", () => {
       const ahead = await chain(list, head, [[w.owner, inviteOf(await newKey(), w.seconds() + 1200)]], w.seconds() + 601);
       const refused = await w.place(list, ahead.texts);
       expect([refusal(refused), refused.body.error?.outcome, refused.body.error?.reason]).toEqual(["400 entry_refused", "service", "issued_at_ahead"]);
-      expect((await w.place(list, (await chain(list, head, [[w.owner, inviteOf(await newKey(), w.seconds() + 1200)]], w.seconds() + 600)).texts)).status).toBe(200);
+      expect((await w.place(list, (await chain(list, head, [[w.owner, inviteOf(await newKey(), w.seconds() + 900)]], w.seconds() + 600)).texts)).status).toBe(200);
       const after = w.service.accountList(ACCOUNT)!.head;
       // the list's own time is now the invite above's issued_at, 600 s ahead: this invite's exp lies after it
       const pool = await newKey();
@@ -559,7 +631,7 @@ describe("the fake account service's list routes (Part D)", () => {
       const late = await pcCall(w, pc, "/v2/pc/list/entries", { list, entries: joined.texts });
       expect([refusal(late), late.body.error?.index]).toEqual(["409 invite_expired", 0]);
       // once an entry of a full signer dated after exp is in, every member refuses the join itself
-      const dated = await chain(list, invited.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600, true, 2, null)]], w.seconds());
+      const dated = await chain(list, invited.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600, true, 1, null)]], w.seconds());
       // an invite asks a fresh sign-in (or the make proof) of whoever places it
       expect((await w.place(list, dated.texts, undefined, w.service.issueToken(ACCOUNT))).status).toBe(200);
       const joinedLate = await chain(list, dated.head, [[pool, await joinOf(pcKey, list, pc.endpoint, pool, null)]], w.seconds());
@@ -584,7 +656,7 @@ describe("the fake account service's list routes (Part D)", () => {
       w.service.listLimits.removalsOnlyFrom = 1e9;
       w.service.listLimits.stateChars = 10;
       // epoch 1 is open: these invites carry no names (under epoch 0 they would be epoch_other)
-      expect(refusal(await w.place(list, (await chain(list, removal.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600, true, 2, null)]], w.seconds())).texts))).toBe("409 list_full");
+      expect(refusal(await w.place(list, (await chain(list, removal.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600, true, 1, null)]], w.seconds())).texts))).toBe("409 list_full");
       // past the hard size only the remove, which adds no row; past the soft one its epoch too
       const both = await chain(list, removal.head, [[w.owner, removeOf(tablet.key)], [w.owner, epochOf(1)]], w.seconds());
       w.service.listLimits.stateHardChars = 10;
@@ -593,10 +665,10 @@ describe("the fake account service's list routes (Part D)", () => {
       expect((await w.place(list, both.texts)).status).toBe(200);
       w.service.listLimits.stateChars = 1e9;
       w.service.listLimits.additionsPerWindow = 4;
-      const fourth = await chain(list, both.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600, true, 2, null)]], w.seconds());
+      const fourth = await chain(list, both.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600, true, 1, null)]], w.seconds());
       expect((await w.place(list, fourth.texts)).status).toBe(200);
       w.tick(MINUTE);
-      const over = await chain(list, fourth.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600, true, 2, null)]], w.seconds());
+      const over = await chain(list, fourth.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600, true, 1, null)]], w.seconds());
       const budget = await w.place(list, over.texts);
       // the three devices and the invite are the window's four additions: the first leaves it nine minutes on
       expect([refusal(budget), budget.headers.get("retry-after")]).toEqual(["429 entry_budget", String(9 * 60)]);
@@ -604,7 +676,7 @@ describe("the fake account service's list routes (Part D)", () => {
       expect((await w.place(list, over.texts)).status).toBe(200);
       // and the day's: five additions so far, the first ones ten minutes ago
       w.service.listLimits.additionsPerDay = 5;
-      const sixth = await chain(list, over.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600, true, 2, null)]], w.seconds());
+      const sixth = await chain(list, over.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600, true, 1, null)]], w.seconds());
       const daily = await w.place(list, sixth.texts);
       expect([refusal(daily), daily.headers.get("retry-after")]).toEqual(["429 entry_budget", String(24 * 3600 - 10 * 60)]);
     });
@@ -814,7 +886,7 @@ describe("the fake account service's list routes (Part D)", () => {
       expect((await open({ commitment: nonce(1), reveal: nonce(9) })).status).toBe(200);
       expect(refusal(await open({ commitment: nonce(1), reveal: nonce(8) }))).toBe("409 attempt_changed");
       expect((await w.call("GET", `/v2/lists/${list}/posts`, undefined, w.token)).body.posts?.[0]).toMatchObject({ attempt: { reveal: nonce(9) } });
-      // the same keys posted again keep the comparison; other keys are another card, and it goes
+      // the same keys posted again keep the comparison while the post stands; other keys are another card, and it goes
       expect((await post()).status).toBe(200);
       expect((await atPc()).body.attempt).toMatchObject({ reveal: nonce(9) });
       const other = await newKey();
@@ -831,13 +903,18 @@ describe("the fake account service's list routes (Part D)", () => {
       expect(refusal(await open({ commitment: nonce(3) }))).toBe("429 attempts_spent");
       expect(refusal(await w.call("POST", `/v2/lists/${list}/posts/${pc.endpoint}/attempt`, { key: key.key, adder, commitment: "short" }, w.token))).toBe("400 invalid_request");
       expect(refusal(await pcCall(w, machine(), "/v2/pc/list/attempt", { list }))).toBe("404 not_found");
+      // a post that ran out is over: posting the same keys again starts with no comparison
+      expect((await atPc()).body.attempt).not.toBeNull();
+      w.tick(LIST_CLAIM_MS + 1000);
+      expect((await post()).status).toBe(200);
+      expect((await atPc()).body.attempt).toBeNull();
     });
 
     test("a join is placed only through the PC route, by the PC whose relay key it names, after that PC redeemed that invite", async () => {
       const w = await world();
       const { list, head } = await w.start();
       const pool = await newKey();
-      const invited = await chain(list, head, [[w.owner, inviteOf(pool, w.seconds() + 3600, true, 3)]], w.seconds());
+      const invited = await chain(list, head, [[w.owner, inviteOf(pool, w.seconds() + 600)]], w.seconds());
       expect((await w.place(list, invited.texts)).status).toBe(200);
       const pc = machine();
       const key = await newKey();
@@ -867,11 +944,15 @@ describe("the fake account service's list routes (Part D)", () => {
       expect((await pcCall(w, pc, "/v2/pc/list/entries", { list, entries: joined.texts })).body).toMatchObject({ head: joined.head, placed: 1 });
       // now in the list, the PC places what it is given; a join naming another relay key is still not its to place
       const other = machine();
-      const second = await chain(list, joined.head, [[pool, await joinOf(await newKey(), list, other.endpoint, pool)]], w.seconds());
+      const spare = await newKey();
+      // (the used invite is out of the list, so names wait for the next epoch: these carry none)
+      const again = await chain(list, joined.head, [[w.owner, inviteOf(spare, w.seconds() + 600, true, 1, null)]], w.seconds());
+      expect((await w.place(list, again.texts)).status).toBe(200);
+      const second = await chain(list, again.head, [[spare, await joinOf(await newKey(), list, other.endpoint, spare, null)]], w.seconds());
       expect(refusal(await pcCall(w, pc, "/v2/pc/list/entries", { list, entries: second.texts }))).toBe("403 pc_proof_required");
       expect(refusal(await pcCall(w, pc, "/v2/pc/list/entries", { list, entries: ["x.y"] }))).toBe("400 entry_malformed");
       // an invite lets a PC in with nobody else awake: a PC's key alone places none
-      const invite = await chain(list, joined.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600)]], w.seconds());
+      const invite = await chain(list, again.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 600)]], w.seconds());
       expect(refusal(await pcCall(w, pc, "/v2/pc/list/entries", { list, entries: invite.texts }))).toBe("403 sign_in_required");
     });
   });
@@ -949,7 +1030,7 @@ describe("the fake account service's list routes (Part D)", () => {
       const w = await world();
       const { list, head } = await w.start();
       const pool = await newKey();
-      const invited = await chain(list, head, [[w.owner, inviteOf(pool, w.seconds() + 3600, true, 3)]], w.seconds());
+      const invited = await chain(list, head, [[w.owner, inviteOf(pool, w.seconds() + 600)]], w.seconds());
       expect((await w.place(list, invited.texts)).status).toBe(200);
       const q = machine();
       await listPc(w, q, w.service.issueToken(ACCOUNT, { device: true }));
@@ -1021,7 +1102,7 @@ describe("the fake account service's list routes (Part D)", () => {
       expect((await send((await chain(list, once.head, [[a.key, epochOf(1)]], w.seconds())).texts)).body.error?.reason).toBe("epoch_not_needed");
       // an invite left open past its hour makes names unsealable until it is put out: an epoch meanwhile changes nothing
       const pool = await newKey();
-      const invited = await chain(list, once.head, [[w.owner, inviteOf(pool, w.seconds() + 60, true, 2, sealed(1))]], w.seconds());
+      const invited = await chain(list, once.head, [[w.owner, inviteOf(pool, w.seconds() + 60, true, 1, sealed(1))]], w.seconds());
       expect((await w.place(list, invited.texts)).status).toBe(200);
       const other = await addDevice(w, list, invited.head, sealed(1));
       w.tick(2 * MINUTE);
@@ -1058,13 +1139,13 @@ describe("the fake account service's list routes (Part D)", () => {
       const far = w.seconds() + 10 * 365 * 86400;
       for (const one of [
         await chain(list, phone.head, [[w.owner, removeOf(phone.key)]], far),
-        await chain(list, phone.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 1200)]], w.seconds() + 11 * 60),
+        await chain(list, phone.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 900)]], w.seconds() + 11 * 60),
       ]) {
         const answer = await w.place(list, one.texts);
         expect([refusal(answer), answer.body.error?.index, answer.body.error?.outcome, answer.body.error?.reason]).toEqual(["400 entry_refused", 0, "service", "issued_at_ahead"]);
       }
       expect(w.service.accountList(ACCOUNT)?.head).toEqual(phone.head);
-      expect((await w.place(list, (await chain(list, phone.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 1200)]], w.seconds() + 9 * 60)).texts)).status).toBe(200);
+      expect((await w.place(list, (await chain(list, phone.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 900)]], w.seconds() + 9 * 60)).texts)).status).toBe(200);
       // a genesis from the future starts no list
       const other = w.service.issueToken("acct_2");
       const first = await newKey();
@@ -1102,7 +1183,7 @@ describe("the fake account service's list routes (Part D)", () => {
       const copied = staleSignIn(w, registered);
       w.tick(110 * MINUTE);
       const pool = await newKey();
-      const signed = await chain(list, a.head, [[a.key, inviteOf(pool, w.seconds() + 600, true, 5)]], w.seconds());
+      const signed = await chain(list, a.head, [[a.key, inviteOf(pool, w.seconds() + 600)]], w.seconds());
       expect(refusal(await w.place(list, signed.texts, undefined, copied))).toBe("403 session_not_fresh");
       expect(w.service.accountList(ACCOUNT)?.head).toEqual(a.head);
       // a key proof needs an invite to prove
@@ -1375,6 +1456,632 @@ describe("the fake account service's list routes (Part D)", () => {
       expect(refusal(await pcCall(w, added.pc, "/v2/pc/list", { account: ACCOUNT }))).toBe("503 list_stopped");
       w.service.untamperList(list);
       expect((await w.place(list, batch.texts)).status).toBe(200);
+    });
+  });
+
+  describe("S2: the link, the snapshot, one invite, wraps with no entry (D11)", () => {
+    test("D11.2's vector: a link's two halves are over the library's 357 bytes, each under its own key and no other", async () => {
+      const vector = {
+        account: "TEST-ONLY-account", list: "1e02680cc5e01ec2c5c7ebaf0a37a1007dd79352492b040879f664cfc142d54c",
+        key: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE5lhuexKpDRsxAK4WTOjTQTjBurzk0iGngvCpNGetUiwtppuB-SgVWvMwkHCQe6FNPoAzLJZntcFyjzv0sk82Bg",
+        device: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVMfhqT7llP9gRR8DB4RLbsL-kQmlkQnKxvJUV6DKvpBKDyennnEbD6f1HOM687iSzBnjcltJ9OLFSM_Tcbr2rw",
+      };
+      const member = canonicalBase64Url("kCfnXvVzpgmrcZ2AnxdsTl2XM_JV-2xWQwnmfQ1eUtA1VqiFxWFChAUe5Lu5FBdWFK_EpbV637LNW0pE77Grig")!;
+      const device = canonicalBase64Url("aqWL_uCE1CQy0sJiiBk_kzmmjM8Z-r6OY0uM9wxp5sGJ1we7IeDKSmjqkZm6_-iS-qhVAgbuFy4kdQhat4eCQg")!;
+      const bytes = linkBytes(vector);
+      expect([bytes.length, bytesToHex(bytes.slice(0, 16))]).toEqual([357, "6f7669732d6c6973742d6c696e6b2f31"]);
+      expect([await verifySignature(bytes, member, vector.key), await verifySignature(bytes, device, vector.device)]).toEqual([true, true]);
+      expect([await verifySignature(bytes, member, vector.device), await verifySignature(bytes, device, vector.key)]).toEqual([false, false]);
+      expect(await verifySignature(linkBytes({ ...vector, key: vector.device, device: vector.key }), member, vector.key)).toBe(false);
+    });
+
+    test("a link rides on the genesis, a claim or the links route, only with the registered key's own signature: a bare text is link_unsigned, any other half link_invalid", async () => {
+      const w = await world();
+      const ownerReg = await newKey();
+      const ownerTok = signedIn(w, ownerReg);
+      const first = await sign(w.owner, { seq: 0, list: "", prev: "" }, genesisOf(w.owner), w.seconds());
+      const list = first.head.hash;
+      const good = await linkOf(list, w.owner, ownerReg);
+      const make = (link: unknown, bearer = ownerTok) => w.call("POST", "/v2/lists", { entry: first.text, link }, bearer);
+      expect(refusal(await make(good.member))).toBe("400 link_unsigned");
+      expect(refusal(await make({ member: good.member }))).toBe("400 invalid_request");
+      expect(refusal(await make({ member: good.member, device: good.member }))).toBe("400 link_invalid");
+      // another sign-in's registered key, or a sign-in that registered none, is not what the link names
+      expect(refusal(await make(good, signedIn(w, await newKey())))).toBe("400 link_invalid");
+      expect(refusal(await make(good, w.token))).toBe("400 link_invalid");
+      expect(w.service.accountList(ACCOUNT)).toBeNull();
+      expect((await make(good)).status).toBe(201);
+      expect(w.service.accountList(ACCOUNT)?.links).toEqual([{ key: w.owner.key, device: ownerReg.key }]);
+      // a claim keeps its link, written with the member when its entry is placed
+      const phone = await newKey();
+      const phoneReg = await newKey();
+      const phoneTok = signedIn(w, phoneReg);
+      expect(refusal(await w.claim(list, phone, phoneTok, { link: (await linkOf(list, phone, phoneReg)).member }))).toBe("400 link_unsigned");
+      expect(refusal(await w.claim(list, phone, phoneTok, { link: await linkOf(list, phone, ownerReg) }))).toBe("400 link_invalid");
+      expect((await w.claim(list, phone, phoneTok, { link: await linkOf(list, phone, phoneReg) })).status).toBe(200);
+      expect(w.service.accountList(ACCOUNT)?.links).toHaveLength(1);
+      const added = await chain(list, w.service.accountList(ACCOUNT)!.head, [[w.owner, await deviceOf(phone, list)]], w.seconds());
+      expect((await w.place(list, added.texts)).status).toBe(200);
+      expect(w.service.accountList(ACCOUNT)?.links).toContainEqual({ key: phone.key, device: phoneReg.key });
+      // the links route: for a device that is in, the link of this very sign-in's key
+      const links = (key: string, link: unknown, bearer: string) => w.call("POST", `/v2/lists/${list}/links`, { key, link }, bearer);
+      const laterReg = await newKey();
+      const laterTok = signedIn(w, laterReg);
+      expect(refusal(await links(phone.key, (await linkOf(list, phone, laterReg)).member, laterTok))).toBe("400 link_unsigned");
+      expect(refusal(await links(phone.key, await linkOf(list, phone, phoneReg), laterTok))).toBe("400 link_invalid");
+      const stranger = await newKey();
+      expect(refusal(await links(stranger.key, await linkOf(list, stranger, laterReg), laterTok))).toBe("409 not_member");
+      expect(refusal(await links("no key", good, laterTok))).toBe("400 invalid_request");
+      expect(refusal(await links(phone.key, good, w.service.issueToken(ACCOUNT, { device: true })))).toBe("403 own_sign_in_required");
+      // the phone's holder signed in again: its new key takes the member key's link, the earlier one is replaced
+      expect((await links(phone.key, await linkOf(list, phone, laterReg), laterTok)).body).toMatchObject({ key: phone.key, linked: true });
+      expect(w.service.accountList(ACCOUNT)?.links).toEqual([{ key: w.owner.key, device: ownerReg.key }, { key: phone.key, device: laterReg.key }]);
+    });
+
+    test("a sign-in is one device: its key is linked to one member key that is in, a second link is link_taken, and a key that changed hands its link on", async () => {
+      const w = await world();
+      const { list, head } = await startLinked(w);
+      const phone = await addLinked(w, list, head);
+      const tablet = await addLinked(w, list, phone.head, { link: false });
+      const taken = await w.call("POST", `/v2/lists/${list}/links`, { key: tablet.key.key, link: await linkOf(list, tablet.key, phone.reg) }, phone.bearer);
+      expect(refusal(taken)).toBe("409 link_taken");
+      // a claim taken over by a sign-in that sends no link carries none
+      const next = await newKey();
+      expect((await w.claim(list, next, phone.bearer, { link: await linkOf(list, next, phone.reg) })).status).toBe(200);
+      const rotated = await chain(list, tablet.head, [[phone.key, await deviceOf(next, list, true)]], w.seconds());
+      expect((await w.place(list, rotated.texts)).status).toBe(200);
+      const links = w.service.accountList(ACCOUNT)!.links;
+      expect([links.some(({ key }) => key === phone.key.key), links.find(({ key }) => key === next.key)?.device]).toEqual([false, phone.reg.key]);
+      // the phone's old key is out, so a link that named it gives way to the tablet's
+      expect((await w.call("POST", `/v2/lists/${list}/links`, { key: tablet.key.key, link: await linkOf(list, tablet.key, tablet.reg) }, tablet.bearer)).status).toBe(200);
+    });
+
+    test("a claim's link is written only while the sign-in that claimed still holds the key it named; its device is let in all the same", async () => {
+      const w = await world();
+      const { list, head } = await startLinked(w);
+      const phone = await newKey();
+      const phoneReg = await newKey();
+      const phoneTok = signedIn(w, phoneReg);
+      expect((await w.claim(list, phone, phoneTok, { link: await linkOf(list, phone, phoneReg) })).status).toBe(200);
+      w.service.removeDevice(ACCOUNT, phoneReg.key);
+      const added = await chain(list, head, [[w.owner, await deviceOf(phone, list)]], w.seconds());
+      expect((await w.place(list, added.texts)).status).toBe(200);
+      expect(w.service.accountList(ACCOUNT)?.links.map(({ key }) => key)).toEqual([w.owner.key]);
+    });
+
+    test("the snapshot of a list account: Step 2's rules, plus at once a device another member allowed and linked while a member up the chain passes them, whatever the switch says", async () => {
+      const w = await world();
+      w.service.opensAll = true;
+      const { list, head, ownerReg } = await startLinked(w);
+      const pc = machine();
+      await listPc(w, pc);
+      const phone = await addLinked(w, list, head);
+      const bare = await addLinked(w, list, phone.head, { link: false });
+      const stranger = await newKey();
+      signedIn(w, stranger, false);
+      const read = await snapshotOf(w, pc);
+      expect([read.eligible[ownerReg.key], read.eligible[phone.reg.key], read.eligible[bare.reg.key], read.eligible[stranger.key]]).toEqual([true, true, false, false]);
+      // "has a list" is the list itself, whatever OVIS_LIST_ACCOUNTS says
+      w.service.listAccounts = "";
+      expect((await snapshotOf(w, pc)).eligible[phone.reg.key]).toBe(true);
+      w.service.listAccounts = "*";
+      // a stopped list adds nobody; one read again answers 503 and the PC keeps what it read
+      w.service.tamperList(list, { stopped: true });
+      expect((await snapshotOf(w, pc)).eligible[phone.reg.key]).toBe(false);
+      w.service.untamperList(list);
+      w.service.tamperList(list, { rebuilding: true });
+      const busy = await pcCall(w, pc, "/v1/pc/snapshot", { account: ACCOUNT });
+      expect([refusal(busy), busy.headers.get("retry-after")]).toEqual(["503 list_rebuilding", "1"]);
+      w.service.untamperList(list);
+      // the chain: once nobody up it passes Step 2, the phone waits on its own sign-in's rules
+      w.service.removeDevice(ACCOUNT, ownerReg.key);
+      expect((await snapshotOf(w, pc)).eligible[phone.reg.key]).toBe(false);
+    });
+
+    test("a device put out of the list is signed out and its registered key removed in the same write; one that only changed its key stays", async () => {
+      const w = await world();
+      w.service.opensAll = true;
+      const { list, head } = await startLinked(w);
+      const pc = machine();
+      await listPc(w, pc);
+      const phone = await addLinked(w, list, head);
+      const unlinked = await addLinked(w, list, phone.head, { link: false });
+      const next = await newKey();
+      expect((await w.claim(list, next, phone.bearer, { link: await linkOf(list, next, phone.reg) })).status).toBe(200);
+      const rotated = await chain(list, unlinked.head, [[phone.key, await deviceOf(next, list, true)]], w.seconds());
+      expect((await w.place(list, rotated.texts)).status).toBe(200);
+      expect((await w.call("GET", "/v2/lists/mine", undefined, phone.bearer)).status).toBe(200);
+      const out = await chain(list, rotated.head, [[w.owner, removeOf(next)], [w.owner, removeOf(unlinked.key)]], w.seconds());
+      expect((await w.place(list, out.texts)).status).toBe(200);
+      expect(refusal(await w.call("GET", "/v2/lists/mine", undefined, phone.bearer))).toBe("401 unauthorized");
+      // a device that never linked is not signed out: the service does not know its sign-in
+      expect((await w.call("GET", "/v2/lists/mine", undefined, unlinked.bearer)).status).toBe(200);
+      const read = await snapshotOf(w, pc);
+      expect([read.removed.includes(phone.reg.key), phone.reg.key in read.eligible, read.removed.includes(unlinked.reg.key)]).toEqual([true, false, false]);
+    });
+
+    test("placing a list's invite makes the service's invite of that key, to the entry's exp; a PC redeems one only while the list holds it open", async () => {
+      const w = await world();
+      const { list, head } = await w.start();
+      const pool = await newKey();
+      const pc = machine();
+      // an invite made by POST /v1/pc-invites alone redeems nothing for an account that has a list
+      expect((await w.call("POST", "/v1/pc-invites", { invite_key: pool.key, auto: true }, w.service.issueToken(ACCOUNT))).status).toBe(200);
+      expect(refusal(await redeemCall(w, pc, pool))).toBe("409 invite_not_in_list");
+      // the entry takes that invite as it is (same key, same auto, an exp within its end): no second one is made
+      const invited = await chain(list, head, [[w.owner, inviteOf(pool, w.seconds() + 600)]], w.seconds());
+      expect((await w.place(list, invited.texts)).status).toBe(200);
+      const shown = async () => (await w.call("GET", "/v1/pc-invites", undefined, w.token)).body as unknown as { invites: { auto: boolean; expires_at: string; yours: boolean; used_at: string | null }[] };
+      expect((await shown()).invites).toHaveLength(1);
+      w.service.tamperList(list, { rebuilding: true });
+      expect(refusal(await redeemCall(w, pc, pool))).toBe("503 list_rebuilding");
+      w.service.untamperList(list);
+      expect((await redeemCall(w, pc, pool)).status).toBe(200);
+      // an entry alone makes the service's invite, by the sign-in that placed it, ending at the entry's exp
+      const plain = await chain(list, invited.head, [[w.owner, inviteOf(await newKey(), w.seconds() + 300, false, 1, null)]], w.seconds());
+      expect((await w.place(list, plain.texts)).status).toBe(200);
+      expect((await shown()).invites.find((invite) => !invite.auto)).toMatchObject({ expires_at: new Date((w.seconds() + 300) * 1000).toISOString(), yours: true, used_at: null });
+    });
+
+    test("an invite entry whose service invite cannot be made is not placed: exp_too_late, uses_one, invite_key_used, invites_full, pc_add_cap", async () => {
+      const w = await world();
+      const { list, head } = await w.start();
+      const one = async (kind: ListKind) => w.place(list, (await chain(list, head, [[w.owner, kind]], w.seconds())).texts);
+      const reasonOf = (called: Called) => [refusal(called), called.body.error?.index, called.body.error?.reason];
+      expect(reasonOf(await one(inviteOf(await newKey(), w.seconds() + 901)))).toEqual(["400 entry_refused", 0, "exp_too_late"]);
+      expect(reasonOf(await one(inviteOf(await newKey(), w.seconds() + 600, true, 2)))).toEqual(["400 entry_refused", 0, "uses_one"]);
+      // a key an invite had (here of the other kind), or one a device registered, is never an invite's
+      const made = await newKey();
+      expect((await w.call("POST", "/v1/pc-invites", { invite_key: made.key, auto: false }, w.service.issueToken(ACCOUNT))).status).toBe(200);
+      expect(refusal(await one(inviteOf(made, w.seconds() + 600, true)))).toBe("409 invite_key_used");
+      const device = await newKey();
+      signedIn(w, device);
+      expect(refusal(await one(inviteOf(device, w.seconds() + 600)))).toBe("409 invite_key_used");
+      // the invite made first ends before this exp
+      w.tick(5 * MINUTE);
+      expect(reasonOf(await one(inviteOf(made, w.seconds() + 700, false)))).toEqual(["400 entry_refused", 0, "exp_too_late"]);
+      // an auto invite stops at the day's one-press adds; a plain one does not
+      (w.service as unknown as { admitTimes: Map<string, number[]> }).admitTimes.set(ACCOUNT, [T0, T0, T0]);
+      const capped = await one(inviteOf(await newKey(), w.seconds() + 600));
+      expect([refusal(capped), Number(capped.headers.get("retry-after")) > 0]).toEqual(["429 pc_add_cap", true]);
+      // five open invites, the list's among them
+      for (let made = 0; made < 4; made++) expect((await w.call("POST", "/v1/pc-invites", { invite_key: (await newKey()).key }, w.service.issueToken(ACCOUNT))).status).toBe(200);
+      expect(refusal(await one(inviteOf(await newKey(), w.seconds() + 600, false)))).toBe("409 invites_full");
+      expect(w.service.accountList(ACCOUNT)?.head).toEqual(head);
+    });
+
+    test("a counted remove of an invite's key revokes its service invite while nobody used it; one a PC used is left as it is", async () => {
+      const w = await world();
+      const { list, head } = await w.start();
+      const pool = await newKey();
+      const used = await newKey();
+      const first = await chain(list, head, [[w.owner, inviteOf(pool, w.seconds() + 600, true, 1, null)]], w.seconds());
+      expect((await w.place(list, first.texts)).status).toBe(200);
+      const second = await chain(list, first.head, [[w.owner, inviteOf(used, w.seconds() + 600, true, 1, null)]], w.seconds());
+      expect((await w.place(list, second.texts)).status).toBe(200);
+      await redeem(w, machine(), used);
+      const out = await chain(list, second.head, [[w.owner, removeOf(pool)], [w.owner, removeOf(used)]], w.seconds());
+      expect((await w.place(list, out.texts)).status).toBe(200);
+      const shown = (await w.call("GET", "/v1/pc-invites", undefined, w.token)).body as unknown as { invites: { used_at: string | null }[] };
+      expect(shown.invites.map((invite) => invite.used_at !== null)).toEqual([true]);
+      expect(refusal(await redeemCall(w, machine(), pool))).toBe("400 invite_invalid");
+      // an invite placed and put out in one batch leaves no open invite at the service
+      const brief = await newKey();
+      const both = await chain(list, out.head, [[w.owner, inviteOf(brief, w.seconds() + 600, true, 1, null)], [w.owner, removeOf(brief)]], w.seconds());
+      expect((await w.place(list, both.texts)).status).toBe(200);
+      expect(refusal(await redeemCall(w, machine(), brief))).toBe("400 invite_invalid");
+    });
+
+    test("an account that has a list hands out no one-press admission: the PC's take is refused, a retry of one taken before the list too", async () => {
+      const w = await world();
+      w.service.opensAll = true;
+      const pc = machine();
+      await listPc(w, pc, w.service.issueToken(ACCOUNT, { device: true }));
+      expect((await w.call("POST", `/v1/pcs/${pc.serverId}/admit`, {}, w.service.issueToken(ACCOUNT))).status).toBe(200);
+      const take = (who = pc) => pcCall(w, who, "/v1/pc/admission", { account: ACCOUNT });
+      expect((await take()).status).toBe(200);
+      await w.start();
+      expect(refusal(await take())).toBe("409 list_add");
+      // told only to a PC an admission waits for
+      const other = machine();
+      await listPc(w, other);
+      expect(refusal(await take(other))).toBe("404 no_admission");
+    });
+
+    test("wraps with no entry: for the current epoch and a key it is wrapped to, never over one that stands, from a sign-in linked to a device that is in, or a PC in the list", async () => {
+      const w = await world();
+      const { list, head } = await startLinked(w);
+      const phone = await addLinked(w, list, head);
+      const put = (wraps: unknown, bearer: string) => w.call("PUT", `/v2/lists/${list}/wraps`, { wraps }, bearer);
+      const mine = { epoch: 0, member: phone.key.enc, wrap: WRAP(7) };
+      expect(refusal(await put([mine], w.token))).toBe("403 not_linked");
+      expect(refusal(await put([], phone.bearer))).toBe("400 invalid_request");
+      const stale = await put([mine, { ...mine, epoch: 1 }], phone.bearer);
+      expect([refusal(stale), stale.body.error?.index]).toEqual(["400 wrap_invalid", 1]);
+      expect((await put([mine], phone.bearer)).body).toMatchObject({ list, stored: 1 });
+      expect((await put([{ ...mine, wrap: WRAP(8) }, { epoch: 0, member: w.owner.enc, wrap: WRAP(8) }], phone.bearer)).body).toMatchObject({ stored: 0 });
+      expect((await w.call("GET", `/v2/lists/${list}/wraps?member=${phone.key.enc}`, undefined, w.token)).body.wraps).toEqual([{ epoch: 0, wrap: WRAP(7) }]);
+      // a PC in the list stores them as a device does; a PC the account lists that is not in it has no such route
+      const a = await addPc(w, list, phone.head);
+      const tablet = await addLinked(w, list, a.head);
+      const theirs = [{ epoch: 0, member: tablet.key.enc, wrap: WRAP(9) }];
+      expect((await pcCall(w, a.pc, "/v2/pc/list/wraps/put", { list, wraps: theirs })).body).toMatchObject({ list, stored: 1 });
+      const outsider = machine();
+      await listPc(w, outsider);
+      expect(refusal(await pcCall(w, outsider, "/v2/pc/list/wraps/put", { list, wraps: theirs }))).toBe("404 not_found");
+    });
+  });
+
+  describe("the one-request birth and the later hand-over (Part F, F10b)", () => {
+    test("a birth places entry 0, its carried keys and PCs, the hand-over and its epoch in one request, with the hand-over's link", async () => {
+      const w = await world();
+      const first = await newKey();
+      const firstTok = signedIn(w, first);
+      expect((await w.call("GET", "/v2/lists/mine", undefined, firstTok)).body).not.toHaveProperty("migrate");
+      w.service.listMigrateAccounts = ACCOUNT;
+      expect((await w.call("GET", "/v2/lists/mine", undefined, firstTok)).body).toMatchObject({ list: null, migrate: true });
+      const phone = await newKey();
+      signedIn(w, phone);
+      const pc = machine();
+      await listPc(w, pc);
+      const next = await newKey();
+      const born = await birthOf(w, first, next, [carriedKey(phone), carriedPc(pc)]);
+      const made = await w.call("POST", "/v2/lists", { entry: born.entry, entries: born.entries, wraps: [{ epoch: 1, member: next.enc, wrap: WRAP(1) }], link: await linkOf(born.list, next, first) }, firstTok);
+      expect([made.status, made.body.list, made.body.head]).toEqual([201, born.list, born.head]);
+      const held = w.service.accountList(ACCOUNT)!;
+      expect([held.head.seq, held.state.epoch, held.state.carrying, held.links, held.wraps]).toEqual([4, 1, false, [{ key: next.key, device: first.key }], [{ epoch: 1, member: next.enc, wrap: WRAP(1) }]]);
+      expect([rowOf(held.state.devices, phone.key)?.carried, rowOf(held.state.pcs, pc.endpoint)?.how]).toEqual([true, "carried"]);
+      // sent again, its answer lost: list_exists with its own id, which the device takes as placed, before its run is read
+      const again = await w.call("POST", "/v2/lists", { entry: born.entry, entries: born.entries.slice(0, 2) }, firstTok);
+      expect([refusal(again), again.body.error?.list]).toEqual(["409 list_exists", born.list]);
+      expect((await w.call("GET", "/v2/lists/mine", undefined, firstTok)).body).not.toHaveProperty("migrate");
+    });
+
+    test("off the migrate switch a birth carries nobody in (carried_not_open); with a key proof, or fewer than 2 or more than 66 texts, it is out of form", async () => {
+      const w = await world();
+      const first = await newKey();
+      const firstTok = signedIn(w, first);
+      const born = await birthOf(w, first, await newKey(), []);
+      const send = (body: Record<string, unknown>) => w.call("POST", "/v2/lists", { entry: born.entry, ...body }, firstTok);
+      const off = await send({ entries: born.entries });
+      expect([refusal(off), off.body.error?.index, off.body.error?.reason]).toEqual(["400 entry_refused", 1, "carried_not_open"]);
+      w.service.listMigrateAccounts = "*";
+      expect(refusal(await send({ entries: born.entries.slice(0, 1) }))).toBe("400 invalid_request");
+      expect(refusal(await send({ entries: Array<string>(67).fill(born.entries[0]!) }))).toBe("400 invalid_request");
+      expect(refusal(await send({ entries: born.entries, key_proof: { challenge_id: "0".repeat(32), signature: "A".repeat(86) } }))).toBe("400 invalid_request");
+      expect(w.service.accountList(ACCOUNT)).toBeNull();
+    });
+
+    test("a birth holds whole or not at all: first_signer, birth_shape and not_carried name their index, a wrap for epoch 0 is wrap_invalid, a link for another key link_invalid", async () => {
+      const w = await world();
+      w.service.listMigrateAccounts = ACCOUNT;
+      const first = await newKey();
+      const firstTok = signedIn(w, first);
+      const next = await newKey();
+      const send = (born: { entry: string; entries: readonly string[] }, more: Record<string, unknown> = {}) => w.call("POST", "/v2/lists", { entry: born.entry, entries: born.entries, ...more }, firstTok);
+      const at = (called: Called) => [refusal(called), called.body.error?.index, called.body.error?.reason ?? null];
+      expect(at(await send(await birthOf(w, await newKey(), next, [])))).toEqual(["400 entry_refused", 0, "first_signer"]);
+      // entry 0's signer is held to what a carried key is: a sign-in Step 2 keeps waiting starts no birth
+      const waiting = await newKey();
+      const waitingTok = signedIn(w, waiting, false);
+      const byWaiting = await birthOf(w, waiting, next, []);
+      expect(at(await w.call("POST", "/v2/lists", { entry: byWaiting.entry, entries: byWaiting.entries }, waitingTok))).toEqual(["403 not_carried", 0, null]);
+      // read in order: anything after the epoch, an epoch with no hand-over before it, a run that stops before its hand-over
+      const zero = await sign(first, { seq: 0, list: "", prev: "" }, genesisOf(first), w.seconds());
+      const list = zero.head.hash;
+      const after = await chain(list, zero.head, [[first, await deviceOf(next, list, true)], [next, epochOf(0)], [next, removeOf(first)]], w.seconds());
+      expect(at(await send({ entry: zero.text, entries: after.texts }))).toEqual(["400 entry_refused", 3, "birth_shape"]);
+      const phone = await newKey();
+      signedIn(w, phone);
+      const early = await chain(list, zero.head, [[first, carriedKey(phone)], [first, epochOf(0)]], w.seconds());
+      expect(at(await send({ entry: zero.text, entries: early.texts }))).toEqual(["400 entry_refused", 2, "birth_shape"]);
+      const tablet = await newKey();
+      signedIn(w, tablet);
+      const short = await chain(list, zero.head, [[first, carriedKey(phone)], [first, carriedKey(tablet)]], w.seconds());
+      expect(at(await send({ entry: zero.text, entries: short.texts }))).toEqual(["400 entry_refused", 3, "birth_shape"]);
+      // a key Step 2 does not let in today, a device code's sign-in's key, a PC the account does not list
+      const late = await newKey();
+      signedIn(w, late, false);
+      const typed = await newKey();
+      w.service.registerSessionKey(w.service.issueToken(ACCOUNT, { device: true }), typed.key, "typed");
+      expect(at(await send(await birthOf(w, first, next, [carriedKey(phone), carriedKey(late)])))).toEqual(["403 not_carried", 2, null]);
+      // the service's word on the carried keys comes after the whole run is judged: a run cut short is birth_shape first
+      const cut = await chain(list, zero.head, [[first, carriedKey(late)], [first, carriedKey(phone)]], w.seconds());
+      expect(at(await send({ entry: zero.text, entries: cut.texts }))).toEqual(["400 entry_refused", 3, "birth_shape"]);
+      expect(at(await send(await birthOf(w, first, next, [carriedKey(typed)])))).toEqual(["403 not_carried", 1, null]);
+      expect(at(await send(await birthOf(w, first, next, [carriedPc(machine())])))).toEqual(["403 not_carried", 1, null]);
+      const typedPc = machine();
+      await listPc(w, typedPc, w.service.issueToken(ACCOUNT, { device: true }));
+      expect(at(await send(await birthOf(w, first, next, [carriedPc(typedPc)])))).toEqual(["403 not_carried", 1, null]);
+      const born = await birthOf(w, first, next, [carriedKey(phone)]);
+      expect(at(await send(born, { wraps: [{ epoch: 0, member: next.enc, wrap: WRAP(1) }] }))).toEqual(["400 wrap_invalid", 0, null]);
+      expect(at(await send(born, { link: await linkOf(born.list, next, phone) }))).toEqual(["400 link_invalid", undefined, null]);
+      expect(w.service.accountList(ACCOUNT)).toBeNull();
+    });
+
+    test("a later hand-over: one device entry ending the key its sign-in registered needs no claim, is outside the budget and takes its link; a carried key's removal signs its sign-in out", async () => {
+      const w = await world();
+      w.service.listMigrateAccounts = ACCOUNT;
+      const first = await newKey();
+      const firstTok = signedIn(w, first);
+      const phone = await newKey();
+      const phoneTok = signedIn(w, phone);
+      const tablet = await newKey();
+      const tabletTok = signedIn(w, tablet);
+      const next = await newKey();
+      const born = await birthOf(w, first, next, [carriedKey(phone), carriedKey(tablet)]);
+      expect((await w.call("POST", "/v2/lists", { entry: born.entry, entries: born.entries }, firstTok)).status).toBe(201);
+      const list = born.list;
+      // a carried sign-in is in the list by its own key: it stores wraps without a link
+      expect((await w.call("PUT", `/v2/lists/${list}/wraps`, { wraps: [{ epoch: 1, member: next.enc, wrap: WRAP(3) }] }, phoneTok)).body).toMatchObject({ stored: 1 });
+      w.service.listLimits.additionsPerWindow = 0;
+      const phone2 = await newKey();
+      // names under epoch 1, the one the birth opened
+      const handOver = await chain(list, born.head, [[phone, { ...await deviceOf(phone2, list, true), sealed: sealed(1) } as ListKind]], w.seconds());
+      const link = await linkOf(list, phone2, phone);
+      // a link goes with a hand-over alone, refused after the second lock; the same entry sent by another sign-in is a device
+      // entry that asks a claim
+      const other = await newKey();
+      const plain = await chain(list, born.head, [[next, { ...await deviceOf(other, list), sealed: sealed(1) } as ListKind]], w.seconds());
+      expect(refusal(await w.call("POST", `/v2/lists/${list}/entries`, { entries: plain.texts, link }, firstTok))).toBe("403 not_claimed");
+      expect((await w.claim(list, other, firstTok)).status).toBe(200);
+      expect(refusal(await w.call("POST", `/v2/lists/${list}/entries`, { entries: plain.texts, link }, firstTok))).toBe("400 invalid_request");
+      expect(refusal(await w.place(list, handOver.texts, undefined, firstTok))).toBe("403 not_claimed");
+      expect((await w.call("POST", `/v2/lists/${list}/entries`, { entries: handOver.texts, link }, phoneTok)).body).toMatchObject({ head: handOver.head, placed: 1 });
+      expect(w.service.accountList(ACCOUNT)?.links).toContainEqual({ key: phone2.key, device: phone.key });
+      // the tablet never handed over: its registered key is its member key, and its removal ends that sign-in
+      const out = await chain(list, handOver.head, [[next, removeOf(tablet)]], w.seconds());
+      expect((await w.place(list, out.texts, undefined, firstTok)).status).toBe(200);
+      expect(refusal(await w.call("GET", "/v2/lists/mine", undefined, tabletTok))).toBe("401 unauthorized");
+      expect((await w.call("GET", "/v2/lists/mine", undefined, phoneTok)).status).toBe(200);
+    });
+  });
+
+  describe("a registered key that is its own link", () => {
+    test("a lone rotating device takes no claim only for a key carried in: on any other list it needs its claim", async () => {
+      const w = await world();
+      const { list, head } = await w.start();
+      const phone = await newKey();
+      const phoneTok = signedIn(w, phone);
+      expect((await w.claim(list, phone, phoneTok)).status).toBe(200);
+      const added = await chain(list, head, [[w.owner, await deviceOf(phone, list)]], w.seconds());
+      expect((await w.place(list, added.texts)).status).toBe(200);
+      const next = await newKey();
+      const rotated = await chain(list, added.head, [[phone, { ...await deviceOf(next, list, true), sealed: null } as ListKind]], w.seconds());
+      expect(refusal(await w.place(list, rotated.texts, undefined, phoneTok))).toBe("403 not_claimed");
+      expect((await w.claim(list, next, phoneTok)).status).toBe(200);
+      expect((await w.place(list, rotated.texts, undefined, phoneTok)).status).toBe(200);
+    });
+
+    test("a carried key in the list is its sign-in's link: another link of that key is link_taken, a claim's is not written, and its removal signs it out", async () => {
+      const w = await world();
+      w.service.listMigrateAccounts = ACCOUNT;
+      const first = await newKey();
+      const firstTok = signedIn(w, first);
+      const phone = await newKey();
+      const phoneTok = signedIn(w, phone);
+      const next = await newKey();
+      const born = await birthOf(w, first, next, [carriedKey(phone)]);
+      expect((await w.call("POST", "/v2/lists", { entry: born.entry, entries: born.entries }, firstTok)).status).toBe(201);
+      const list = born.list;
+      const second = await newKey();
+      expect((await w.claim(list, second, phoneTok, { link: await linkOf(list, second, phone) })).status).toBe(200);
+      const added = await chain(list, born.head, [[phone, { ...await deviceOf(second, list), sealed: null } as ListKind]], w.seconds());
+      expect((await w.place(list, added.texts, undefined, phoneTok)).status).toBe(200);
+      expect(w.service.accountList(ACCOUNT)?.links.map(({ key }) => key)).not.toContain(second.key);
+      expect(refusal(await w.call("POST", `/v2/lists/${list}/links`, { key: second.key, link: await linkOf(list, second, phone) }, phoneTok))).toBe("409 link_taken");
+      const out = await chain(list, added.head, [[next, removeOf(phone)]], w.seconds());
+      expect((await w.place(list, out.texts, undefined, firstTok)).status).toBe(200);
+      expect(refusal(await w.call("GET", "/v2/lists/mine", undefined, phoneTok))).toBe("401 unauthorized");
+    });
+
+    test("a carried key that the table links to another sign-in's key stands for that one, not for its own; its removal signs both out", async () => {
+      const w = await world();
+      w.service.listMigrateAccounts = ACCOUNT;
+      const first = await newKey();
+      const firstTok = signedIn(w, first);
+      const phone = await newKey();
+      const phoneTok = signedIn(w, phone);
+      const next = await newKey();
+      const born = await birthOf(w, first, next, [carriedKey(phone)]);
+      expect((await w.call("POST", "/v2/lists", { entry: born.entry, entries: born.entries }, firstTok)).status).toBe(201);
+      // the phone's holder signs in again elsewhere and links the carried key to that sign-in's key
+      const elsewhere = await newKey();
+      const elsewhereTok = signedIn(w, elsewhere);
+      expect((await w.call("POST", `/v2/lists/${born.list}/links`, { key: phone.key, link: await linkOf(born.list, phone, elsewhere) }, elsewhereTok)).status).toBe(200);
+      // the phone's own sign-in stores no wraps for it now; the key's removal retires the linked sign-in, and the registered
+      // key that is the key itself, as the service does
+      expect(refusal(await w.call("PUT", `/v2/lists/${born.list}/wraps`, { wraps: [{ epoch: 1, member: next.enc, wrap: WRAP(3) }] }, phoneTok))).toBe("403 not_linked");
+      const out = await chain(born.list, born.head, [[next, removeOf(phone)]], w.seconds());
+      expect((await w.place(born.list, out.texts, undefined, firstTok)).status).toBe(200);
+      expect([refusal(await w.call("GET", "/v2/lists/mine", undefined, elsewhereTok)), refusal(await w.call("GET", "/v2/lists/mine", undefined, phoneTok))]).toEqual(["401 unauthorized", "401 unauthorized"]);
+    });
+
+    test("a carried key stands up the snapshot's chain for a device it let in, as a link would", async () => {
+      const w = await world();
+      w.service.opensAll = true;
+      w.service.listMigrateAccounts = ACCOUNT;
+      const pc = machine();
+      await listPc(w, pc);
+      const first = await newKey();
+      const firstTok = signedIn(w, first);
+      const phone = await newKey();
+      signedIn(w, phone);
+      const next = await newKey();
+      const born = await birthOf(w, first, next, [carriedKey(phone)]);
+      expect((await w.call("POST", "/v2/lists", { entry: born.entry, entries: born.entries }, firstTok)).status).toBe(201);
+      // the carried phone lets a new device in; that device's sign-in passes no Step 2 rule of its own
+      const tablet = await newKey();
+      const tabletReg = await newKey();
+      const tabletTok = signedIn(w, tabletReg, false);
+      expect((await w.claim(born.list, tablet, tabletTok, { link: await linkOf(born.list, tablet, tabletReg) })).status).toBe(200);
+      const added = await chain(born.list, born.head, [[phone, { ...await deviceOf(tablet, born.list), sealed: sealed(1) } as ListKind]], w.seconds());
+      expect((await w.place(born.list, added.texts)).status).toBe(200);
+      expect((await snapshotOf(w, pc)).eligible[tabletReg.key]).toBe(true);
+      // once the phone's own sign-in no longer passes Step 2, nobody up the chain does
+      w.service.removeDevice(ACCOUNT, phone.key);
+      expect((await snapshotOf(w, pc)).eligible[tabletReg.key]).toBe(false);
+    });
+  });
+
+  describe("a list account's PC completes its listing", () => {
+    test("on its own mailbox pull, as the service accepts any confirmed listing a PC pulled since: a list hands out no admission to take", async () => {
+      const w = await world();
+      w.service.opensAll = true;
+      await w.start();
+      const complete = async (pc: Machine, listing: string) => {
+        const scope = { account: ACCOUNT, listing_id: listing };
+        const challenge = await (await w.service.fetch(new Request(`${BASE}/v1/pc/challenge`, { method: "POST", body: JSON.stringify({ server_id: pc.serverId, public_key: pc.endpoint, completion: scope }) }))).json() as { challenge_id: string; frame: string };
+        const answer = answerServerChallenge(challenge.frame, pc.keys.secretKey, { server_id: pc.serverId, role: "account", connection_id: `pc-complete/1:${ACCOUNT}:${listing}:${challenge.challenge_id}` });
+        return await w.call("POST", "/v1/pc/complete", { server_id: pc.serverId, ...scope, challenge_id: challenge.challenge_id, proof: answer });
+      };
+      const pullListing = async (pc: Machine) => (await (await w.service.fetch(new Request(`${BASE}/v1/pc/mailbox`, { method: "POST",
+        body: JSON.stringify({ ...(await proof(w, pc)), ack: null, account: ACCOUNT, with_listing_id: true }) }))).json() as { listing_id: string | null }).listing_id;
+      const listingOf = (pc: Machine) => w.service.pcs(ACCOUNT).find((row) => row.server_id === pc.serverId)!.listing_id!;
+      const pc = machine();
+      await listPc(w, pc);
+      // before its first pull, with no admission to take, nothing is the listing's evidence
+      expect(refusal(await complete(pc, listingOf(pc)))).toBe("409 listing_changed");
+      expect(refusal(await pcCall(w, pc, "/v1/pc/admission", { account: ACCOUNT }))).toBe("404 no_admission");
+      expect(await pullListing(pc)).toBe(listingOf(pc));
+      expect((await complete(pc, listingOf(pc))).status).toBe(200);
+      // a listing a device code made that nobody confirmed completes on no pull
+      const typed = machine();
+      await listPc(w, typed, w.service.issueToken(ACCOUNT, { device: true }));
+      expect(await pullListing(typed)).toBeNull();
+      expect(refusal(await complete(typed, listingOf(typed)))).toBe("409 listing_changed");
+    });
+  });
+
+  describe("the plain invite's line proof on a PC's post", () => {
+    /** A list that holds a plain invite of `line`, and a PC the account lists, with the keys it posts. */
+    async function withPlainInvite() {
+      const w = await world();
+      const { list, head } = await w.start();
+      const line = await newKey();
+      const invited = await chain(list, head, [[w.owner, inviteOf(line, w.seconds() + 600, false, 1, null)]], w.seconds());
+      expect((await w.place(list, invited.texts)).status).toBe(200);
+      const pc = machine();
+      await listPc(w, pc);
+      const key = await newKey();
+      const post = async (more: Record<string, unknown> = {}) => pcCall(w, pc, "/v2/pc/list/keys", { list, key: key.key, enc: key.enc, card: await cardOf(key, list, pc.endpoint), ...more });
+      const posts = async () => ((await w.call("GET", `/v2/lists/${list}/posts`, undefined, w.token)).body.posts ?? []) as unknown as Record<string, unknown>[];
+      return { w, list, head: invited.head, line, pc, key, post, posts };
+    }
+
+    test("a PC posts its keys with the plain invite's key and the line's proof: carried on the post and shown to the account's devices; a post without them clears them", async () => {
+      const { list, line, pc, key, post, posts } = await withPlainInvite();
+      const proof = await lineProof(list, pc, key, line);
+      const posted = await post({ invite: line.key, invite_proof: proof });
+      expect([posted.status, posted.body.key]).toEqual([200, key.key]);
+      expect(await posts()).toEqual([expect.objectContaining({ endpoint: pc.endpoint, key: key.key, invite: line.key, invite_proof: proof })]);
+      expect((await post()).status).toBe(200);
+      const plain = await posts();
+      expect([plain.length, Object.hasOwn(plain[0] ?? {}, "invite"), Object.hasOwn(plain[0] ?? {}, "invite_proof")]).toEqual([1, false, false]);
+    });
+
+    test("the invite and its proof go together, in their forms; an invite the list does not hold open is invite_not_in_list; a proof not the line's is invite_proof_invalid; nothing is posted", async () => {
+      const { w, list, head, line, pc, key, post, posts } = await withPlainInvite();
+      const proof = await lineProof(list, pc, key, line);
+      for (const over of [{ invite: line.key }, { invite_proof: proof }, { invite: "not a key", invite_proof: proof }, { invite: line.key, invite_proof: 7 }]) {
+        expect([Object.keys(over), refusal(await post(over))]).toEqual([Object.keys(over), "400 invalid_request"]);
+      }
+      const stranger = await newKey();
+      expect(refusal(await post({ invite: stranger.key, invite_proof: await lineProof(list, pc, key, stranger) }))).toBe("409 invite_not_in_list");
+      const other = await newKey();
+      const proofs = {
+        "another key's": await lineProof(list, pc, key, other),
+        "another PC's": await lineProof(list, machine(), key, line),
+        "another account's": await lineProof(list, pc, key, line, "acct_2"),
+        "another card's": await lineProof(list, pc, other, line),
+        // a lying service hands the line the challenge of a card of its own as a redeem challenge: that signature is no proof
+        "a redeem signature over another card's line challenge": await redeemOverLineChallenge(list, pc, other, line),
+        "a redeem signature over this card's line challenge": await redeemOverLineChallenge(list, pc, key, line),
+        "86 characters of junk": "A".repeat(86),
+      };
+      for (const [why, bad] of Object.entries(proofs)) expect([why, refusal(await post({ invite: line.key, invite_proof: bad }))]).toEqual([why, "400 invite_proof_invalid"]);
+      expect(await posts()).toEqual([]);
+      // the invite put out of the list by a member
+      const out = await chain(list, head, [[w.owner, removeOf(line)]], w.seconds());
+      expect((await w.place(list, out.texts)).status).toBe(200);
+      expect(refusal(await post({ invite: line.key, invite_proof: proof }))).toBe("409 invite_not_in_list");
+      expect(await posts()).toEqual([]);
+    });
+  });
+
+  describe("tamper mode: the migration's lies", () => {
+    test("forgeBirth: the service answers a birth of its own, by a key of its own carrying the account's registered keys, as the account's list", async () => {
+      const w = await world();
+      const phone = await newKey();
+      signedIn(w, phone);
+      const pc = machine();
+      await listPc(w, pc);
+      const forged = await w.service.forgeBirth(ACCOUNT, { endpoints: [pc.endpoint] });
+      expect((await w.call("GET", "/v2/lists/mine", undefined, w.token)).body.list).toBe(forged);
+      const served = await w.log(forged);
+      const replayed = await replayList(served.body.entries!, 1, { saved: null });
+      const state = replayed.member!.state;
+      expect([replayed.stopped, state.epoch, state.carrying, rowOf(state.devices, phone.key)?.carried, rowOf(state.pcs, pc.endpoint)?.how]).toEqual([null, 1, false, true, "carried"]);
+      const signer = readBody(entryFromText(served.body.entries![0]!).body).signer;
+      expect([signer === phone.key, signer === w.owner.key]).toEqual([false, false]);
+    });
+
+    test("a part of a birth: withholdAfter serves entry 0 and the carried entries, or everything but the epoch", async () => {
+      const w = await world();
+      w.service.listMigrateAccounts = ACCOUNT;
+      const first = await newKey();
+      const firstTok = signedIn(w, first);
+      const phone = await newKey();
+      signedIn(w, phone);
+      const born = await birthOf(w, first, await newKey(), [carriedKey(phone)]);
+      expect((await w.call("POST", "/v2/lists", { entry: born.entry, entries: born.entries }, firstTok)).status).toBe(201);
+      for (const [after, epoch] of [[1, 0], [2, 0]] as const) {
+        w.service.untamperList(born.list);
+        w.service.tamperList(born.list, { withholdAfter: after });
+        const served = await w.log(born.list);
+        const replayed = await replayList(served.body.entries!, 1, { saved: null });
+        expect([served.body.entries!.length, served.body.head?.seq, replayed.member?.state.epoch]).toEqual([after + 1, after, epoch]);
+      }
+    });
+
+    test("withholdAnswer: a genesis, a birth and a placement are stored and their answers never come; sent again they answer list_exists or placed 0", async () => {
+      const w = await world();
+      const { list, head } = await w.start();
+      w.service.tamperAccount(ACCOUNT, { withholdAnswer: true });
+      const phone = await newKey();
+      expect((await w.claim(list, phone)).status).toBe(200);
+      const added = await chain(list, head, [[w.owner, await deviceOf(phone, list)]], w.seconds());
+      await expect(w.place(list, added.texts)).rejects.toThrow("withheld");
+      expect(w.service.accountList(ACCOUNT)?.head).toEqual(added.head);
+      // a genesis, and a birth, of another account told the same lie
+      w.service.listMigrateAccounts = "*";
+      const other = await newKey();
+      const otherTok = w.service.issueToken("acct_2");
+      w.service.registerSessionKey(otherTok, other.key, "first");
+      w.service.tamperAccount("acct_2", { withholdAnswer: true });
+      const born = await birthOf(w, other, await newKey(), [], "acct_2");
+      await expect(w.call("POST", "/v2/lists", { entry: born.entry, entries: born.entries }, otherTok)).rejects.toThrow("withheld");
+      expect(w.service.accountList("acct_2")?.head).toEqual(born.head);
+      w.service.untamperAccount(ACCOUNT);
+      w.service.untamperAccount("acct_2");
+      expect((await w.place(list, added.texts)).body.placed).toBe(0);
+      expect(refusal(await w.call("POST", "/v2/lists", { entry: born.entry, entries: born.entries }, otherTok))).toBe("409 list_exists");
+    });
+
+    test("eligibleAgain: a removed key is listed eligible in the snapshot again, until the lie ends", async () => {
+      const w = await world();
+      w.service.opensAll = true;
+      const pc = machine();
+      await listPc(w, pc);
+      const phone = await newKey();
+      signedIn(w, phone);
+      w.service.removeDevice(ACCOUNT, phone.key);
+      expect((await snapshotOf(w, pc)).removed).toEqual([phone.key]);
+      w.service.tamperAccount(ACCOUNT, { eligibleAgain: [phone.key] });
+      const lied = await snapshotOf(w, pc);
+      expect([lied.eligible[phone.key], lied.removed]).toEqual([true, []]);
+      w.service.untamperAccount(ACCOUNT);
+      expect((await snapshotOf(w, pc)).removed).toEqual([phone.key]);
     });
   });
 });

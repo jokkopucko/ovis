@@ -18,7 +18,7 @@ export const expect = async ({ page, width, scheme, box, menu, scenario, clear, 
     await clear();
     await box.fill("/");
     await menu.locator(".menu-item").filter({ hasText: "/probe-skill" }).waitFor();
-    const listed = commands.filter(({ visibility }) => visibility !== "agent-hidden").map(({ name }) => name).sort();
+    const listed = commands.filter((row) => row.visibility !== "agent-hidden" && !row.chatPaletteHidden).map(({ name }) => name).sort();
     assert.deepEqual((await rowNames()).sort(), listed);
     assert.ok(!listed.includes("rewind"));
     assert.deepEqual(await menu.locator(".menu-heading").allTextContents(), ["Built in", "Your skills", "Project skills", "Terminal commands"]);

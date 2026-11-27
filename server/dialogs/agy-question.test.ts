@@ -30,6 +30,14 @@ test("takes the write-in field for open only while it ends the screen", () => {
   expect(agyWriteInWaits(`${editor}user@host:~$ echo pending\n`)).toBe(false);
 });
 
+test("accepts an aligned Antigravity model footer, not indented output", () => {
+  const question = screen.trimEnd().split("\n").slice(0, -1).join("\n");
+  expect(parseInteractivePrompt("agy", `${question}\n                    Gemini 3.8 Flash · high\n`)).not.toBeNull();
+  expect(parseInteractivePrompt("agy", `${question}\n                    auto · Gemini 4 Hydrogen · medium\n`)).not.toBeNull();
+  expect(parseInteractivePrompt("agy", `${question}\n                    $ echo unexpected\n`)).toBeNull();
+  expect(parseInteractivePrompt("agy", `${question}\n                    $ echo unexpected · high\n`)).toBeNull();
+});
+
 test("does not read the folder-trust picker as a question", () => {
   expect(parseInteractivePrompt("agy", readFileSync(new URL("../fixtures/agy-1.5.6-trust.txt", import.meta.url), "utf8"))).toBeNull();
 });

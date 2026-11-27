@@ -13,6 +13,12 @@ export const OUTPUT_JOIN_MAX_MS = 15_000;
  * Draining 192 KiB from the high to the low watermark takes 6 s at the join rate above.
  */
 export const OUTPUT_PAUSE_MAX_MS = 10_000;
+/**
+ * The same bound for a client that is the pane's only viewer: holding the pty paused then slows
+ * no one but itself, and a slow phone parsing a burst of wide text (Korean, emoji) still ACKs
+ * well past 10 s. It stays a fixed bound, so a client acknowledging a byte at a time still ends.
+ */
+export const OUTPUT_PAUSE_ALONE_MAX_MS = 60_000;
 
 /**
  * What a frame carrying `text` costs on the wire: JSON escapes every control byte, so an ESC
@@ -82,9 +88,10 @@ export class OutputWindow {
    * nothing to acknowledge can make no ACK progress, so another pane's backlog must not pause
    * or stop it (that pane's own window answers for it). The deadline is OUTPUT_STALL_MS plus
    * the time the oldest unacknowledged frame needs to cross a slow link: its ACK cannot come
-   * before then.
+   * before then. `alone`: no other client shares the pty, so a pause holds back no peer.
    */
-  check(buffered: number, now = Date.now(), large = 0): OutputVerdict {
+  check(buffered: number, now = Date.now(), large = 0, alone = false): OutputVerdict {
+    const pauseMax = alone ? OUTPUT_PAUSE_ALONE_MAX_MS : OUTPUT_PAUSE_MAX_MS;
     if (buffered >= OUTPUT_HARD_BYTES) return "stop";
     if (!this.blocked && (buffered < OUTPUT_HIGH_BYTES || this.pending <= OUTPUT_LOW_BYTES)) {
       this.stalledSince = undefined;
@@ -99,11 +106,11 @@ export class OutputWindow {
     this.pausingSince ??= now;
     if (large > 0) {
       this.stalledSince = undefined;
-      return now - this.pausingSince >= OUTPUT_PAUSE_MAX_MS ? "stop" : "pause";
+      return now - this.pausingSince >= pauseMax ? "stop" : "pause";
     }
     const oldest = this.inFlight[this.head];
     const deadline = OUTPUT_STALL_MS + (oldest ? Math.min(OUTPUT_JOIN_MAX_MS - OUTPUT_STALL_MS, crossingMs(oldest.wire)) : 0);
-    return now - this.stalledSince >= deadline || now - this.pausingSince >= OUTPUT_PAUSE_MAX_MS ? "stop" : "pause";
+    return now - this.stalledSince >= deadline || now - this.pausingSince >= pauseMax ? "stop" : "pause";
   }
 }
 
@@ -164,6 +171,15 @@ export class ReplayBuffer {
     const cut = bytes.toString("utf8", this.start, start);
     for (const [, params, state] of cut.matchAll(PRIVATE_MODES)) {
       for (const mode of params!.split(";").filter(Boolean)) {
+        // Never restore ?2026h across a cut (it would pair with a retained ?2026l to settle a partial screen),
+        // and never record an unmatched ?2026l (herdr-core's attach reset) on a stream that never used ?2026h.
+        if (mode === "2026") {
+          if (state === "h") {
+            this.modes.delete(mode);
+            this.modes.set(mode, "l");
+          }
+          continue;
+        }
         this.modes.delete(mode);
         this.modes.set(mode, state as "h" | "l");
       }

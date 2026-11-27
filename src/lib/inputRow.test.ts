@@ -1,25 +1,20 @@
 import { describe, expect, test } from "bun:test";
-import { Terminal } from "@xterm/xterm";
+import { testTerminal, type TestTerminal } from "./ghostty/testTerminal.test-support.ts";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { FrameGate, inputRowState, readScreen, readScreenLines, readsInputRow, type InputRowState, type ScreenSnapshot } from "./inputRow.ts";
-import { matchHerdrWidths } from "./terminalWidths.ts";
 import { drawsColour, screenFromAnsi, typedDraft } from "../../shared/input-row.ts";
 import { SCREEN_AUTO_RETURN, watchReturn } from "./terminalPeek.ts";
 
 const FIXTURES = join(import.meta.dir, "fixtures-input-rows");
 const CLAUDE = join(import.meta.dir, "../../server/fixtures");
 
-const parse = (term: Terminal, data: string): Promise<void> => new Promise((resolve) => term.write(data, resolve));
-const terminal = (cols: number, rows = 40): Terminal => {
-  const term = new Terminal({ cols, rows, scrollback: 0, allowProposedApi: true });
-  matchHerdrWidths(term);
-  return term;
-};
+const parse = (term: TestTerminal, data: string): Promise<void> => new Promise((resolve) => term.write(data, resolve));
+const terminal = (cols: number, rows = 40) => testTerminal({ cols, rows });
 
 test("logical screen lines preserve spaces across wraps but not hard line breaks", async () => {
-  const term = terminal(40, 5);
+  const term = await terminal(40, 5);
   const text = `${"a".repeat(39)} b`;
   try {
     await parse(term, `${text}\r\nnext`);
@@ -30,7 +25,7 @@ test("logical screen lines preserve spaces across wraps but not hard line breaks
 });
 
 test("logical screen lines reject a wrapped line clipped at the screen top", async () => {
-  const term = terminal(40, 2);
+  const term = await terminal(40, 2);
   try {
     await parse(term, `${"a".repeat(81)}\r\nnext`);
     expect(readScreenLines(term.buffer.active, term.rows)).toBeNull();
@@ -40,7 +35,7 @@ test("logical screen lines reject a wrapped line clipped at the screen top", asy
 });
 
 async function screenOf(text: string, cols: number): Promise<ScreenSnapshot> {
-  const term = terminal(cols);
+  const term = await terminal(cols);
   const rows = text.replace(/\r/g, "").split("\n").slice(0, 40);
   await parse(term, rows.map((row, index) => `\u001b[${index + 1};1H${row}`).join(""));
   const screen = readScreen(term.buffer.active, term.cols, term.rows);
@@ -56,7 +51,7 @@ async function recorded(agent: string, name: string): Promise<InputRowState | nu
 async function replay(agent: string, name: string): Promise<(InputRowState | null)[]> {
   const frames = readFileSync(join(FIXTURES, agent, `${name}.frames.jsonl`), "utf8").trim().split("\n")
     .map((line) => JSON.parse(line) as { cols: number; rows: number; data: string });
-  const term = terminal(frames[0]!.cols, frames[0]!.rows);
+  const term = await terminal(frames[0]!.cols, frames[0]!.rows);
   const gate = new FrameGate();
   term.onResize(() => gate.resized());
   const states: (InputRowState | null)[] = [];
@@ -289,6 +284,172 @@ describe("FrameGate", () => {
     expect(gate.settle(gate.enqueue("\u001b[2J\u001b[Hscreen", true), true)).toBe(true);
   });
 
+  // hc 0.1.21's attach paint (server/herdr-core/adapter.test.ts): CAN, DECSTR and an end of synchronized update, then the
+  // screen outside any block ending at win32-input-mode (?9001l/h); the server puts its history clear (attach-session.ts CLEAR_HISTORY) ahead of it
+  const CORE_PAINT = "\u001b[?1049l\u001b[3J\u001b[H\u001b[2J\u0018\u001b[!p\u001b[?2026l\u001b[H\u001b[2J\u00bb Ask Codex to do anything\u001b[?9001l";
+
+  test("an end that closes no block frames nothing: herdr-core's attach paint reads, and the program's blocks after it", () => {
+    const gate = new FrameGate();
+    const paint = gate.enqueue(CORE_PAINT, true);
+    expect(paint.synchronized).toBe(false);
+    expect(gate.settle(paint, true)).toBe(true);
+    expect(gate.current).toBe(true);
+    gate.resized();
+    expect(gate.settle(gate.enqueue(`${OPEN}\u001b[1;1Hhalf`, true), true)).toBe(false);
+    expect(gate.settle(gate.enqueue(` drawn${CLOSE}`, true), true)).toBe(true);
+    // a stream drawn in blocks stays one: after a resize, an end alone is no frame of the new grid
+    gate.resized();
+    expect(gate.settle(gate.enqueue(`late${CLOSE}`, true), true)).toBe(false);
+    expect(gate.settle(gate.enqueue(`${OPEN}new${CLOSE}`, true), true)).toBe(true);
+  });
+
+  test("herdr-core's attach paint reads after a stream drawn in blocks, and when a read cuts its end in two", () => {
+    const gate = new FrameGate();
+    expect(gate.settle(gate.enqueue(`${OPEN}old${CLOSE}`, true), true)).toBe(true);
+    gate.reset();
+    expect(gate.settle(gate.enqueue(CORE_PAINT, true), true)).toBe(true);
+    gate.reset();
+    const cut = CORE_PAINT.indexOf("?2026l") + 3;
+    expect(gate.settle(gate.enqueue(CORE_PAINT.slice(0, cut), true), true)).toBe(false);
+    expect(gate.settle(gate.enqueue(CORE_PAINT.slice(cut), true), true)).toBe(true);
+    gate.resized();
+    expect(gate.settle(gate.enqueue("\u001b[1;1Hthe shell's prompt", true), true)).toBe(true);
+  });
+
+  test("a truncated replay with a restored unmatched ?2026l does not settle as a complete screen", () => {
+    // ReplayBuffer.text() prepends saved modes (\x1b[?2026l) with no CAN+DECSTR paint reset
+    const gate = new FrameGate();
+    const truncated = `\u001b[?1049h\u001b[?2026l\u001b[1;1H${"─".repeat(60)}\r\n❯ \r\n${"─".repeat(60)}\r\n  Waiting for 1 background agent`;
+    expect(gate.settle(gate.enqueue(truncated, true), true)).toBe(false);
+    expect(gate.current).toBe(false);
+    // a subsequent plain diff still waits until a real synchronized frame closes
+    expect(gate.settle(gate.enqueue("\u001b[2;3H ", true), true)).toBe(false);
+    expect(gate.current).toBe(false);
+    expect(gate.settle(gate.enqueue(`${OPEN}\u001b[1;1Hfull frame${CLOSE}`, true), true)).toBe(true);
+    expect(gate.current).toBe(true);
+  });
+
+  test("a split herdr-core attach paint holds off until its ?9001 end mark, so history chunks never arm a peek watcher", async () => {
+    const idle = readFileSync(join(FIXTURES, "codex", "permissions-idle-120.ansi"), "utf8").replace(/\r/g, "").split("\n").slice(0, 40);
+    const term = await terminal(120, 40);
+    const gate = new FrameGate();
+    const states: InputRowState[] = [];
+    const write = async (chunk: string): Promise<boolean> => {
+      const stamp = gate.enqueue(chunk, true);
+      await parse(term, chunk);
+      const settled = gate.settle(stamp, true);
+      if (settled) states.push(inputRowState("codex", readScreen(term.buffer.active, term.cols, term.rows))!);
+      return settled;
+    };
+    try {
+      const historyChunk = `\u001b[?1049l\u001b[3J\u001b[H\u001b[2J\u0018\u001b[!p\u001b[?2026l\u001b[H\u001b[2J${"old scrollback line\r\n".repeat(400)}`;
+      const screenChunk = `\u001b[0m\r\n${"\n".repeat(40)}\u001b[H\u001b[2J${idle.map((row, index) => `\u001b[${index + 1};1H${row}`).join("")}\u001b[0m\u001b[?9001l`;
+      expect(await write(historyChunk)).toBe(false);
+      expect(gate.current).toBe(false);
+      expect(await write(screenChunk)).toBe(true);
+      expect(gate.current).toBe(true);
+      expect(states).toEqual(["ready"]);
+      expect(watch("codex", states)).toEqual({ armed: false, returnedAt: null, manualAt: null });
+    } finally {
+      term.dispose();
+    }
+    // split byte-by-byte across CAN+DECSTR and ?9001h, and aborted paint restarted by a second CAN+DECSTR
+    const splitGate = new FrameGate();
+    const hPaint = CORE_PAINT.replace("\u001b[?9001l", "\u001b[?9001h");
+    for (let i = 0; i < hPaint.length - 1; i++) {
+      const stamp = splitGate.enqueue(hPaint[i]!, true);
+      if (i >= hPaint.indexOf("\u0018\u001b[!p") + 4) expect(splitGate.settle(stamp, true)).toBe(false);
+    }
+    expect(splitGate.settle(splitGate.enqueue(hPaint.at(-1)!, true), true)).toBe(true);
+    // aborted paint without ?9001 followed by a fresh paint settles only on the fresh paint
+    const abortGate = new FrameGate();
+    expect(abortGate.settle(abortGate.enqueue("\u0018\u001b[!p\u001b[?2026lSTALE", true), true)).toBe(false);
+    expect(abortGate.settle(abortGate.enqueue("\u0018\u001b[!p\u001b[?2026lFRESH\u001b[?9001l", true), true)).toBe(true);
+    // paint started before a resize does not settle as a whole frame for the new epoch
+    const resizeGate = new FrameGate();
+    expect(resizeGate.settle(resizeGate.enqueue("\u0018\u001b[!p\u001b[?2026lhalf", true), true)).toBe(false);
+    resizeGate.resized();
+    expect(resizeGate.settle(resizeGate.enqueue("old-size\u001b[?9001l", true), true)).toBe(false);
+  });
+
+  test("combined private mode sequences (?25;2026h / ?25;2026l) gate unfinished updates like xterm", () => {
+    const gate = new FrameGate();
+    expect(gate.settle(gate.enqueue(CORE_PAINT, true), true)).toBe(true);
+    // combined mode opening in the next chunk holds the unfinished update
+    expect(gate.settle(gate.enqueue("\u001b[?25;2026h\u001b[1;1Hunfinished picker", true), true)).toBe(false);
+    expect(gate.current).toBe(false);
+    // split across chunks and closed with combined mode
+    expect(gate.settle(gate.enqueue(" still drawing\u001b[?25;020", true), true)).toBe(false);
+    expect(gate.settle(gate.enqueue("26l", true), true)).toBe(true);
+    expect(gate.current).toBe(true);
+    // combined open sharing the tail of an attach paint chunk also holds until closed
+    gate.reset();
+    expect(gate.settle(gate.enqueue(`${CORE_PAINT}\u001b[?25;2026hpartial`, true), true)).toBe(false);
+    expect(gate.settle(gate.enqueue("done\u001b[?2026;25l", true), true)).toBe(true);
+    // DECRQM (?2026$p) and distinct mode numbers (?20260h) are ignored
+    gate.reset();
+    expect(gate.settle(gate.enqueue("\u001b[?2026$p\u001b[?20260hplain", true), true)).toBe(true);
+  });
+
+  test("same-channel recovery paint after a resize settles without an external gate.reset()", () => {
+    const gate = new FrameGate();
+    expect(gate.settle(gate.enqueue(`${OPEN}before resize${CLOSE}`, true), true)).toBe(true);
+    gate.resized();
+    expect(gate.current).toBe(false);
+    // upstream reconnect repaints on the same channel (adapter.test.ts): CAN+DECSTR clears prior synced state
+    const recovery = "\u0018\u001b[!p\u001b[?2026l\u001b[?1049l\u001b[H\u001b[2J$ vim\r\n$ back\u001b[2;8H\u001b[?9001l";
+    const cut = recovery.indexOf("$ vim");
+    expect(gate.settle(gate.enqueue(recovery.slice(0, cut), true), true)).toBe(false);
+    expect(gate.settle(gate.enqueue(recovery.slice(cut), true), true)).toBe(true);
+    expect(gate.current).toBe(true);
+    // plain writes after the recovery paint continue to settle until a synchronized block opens again
+    expect(gate.settle(gate.enqueue("\u001b[2;8Hmore", true), true)).toBe(true);
+    expect(gate.settle(gate.enqueue(`${OPEN}half`, true), true)).toBe(false);
+    expect(gate.settle(gate.enqueue(`done${CLOSE}`, true), true)).toBe(true);
+  });
+
+  test("a stale recovery paint never consumes the resize reflow guard, even if a display query follows or geometry catches up mid-paint", () => {
+    // case 1: recovery paint starts before a resize and closes after it; subsequent plain display query must not consume reflow
+    const gate = new FrameGate();
+    expect(gate.settle(gate.enqueue(`${OPEN}before${CLOSE}`, true), true)).toBe(true);
+    expect(gate.settle(gate.enqueue("\u0018\u001b[!p\u001b[?2026lold-half", true), true)).toBe(false);
+    gate.reflowed();
+    gate.resized();
+    expect(gate.settle(gate.enqueue("old-rest\u001b[?9001l", true), true)).toBe(false);
+    expect(gate.settle(gate.enqueue("\u001b]10;?\u001b\\\u001b[c", true), true)).toBe(false);
+    expect(gate.settle(gate.enqueue(`${OPEN}reflowed${CLOSE}`, true), true)).toBe(true);
+    expect(gate.reflowing).toBe(true);
+
+    // case 2: paint starts while geometry is false and closes after geometry becomes true
+    const geomGate = new FrameGate();
+    expect(geomGate.settle(geomGate.enqueue(`${OPEN}before${CLOSE}`, true), true)).toBe(true);
+    geomGate.resized();
+    expect(geomGate.settle(geomGate.enqueue("\u0018\u001b[!p\u001b[?2026lold-grid", false), true)).toBe(false);
+    geomGate.reflowed();
+    expect(geomGate.settle(geomGate.enqueue("old-rest\u001b[?9001l", true), true)).toBe(false);
+    expect(geomGate.settle(geomGate.enqueue(`${OPEN}reflowed${CLOSE}`, true), true)).toBe(true);
+    expect(geomGate.reflowing).toBe(true);
+  });
+
+  test("RIS (ESC c) and standalone DECSTR (CSI ! p) clear an open synchronized block like xterm 6, and CSI param count caps at 32", () => {
+    const risGate = new FrameGate();
+    expect(risGate.settle(risGate.enqueue("\u001b[?25;2026hpartial", true), true)).toBe(false);
+    expect(risGate.settle(risGate.enqueue("\u001bcplain prompt", true), true)).toBe(true);
+    expect(risGate.current).toBe(true);
+
+    const decstrGate = new FrameGate();
+    expect(decstrGate.settle(decstrGate.enqueue("\u001b[?25;2026hpartial", true), true)).toBe(false);
+    expect(decstrGate.settle(decstrGate.enqueue("\u001b[!pplain prompt", true), true)).toBe(true);
+    expect(decstrGate.current).toBe(true);
+
+    // xterm 6 ignores parameter #33 in a CSI private mode list
+    const capGate = new FrameGate();
+    expect(capGate.settle(capGate.enqueue(`${OPEN}partial`, true), true)).toBe(false);
+    const thirtyThree = `\u001b[?${Array(32).fill("25").join(";")};2026l`;
+    expect(capGate.settle(capGate.enqueue(thirtyThree, true), true)).toBe(false);
+    expect(capGate.settle(capGate.enqueue(CLOSE, true), true)).toBe(true);
+  });
+
   test("a reset forgets a block the old stream left open", () => {
     const gate = new FrameGate();
     gate.enqueue(`${OPEN}cut off`, true);
@@ -377,7 +538,7 @@ describe("recorded frame streams", () => {
   test("a phone peek's resize: herdr's reflowed frame of gjc's loading /sessions neither arms nor returns", async () => {
     const loading = readFileSync(join(FIXTURES, "gjc", "sessions-open-loading10s-119.ansi"), "utf8").replace(/\r/g, "").split("\n").slice(0, 40);
     // herdr's own frame for the new grid: the old screen, reflowed to 40 columns (its box cut at the borders)
-    const old = terminal(119);
+    const old = await terminal(119);
     await parse(old, loading.map((row, index) => `\u001b[${index + 1};1H${row}`).join(""));
     old.resize(40, 40);
     await parse(old, "");
@@ -386,7 +547,7 @@ describe("recorded frame streams", () => {
     expect(inputRowState("gjc", await screenOf(reflowed.join("\n"), 40))).toBe("gone");
     const redrawn = readFileSync(join(FIXTURES, "gjc", "settings-closed-40.ansi"), "utf8").replace(/\r/g, "").split("\n").slice(0, 40);
     const frame = (rows: readonly string[]): string => `\u001b[?2026h\u001b[2J${rows.map((row, index) => `\u001b[${index + 1};1H${row}`).join("")}\u001b[?2026l`;
-    const term = terminal(119);
+    const term = await terminal(119);
     const gate = new FrameGate();
     term.onResize(() => gate.resized());
     const states: InputRowState[] = [];
@@ -580,6 +741,22 @@ describe("the chat send's read of the same screens (shared/input-row.ts)", () =>
     expect(typed("kilo", "kilo/draft-session-typed-119.ansi")).toBeTrue();
     expect(typed("kilo", "kilo/draft-session-empty-119.ansi")).toBeFalse();
     expect(typed("kilo", "kilo/draft-session-slash-119.ansi")).toBeTrue();
+  });
+
+  test("Kilo's empty editor does not include the previous message across blank screen rows", () => {
+    const rows = readFileSync(join(FIXTURES, "kilo/draft-session-empty-119.ansi"), "utf8").split("\n");
+    rows.fill("", 4, 33);
+    expect(typedDraft("kilo", screenFromAnsi(rows.join("\n")))).toBeFalse();
+  });
+
+  test("a Pi draft can consist of a single private-use glyph", () => {
+    const screen = readFileSync(join(FIXTURES, "pi/draft-typed-119.ansi"), "utf8");
+    expect(typedDraft("pi", screenFromAnsi(screen.replace("leftover draft", "\uE0B0")))).toBeTrue();
+  });
+
+  test("Letta's inverse cursor cell can contain the only typed character", () => {
+    const screen = readFileSync(join(FIXTURES, "letta/draft-typed-119.ansi"), "utf8");
+    expect(typedDraft("letta", screenFromAnsi(screen.replace("leftover draft", "\u001b[7mx\u001b[27m")))).toBeTrue();
   });
 
   test("a character that draws nothing (Letta pads its empty box with zero-width spaces) is no typed text", () => {

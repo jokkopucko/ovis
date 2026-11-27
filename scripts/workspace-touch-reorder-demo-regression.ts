@@ -1,15 +1,12 @@
 /// <reference types="bun" />
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { chromium, type CDPSession, type Page } from "playwright-core";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
-import { serveDemo } from "./demo-server.ts";
+import { appContext } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 
 // All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
-const app = mkdtempSync(join(tmpdir(), "herdr-touch-reorder-demo-"));
 
 const topRows = (page: Page) => page.evaluate(() => [...document.querySelectorAll<HTMLElement>(".machine-workspaces .sidebar-list > .workspace-list > .workspace-group")].map((row) => row.dataset.workspace ?? ""));
 const serverOrder = (page: Page) => page.evaluate(async () => ((await (await fetch("/api/session")).json()).snapshot as { workspaces: { workspace_id: string }[] }).workspaces.map((workspace) => workspace.workspace_id));
@@ -68,16 +65,7 @@ const endPressProbe = (page: Page, failed: boolean) => page.evaluate((failed) =>
 }, failed);
 
 async function stroke(page: Page, cdp: CDPSession, from: { x: number; y: number }, to: { x: number; y: number }, holdMs: number, during?: () => Promise<void>): Promise<void> {
-  // the demo's timeline raises a finish droplet over the top of a phone's screen at its own moment, where the first
-  // row sits: a person dismisses it before pressing the row under it
-  if (holdMs > 0) {
-    const dismiss = page.locator(".droplet-close");
-    if (await dismiss.isVisible()) {
-      await dismiss.tap();
-      await page.locator(".droplet").waitFor({ state: "detached" });
-    }
-    await armPressProbe(page, from);
-  }
+  if (holdMs > 0) await armPressProbe(page, from);
   await touch(cdp, "touchStart", from);
   if (holdMs > 0) {
     const missed = await page.locator(".workspace.is-lifted").waitFor({ timeout: 5_000 }).then(() => null, (error: unknown) => error);
@@ -247,7 +235,7 @@ async function neverDrawnSince(page: Page, since: number, order: readonly string
 
 type Browser = Awaited<ReturnType<typeof chromium.launch>>;
 async function openOrderPage(browser: Browser, url: string) {
-  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, locale: "en-US" });
+  const context = await appContext(browser, { viewport: { width: 1440, height: 1000 } });
   await context.addInitScript(() => {
     localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
     const commits: string[] = [];
@@ -269,9 +257,12 @@ async function openOrderPage(browser: Browser, url: string) {
 }
 
 async function checkEdgeHoldGrowth(browser: Browser, url: string): Promise<void> {
-  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" });
+  const context = await appContext(browser, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   try {
-    await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
+    await context.addInitScript(() => {
+      Reflect.set(window, "__ovisDemoHoldTurn", true);
+      localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
+    });
     const page = await context.newPage();
     await page.goto(url);
     await page.locator(".conn-live").waitFor({ state: "attached" });
@@ -522,7 +513,7 @@ async function checkAdmission(browser: Browser, url: string): Promise<unknown> {
 }
 
 async function checkOrderEvidence(browser: Browser, url: string): Promise<{ happy: unknown; failure: unknown }> {
-  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, locale: "en-US" });
+  const context = await appContext(browser, { viewport: { width: 1440, height: 1000 } });
   await context.addInitScript(() => {
     localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
     const commits: string[] = [];
@@ -692,7 +683,7 @@ async function checkOrderEvidence(browser: Browser, url: string): Promise<{ happ
 }
 
 async function checkLegacyFallback(browser: Awaited<ReturnType<typeof chromium.launch>>, url: string): Promise<unknown> {
-  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, locale: "en-US" });
+  const context = await appContext(browser, { viewport: { width: 1440, height: 1000 } });
   await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
   const page = await context.newPage();
   await page.goto(url);
@@ -726,136 +717,121 @@ async function checkLegacyFallback(browser: Awaited<ReturnType<typeof chromium.l
   return { U, V, W };
 }
 
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  const html = readFileSync(index, "utf8");
-  assert.match(html, /<script type="module"/);
-  writeFileSync(index, html.replace(/<script type="module"/, '<script src="./demo-transport.js"></script>\n    <script type="module"'));
+await withDemoBrowser({ tempPrefix: "herdr-touch-reorder-demo-" }, async ({ browser, baseUrl }) => {
+  const context = await appContext(browser, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  await context.addInitScript(() => {
+    // The demo's finish droplet can cover a pinned row between measuring it and pressing it.
+    Reflect.set(window, "__ovisDemoHoldTurn", true);
+    localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
+  });
+  await context.addInitScript(() => {
+    const original = Element.prototype.getBoundingClientRect;
+    (window as unknown as { __rowBoxReads: number }).__rowBoxReads = 0;
+    Element.prototype.getBoundingClientRect = function (this: Element) {
+      if (this.matches?.(".workspace-group[data-workspace]")) (window as unknown as { __rowBoxReads: number }).__rowBoxReads += 1;
+      return original.call(this);
+    };
+  });
+  const page = await context.newPage();
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto(`${baseUrl}`);
+  await page.locator(".conn-live").waitFor({ state: "attached" });
+  await page.locator('#drawer-toggle').click();
+  await page.locator(".machine-workspaces .workspace-group").first().waitFor();
+  const cdp = await context.newCDPSession(page);
 
-  const server = serveDemo(app);
+  assert.equal(await page.evaluate(() => matchMedia("(pointer: coarse)").matches), true, "the phone context has a coarse pointer");
+  assert.equal(await page.locator(".machine-workspaces .workspace-select").first().getAttribute("draggable"), "false",
+    "on a touch screen the browser's own drag is off, so iOS lifts no drag preview that drops nothing");
 
-  try {
-    const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-    try {
-      const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" });
-      await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
-      await context.addInitScript(() => {
-        const original = Element.prototype.getBoundingClientRect;
-        (window as unknown as { __rowBoxReads: number }).__rowBoxReads = 0;
-        Element.prototype.getBoundingClientRect = function (this: Element) {
-          if (this.matches?.(".workspace-group[data-workspace]")) (window as unknown as { __rowBoxReads: number }).__rowBoxReads += 1;
-          return original.call(this);
-        };
-      });
-      const page = await context.newPage();
-      const errors: string[] = [];
-      page.on("pageerror", (error) => errors.push(error.message));
-      await page.goto(`http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/`);
-      await page.locator(".conn-live").waitFor({ state: "attached" });
-      await page.locator('#drawer-toggle').click();
-      await page.locator(".machine-workspaces .workspace-group").first().waitFor();
-      const cdp = await context.newCDPSession(page);
+  await addScratchWorkspace(page);
+  const before = await topRows(page);
+  assert.ok(before.length >= 3, `three top-level workspaces: ${JSON.stringify(before)}`);
+  assert.deepEqual((await serverOrder(page)).filter((id) => before.includes(id)), before, "the sidebar draws herdr's order");
 
-      assert.equal(await page.evaluate(() => matchMedia("(pointer: coarse)").matches), true, "the phone context has a coarse pointer");
-      assert.equal(await page.locator(".machine-workspaces .workspace-select").first().getAttribute("draggable"), "false",
-        "on a touch screen the browser's own drag is off, so iOS lifts no drag preview that drops nothing");
+  await stroke(page, cdp, await centerOf(page, before[0]!), await centerOf(page, before[2]!), 0, async () => {
+    assert.equal(await page.locator(".workspace.is-lifted").count(), 0, "a stroke that moves at once lifts nothing");
+  });
+  assert.deepEqual(await topRows(page), before, "a quick stroke moves nothing");
 
-      await addScratchWorkspace(page);
-      const before = await topRows(page);
-      assert.ok(before.length >= 3, `three top-level workspaces: ${JSON.stringify(before)}`);
-      assert.deepEqual((await serverOrder(page)).filter((id) => before.includes(id)), before, "the sidebar draws herdr's order");
+  const target = await centerOf(page, before[2]!);
+  await stroke(page, cdp, await centerOf(page, before[0]!), { x: target.x, y: target.y + 4 }, 600, async () => {
+    assert.equal(await page.locator(`.workspace-group.is-lifted[data-workspace="${before[0]}"]`).count(), 1, "the held row is lifted");
+    assert.ok(await page.locator(`.machine-workspaces [data-drop="after"]`).count() === 1, "a line shows where it lands");
+    assert.notEqual(await page.locator(`.workspace-group[data-workspace="${before[0]}"]`).evaluate((row) => row.style.transform), "", "the row follows the finger");
+  });
+  const expected = [before[1]!, before[2]!, before[0]!, ...before.slice(3)];
+  await page.waitForFunction((want) => [...document.querySelectorAll<HTMLElement>(".machine-workspaces .sidebar-list > .workspace-list > .workspace-group")].map((row) => row.dataset.workspace).join() === want.join(),
+    expected, { timeout: 5_000 });
+  assert.deepEqual((await serverOrder(page)).filter((id) => before.includes(id)), expected, "herdr got the move");
+  assert.equal(await page.locator(".workspace.is-lifted, [data-drop]").count(), 0, "nothing stays lifted or marked");
+  assert.equal(await page.locator(`.workspace-group[data-workspace="${before[0]}"]`).evaluate((row) => row.style.transform), "", "the dropped row sits in the list");
+  assert.equal(await page.locator('#drawer-toggle').getAttribute("aria-expanded"), "true", "the drag left the drawer open");
+  console.log("PASS a long press lifts a workspace row on a touch screen, and a drag drops it where the line shows");
 
-      await stroke(page, cdp, await centerOf(page, before[0]!), await centerOf(page, before[2]!), 0, async () => {
-        assert.equal(await page.locator(".workspace.is-lifted").count(), 0, "a stroke that moves at once lifts nothing");
-      });
-      assert.deepEqual(await topRows(page), before, "a quick stroke moves nothing");
-
-      const target = await centerOf(page, before[2]!);
-      await stroke(page, cdp, await centerOf(page, before[0]!), { x: target.x, y: target.y + 4 }, 600, async () => {
-        assert.equal(await page.locator(`.workspace-group.is-lifted[data-workspace="${before[0]}"]`).count(), 1, "the held row is lifted");
-        assert.ok(await page.locator(`.machine-workspaces [data-drop="after"]`).count() === 1, "a line shows where it lands");
-        assert.notEqual(await page.locator(`.workspace-group[data-workspace="${before[0]}"]`).evaluate((row) => row.style.transform), "", "the row follows the finger");
-      });
-      const expected = [before[1]!, before[2]!, before[0]!, ...before.slice(3)];
-      await page.waitForFunction((want) => [...document.querySelectorAll<HTMLElement>(".machine-workspaces .sidebar-list > .workspace-list > .workspace-group")].map((row) => row.dataset.workspace).join() === want.join(),
-        expected, { timeout: 5_000 });
-      assert.deepEqual((await serverOrder(page)).filter((id) => before.includes(id)), expected, "herdr got the move");
-      assert.equal(await page.locator(".workspace.is-lifted, [data-drop]").count(), 0, "nothing stays lifted or marked");
-      assert.equal(await page.locator(`.workspace-group[data-workspace="${before[0]}"]`).evaluate((row) => row.style.transform), "", "the dropped row sits in the list");
-      assert.equal(await page.locator('#drawer-toggle').getAttribute("aria-expanded"), "true", "the drag left the drawer open");
-      console.log("PASS a long press lifts a workspace row on a touch screen, and a drag drops it where the line shows");
-
-      const burstFrom = await centerOf(page, before[0]!);
-      await touch(cdp, "touchStart", burstFrom);
-      await page.locator(".workspace.is-lifted").waitFor({ timeout: 5_000 });
-      const rowCount = await page.locator(".machine-workspaces .workspace-group[data-workspace]").count();
-      const burst = await page.evaluate(({ x, y }) => new Promise<{ during: number; frame: number }>((resolve) => {
-        const counter = window as unknown as { __rowBoxReads: number };
-        counter.__rowBoxReads = 0;
-        const target = document.elementFromPoint(x, y) ?? document.body;
-        for (let i = 0; i < 8; i += 1) {
-          const at = y + i * 4;
-          const touch = new Touch({ identifier: 1, target, clientX: x, clientY: at, pageX: x, pageY: at, screenX: x, screenY: at });
-          target.dispatchEvent(new TouchEvent("touchmove", { bubbles: true, cancelable: true, touches: [touch], targetTouches: [touch], changedTouches: [touch] }));
-        }
-        const during = counter.__rowBoxReads;
-        requestAnimationFrame(() => resolve({ during, frame: counter.__rowBoxReads }));
-      }), { x: burstFrom.x, y: burstFrom.y + 12 });
-      assert.equal(burst.during, 0, `a burst of 8 touchmoves at 8 heights measures no row while it is dispatched: ${burst.during} reads`);
-      assert.ok(burst.frame > 0 && burst.frame <= rowCount, `the next frame measures the rows once: ${burst.frame} reads for ${rowCount} rows`);
-      await touch(cdp, "touchCancel");
-      console.log("PASS a burst of touchmoves measures the rows once per frame, not once per event");
-
-      const moved = before[0]!;
-      const movedRow = page.locator(`.workspace-group[data-workspace="${moved}"]`);
-      await movedRow.locator(".row-menu-toggle").click();
-      const workspaceSheet = page.locator(".row-sheet");
-      await workspaceSheet.waitFor();
-      assert.deepEqual(await workspaceSheet.locator(".row-sheet-item").allTextContents(), ["Pin workspace", "New tab with agent…", "Rename workspace", "Earlier sessions…", "Close group", "New worktree", "Open worktree…", "Collapse"],
-        "the touch menu of a repository contains its group's native actions, with no pane or reorder actions");
-      await workspaceSheet.getByRole("button", { name: "Cancel", exact: true }).click();
-      await workspaceSheet.waitFor({ state: "detached" });
-      await movedRow.locator(".workspace-select").focus();
-      await page.keyboard.press("Alt+ArrowUp");
-      const stepped = [before[1]!, before[0]!, before[2]!, ...before.slice(3)];
-      await page.waitForFunction((want) => [...document.querySelectorAll<HTMLElement>(".machine-workspaces .sidebar-list > .workspace-list > .workspace-group")].map((row) => row.dataset.workspace).join() === want.join(),
-        stepped, { timeout: 5_000 });
-      assert.deepEqual((await serverOrder(page)).filter((id) => before.includes(id)), stepped, "herdr got the keyboard move");
-      console.log("PASS the touch menu keeps workspace scope and Alt+Up still moves a workspace one step");
-
-      await checkPinned(page, cdp);
-      assert.deepEqual(errors, []);
-      await context.close();
-      await checkEdgeHoldGrowth(browser, `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/`);
-      const desktop = await browser.newContext({ viewport: { width: 1440, height: 1000 }, locale: "en-US" });
-      await desktop.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
-      const desktopPage = await desktop.newPage();
-      await desktopPage.goto(`http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/`);
-      await desktopPage.locator(".conn-live").waitFor({ state: "attached" });
-      await desktopPage.locator(".machine-workspaces .workspace-group").first().waitFor();
-      await checkPinned(desktopPage);
-      await desktop.close();
-      const demoUrl = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/`;
-      const order = await checkOrderEvidence(browser, demoUrl);
-      const failure = order.failure as Record<string, unknown>;
-      failure["legacy_fallback"] = await checkLegacyFallback(browser, demoUrl);
-      failure["refused_moves"] = await checkRefusedMoves(browser, demoUrl);
-      failure["proof_gating"] = await checkProofGating(browser, demoUrl);
-      failure["unseen_retired_era"] = await checkUnseenRetiredEra(browser, demoUrl);
-      failure["admission"] = await checkAdmission(browser, demoUrl);
-      const evidence = process.env["UI_EVIDENCE_DIR"];
-      if (evidence) {
-        mkdirSync(evidence, { recursive: true });
-        writeFileSync(join(evidence, "reorder-holds-through-snapshot.json"), JSON.stringify(order.happy, null, 2));
-        writeFileSync(join(evidence, "superseded-reorder-failure.json"), JSON.stringify(order.failure, null, 2));
-      }
-    } finally {
-      await browser.close();
+  const burstFrom = await centerOf(page, before[0]!);
+  await touch(cdp, "touchStart", burstFrom);
+  await page.locator(".workspace.is-lifted").waitFor({ timeout: 5_000 });
+  const rowCount = await page.locator(".machine-workspaces .workspace-group[data-workspace]").count();
+  const burst = await page.evaluate(({ x, y }) => new Promise<{ during: number; frame: number }>((resolve) => {
+    const counter = window as unknown as { __rowBoxReads: number };
+    counter.__rowBoxReads = 0;
+    const target = document.elementFromPoint(x, y) ?? document.body;
+    for (let i = 0; i < 8; i += 1) {
+      const at = y + i * 4;
+      const touch = new Touch({ identifier: 1, target, clientX: x, clientY: at, pageX: x, pageY: at, screenX: x, screenY: at });
+      target.dispatchEvent(new TouchEvent("touchmove", { bubbles: true, cancelable: true, touches: [touch], targetTouches: [touch], changedTouches: [touch] }));
     }
-  } finally {
-    server.stop(true);
+    const during = counter.__rowBoxReads;
+    requestAnimationFrame(() => resolve({ during, frame: counter.__rowBoxReads }));
+  }), { x: burstFrom.x, y: burstFrom.y + 12 });
+  assert.equal(burst.during, 0, `a burst of 8 touchmoves at 8 heights measures no row while it is dispatched: ${burst.during} reads`);
+  assert.ok(burst.frame > 0 && burst.frame <= rowCount, `the next frame measures the rows once: ${burst.frame} reads for ${rowCount} rows`);
+  await touch(cdp, "touchCancel");
+  console.log("PASS a burst of touchmoves measures the rows once per frame, not once per event");
+
+  const moved = before[0]!;
+  const movedRow = page.locator(`.workspace-group[data-workspace="${moved}"]`);
+  await movedRow.locator(".row-menu-toggle").click();
+  const workspaceSheet = page.locator(".row-sheet");
+  await workspaceSheet.waitFor();
+  assert.deepEqual(await workspaceSheet.locator(".row-sheet-item").allTextContents(), ["Pin workspace", "New tab with agent…", "Rename workspace", "Earlier sessions…", "Close group", "New worktree", "Open worktree…", "Collapse"],
+    "the touch menu of a repository contains its group's native actions, with no pane or reorder actions");
+  await workspaceSheet.getByRole("button", { name: "Cancel", exact: true }).click();
+  await workspaceSheet.waitFor({ state: "detached" });
+  await movedRow.locator(".workspace-select").focus();
+  await page.keyboard.press("Alt+ArrowUp");
+  const stepped = [before[1]!, before[0]!, before[2]!, ...before.slice(3)];
+  await page.waitForFunction((want) => [...document.querySelectorAll<HTMLElement>(".machine-workspaces .sidebar-list > .workspace-list > .workspace-group")].map((row) => row.dataset.workspace).join() === want.join(),
+    stepped, { timeout: 5_000 });
+  assert.deepEqual((await serverOrder(page)).filter((id) => before.includes(id)), stepped, "herdr got the keyboard move");
+  console.log("PASS the touch menu keeps workspace scope and Alt+Up still moves a workspace one step");
+
+  await checkPinned(page, cdp);
+  assert.deepEqual(errors, []);
+  await context.close();
+  await checkEdgeHoldGrowth(browser, `${baseUrl}`);
+  const desktop = await appContext(browser, { viewport: { width: 1440, height: 1000 } });
+  await desktop.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
+  const desktopPage = await desktop.newPage();
+  await desktopPage.goto(`${baseUrl}`);
+  await desktopPage.locator(".conn-live").waitFor({ state: "attached" });
+  await desktopPage.locator(".machine-workspaces .workspace-group").first().waitFor();
+  await checkPinned(desktopPage);
+  await desktop.close();
+  const demoUrl = `${baseUrl}`;
+  const order = await checkOrderEvidence(browser, demoUrl);
+  const failure = order.failure as Record<string, unknown>;
+  failure["legacy_fallback"] = await checkLegacyFallback(browser, demoUrl);
+  failure["refused_moves"] = await checkRefusedMoves(browser, demoUrl);
+  failure["proof_gating"] = await checkProofGating(browser, demoUrl);
+  failure["unseen_retired_era"] = await checkUnseenRetiredEra(browser, demoUrl);
+  failure["admission"] = await checkAdmission(browser, demoUrl);
+  const evidence = process.env["UI_EVIDENCE_DIR"];
+  if (evidence) {
+    mkdirSync(evidence, { recursive: true });
+    writeFileSync(join(evidence, "reorder-holds-through-snapshot.json"), JSON.stringify(order.happy, null, 2));
+    writeFileSync(join(evidence, "superseded-reorder-failure.json"), JSON.stringify(order.failure, null, 2));
   }
-} finally {
-  rmSync(app, { recursive: true, force: true });
-}
+});

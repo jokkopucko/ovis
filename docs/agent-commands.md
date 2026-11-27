@@ -17,16 +17,60 @@ Everything here rests on three rules. A change that breaks one of them is a bug,
    knows (`dialog`, naming the reader), only works in the terminal (`terminal`), or is not known
    (`unknown`). Rows also carry `visibility`, `provenance` (scan, static or native, and whether it
    was checked against the running version), `shadows` and a stable `id`.
-2. **The terminal is the only way a command is sent.** Chat types into the pane exactly as the
-   user would, through the same submit path as any message. No command goes through an agent's
-   API. The native writes the bridge keeps are answers, not commands: a pending OpenCode v2 form,
-   and the approvals of a Codex Ovis started on its own app server
+2. **A command goes as data where the agent takes it as data, and is typed everywhere else.**
+   Where the pane's own agent session has an API route for a command, and the bridge reaches that
+   session, Chat sends the command there ([Commands sent as data](#commands-sent-as-data)).
+   Everything else is typed into the pane exactly as the user would, through the same submit path
+   as any message. A request that reached nothing (no verified session, no connection, a refusal
+   before anything ran) falls back to typing; one that may have reached the agent is never typed
+   as well, so a command never runs twice. The other native writes the bridge keeps are answers,
+   not commands: a pending OpenCode v2 form, and the approvals of a Codex Ovis started on its own app server
    ([`server/approvals/codex.ts`](../server/approvals/codex.ts)), which subscribes to its threads
-   for them (`thread/resume`, no overrides) and starts no turn.
+   for them (`thread/resume`, no overrides). That Codex's server also takes a plain chat message
+   (never a command) as a turn of the pane's own thread while it is idle (`turn/start`), under the
+   same rule: nothing that may have reached it is typed as well. Its answer names the turn the
+   message became, and the pane's next queued message goes when the server says that turn ended
+   (`turn/completed` for its id, on the pane's own thread), not when herdr reads the pane at rest;
+   the queue types nothing into a turn the server says that thread runs. Once the server can no
+   longer tell (its connection ended, or the pane runs another thread), the queue goes by the
+   pane's status again, as for every other agent.
 3. **An outcome changes only on evidence tied to that send.** Sending a command records
    `accepted` and nothing more. A later state needs evidence that belongs to this send, listed
    under [Outcome states](#outcome-states-and-their-evidence). A screen that changed, an idle agent
    or a timer proves nothing.
+
+## Commands sent as data
+
+[`server/command-data-send.ts`](../server/command-data-send.ts) decides, per send, whether a
+command has a data route (`commandDataRoute`) and sends it (`sendCommandAsData`); the composer
+types it otherwise. Only a send that is exactly one command, with no `@skill`, is routed.
+
+| Agent | Command | Route | Result |
+| --- | --- | --- | --- |
+| OpenCode 2 | a server command (`GET /api/command`: `init`, `review`, `goal`, user commands), not one the TUI runs itself | `POST /api/session/{id}/command {name, text, delivery: "steer"}`, as the TUI's Enter does | the 204 answers once the command's callback ran: `native` evidence |
+| OpenCode 2 | bare `/compact` | `POST /api/session/{id}/compact` | the 200 only admits it, so the send stays `accepted` as a typed `/compact` does |
+| Codex on the server Ovis started for it (0.169 to 0.171) | bare `/plan`, only while the thread is idle (Codex's own dispatcher allows `/plan` only between tasks) | `thread/settings/update` with Plan mode, Plan's own effort (`plan_mode_reasoning_effort` from `config/read`, else the preset `collaborationMode/list` gives) and the thread's model as it is when the request goes, as the TUI's `/plan` does | the server's answer: `native` evidence |
+| OmO (and a pi that has its control socket), Linux | `/efforts <level>`, a level `get_available_thinking_levels` offers, never `off` | `set_thinking_level {level, scope: "turn"}` on the control socket the pane's own process listens on (`<agentDir>/rpc/tui/`, found through `/proc`; [`server/omo-control.ts`](../server/omo-control.ts)): this session only, so unlike the typed command it is not remembered as the model's level, and never made every session's default | the socket's success: `native` evidence (OmO writes `thinking_level_change` only when the level changes) |
+
+A Codex `/plan` goes only to the pane's thread while it is the only one loaded on the server
+besides subagents (a `/resume` or `/new` in the TUI loads another without telling Ovis which it
+shows) and never to one herdr reports the pane does not show, read again right before the
+request; and only once the server said that thread is idle and named its model ([`server/approvals/codex.ts`](../server/approvals/codex.ts)
+`servedPlan`); until then, and in a Codex Ovis did not start, it is typed. Codex's `/compact` stays
+typed: compacting through its server aborts a turn Ovis may not have heard of yet. In a pane where
+Ovis started Codex on its server, `/plan` is offered in the palette again (`withDataRoutes`).
+
+The pane's session must be the one its verified OpenCode 2 service holds (`openCodePaneService`)
+and the one herdr still reports for the pane right before the request, never on Windows. The
+text is read as OpenCode's TUI reads it: the slash first, the name up to the first white space
+(it may hold `/`, as `team/check`), the rest as the argument; a name the TUI runs itself, or one
+of its aliases (`/resume`, `/effort`, `/usage`), is typed. The sender's right to type and the
+send's deadline are checked once the connection is open, right before the request's bytes go.
+Known limits: a message queued behind a working agent is typed when its turn comes, as before;
+and a model or agent picked in OpenCode's terminal but not yet sent there is not used, where the
+TUI's own Enter would commit it first. A 4xx answer (an unknown command is 404) or a connection that never opened types the
+command as before. No answer after the connection opened is `timeout`, and a 5xx is
+`command_failed`: neither is typed again, and the chat keeps the text.
 
 ## Where the rows come from
 
@@ -164,7 +208,9 @@ of a turn are not held. Nothing is typed to close the screen.
 
 Rows marked `agent-hidden` mirror the agent's own menu, which hides them (Claude Code's
 `/heapdump`, for instance). They are left out of the menu too, but typing one sends it like any
-other command. No other row a source finds is ever hidden.
+other command. The agent catalog may also mark an ordinary plan, permission, model or effort
+control `chatPaletteHidden` when its bare form shows no result in Chat. This affects suggestions
+only: typed commands still run, and rows with a terminal handoff or a Chat dialog stay listed.
 
 ## Outcome states and their evidence
 
@@ -204,8 +250,9 @@ Recognized Hermes informational result cards remain available.
   after this send's own echo and was not on screen when it was sent. Hermes `/help`, `/status`,
   `/version`, `/profile` and `/reload-skills` work this way, and the text is shown verbatim on a
   card with a **Dismiss** that sends no keys.
-- `native`: the agent's own event stream. Today only OpenCode v2, whose service announces the
-  session's message and the end of its execution.
+- `native`: the agent's own event stream or API answer. OpenCode v2, whose service announces the
+  session's message and the end of its execution, and answers a server command sent as data once
+  its callback ran; and the answer to a command sent as data (Codex's `/plan`, OmO's `/efforts`).
 - `side-store`: reserved for an agent's own side store, such as omp's saved BTW answers. Nothing
   produces it yet, so omp `/btw` is a terminal command.
 
@@ -287,7 +334,10 @@ records it; Claude Code records that branch on the next prompt or command.
 `GET /api/sessions/history` lists a folder's earlier sessions from each agent's own store
 ([`server/session-history.ts`](../server/session-history.ts)), newest first. It reads at most the
 first 64 KiB of a file, looks at most at 400 files and returns at most 50 rows, and refuses any
-path that resolves outside the store. Resume opens a new tab with the agent's own resume flag,
+path that resolves outside the store. Codex checks its two optional metadata stores separately
+from the rollout scan. For the append-only name index it reads the last 64 KiB instead, plus
+one preceding byte to distinguish a complete first record from a cut line.
+Resume opens a new tab with the agent's own resume flag,
 only where that flag is cited in the code; a row without one has no Resume button.
 
 ## Starting an agent with a first message
@@ -384,7 +434,7 @@ There is no single place for a new agent. These files each need it:
 
 ## Not done yet
 
-These are tracked as issues rather than built: sending a command through an agent's own API, a
+These are tracked as issues rather than built: data routes for other agents and commands, a
 link between a Codex pane and its thread, opt-in companions that would let an agent report its
 own runtime commands, probes that are certified free of side effects, versions for the nine
 agents whose stores do not record one, translations of card labels the server writes,

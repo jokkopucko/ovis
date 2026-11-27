@@ -1,0 +1,40 @@
+                                     ██  ██       ▀▄▄▀ █ █ █ █▄▄▀
+                                     ▒▒  ██                  █
+                                         ██       v19.1.0
+
+                 Tip: Psst, omp has a natural habitat 🐦 tern (https://scl.so/tern)
+
+                                                                                                    
+ Run the form fixture.                                                                              
+                                                                                                    
+╭─ Ask · 4 of 6 answered ──────────────────────────────────────────────────────────────────────────╮
+│ Sessions live in memory and are lost on restart.                                                 │
+│                                                                                                  │
+│ ✓ Where should sessions persist?                                                                 │
+│    ✓ SQLite: one file, n…   Redis: shared acros…                                                 │
+│                                                                                                  │
+│ ✓ Q2 · Targets                                                                                   │
+│    ✓ Desktop   Phone   Tablet                                                                    │
+│                                                                                                  │
+│ Q3 · Region                                                                                      │
+│ ❯ ‹ United States ›  2/2                                                                         │
+│                                                                                                  │
+│ ✓ Session lifetime (days)                                                                        │
+│   30                                                                                             │
+│                                                                                                  │
+│ ○ Notes                                                                                          │
+│   type your answer                                                                               │
+│                                                                                                  │
+│ ○ Ship it today                                                                                  │
+│    Ship it today                                                                                 │
+│                                                                                                  │
+│   Submit                                                                                         │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+  ⎋ Working…                                                                                        
+ ❓ 2s > ⬢ Form fixture > 📁 …7d_78nzzhq00000gn/T/omp-form-l0Ejig/cwd ▶─6%───────────────╎─┃───131K─
+╰─                                                                                                  

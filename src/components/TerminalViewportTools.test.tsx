@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, jest, spyOn } from "bun:test";
-import { createElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import type { Terminal } from "@xterm/xterm";
+import { act, createElement } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
+import type { GhosttyTerminal } from "../lib/ghostty/terminal.ts";
 import type { PaneScrollInfo } from "../../shared/protocol.ts";
 import * as machineContext from "../lib/machineContext.tsx";
 import * as settingsModule from "../lib/settings.ts";
@@ -15,12 +15,12 @@ const ROWS = 24;
 const PAGE = ROWS - 1;
 const metrics = (max: number, offset = 0): PaneScrollInfo => ({ offset_from_bottom: offset, max_offset_from_bottom: max, viewport_rows: ROWS });
 
-// React, the component and its viewport gate are real; herdr's scroll API, the xterm terminal and the DOM are stand-ins.
+// React, the component and its viewport gate are real; herdr's scroll API, the xterm terminal are stand-ins.
 describe("a page held for a scroll read on stale zero-history metrics", () => {
-  const globals = ["document", "getComputedStyle", "ResizeObserver", "IS_REACT_ACT_ENVIRONMENT"] as const;
+  const globals = ["ResizeObserver", "Event", "CustomEvent"] as const;
   let saved: (PropertyDescriptor | undefined)[] = [];
   let spies: { mockRestore(): void }[] = [];
-  let renderer: ReactTestRenderer | null = null;
+  let page: Page;
   /** each metrics read waits for the test to answer it */
   let reads: ((scroll: PaneScrollInfo) => void)[] = [];
   let scrolledTo: number[] = [];
@@ -29,13 +29,13 @@ describe("a page held for a scroll read on stale zero-history metrics", () => {
   const pageScroll: { current: ((direction: -1 | 1) => void) | null } = { current: null };
 
   beforeEach(async () => {
+    page = openPage();
+    Object.defineProperty(page.window.document, "visibilityState", { configurable: true, value: "visible" });
     jest.useFakeTimers();
     reads = []; scrolledTo = []; applicationPages = []; pageScroll.current = null;
     saved = globals.map((name) => Object.getOwnPropertyDescriptor(globalThis, name));
-    const listen = { addEventListener() {}, removeEventListener() {} };
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, writable: true, value: true });
-    Object.defineProperty(globalThis, "document", { configurable: true, writable: true, value: { visibilityState: "visible", ...listen } });
-    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, writable: true, value: () => ({ visibility: "visible" }) });
+    Object.defineProperty(globalThis, "Event", { configurable: true, writable: true, value: page.window.Event });
+    Object.defineProperty(globalThis, "CustomEvent", { configurable: true, writable: true, value: page.window.CustomEvent });
     Object.defineProperty(globalThis, "ResizeObserver", { configurable: true, writable: true, value: class { observe() {} disconnect() {} } });
     spies = [
       spyOn(machineContext, "useMachineApi").mockReturnValue({
@@ -47,35 +47,34 @@ describe("a page held for a scroll read on stale zero-history metrics", () => {
       } as ReturnType<typeof settingsModule.useSettings>),
     ];
     const disposable = { dispose() {} };
+    const terminalElement = page.window.document.createElement("div");
+    Object.defineProperty(terminalElement, "getClientRects", { configurable: true, value: () => [new page.window.DOMRect(0, 0, 800, 600)] });
     const terminal = {
       cols: 80, rows: ROWS,
-      element: { getClientRects: () => [{}], querySelector: () => null, parentElement: null, dispatchEvent: () => true, ...listen },
+      element: terminalElement,
       buffer: { active: { viewportY: 0, baseY: 0, getLine: () => undefined } },
       onWriteParsed: (listener: () => void) => { output = listener; return disposable; },
       onScroll: () => disposable, onRender: () => disposable, onResize: () => disposable,
-    } as unknown as Terminal;
-    await act(async () => {
-      renderer = create(createElement(TerminalViewportTools, {
-        viewportIntent: new ViewportIntentGate(), terminal, paneId: "w1:p1", pageScroll,
-        onApplicationPage: (direction) => { applicationPages.push(direction); },
-        enabled: true, interactive: true, search: null, onError: (message) => { throw new Error(message); },
-      }));
-    });
+    } as unknown as GhosttyTerminal;
+    await page.render(createElement(TerminalViewportTools, {
+      viewportIntent: new ViewportIntentGate(), terminal, paneId: "w1:p1", pageScroll,
+      onApplicationPage: (direction) => { applicationPages.push(direction); },
+      enabled: true, interactive: true, search: null, onError: (message) => { throw new Error(message); },
+    }));
     // a program owned the screen: no history to scroll; then it quits and hands the screen back to the shell
     await answer(metrics(0));
     await act(async () => { output(); });
   });
 
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = null;
+    jest.useRealTimers();
+    await page.close();
     for (const spy of spies) spy.mockRestore();
     globals.forEach((name, index) => {
       const descriptor = saved[index];
       if (descriptor) Object.defineProperty(globalThis, name, descriptor);
       else Reflect.deleteProperty(globalThis, name);
     });
-    jest.useRealTimers();
   });
 
   /** Answers the oldest pending read and lets its promise chain (and a scroll write it starts) finish. */
@@ -226,30 +225,30 @@ function fakeHerdr(max: number) {
 
 describe("history scrolls by every wheel line while the view's own writes are slow, and page keys go where they did", () => {
   const saved = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
 
   beforeEach(() => {
+    page = openPage();
+    Object.defineProperty(page.window.document, "visibilityState", { configurable: true, value: "visible" });
     jest.useFakeTimers();
-    for (const key of ["document", "getComputedStyle", "ResizeObserver", "IS_REACT_ACT_ENVIRONMENT"]) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    for (const key of ["ResizeObserver", "Event", "CustomEvent"]) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     const define = (key: string, value: unknown) => Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
-    define("IS_REACT_ACT_ENVIRONMENT", true);
-    define("document", { visibilityState: "visible", addEventListener() {}, removeEventListener() {} });
-    define("getComputedStyle", () => ({ visibility: "visible" }));
+    define("Event", page.window.Event);
+    define("CustomEvent", page.window.CustomEvent);
     define("ResizeObserver", class { observe() {} disconnect() {} });
     spyOn(settingsModule, "useSettings").mockReturnValue({
       settings: settingsModule.DEFAULT_SETTINGS, resolvedLanguage: "en",
     } as ReturnType<typeof settingsModule.useSettings>);
   });
 
-  afterEach(() => {
-    act(() => { renderer?.unmount(); });
-    renderer = undefined;
+  afterEach(async () => {
+    jest.useRealTimers();
+    await page.close();
     for (const [key, descriptor] of saved) {
       if (descriptor) Object.defineProperty(globalThis, key, descriptor);
       else Reflect.deleteProperty(globalThis, key);
     }
     jest.restoreAllMocks();
-    jest.useRealTimers();
   });
 
   async function mount(herdr: ReturnType<typeof fakeHerdr>) {
@@ -258,29 +257,35 @@ describe("history scrolls by every wheel line while the view's own writes are sl
     const listener = () => ({ dispose() {} });
     // the grid and its layer have a size, so the Jump to bottom button is drawn
     const rect = { left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600 };
-    const screen = { getBoundingClientRect: () => rect };
+    const terminalElement = page.window.document.createElement("div");
+    const screen = page.window.document.createElement("div");
+    screen.className = "xterm-screen";
+    terminalElement.append(screen);
+    Object.defineProperty(terminalElement, "getClientRects", { configurable: true, value: () => [rect] });
+    Object.defineProperty(screen, "getBoundingClientRect", { configurable: true, value: () => rect });
+    const addListener = terminalElement.addEventListener.bind(terminalElement);
+    Object.defineProperty(terminalElement, "addEventListener", { configurable: true, value: (type: string, callback: () => void) => {
+      if (type === "wheel") wheeled.push(callback);
+      addListener(type, callback);
+    } });
     const terminal = {
-      element: {
-        getClientRects: () => [rect], querySelector: () => screen, parentElement: null, dispatchEvent: () => true,
-        addEventListener(type: string, callback: () => void) { if (type === "wheel") wheeled.push(callback); }, removeEventListener() {},
-      },
+      element: terminalElement,
       cols: 80, rows: 24,
       buffer: { active: { viewportY: 0, baseY: 0, getLine: () => undefined } },
       onWriteParsed: (callback: () => void) => { written.push(callback); return { dispose() {} }; },
       onScroll: listener, onRender: listener, onResize: (callback: () => void) => { resized.push(callback); return { dispose() {} }; },
-    } as unknown as Terminal;
+    } as unknown as GhosttyTerminal;
     const lineScroll: { current: ((lines: number) => void) | null } = { current: null };
     const pageScroll: { current: ((direction: -1 | 1) => void) | null } = { current: null };
     const errors: string[] = [];
     const programPages: number[] = [], programKeys: string[] = [];
     let start = 0;
-    await act(async () => {
-      renderer = create(createElement(TerminalViewportTools, {
-        viewportIntent: new ViewportIntentGate(), terminal, paneId: "w1:p1", lineScroll, pageScroll,
-        onApplicationPage: (direction: -1 | 1) => { programPages.push(direction); programKeys.push(`${direction}@${Date.now() - start}`); },
-        enabled: true, interactive: true, search: null, onError: (message: string) => { errors.push(message); },
-      }), { createNodeMock: () => ({ parentElement: screen }) });
-    });
+    Object.defineProperty(page.container, "getBoundingClientRect", { configurable: true, value: () => rect });
+    await page.render(createElement(TerminalViewportTools, {
+      viewportIntent: new ViewportIntentGate(), terminal, paneId: "w1:p1", lineScroll, pageScroll,
+      onApplicationPage: (direction: -1 | 1) => { programPages.push(direction); programKeys.push(`${direction}@${Date.now() - start}`); },
+      enabled: true, interactive: true, search: null, onError: (message: string) => { errors.push(message); },
+    }));
     start = Date.now();
     // a step at the time of the one before moves nothing (a timer of 0 ms has taken the clock 1 ms on)
     const at = (ms: number) => act(async () => { if (start + ms > Date.now()) jest.advanceTimersByTime(start + ms - Date.now()); });
@@ -296,7 +301,7 @@ describe("history scrolls by every wheel line while the view's own writes are sl
       /** the same through the terminal's wheel event, as the browser sends it: the view also marks a gesture */
       wheelEvent: (lines: number) => act(async () => { for (const callback of wheeled) callback(); lineScroll.current!(lines); }),
       page: (direction: -1 | 1) => act(async () => { pageScroll.current!(direction); }),
-      jumpToBottom: () => act(async () => { renderer!.root.findByProps({ "aria-label": "Jump to bottom" }).props.onClick(); }),
+      jumpToBottom: () => act(async () => { page.one('[aria-label="Jump to bottom"]').click(); }),
       /** a chunk of output parsed, as herdr's repaint of a moved view arrives */
       output: () => act(async () => { for (const callback of written) callback(); }),
       answerWrite: (moved?: HerdrState | null) => act(async () => { herdr.answerWrite(moved); }),
@@ -305,7 +310,7 @@ describe("history scrolls by every wheel line while the view's own writes are sl
       failReads: () => act(async () => { herdr.failReads(); }),
       /** the grid's size changes (a resize while a write is out) */
       resize: () => act(async () => { for (const callback of resized) callback(); }),
-      unmount: () => act(async () => { renderer?.unmount(); renderer = undefined; }),
+      unmount: () => page.render(null),
       /** answers every read and write as they come, through `until` ms after mounting */
       async answerAll(until: number) {
         while (herdr.writing()) await act(async () => { herdr.answerWrite(); });

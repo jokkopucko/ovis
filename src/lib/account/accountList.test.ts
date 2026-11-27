@@ -704,9 +704,10 @@ describe("catching up", () => {
     now += 30_000;
     const view = await phone.list.sync();
     expect(following(view)).toMatchObject({ head: 2, standing: "in", trouble: null, read_at: Math.floor(now / 1000) });
+    const by = (await phone.keys()).key;
     expect(view.pcs).toEqual([
-      { endpoint: desk.endpoint, server_id: desk.server_id, how: "added", allows: true, name: { label: "Desk in the study", os: "linux" } },
-      { endpoint: laptop.endpoint, server_id: laptop.server_id, how: "added", allows: true, name: { label: "Laptop", os: "linux" } },
+      { endpoint: desk.endpoint, server_id: desk.server_id, how: "added", allows: true, name: { label: "Desk in the study", os: "linux" }, seq: 1, by, new_at: null },
+      { endpoint: laptop.endpoint, server_id: laptop.server_id, how: "added", allows: true, name: { label: "Laptop", os: "linux" }, seq: 2, by, new_at: null },
     ]);
     expect([phone.list.holdsPc(desk.endpoint), phone.list.holdsPc(newPc().endpoint)]).toEqual([true, false]);
     expect([phone.list.pcOfKey(desk.key), phone.list.pcOfKey(laptop.key), phone.list.pcOfKey((await phone.keys()).key)]).toEqual([desk.endpoint, laptop.endpoint, null]);

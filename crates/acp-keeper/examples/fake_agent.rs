@@ -13,7 +13,8 @@
 //!
 //! `session/load` adopts the loaded id, and fails while the file named by `--refuse-load FILE`
 //! exists; with `--no-load` the agent does not offer `loadSession`. With `--ask-on-close` it asks for one more approval as its stdin closes, and with
-//! `--linger` it stays alive after that, as an agent busy elsewhere would.
+//! `--linger` it stays alive after that, as an agent busy elsewhere would. With `--exit-after-session` it exits
+//! right after answering `session/new`.
 
 use std::io::{BufRead, Write};
 
@@ -69,7 +70,12 @@ fn main() {
         let id = msg.get("id").cloned().unwrap_or(Value::Null);
         let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
         if method.is_empty() {
-            if id == json!("perm-1") {
+            if id == json!("question") {
+                if let Some(prompt) = asked.take() {
+                    send(&mut out, &chunk(&session, &msg["result"].to_string()));
+                    send(&mut out, &end_turn(&prompt));
+                }
+            } else if id == json!("perm-1") {
                 if let Some(prompt) = asked.take() {
                     let outcome = msg
                         .pointer("/result/outcome/optionId")
@@ -109,11 +115,18 @@ fn main() {
                 send(&mut out, &json!({"jsonrpc":"2.0","id":id,"error":{"code":refuse_session,"message":"session refused"}}));
                 continue;
             }
-            "session/new" => json!({
-                "sessionId": session,
-                "modes": {"currentModeId": "ask", "availableModes": [{"id": "ask", "name": "Ask"}, {"id": "code", "name": "Code"}]},
-                "models": {"currentModelId": "m1", "availableModels": [{"modelId": "m1", "name": "One"}, {"modelId": "m2", "name": "Two"}]},
-            }),
+            "session/new" => {
+                let opened = json!({
+                    "sessionId": session,
+                    "modes": {"currentModeId": "ask", "availableModes": [{"id": "ask", "name": "Ask"}, {"id": "code", "name": "Code"}]},
+                    "models": {"currentModelId": "m1", "availableModels": [{"modelId": "m1", "name": "One"}, {"modelId": "m2", "name": "Two"}]},
+                });
+                if args.iter().any(|a| a == "--exit-after-session") {
+                    send(&mut out, &json!({"jsonrpc": "2.0", "id": id, "result": opened}));
+                    std::process::exit(0);
+                }
+                opened
+            }
             "session/load" if refuse_load.as_ref().is_some_and(|f| std::path::Path::new(f).exists()) => {
                 send(&mut out, &json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32603, "message": "the session is locked"}}));
                 continue;
@@ -142,6 +155,24 @@ fn main() {
                         }
                     }
                     "helpers" => helpers(words.next().unwrap_or(".")),
+                    "elicit" => {
+                        let mut params: Value = serde_json::from_str(text.strip_prefix("elicit ").unwrap()).unwrap();
+                        params["sessionId"] = json!(session);
+                        asked = Some(id);
+                        send(&mut out, &json!({"jsonrpc":"2.0","id":"question","method":"elicitation/create","params":params}));
+                        continue;
+                    }
+                    "question" => {
+                        asked = Some(id);
+                        send(
+                            &mut out,
+                            &json!({"jsonrpc":"2.0","id":"question","method":"elicitation/create","params":{
+                            "mode":"form","sessionId":session,"toolCallId":"tool-1","message":"Questions","requestedSchema":{
+                                "type":"object","properties":{"q0":{"type":"string","title":"Color","description":"Which color?",
+                                    "oneOf":[{"const":"red","title":"Red"},{"const":"blue","title":"Blue"}]}},"required":["q0"]}}}),
+                        );
+                        continue;
+                    }
                     "widen" if always => send(&mut out, &chunk(&session, "already allowed here")),
                     "widen" | "ask" | "ask-and-close-input" | "end-and-close-input" => {
                         #[cfg(unix)]

@@ -25,10 +25,20 @@ export class AdmissionRefusedError extends Error {
  * A marked pairing's first link that the PC turned away, ending its new row: the code ended (`link_required`), the
  * account did not confirm the device (`unverified_device`), or, on a PC that was in no account when the device read
  * its status (`pcAccount` null), the link named another account than the one named for it (`account_mismatch`). A PC
- * already in an account keeps a row whose link it refuses.
+ * already in an account keeps a row whose link it refuses. `list_removed`: the account's signed list removed this PC,
+ * and it takes no link into that account until it is a new PC.
  */
 export function firstLinkRefusal(code: string, pcAccount: string | null): boolean {
-  return code === "link_required" || code === "unverified_device" || (code === "account_mismatch" && pcAccount === null);
+  return code === "link_required" || code === "unverified_device" || code === "list_removed" || (code === "account_mismatch" && pcAccount === null);
+}
+
+/**
+ * A link the PC refused because the account's signed list removed that PC (`409 list_removed`), whatever pairing sent
+ * it: the PC comes back into that account only as a new PC. A marked pairing's row ended with it (refusalOf); any
+ * other pairing stands, and is told the same words.
+ */
+export function listRemovedLink(error: unknown): boolean {
+  return error instanceof AccountPcError && error.code === "list_removed";
 }
 
 /** What the failure screen says for a refusal of a first link, before the pairing or at the link; null for any other failure. */
@@ -49,6 +59,7 @@ export function refusalOf(error: unknown): RelayFailure | null {
     case "link_required": return "link-required";
     case "account_mismatch": return "account-mismatch";
     case "unverified_device": return "unverified-device";
+    case "list_removed": return "list-removed";
     default: return null;
   }
 }

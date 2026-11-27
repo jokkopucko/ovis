@@ -40,7 +40,7 @@ const report = (): UsageReport => ({
 
 async function usageContext(browser: Browser, options: BrowserContextOptions): Promise<BrowserContext> {
   const context = await browser.newContext(options);
-  await context.route("**/api/agent-catalog", (route) => route.fulfill({ json: { platform: "linux", agents: [] } }));
+  await context.route((url) => url.pathname === "/api/agent-catalog", (route) => route.fulfill({ json: { platform: "linux", agents: [] } }));
   return context;
 }
 
@@ -111,7 +111,10 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
       mkdirSync(process.env.UI_EVIDENCE_DIR, { recursive: true });
       await page.locator(".sidebar-shell").screenshot({ path: join(process.env.UI_EVIDENCE_DIR, "usage-popover.png") });
     }
-    const refreshed = page.waitForRequest((request) => request.url().endsWith("/api/usage?refresh=1"));
+    const refreshed = page.waitForRequest((request) => {
+      const url = new URL(request.url());
+      return url.pathname === "/api/usage" && url.searchParams.get("refresh") === "1";
+    });
     await popover.getByRole("button", { name: "Refresh", exact: true }).click();
     await refreshed;
     await page.keyboard.press("Escape");
@@ -216,6 +219,7 @@ export async function checkUsageMeters(browser: Browser, origin: string): Promis
   }
   console.log("PASS plan meters beside the Settings gear: session left by default, accounts, order, hiding, week and used, row fit, popover, refresh, Escape, off switch and phone fit");
   await checkStatuslineSwitch(browser, origin);
+  await checkFailures(browser, origin);
   await checkRecordedAccounts(browser, origin);
 }
 
@@ -270,7 +274,7 @@ async function checkRecordedAccounts(browser: Browser, origin: string): Promise<
   const installed = { installed: true, binary: "/usr/bin/claude", on_path: true, version: "2.1.311", version_error: null, meets_min_version: true };
   const claudeCode = catalogRow(AGENT_CATALOG.find((entry) => entry.id === "claude")!, "linux", installed);
   const staged = async (context: BrowserContext, report: () => UsageReport = recordedReport): Promise<void> => {
-    await context.route("**/api/agent-catalog", (route) => route.fulfill({ json: { platform: "linux", agents: [claudeCode] } }));
+    await context.route((url) => url.pathname === "/api/agent-catalog", (route) => route.fulfill({ json: { platform: "linux", agents: [claudeCode] } }));
     await context.route("**/api/usage/statusline", (route) => route.fulfill({ json: { installed: false, supported: true } }));
     await context.route("**/api/usage*", (route) => route.fulfill({ json: report() }));
     await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ showUsage: true })));
@@ -478,6 +482,46 @@ async function checkStatuslineSwitch(browser: Browser, origin: string): Promise<
   console.log("PASS a refused Claude sign-in offers the status line in place; Settings' switch shows and undoes it, sending only on or off");
 }
 
+/** Each failed read says what it ran into; Claude's on this PC offers its status line for a failure and a 429 too. */
+async function checkFailures(browser: Browser, origin: string): Promise<void> {
+  for (const phone of [false, true]) {
+    const context = await usageContext(browser, { viewport: phone ? { width: 390, height: 844 } : { width: 1280, height: 800 }, locale: "en-US", ...(phone ? { hasTouch: true, isMobile: true } : {}) });
+    try {
+      await context.route("**/api/usage/statusline", (route) => route.fulfill({ json: { installed: false, supported: true } }));
+      await context.route("**/api/usage*", (route) => route.fulfill({ json: { providers: [
+        { id: "claude", key: "claude:u1", account: "me@example.com", plan: "max", problem: "failed", failure: "upstream", checked_at: null, windows: [], statusline_offer: true },
+        { id: "claude", key: "claude:cliproxy:hub-1.json", account: "hub@example.com", plan: null, problem: "failed", failure: "hub", checked_at: null, windows: [] },
+        { id: "codex", key: "codex:c1", account: "me@example.com", plan: "pro", problem: "failed", failure: "timeout", checked_at: null, windows: [] },
+        { id: "cursor", key: "cursor:c1", account: null, plan: "pro", problem: "failed", failure: "bad_response", checked_at: null, windows: [] },
+        { id: "grok", key: "grok:g1", account: null, plan: null, problem: "failed", failure: "network", checked_at: null, windows: [] },
+        { id: "copilot", key: "copilot:me", account: "me", plan: "free", problem: "failed", checked_at: null, windows: [] },
+      ] } satisfies UsageReport }));
+      await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ showUsage: true })));
+      const page = await context.newPage();
+      await page.goto(origin);
+      if (phone) await openUsageDrawer(page);
+      await page.locator(".usage-strip").click();
+      const popover = page.getByRole("dialog", { name: "Subscription usage", exact: true });
+      await popover.waitFor();
+      // in whatever order the shared account order puts them
+      assert.deepEqual((await popover.locator(".usage-note.is-problem").allTextContents()).sort(), [
+        "Claude is busy or down. Try again later.",
+        "Codex took too long to answer.",
+        "Cursor sent an answer Ovis cannot read.",
+        "GitHub Copilot could not be reached.",
+        "Hub could not read this account.",
+        "This PC could not connect to Grok.",
+      ]);
+      assert.equal(await popover.getByRole("button", { name: "Read from Claude's status line instead", exact: true }).count(), 1, "offered for the failed Claude on this PC only");
+      assert.equal(await popover.locator(".usage-note").evaluateAll((notes) => notes.every((note) => note.scrollWidth <= note.clientWidth)), true, "every note fits");
+      if (process.env.UI_EVIDENCE_DIR) await page.locator(".sidebar-shell").screenshot({ path: join(process.env.UI_EVIDENCE_DIR, `usage-failures${phone ? "-phone" : ""}.png`) });
+    } finally {
+      await context.close();
+    }
+  }
+  console.log("PASS a failed read names what it ran into, a Hub account's the Hub, and a failed Claude on this PC offers its status line, desktop and phone");
+}
+
 /** An expired sign-in on this PC, one through the hub and Antigravity's, each expired: only the first can sign in again here. */
 const expiredReport = (): UsageReport => ({
   providers: [
@@ -528,7 +572,7 @@ export async function checkUsageSignInAgain(browser: Browser, origin: string): P
       await context.route("**/api/usage*", (route) => route.fulfill({ json: expiredReport() }));
       await context.route("**/api/usage/login?provider=*", (route) => route.fulfill({ json: { accounts: ["me@team.example"] } }));
       await context.route("**/api/usage/login/prompt*", (route) => route.fulfill({ json: { provider: "claude", url: null, user_code: null, wants_code: false, ended: false } }));
-      await context.route("**/api/usage/login", (route) => {
+      await context.route((url) => url.pathname === "/api/usage/login" && !url.searchParams.has("provider"), (route) => {
         if (route.request().method() !== "POST") return route.continue();
         const body = route.request().postDataJSON() as { follow?: boolean };
         posted.push(body);

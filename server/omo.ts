@@ -1,8 +1,9 @@
 import { constants, fstatSync, closeSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync } from "node:fs";
+import { directoryEntries } from "./directory-entries.ts";
 import { uptime } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { HerdrPane } from "../shared/protocol.ts";
-import { herdrRpc } from "./herdr/client.ts";
+import { paneProcessInfo } from "./herdr/client.ts";
 import { recentProcessTable } from "./gjc-runtime.ts";
 import { processAlive, processStartedAt, processStartedAtAsync } from "./process-start.ts";
 import { descendantProcesses, type ProcessRow } from "./windows-processes.ts";
@@ -73,6 +74,7 @@ export interface OmoRuntime {
   /** Recognized only by verified native holders: hints and cwd/time inference never apply. */
   custom?: boolean;
   ambiguous?: boolean;
+  incompleteStore?: boolean;
 }
 
 /** A session is never selected by mtime: tool activity is not evidence of pane ownership. */
@@ -89,6 +91,7 @@ export function selectOmoTranscript(paneId: string, candidates: OmoCandidate[], 
   const owned = (file: OmoCandidate) => target.stores === undefined || (file.store !== undefined && target.stores.includes(file.store));
   const exact = direct(target);
   const claimed = new Set(runtimes.filter((runtime) => runtime !== target).flatMap((runtime) => direct(runtime).map((file) => file.path)));
+  if (target.incompleteStore && (exact.length !== 1 || !target.paths.includes(exact[0]!.path))) return null;
   if (target.paths.length > 0 || target.ids.length > 0) {
     if (exact.length !== 1 || claimed.has(exact[0]!.path)) return null;
     // A launch ID can outlive /new. Without a current descriptor, a later unclaimed
@@ -169,7 +172,7 @@ export function processEnviron(pid: number): string[] | null {
  * say — a custom identity cannot be verified without it. A pane cwd goes stale the
  * moment a process moves, so it must never override either process-specific source.
  */
-function processCwd(process: { pid: number; cwd?: string }, cwd: string): string {
+function processCwd(process: { pid: number; cwd?: string | null }, cwd: string): string {
   if (typeof process.cwd === "string" && process.cwd) return process.cwd;
   try { return readlinkSync(`/proc/${process.pid}/cwd`); } catch { return cwd; }
 }
@@ -189,7 +192,7 @@ function processCwd(process: { pid: number; cwd?: string }, cwd: string): string
  *   the model it runs.
  */
 export function omoProcessIdentity(
-  process: { pid: number; argv?: string[]; cwd?: string },
+  process: { pid: number; argv?: string[] | null; cwd?: string | null },
   cwd: string,
   home: string,
   environOf: (pid: number) => readonly string[] | null = processEnviron,
@@ -311,22 +314,54 @@ export function earliestStart(starts: readonly (number | null)[]): number | null
   return known.length > 0 ? Math.min(...known) : null;
 }
 
-export function omoCandidates(cwd: string, home: string, exactPaths: string[] = [], agentDirs: readonly string[] = [defaultOmoAgentDir(home)]): OmoCandidate[] {
+const SESSION_ENTRY_LIMIT = 8192;
+const SESSION_TRANSCRIPT_LIMIT = 4096;
+
+function sessionListing(dir: string): { transcripts: string[]; capped: boolean } | null {
+  try {
+    const transcripts: string[] = [];
+    let count = 0;
+    for (const name of directoryEntries(dir)) {
+      if (++count >= SESSION_ENTRY_LIMIT) return { transcripts: [], capped: true };
+      if (name.endsWith(".jsonl")) transcripts.push(name);
+    }
+    return { transcripts, capped: false };
+  } catch { return null; }
+}
+
+export function omoCandidates(cwd: string, home: string, exactPaths: string[] = [], agentDirs: readonly string[] = [defaultOmoAgentDir(home)]): {
+  files: OmoCandidate[]; capped: Set<string>; listings: ReadonlyMap<string, readonly string[]>;
+} {
   const roots = canonicalRoots(agentDirs.map((agentDir) => join(agentDir, "sessions")));
   const paths = new Set(exactPaths);
+  const capped = new Set<string>();
+  const listings = new Map<string, readonly string[]>();
+  const scanned = new Set<string>();
   for (const agentDir of new Set(agentDirs)) {
-    const dir = sessionDir(cwd, agentDir);
-    let names: string[] = [];
-    try { names = readdirSync(dir); } catch { /* only explicit evidence may remain */ }
-    // Never choose a subset when the directory is too large to inspect safely.
-    if (names.length <= 4096) for (const name of names) if (name.endsWith(".jsonl")) paths.add(join(dir, name));
+    let dir: string;
+    try { dir = realpathSync(sessionDir(cwd, agentDir)); } catch { continue; }
+    if (scanned.has(dir)) continue;
+    scanned.add(dir);
+    const listing = sessionListing(dir);
+    if (listing === null) {
+      for (const root of canonicalRoots([join(agentDir, "sessions")])) capped.add(root);
+      continue;
+    }
+    const { transcripts } = listing;
+    if (!listing.capped) listings.set(dir, transcripts);
+    // Bound transcript reads without counting sidecars or guessing from a partial set.
+    if (!listing.capped && transcripts.length <= SESSION_TRANSCRIPT_LIMIT) {
+      for (const name of transcripts) paths.add(join(dir, name));
+    } else {
+      for (const root of canonicalRoots([join(agentDir, "sessions")])) capped.add(root);
+    }
   }
   const found = new Map<string, OmoCandidate>();
   for (const path of paths) {
     const file = candidate(path, roots, cwd);
     if (file) found.set(file.path, file);
   }
-  return [...found.values()];
+  return { files: [...found.values()], capped, listings };
 }
 
 function resumedIds(argv: string[]): string[] {
@@ -354,7 +389,7 @@ function isLaunchStep(argv: readonly string[]): boolean {
   return script !== undefined && PACKAGE_RUNNER.test(script);
 }
 
-export type ProcessInfo = { process_info?: { shell_pid?: number; foreground_processes?: { pid: number; argv?: string[]; cwd?: string }[] } } | null;
+export type ProcessInfo = { process_info?: { shell_pid?: number | null; foreground_processes?: { pid: number; argv?: string[] | null; cwd?: string | null }[] } } | null;
 
 /**
  * herdr on Windows names only the pane's launcher in foreground_processes, not what the launcher
@@ -363,7 +398,7 @@ export type ProcessInfo = { process_info?: { shell_pid?: number; foreground_proc
  */
 export function withOmoDescendants(info: ProcessInfo, rows: readonly ProcessRow[], alive: (pid: number) => boolean = () => true): ProcessInfo {
   const shell = info?.process_info?.shell_pid;
-  if (shell === undefined) return info;
+  if (shell == null) return info;
   const foreground = info?.process_info?.foreground_processes ?? [];
   const named = new Set(foreground.map((entry) => entry.pid));
   const below = descendantProcesses(rows, shell);
@@ -399,7 +434,7 @@ export function withOmoDescendants(info: ProcessInfo, rows: readonly ProcessRow[
 
 export const processInfo = async (paneId: string): Promise<ProcessInfo> => {
   const [info, rows] = await Promise.all([
-    herdrRpc<NonNullable<ProcessInfo>>("pane.process_info", { pane_id: paneId }).catch(() => null),
+    paneProcessInfo(paneId).then((process_info) => ({ process_info }), () => null),
     process.platform === "win32" ? recentProcessTable() : Promise.resolve([]),
   ]);
   return withOmoDescendants(info, rows, processAlive);
@@ -442,7 +477,7 @@ export async function heldOmoProcess(
   return held ? { pid: held.pid, started: startOf(held.pid) } : null;
 }
 
-type OmoForeground = { pid: number; argv?: string[]; cwd?: string };
+type OmoForeground = { pid: number; argv?: string[] | null; cwd?: string | null };
 
 const paneFallbackCwd = (pane: HerdrPane): string =>
   (typeof pane.foreground_cwd === "string" && pane.foreground_cwd) || pane.cwd || "";
@@ -533,14 +568,21 @@ function omoTranscriptsResolved(cwd: string, panes: readonly PaneResolution[], h
     }
     runtimes.push({ paneId: pane.pane_id, startedAt: starts.every((start) => start !== null) ? Math.min(...(starts as number[])) : null, paths, ids, stores: stores.filter((store): store is string => store !== null), custom, ambiguous: resolved.ambiguous });
   }
-  const files = omoCandidates(cwd, home, runtimes.flatMap((runtime) => runtime.paths), [...agentDirs]);
+  const { files, capped, listings } = omoCandidates(cwd, home, runtimes.flatMap((runtime) => runtime.paths), [...agentDirs]);
   // Match canonical candidates even when /proc names a symlink into the store, and drop a
   // path that no store of this pane contains: it is another pane's or a stale report.
   for (const runtime of runtimes) {
     runtime.paths = runtime.paths.flatMap((path) => { try { return [realpathSync(path)]; } catch { return []; } });
     if (runtime.stores !== undefined) runtime.paths = runtime.paths.filter((path) => runtime.stores!.some((root) => inStore(path, root)));
   }
-  const current = runtimes.map((runtime) => heldRuntime(runtime, held.get(runtime.paneId) ?? [], files));
+  const current = runtimes.map((runtime) => {
+    const claims = held.get(runtime.paneId) ?? [];
+    const resolved = heldRuntime(runtime, claims, files);
+    // A scoped holder names its own store. Launch IDs and time inference have no such proof.
+    const stores = claims.length === 0 ? runtime.stores ?? [] : claims.flatMap(({ store }) => store === null ? [] : [store]);
+    const incompleteStore = stores.some((store) => capped.has(store));
+    return incompleteStore ? { ...resolved, paths: resolved.paths.filter((path) => runtime.paths.includes(path)), incompleteStore } : resolved;
+  });
   // That held session's file comes with its first message: until then the pane is a conversation
   // with nothing in it, not an unreadable one.
   const unwritten = (paneId: string): string | null => {
@@ -549,9 +591,9 @@ function omoTranscriptsResolved(cwd: string, panes: readonly PaneResolution[], h
     const id = entries[0]!.id;
     if (files.some((file) => file.id === id && entries.some((entry) => entry.store !== null && entry.store === file.store))) return null;
     for (const dir of new Set(entries.map((entry) => entry.dir))) {
-      let names: string[];
-      try { names = readdirSync(dir); } catch { return null; }
-      if (names.some((name) => name === `${id}.jsonl` || name.endsWith(`_${id}.jsonl`))) return null;
+      let names: readonly string[] | undefined;
+      try { names = listings.get(realpathSync(dir)); } catch { return null; }
+      if (names === undefined || names.some((name) => name === `${id}.jsonl` || name.endsWith(`_${id}.jsonl`))) return null;
     }
     return id;
   };

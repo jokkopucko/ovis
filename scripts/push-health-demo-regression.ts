@@ -7,17 +7,15 @@
  */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { chromium, type Browser, type Locator, type Page } from "playwright-core";
+import type { Browser, Locator, Page } from "playwright-core";
 import { DEMO_PUSH } from "../site/demo/fixtures.ts";
 import { JA } from "../src/lib/i18n.ja.ts";
 import { KO } from "../src/lib/i18n.ko.ts";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
+import { appContext } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 import { openSettingsPage, pressInSettings } from "./settings-page.ts";
-import { serveDemo } from "./demo-server.ts";
 
 type Theme = "light" | "dark";
 type Language = "en" | "ko";
@@ -130,7 +128,7 @@ async function run(browser: Browser, origin: string, width: number, theme: Theme
   const viewport = phone ? PHONE : DESKTOP;
   const tag = `${width} ${theme} ${language}`;
   const open = async (mode: string) => {
-    const context = await browser.newContext({ viewport, ...(phone ? { deviceScaleFactor: 3, isMobile: true, hasTouch: true } : {}), locale: language === "ko" ? "ko-KR" : "en-US", permissions: ["notifications"] });
+    const context = await appContext(browser, { viewport, ...(phone ? { deviceScaleFactor: 3, isMobile: true, hasTouch: true } : {}), locale: language === "ko" ? "ko-KR" : "en-US", permissions: ["notifications"] });
     await context.addInitScript(([settings, key, state]) => { localStorage.setItem("ovis:settings", settings); localStorage.setItem(key, state); }, [JSON.stringify({ language, theme, alertsOn: true }), QA_KEY, mode] as const);
     const page = await context.newPage();
     const errors: string[] = [];
@@ -351,7 +349,7 @@ async function checkFailedRepairAtLargeText(browser: Browser, origin: string, wi
   const wide = width > 640;
   const viewport = wide ? DESKTOP : { width, height: width === 320 ? 568 : 844 };
   const tag = `${width} failed repair at 20px`;
-  const context = await browser.newContext({ viewport, ...(wide ? {} : { deviceScaleFactor: 3, isMobile: true, hasTouch: true }), locale: "en-US", permissions: ["notifications"] });
+  const context = await appContext(browser, { viewport, ...(wide ? {} : { deviceScaleFactor: 3, isMobile: true, hasTouch: true }), permissions: ["notifications"] });
   await context.addInitScript(([settings, key]) => { localStorage.setItem("ovis:settings", settings); localStorage.setItem(key, "fresh"); }, [JSON.stringify({ language: "en", theme: "light", alertsOn: true, uiFontSize: 20 }), QA_KEY] as const);
   try {
     const page = await context.newPage();
@@ -393,7 +391,7 @@ async function checkFailedRepairAtLargeText(browser: Browser, origin: string, wi
 async function checkLineAtLargeText(browser: Browser, origin: string, width: number): Promise<void> {
   const viewport = { width, height: width === 320 ? 568 : 844 };
   const tag = `${width} ja line at 20px`;
-  const context = await browser.newContext({ viewport, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: "ja-JP", permissions: ["notifications"] });
+  const context = await appContext(browser, { viewport, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: "ja-JP", permissions: ["notifications"] });
   await context.addInitScript(([settings, key]) => { localStorage.setItem("ovis:settings", settings); localStorage.setItem(key, "fresh"); }, [JSON.stringify({ language: "ja", theme: "light", alertsOn: true, uiFontSize: 20 }), QA_KEY] as const);
   try {
     const page = await context.newPage();
@@ -430,30 +428,14 @@ async function checkLineAtLargeText(browser: Browser, origin: string, width: num
   } finally { await context.close(); }
 }
 
-const app = mkdtempSync(join(tmpdir(), "herdr-push-health-demo-"));
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  const html = readFileSync(index, "utf8");
-  assert.match(html, /<script type="module"/);
-  writeFileSync(index, html.replace(/<script type="module"/, () => `${HOLD_DEMO_TURN}<script src="./demo-transport.js"></script>${RELEASE_TIMERS}${STAND_IN}\n    <script type="module"`));
-  const server = serveDemo(app);
-  try {
-    if (EVIDENCE) mkdirSync(EVIDENCE, { recursive: true });
-    const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-    try {
-      const origin = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/`;
-      for (const [width, theme, language] of [[PHONE.width, "light", "en"], [PHONE.width, "dark", "en"], [DESKTOP.width, "light", "en"], [DESKTOP.width, "dark", "en"], [PHONE.width, "light", "ko"]] as const) {
-        await run(browser, origin, width, theme, language);
-      }
-      for (const width of [320, PHONE.width, DESKTOP.width]) await checkFailedRepairAtLargeText(browser, origin, width);
-      for (const width of [320, PHONE.width]) await checkLineAtLargeText(browser, origin, width);
-    } finally { await browser.close(); }
-  } finally { server.stop(true); }
-  if (EVIDENCE) {
-    writeFileSync(join(EVIDENCE, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
-    writeFileSync(join(EVIDENCE, "push-health-result.json"), `${JSON.stringify({ script: "scripts/push-health-demo-regression.ts", ok: true, results, captures: manifest.length }, null, 2)}\n`);
+await withDemoBrowser({ tempPrefix: "herdr-push-health-demo-", beforeTransport: HOLD_DEMO_TURN, afterTransport: `${RELEASE_TIMERS}${STAND_IN}` }, async ({ browser, baseUrl: origin }) => {
+  for (const [width, theme, language] of [[PHONE.width, "light", "en"], [PHONE.width, "dark", "en"], [DESKTOP.width, "light", "en"], [DESKTOP.width, "dark", "en"], [PHONE.width, "light", "ko"]] as const) {
+    await run(browser, origin, width, theme, language);
   }
-} finally {
-  rmSync(app, { recursive: true, force: true });
+  for (const width of [320, PHONE.width, DESKTOP.width]) await checkFailedRepairAtLargeText(browser, origin, width);
+  for (const width of [320, PHONE.width]) await checkLineAtLargeText(browser, origin, width);
+});
+if (EVIDENCE) {
+  writeFileSync(join(EVIDENCE, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+  writeFileSync(join(EVIDENCE, "push-health-result.json"), `${JSON.stringify({ script: "scripts/push-health-demo-regression.ts", ok: true, results, captures: manifest.length }, null, 2)}\n`);
 }

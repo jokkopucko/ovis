@@ -1,46 +1,41 @@
-import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
-import { createElement } from "react";
+import { afterEach, beforeEach, describe, expect, it, jest, mock } from "bun:test";
+import { act, createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { act, create as createRenderer, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, reactProps, type Page } from "../lib/page.fixture.ts";
+import type { AccountList } from "../lib/account/accountList.ts";
+import { LIST_WRITE_WAITING_EVENT } from "../lib/account/listWrite.ts";
 import type { MyPc } from "../lib/account/myPcs.ts";
+import { setPageAccountList } from "../lib/account/pageList.ts";
+import { endPairCodeComposition, typePairCode } from "../lib/pairCodeInput.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { signInLink } from "./ConnectPhoneDialog.tsx";
 import { keyIdGroups } from "./KeyId.tsx";
-import { AccountJoinRequests } from "./AccountJoinRequests.tsx";
+import * as AccountJoinRequestsModule from "./AccountJoinRequests.tsx";
 import { ADD_PC_FROM_KEY } from "./MachineSidebar.tsx";
-import { NewPcNotices } from "./NewPcNotices.tsx";
+import * as NewPcNoticesModule from "./NewPcNotices.tsx";
 import { leaveAddEntry, RelayShell, type RelayShellProps } from "./RelayShell.tsx";
-import { UnconfirmedPcNotices } from "./UnconfirmedPcNotices.tsx";
-
-/** every tree a test draws, still mounted: the test's end unmounts each one, not only the last it kept */
-const drawn = new Set<ReactTestRenderer>();
-const create = (...args: Parameters<typeof createRenderer>): ReactTestRenderer => {
-  const tree = createRenderer(...args);
-  const unmount = tree.unmount.bind(tree);
-  tree.unmount = () => { drawn.delete(tree); unmount(); };
-  drawn.add(tree);
-  return tree;
-};
+import * as UnconfirmedPcNoticesModule from "./UnconfirmedPcNotices.tsx";
 
 const EXPECTED = "0123456789abcdef0123456789abcdef";
 const RECEIVED = "01234567ffffcdef0123456789abeeee";
 const none = () => {};
 const props = (state: RelayShellProps["state"]): RelayShellProps => ({ state, scoped: true, iosTab: false, onPair: none, onRetry: none, onCancel: none, onBack: none, onForget: none, onUpdate: none, onMatch: none, onCodeStart: none, onCodeSubmit: none, onCodeMatch: none });
+let staticPage: Page | undefined;
+afterEach(async () => {
+  const page = staticPage;
+  staticPage = undefined;
+  await page?.close();
+});
+
 const render = (shown: RelayShellProps): string => {
-  const saved = Object.getOwnPropertyDescriptor(navigator, "languages");
-  Object.defineProperty(navigator, "languages", { configurable: true, value: ["en"] });
-  try {
-    return renderToStaticMarkup(createElement(SettingsProvider, { children: createElement(RelayShell, shown) }));
-  } finally {
-    if (saved) Object.defineProperty(navigator, "languages", saved);
-    else Reflect.deleteProperty(navigator, "languages");
+  if (staticPage === undefined) {
+    staticPage = openPage("https://app.ovis.sh/");
+    staticPage.window.happyDOM.setViewport({ width: 390, height: 844 });
   }
+  return renderToStaticMarkup(createElement(SettingsProvider, { children: createElement(RelayShell, shown) }));
 };
 describe("the front page's account part", () => {
   // the dashboard is a page opened on purpose, by its address: a front page with none is Add a PC
-  let windowBefore: PropertyDescriptor | undefined;
-  beforeEach(() => { windowBefore = Object.getOwnPropertyDescriptor(globalThis, "window"); Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { hash: "" } } }); });
-  afterEach(() => { if (windowBefore) Object.defineProperty(globalThis, "window", windowBefore); else Reflect.deleteProperty(globalThis, "window"); });
   const pc = (server_id: string, name: string, state: "paired" | "needs-approval" | "offline" | "needs-update", paired = state === "paired") => ({ server_id, name, state, last_seen_at: null, added_at: null, listed: true, paired, linked: paired });
 
   it("offers GitHub alone until the service is set up for Apple", () => {
@@ -140,8 +135,22 @@ describe("the front page's account part", () => {
     expect(rowsOf(out)).toEqual([[`/s/${"a".repeat(32)}/`, "old-desk Relay Update needed"]]);
   });
 
+  it("says of a PC that the account's list does not hold that it is not in the list yet, and of a list this device cannot read, above the rows", () => {
+    const join = { server_public_key: "k", relay: "wss://relay.example" };
+    const pcs = [{ ...pc("c".repeat(32), "desk", "needs-approval"), join, byList: true as const }, { ...pc("d".repeat(32), "old-box", "needs-approval"), join, notInList: true as const }];
+    const html = render({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "github", error: null, pcs } }), scoped: false, onSignIn: none });
+    expect(rowsOf(html)).toEqual([[`/s/${"c".repeat(32)}/`, "desk Relay On"], [`/s/${"d".repeat(32)}/`, "old-box Relay Not in your account&#x27;s list yet On"]]);
+    expect(html).not.toContain("data-list-unread");
+    // a copy only a newer app reads, and one that does not read: one line each, and every row marked
+    const marked = [{ ...pc("c".repeat(32), "desk", "needs-approval"), join, notInList: true as const }, { ...pc("d".repeat(32), "old-box", "needs-approval"), join, notInList: true as const }];
+    const newer = render({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "github", error: null, pcs: marked, list: "newer" } }), scoped: false, onSignIn: none });
+    expect(newer).toContain("This device cannot read your account&#x27;s list. Update the app.");
+    expect(rowsOf(newer).map(([, text]) => text)).toEqual(["desk Relay Not in your account&#x27;s list yet On", "old-box Relay Not in your account&#x27;s list yet On"]);
+    const damaged = render({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "github", error: null, pcs: marked, list: "damaged" } }), scoped: false, onSignIn: none });
+    expect(damaged).toMatch(/data-list-unread="damaged"[^>]*>This device cannot read your account&#x27;s list\. Sign out and in again on this device, then allow it from another device\.</);
+  });
+
   it("lists on My PCs this device's own PCs and then the account's it can open, each once, by way and state, whatever the address", () => {
-    Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { hash: "" } } });
     const devices = [saved("a".repeat(32), "p620"), saved("b".repeat(32), "nuc")];
     const pcStatus = new Map([["a".repeat(32), { kind: "answered", route: "relay", rttMs: 40 }], ["b".repeat(32), { kind: "offline", reason: "pc" }]] as const);
     const join = { server_public_key: "k", relay: "wss://relay.example" };
@@ -201,9 +210,6 @@ describe("the front page's account part", () => {
 });
 
 describe("the hosted front page", () => {
-  let windowBefore: PropertyDescriptor | undefined;
-  beforeEach(() => { windowBefore = Object.getOwnPropertyDescriptor(globalThis, "window"); Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { hash: "" } } }); });
-  afterEach(() => { if (windowBefore) Object.defineProperty(globalThis, "window", windowBefore); else Reflect.deleteProperty(globalThis, "window"); });
   const pc = (server_id: string, name: string, state: MyPc["state"], over: Partial<MyPc> = {}): MyPc => ({ server_id, name, state, last_seen_at: null, added_at: null, listed: true, paired: state === "paired", linked: true, ...over });
   const device = (server_id: string, name: string, relay: string) => ({ server_id, server_public_key: "k", relay, name, device_id: "0".repeat(16), label: "Phone" }) as unknown as Extract<RelayShellProps["state"], { kind: "list" }>["devices"][number];
   const AP = "wss://relay-ap.ovis.sh";
@@ -219,71 +225,113 @@ describe("the hosted front page", () => {
   const signedIn = (pcs: MyPc[] | null, extra: Partial<RelayShellProps> = {}): RelayShellProps => ({ ...props({ kind: "list", devices: devices(), account: { kind: "signed-in", provider: "github", error: null, pcs } }), scoped: false, onSignIn: none, ...extra });
 
   describe("in a browser", () => {
+    let browser: Page;
     const descriptors = new Map<string, PropertyDescriptor | undefined>();
-    let renderer: ReactTestRenderer | undefined;
-    const node = () => ({ isConnected: true, focus() {}, contains: () => false, querySelector: () => null, querySelectorAll: () => [], getClientRects: () => [], getBoundingClientRect: () => ({ top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0, x: 0, y: 0 }), closest: () => null, addEventListener() {}, removeEventListener() {}, pauseAnimations() {}, unpauseAnimations() {} });
 
     beforeEach(() => {
-      for (const key of ["window", "document", "navigator", "localStorage", "sessionStorage", "getComputedStyle", "matchMedia", "HTMLElement", "IntersectionObserver", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-      const events = new EventTarget();
-      const store = new Map<string, string>();
-      const storage = { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => { store.set(key, value); }, removeItem: (key: string) => { store.delete(key); }, key: () => null, length: 0, clear: () => store.clear() };
-      const tab = new Map<string, string>();
-      Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: { getItem: (key: string) => tab.get(key) ?? null, setItem: (key: string, value: string) => { tab.set(key, value); }, removeItem: (key: string) => { tab.delete(key); }, key: () => null, length: 0, clear: () => tab.clear() } });
-      const matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
-      class HTMLElement { isConnected = true; focus(): void {} }
-      class IntersectionObserver { observe(): void {} disconnect(): void {} }
-      Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-      Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: HTMLElement });
-      Object.defineProperty(globalThis, "IntersectionObserver", { configurable: true, value: IntersectionObserver });
-      Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
-      Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Mozilla/5.0 (X11; Linux x86_64)", maxTouchPoints: 0 } });
-      Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage });
-      Object.defineProperty(globalThis, "matchMedia", { configurable: true, value: matchMedia });
-      Object.defineProperty(globalThis, "window", { configurable: true, value: {
-        location: { href: "https://app.ovis.sh/", search: "", hash: "", origin: "https://app.ovis.sh", pathname: "/" },
-        history: { state: null, replaceState() {}, pushState() {}, back() {} },
-        localStorage: storage, matchMedia, innerWidth: 1440,
-        addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), dispatchEvent: events.dispatchEvent.bind(events),
-        requestAnimationFrame: () => 1, cancelAnimationFrame() {},
-        setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout,
-      } });
-      Object.defineProperty(globalThis, "document", { configurable: true, value: {
-        documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
-        activeElement: new HTMLElement(),
-        body: { nodeType: 1, children: [], createNodeMock: node },
-        querySelector: () => null, querySelectorAll: () => [],
-        addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), dispatchEvent: events.dispatchEvent.bind(events),
-      } });
+      browser = openPage("https://app.ovis.sh/");
+      descriptors.set("Capacitor", Object.getOwnPropertyDescriptor(globalThis, "Capacitor"));
+      browser.window.happyDOM.settings.navigation.disableMainFrameNavigation = true;
+      Object.defineProperty(browser.window.navigator, "onLine", { configurable: true, writable: true, value: true });
+      // Keep the history boundary inert unless the test records a particular history action.
+      Object.assign(browser.window.history, { pushState() {}, replaceState() {}, back() {} });
+      Object.defineProperty(browser.window, "innerWidth", { configurable: true, value: 1440 });
+      Object.defineProperty(browser.window, "requestAnimationFrame", { configurable: true, writable: true, value: () => 1 });
+      const matchMedia = (query: string) => ({ media: query, matches: false, addEventListener() {}, removeEventListener() {} });
+      Object.defineProperty(browser.window, "matchMedia", { configurable: true, writable: true, value: matchMedia });
+      Object.defineProperty(browser.window, "setTimeout", { configurable: true, value: (...args: Parameters<typeof setTimeout>) => setTimeout(...args) });
+      Object.defineProperty(browser.window, "clearTimeout", { configurable: true, value: clearTimeout });
+      for (const [key, value] of Object.entries({
+        localStorage: browser.window.localStorage, sessionStorage: browser.window.sessionStorage, matchMedia,
+        HTMLElement: browser.window.HTMLElement, HTMLInputElement: browser.window.HTMLInputElement,
+        requestAnimationFrame: () => 1, cancelAnimationFrame: () => {},
+        IntersectionObserver: browser.window.IntersectionObserver, Event: browser.window.Event, CustomEvent: browser.window.CustomEvent,
+      })) {
+        descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+        Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+      }
     });
 
     afterEach(async () => {
-      // every tree goes, then what was left to run on a timer runs while this window is still here: a closed sheet (Add
-      // a PC over My PCs) leaves its history entry a turn later (sheetHistory leaveSheet), whether it closed in the
-      // test's last step or as its tree unmounted; run after the window went, it found another or none
-      await act(async () => { for (const tree of [...drawn]) tree.unmount(); });
-      renderer = undefined;
-      await act(async () => { for (let turn = 0; turn < 3; turn++) await new Promise((resolve) => setTimeout(resolve, 0)); });
-      for (const [key, descriptor] of descriptors) {
-        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-        else Reflect.deleteProperty(globalThis, key);
+      try {
+        await browser.render(null);
+        // Let the sheet leave its history entry while this window is still here.
+        await act(async () => { for (let turn = 0; turn < 3; turn++) await new Promise((resolve) => setTimeout(resolve, 0)); });
+      } finally {
+        try { await browser.close(); } finally {
+          for (const [key, descriptor] of descriptors) {
+            if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+            else Reflect.deleteProperty(globalThis, key);
+          }
+          descriptors.clear();
+        }
       }
-      descriptors.clear();
     });
 
-    const mount = async (shown: RelayShellProps) => { await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(RelayShell, shown) }), { createNodeMock: node }); }); };
-    const dialogs = () => renderer!.root.findAll((instance) => instance.props.role === "dialog");
-    const dialog = () => { const found = dialogs(); if (found.length !== 1) throw new Error(`${found.length} dialogs`); return found[0]!; };
-    const textOf = (node: ReactTestInstance): string => node.children.map((child) => typeof child === "string" ? child : textOf(child)).join("");
-    /** whether a node is on screen: no part it sits in is hidden (the pane the layout does not show stays mounted, hidden) */
-    const shown = (node: ReactTestInstance): boolean => { for (let at: ReactTestInstance | null = node; at !== null; at = at.parent) if (at.props?.hidden === true) return false; return true; };
-    const buttons = (label: string) => renderer!.root.findAll((node) => node.type === "button" && textOf(node).trim() === label && shown(node));
+    const mount = async (shown: RelayShellProps) => {
+      await browser.render(null);
+      await browser.render(createElement(SettingsProvider, { children: createElement(RelayShell, shown) }));
+    };
+    const all = <E extends Element = HTMLElement,>(selector: string, root: Element = document.body): E[] => [...root.querySelectorAll<E>(selector)];
+    const element = <E extends Element = HTMLElement,>(selector: string, root?: Element): E => one(selector, all<E>(selector, root));
+    const dialogs = () => all('[role="dialog"]');
+    const dialog = () => one("dialogs", dialogs());
+    const textOf = (node: Element): string => node.textContent ?? "";
+    const shown = (node: Element): boolean => node.closest("[hidden]") === null;
+    const buttons = (label: string) => all("button").filter((node) => textOf(node).trim() === label && shown(node));
+    const submit = async (form: Element, value: string) => {
+      await browser.type(element<HTMLInputElement>('input:not([type="hidden"])', form), value);
+      await act(async () => { Reflect.apply(form.dispatchEvent, form, [new browser.window.Event("submit", { bubbles: true, cancelable: true })]); });
+    };
+    const clickLink = (link: Element): boolean => {
+      const event = new browser.window.MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
+      Reflect.apply(link.dispatchEvent, link, [event]);
+      return event.defaultPrevented;
+    };
+    const trackFocus = (focused: string[]): void => {
+      // The first focus can happen during mount. The page restores the shared prototype on close.
+      const focus = browser.window.HTMLElement.prototype.focus;
+      Object.defineProperty(browser.window.HTMLElement.prototype, "focus", { configurable: true, value: function (this: HTMLElement, options?: FocusOptions) {
+        focused.push(this.localName === "button" ? String(this.getAttribute("data-action") ?? this.getAttribute("aria-label")) : this.localName);
+        Reflect.apply(focus, this, [options]);
+      } });
+    };
     const button = (label: string) => { const found = buttons(label); if (found.length !== 1) throw new Error(`${found.length} buttons say ${label}`); return found[0]!; };
+
+    it("puts up the card of a change that still waits when another change is refused for it, and the card acts on that request alone", async () => {
+      const first = { account: "acct", list: "5c".repeat(32), key: "member", on: { seq: 3, hash: "aa".repeat(32) }, place: { seq: 4, hash: "bb".repeat(32) }, for: "allow:k", at: 1 };
+      const calls: string[] = [];
+      let waits: typeof first | null = first;
+      setPageAccountList({
+        waiting: async () => waits, cancel: async (given: typeof first) => { calls.push(`cancel ${given.place.hash}`); },
+        sync: async () => { calls.push("sync"); throw new Error("nothing is sent in this test"); },
+        subscribe: () => () => {}, view: () => ({ account: null, reached: false, status: { at: "off" }, devices: [], pcs: [] }),
+        // Add PC's relay tab asks every page list whether this device may write it (InvitePc): this one may not
+        writer: () => null,
+      } as unknown as AccountList);
+      const cards = () => all('[data-testid="list-allow-notice"]');
+      const refusedElsewhere = async (): Promise<void> => { await act(async () => { browser.window.dispatchEvent(new browser.window.Event(LIST_WRITE_WAITING_EVENT)); await Promise.resolve(); await Promise.resolve(); }); };
+      try {
+        await mount({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: () => {} });
+        expect(cards()).toHaveLength(0);
+        // a Remove on this screen was refused because an earlier change still waits
+        await refusedElsewhere();
+        expect(cards().map(textOf).join("")).toContain("An earlier change is still waiting");
+        // Cancel lets go of the request the card was put up for
+        await act(async () => { button("Cancel").click(); await Promise.resolve(); await Promise.resolve(); });
+        expect([calls, cards().length]).toEqual([[`cancel ${first.place.hash}`], 0]);
+        // put up again; another change took the place meanwhile: Try again on this card sends nothing of it
+        await refusedElsewhere();
+        waits = { ...first, place: { seq: 4, hash: "cc".repeat(32) }, for: "remove-pc:x" };
+        await act(async () => { button("Try again").click(); await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+        expect([calls, cards().length]).toEqual([[`cancel ${first.place.hash}`], 0]);
+      } finally { setPageAccountList(null); }
+    });
 
     describe("a pairing's step frame", () => {
       const offer = { v: 1 as const, server_id: EXPECTED, server_public_key: "k", relay: "wss://relay.example", name: "Desk" };
-      const backOf = (): ReactTestInstance[] => renderer!.root.findAll((node) => node.type === "button" && node.props.className === "relay-step-back");
-      const stepOf = (): unknown => renderer!.root.findAll((node) => node.type === "div" && node.props.className === "relay-step-progress")[0]?.props["data-step"] ?? null;
+      const backOf = () => all<HTMLButtonElement>('button[class="relay-step-back"]');
+      const stepOf = () => all('div[class="relay-step-progress"]')[0]?.getAttribute("data-step") ?? null;
 
       it("cancels the pairing from its round Back on the confirm, the comparison and the connection, each named for what it does", async () => {
         const steps: [RelayShellProps["state"], string, number][] = [
@@ -296,32 +344,31 @@ describe("the hosted front page", () => {
           let cancelled = 0;
           await mount({ ...props(state), onCancel: () => { cancelled++; } });
           const back = backOf();
-          expect(back.map((button) => button.props["aria-label"])).toEqual([label]);
-          await act(async () => { back[0]!.props.onClick(); });
+          expect(back.map((button) => button.getAttribute("aria-label"))).toEqual([label]);
+          await act(async () => { back[0]!.click(); });
           expect(cancelled).toBe(1);
-          expect(stepOf()).toBe(step);
-          await act(async () => { renderer!.unmount(); });
+          expect(stepOf()).toBe(String(step));
+          await browser.render(null);
         }
       });
 
       it("moves the focus to the heading when the press takes the focused button away", async () => {
         const focused: string[] = [];
-        const nodes = (element: { type: unknown }) => element.type === "h1" ? { ...node(), focus: () => { focused.push("h1"); } } : node();
+        trackFocus(focused);
         const draw = (confirmed: boolean) => createElement(SettingsProvider, { children: createElement(RelayShell, props({ kind: "compare", name: "Desk", digits: "123456", confirmed })) });
-        await act(async () => { renderer = create(draw(false), { createNodeMock: nodes as never }); });
+        await browser.render(draw(false));
         expect(focused).toEqual([]);
-        Object.defineProperty(document, "activeElement", { configurable: true, value: null });
-        await act(async () => { renderer!.update(draw(true)); });
+        await browser.render(draw(true));
         expect(focused).toEqual(["h1"]);
-        expect(textOf(renderer!.root.find((n) => n.type === "h1"))).toBe("Approve on the PC if it shows the same number");
+        expect(textOf(element("h1"))).toBe("Approve on the PC if it shows the same number");
       });
 
       it("drops the round Back once this phone confirmed the digits, leaving the comparison's own Cancel", async () => {
         let cancelled = 0;
         await mount({ ...props({ kind: "compare", name: "Desk", digits: "123456", confirmed: true }), onCancel: () => { cancelled++; } });
         expect(backOf()).toEqual([]);
-        expect(stepOf()).toBe(2);
-        await act(async () => { button("Cancel").props.onClick(); });
+        expect(stepOf()).toBe("2");
+        await act(async () => { button("Cancel").click(); });
         expect(cancelled).toBe(1);
       });
 
@@ -330,19 +377,19 @@ describe("the hosted front page", () => {
         (window as unknown as { requestAnimationFrame: (run: () => void) => number }).requestAnimationFrame = (run) => { run(); return 1; };
         await mount(props({ kind: "connecting", name: "Desk", approved: true, pairing: true }));
         const said = "Approved. Desk opens in a moment.";
-        expect(renderer!.root.findAll((node) => node.type === "p" && node.props.className === "relay-shell-copy").map(textOf)).toEqual([said]);
-        expect(textOf(renderer!.root.find((node) => node.props.role === "status" && node.props.className === "visually-hidden"))).toBe(said);
-        const bar = renderer!.root.find((node) => node.props.role === "progressbar");
-        expect([bar.props["aria-label"], bar.props["aria-valuetext"]]).toEqual(["Pair", "Step 3 of 3"]);
+        expect(all('p[class="relay-shell-copy"]').map(textOf)).toEqual([said]);
+        expect(textOf(element('[role="status"][class="visually-hidden"]'))).toBe(said);
+        const bar = element('[role="progressbar"]');
+        expect([bar.getAttribute("aria-label"), bar.getAttribute("aria-valuetext")]).toEqual(["Pair", "Step 3 of 3"]);
       });
 
       it("keeps the ready checkpoint on the card, offers no Back once the pairing failed, and draws the failure without a step", async () => {
         // a saved PC's enrollment retry reaches ready too: it is not drawn as a pairing step
         await mount(props({ kind: "ready", name: "Desk", server_id: EXPECTED, enrollment: "local" }));
-        expect(renderer!.root.findAll((node) => node.props.className === "relay-step")).toEqual([]);
+        expect(all('[class="relay-step"]')).toEqual([]);
         expect(backOf()).toEqual([]);
         expect(stepOf()).toBeNull();
-        await act(async () => { renderer!.unmount(); });
+        await browser.render(null);
         await mount(props({ kind: "failed", failure: "pair-declined", name: "Desk", detail: null, server_id: EXPECTED, pairing: true }));
         expect(backOf()).toEqual([]);
         expect(stepOf()).toBeNull();
@@ -351,14 +398,14 @@ describe("the hosted front page", () => {
       it("keeps a saved PC opening again on the card: no steps, no sheep, its own Cancel", async () => {
         let cancelled = 0;
         await mount({ ...props({ kind: "connecting", name: "Desk" }), onCancel: () => { cancelled++; } });
-        expect(renderer!.root.findAll((node) => node.props.className === "relay-step")).toEqual([]);
-        expect(renderer!.root.findAll((node) => node.type === "span" && String(node.props.className).startsWith("sheep-"))).toEqual([]);
-        await act(async () => { button("Cancel").props.onClick(); });
+        expect(all('[class="relay-step"]')).toEqual([]);
+        expect(all("span").filter((node) => String(node.className).startsWith("sheep-"))).toEqual([]);
+        await act(async () => { button("Cancel").click(); });
         expect(cancelled).toBe(1);
-        await act(async () => { renderer!.unmount(); });
+        await browser.render(null);
         await mount(props({ kind: "failed", failure: "pc-offline", name: "Desk", detail: null, server_id: EXPECTED }));
-        expect(renderer!.root.findAll((node) => node.props.className === "relay-step")).toEqual([]);
-        expect(renderer!.root.findAll((node) => node.type === "span" && String(node.props.className).startsWith("sheep-"))).toEqual([]);
+        expect(all('[class="relay-step"]')).toEqual([]);
+        expect(all("span").filter((node) => String(node.className).startsWith("sheep-"))).toEqual([]);
       });
     });
 
@@ -366,79 +413,81 @@ describe("the hosted front page", () => {
       const offer = { v: 1 as const, server_id: ids.mini, server_public_key: "k", relay: AP, name: "Mac mini" };
       let paired = 0;
       await mount({ ...props({ kind: "confirm", offer }), onPair: () => { paired += 1; }, sheetJoin: { mode: "new", server_id: ids.mini } });
-      expect(dialog().props["data-add-pc-phase"]).toBe("confirm");
-      expect(renderer!.root.findAll((instance) => instance.type === "h1")).toHaveLength(0);
-      await act(async () => { button("Pair").props.onClick(); });
+      expect(dialog().getAttribute("data-add-pc-phase")).toBe("confirm");
+      expect(all("h1")).toHaveLength(0);
+      await act(async () => { button("Pair").click(); });
       expect(paired).toBe(1);
-      await act(async () => { renderer!.unmount(); });
+      await browser.render(null);
       const typed: (string | undefined)[] = [];
       await mount({ ...props({ kind: "compare", name: "Mac mini", digits: "123456", confirmed: false, typed: true }), onMatch: (digits) => { typed.push(digits); }, sheetJoin: { mode: "new", server_id: ids.mini } });
-      expect(dialog().props["data-add-pc-phase"]).toBe("compare");
-      const form = dialog().findByType("form");
-      await act(async () => { form.props.onSubmit({ preventDefault() {}, currentTarget: { elements: { namedItem: () => ({ value: "123 456" }) } } }); });
+      expect(dialog().getAttribute("data-add-pc-phase")).toBe("compare");
+      const form = element<HTMLFormElement>("form", dialog());
+      await submit(form, "123 456");
       expect(typed).toEqual(["123456"]);
-      await act(async () => { renderer!.unmount(); });
+      await browser.render(null);
       let openedPc = 0;
       await mount({ ...props({ kind: "ready", name: "Mac mini", server_id: ids.mini }), onOpenPc: () => { openedPc += 1; }, sheetJoin: { mode: "new", server_id: ids.mini } });
-      expect(dialog().props["data-add-pc-mode"]).toBe("new");
-      expect(dialog().props["data-add-pc-phase"]).toBe("ready");
-      expect(dialog().findAll((n) => n.type === "div" && n.props.role === "progressbar").map((n) => n.props["aria-valuenow"])).toEqual([4]);
-      expect(dialog().findAll((n) => n.type === "li").map((n) => n.props["data-step"])).toEqual(["done", "done", "done", "done"]);
-      await act(async () => { button("Open PC").props.onClick(); });
+      expect(dialog().getAttribute("data-add-pc-mode")).toBe("new");
+      expect(dialog().getAttribute("data-add-pc-phase")).toBe("ready");
+      expect(all('div[role="progressbar"]', dialog()).map((n) => n.getAttribute("aria-valuenow"))).toEqual(["4"]);
+      expect(all("li", dialog()).map((n) => n.getAttribute("data-step"))).toEqual(["done", "done", "done", "done"]);
+      await act(async () => { button("Open PC").click(); });
       expect(openedPc).toBe(1);
-      await act(async () => { renderer!.unmount(); });
+      await browser.render(null);
       await mount({ ...props({ kind: "confirm", offer }), sheetJoin: { mode: "join", server_id: ids.desk } });
       expect(dialogs()).toHaveLength(0);
-      expect(textOf(renderer!.root.findByType("h1"))).toBe("Pair with Mac mini?");
+      expect(textOf(element("h1"))).toBe("Pair with Mac mini?");
     });
 
     it("shows how the sheet's join failed in the sheet, with Try again, only for that PC, and suppresses raw close-code details in the RelayShell failure path", async () => {
       let retried = 0;
       const offline = { kind: "failed", failure: "pc-offline", name: "Mac mini", detail: "The relay closed the connection (0)" } as const;
       await mount({ ...props({ ...offline, server_id: ids.mini }), onRetry: () => { retried += 1; }, sheetJoin: { mode: "join", server_id: ids.mini } });
-      expect(dialog().props["data-add-pc-phase"]).toBe("failed");
+      expect(dialog().getAttribute("data-add-pc-phase")).toBe("failed");
       expect(textOf(dialog())).toContain("Machine offline");
       expect(textOf(dialog())).not.toContain("The relay closed the connection (0)");
-      await act(async () => { button("Try again").props.onClick(); });
+      await act(async () => { button("Try again").click(); });
       expect(retried).toBe(1);
-      await act(async () => { renderer!.unmount(); });
+      await browser.render(null);
       for (const state of [{ ...offline, server_id: ids.desk }, offline]) {
         await mount({ ...props(state), sheetJoin: { mode: "join", server_id: ids.mini } });
         expect(dialogs()).toHaveLength(0);
-        expect(textOf(renderer!.root.findByType("h1"))).toBe("Machine offline");
-        expect(textOf(renderer!.root)).not.toContain("The relay closed the connection (0)");
-        await act(async () => { renderer!.unmount(); });
+        expect(textOf(element("h1"))).toBe("Machine offline");
+        expect(textOf(document.body)).not.toContain("The relay closed the connection (0)");
+        await browser.render(null);
       }
       await mount({ ...props({ kind: "failed", failure: "identity-changed", name: "Mac mini", detail: null, server_id: ids.mini }), sheetJoin: { mode: "join", server_id: ids.mini } });
       expect(dialogs()).toHaveLength(0);
       expect(button("Forget this PC")).toBeDefined();
     });
 
-    const one = (what: string, found: ReactTestInstance[]): ReactTestInstance => { if (found.length !== 1) throw new Error(`${found.length} ${what} on screen`); return found[0]!; };
-    const tab = (way: string) => one(`${way} tabs`, renderer!.root.findAll((node) => node.type === "button" && node.props["data-tab"] === way && shown(node)));
-    const panel = () => one("tab panels", renderer!.root.findAll((node) => node.type === "div" && typeof node.props["data-tab-panel"] === "string" && shown(node))).props["data-tab-panel"] as string;
-    const views = () => renderer!.root.findAll((node) => node.type === "div" && typeof node.props["data-view"] === "string" && shown(node)).map((node) => node.props["data-view"] as string);
+    const one = <E extends Element,>(what: string, found: E[]): E => { if (found.length !== 1) throw new Error(`${found.length} ${what} on screen`); return found[0]!; };
+    const tab = (way: string) => one(`${way} tabs`, all<HTMLButtonElement>(`button[data-tab="${way}"]`).filter(shown));
+    const panel = () => one("tab panels", all("div[data-tab-panel]").filter(shown)).getAttribute("data-tab-panel");
+    const views = () => all("div[data-view]").filter(shown).map((node) => node.getAttribute("data-view"));
     const view = () => { const on = views(); if (on.length !== 1) throw new Error(`views on screen: ${on.join(", ")}`); return on[0]!; };
-    const action = (name: string) => one(`${name} buttons`, renderer!.root.findAll((node) => node.type === "button" && node.props["data-action"] === name && shown(node)));
-    const back = () => renderer!.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Back" && shown(node));
-    const title = () => textOf(one("h1 headings", renderer!.root.findAll((node) => node.type === "h1" && shown(node))));
+    const action = (name: string) => one(`${name} buttons`, all<HTMLButtonElement>(`button[data-action="${name}"]`).filter(shown));
+    const back = () => all<HTMLButtonElement>('button[aria-label="Back"]').filter(shown);
+    const title = () => textOf(one("h1 headings", all("h1").filter(shown)));
     /** Add PC at the end of My PCs: the connect tabs, with Back to the list */
     const openAdd = async () => {
       expect(view()).toBe("my-pcs");
-      await act(async () => { action("add-pc").props.onClick(); });
+      await act(async () => { action("add-pc").click(); });
       expect(view()).toBe("add-pc");
       expect(title()).toBe("Add PC");
     };
-    const rowTexts = () => renderer!.root.findAll((node) => node.type === "li" && typeof node.props["data-pc-way"] === "string" && shown(node)).map((node) => [node.props["data-pc-way"], textOf(node)]);
+    const rowTexts = () => all("li[data-pc-way]").filter(shown).map((node) => [node.getAttribute("data-pc-way"), textOf(node)] as const);
     /** where there is no scanner, the code is one small line that opens its field in place; its Pair hands the code on */
     const typeCode = async (code: string) => {
       const line = action("add-code");
-      expect([line.props.className, line.props["aria-expanded"]]).toEqual(["connect-address-link", false]);
-      expect(renderer!.root.findAll((node) => node.type === "input" && node.props.name === "code")).toHaveLength(0);
-      await act(async () => { line.props.onClick(); });
-      const form = renderer!.root.find((node) => node.type === "form" && node.props["data-code-form"] !== undefined);
-      expect(form.findAll((node) => node.type === "button" && node.props.type === "submit").map(textOf)).toEqual(["Pair"]);
-      await act(async () => { form.props.onSubmit({ preventDefault() {}, currentTarget: { elements: { namedItem: () => ({ value: code }) } } }); });
+      expect([line.className, line.getAttribute("aria-expanded")]).toEqual(["connect-address-link", "false"]);
+      expect(all<HTMLInputElement>('input[name="code"]')).toHaveLength(0);
+      await act(async () => { line.click(); });
+      const form = element<HTMLFormElement>("form[data-code-form]");
+      const field = reactProps(element<HTMLInputElement>("input", form));
+      expect([field.onInput, field.onCompositionEnd]).toEqual([typePairCode, endPairCodeComposition]);
+      expect(all<HTMLButtonElement>('button[type="submit"]', form).map(textOf)).toEqual(["Pair"]);
+      await submit(form, code);
     };
     /** a wide screen (a desktop browser): My PCs and Add a PC side by side */
     /** the window's width as media queries read it, which a test can move across 1024 px as a rotation or a resize does */
@@ -461,14 +510,14 @@ describe("the hosted front page", () => {
     it("opens on the relay tab again after a sign-out that follows another tab and a sign-in", async () => {
       const signedOut = { ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none };
       await mount(signedOut);
-      await act(async () => { tab("ssh").props.onClick(); });
+      await act(async () => { tab("ssh").click(); });
       expect(panel()).toBe("ssh");
-      await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, signedIn(four())) })); });
+      await browser.render(createElement(SettingsProvider, { children: createElement(RelayShell, signedIn(four())) }));
       expect(view()).toBe("my-pcs");
-      await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, signedOut) })); });
+      await browser.render(createElement(SettingsProvider, { children: createElement(RelayShell, signedOut) }));
       expect(title()).toBe("Connect a PC");
       expect(panel()).toBe("relay");
-      expect(tab("relay").props["aria-pressed"]).toBe(true);
+      expect(tab("relay").getAttribute("aria-pressed")).toBe("true");
     });
 
     it("opens Add PC from the end of My PCs, its Back returning to the list, and a sign-in made there lands on the list", async () => {
@@ -480,13 +529,13 @@ describe("the hosted front page", () => {
       expect(panel()).toBe("relay");
       expect(buttons("Continue with GitHub")).toHaveLength(1);
       // no list under the ways to add one
-      expect(renderer!.root.findAll((node) => node.props["data-pc-way"] !== undefined && shown(node))).toHaveLength(0);
-      await act(async () => { back()[0]!.props.onClick(); });
+      expect(all("[data-pc-way]").filter(shown)).toHaveLength(0);
+      await act(async () => { back()[0]!.click(); });
       expect(view()).toBe("my-pcs");
       await openAdd();
-      await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, { ...signedOut, state: { kind: "list", devices: [device(ids.desk, "p620", AP)], account: { kind: "signing-in", provider: "github" } } }) })); });
+      await browser.render(createElement(SettingsProvider, { children: createElement(RelayShell, { ...signedOut, state: { kind: "list", devices: [device(ids.desk, "p620", AP)], account: { kind: "signing-in", provider: "github" } } }) }));
       expect(view()).toBe("add-pc");
-      await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, signedIn(four())) })); });
+      await browser.render(createElement(SettingsProvider, { children: createElement(RelayShell, signedIn(four())) }));
       expect(view()).toBe("my-pcs");
       expect(rowTexts().map(([way]) => way)).toEqual(["relay", "relay", "relay", "relay"]);
     });
@@ -496,73 +545,73 @@ describe("the hosted front page", () => {
       (window.location as unknown as { assign: (href: string) => void }).assign = (href) => { opened.push(href); };
       await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
       for (const [way, typed] of [["tailscale", "my-pc.tailnet.ts.net"], ["ssh", "https://my-pc.example.com"]] as const) {
-        await act(async () => { tab(way).props.onClick(); });
+        await act(async () => { tab(way).click(); });
         expect(panel()).toBe(way);
         if (way === "ssh") {
           // a browser has no SSH: the tab is Add by address alone, a text link to the field
-          expect(renderer!.root.findAll((node) => node.type === "input")).toHaveLength(0);
-          await act(async () => { button("Add by address").props.onClick(); });
+          expect(all<HTMLInputElement>("input")).toHaveLength(0);
+          await act(async () => { button("Add by address").click(); });
         }
-        const fields = renderer!.root.findAll((node) => node.type === "input");
+        const fields = all<HTMLInputElement>("input");
         expect(fields).toHaveLength(1);
-        expect(renderer!.root.findAll((node) => node.type === "button" && node.props.className === "btn account-provider")).toHaveLength(0);
-        const form = renderer!.root.find((node) => node.type === "form");
-        await act(async () => { form.props.onSubmit({ preventDefault() {}, currentTarget: { elements: { namedItem: () => ({ value: typed }) } } }); });
+        expect(all<HTMLButtonElement>('button[class="btn account-provider"]')).toHaveLength(0);
+        const form = element<HTMLFormElement>("form");
+        await submit(form, typed);
       }
       expect(opened).toEqual(["https://my-pc.tailnet.ts.net/", "https://my-pc.example.com/"]);
     });
 
     it("keeps a code typed in the relay tab's folded field through its lookup and a failure to correct, and its Cancel clears it", async () => {
       const calls: string[] = [];
-      const draw = (shown: RelayShellProps) => act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, shown) })); });
+      const draw = (shown: RelayShellProps) => browser.render(createElement(SettingsProvider, { children: createElement(RelayShell, shown) }));
       const front: RelayShellProps = { ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none,
         onCodeStart: () => { calls.push("start"); }, onCodeSubmit: (code) => { calls.push(`submit ${code}`); }, onCancel: () => { calls.push("cancel"); void draw(front); } };
       await mount(front);
       await typeCode("ABCDE-1234");
       expect(calls).toEqual(["start", "submit ABCDE-1234"]);
-      const field = () => renderer!.root.find((node) => node.type === "form" && node.props["data-code-form"] !== undefined).findByType("input");
+      const field = () => element<HTMLInputElement>("form[data-code-form] input");
       // the field keeps its own open state, which a field mounted again would have lost (closed): so it is the same field
-      const same = () => action("add-code").props["aria-expanded"] === true && field() !== undefined;
+      const same = () => action("add-code").getAttribute("aria-expanded") === "true" && field() !== undefined;
       // looking, then a failure the person can correct: the same field, still holding what was typed, on the same page
       await draw({ ...front, state: { kind: "code-looking" } });
       expect(same()).toBe(true);
       expect(view()).toBe("add-pc");
-      expect(textOf(renderer!.root.find((node) => node.props["data-code-form"] !== undefined))).toContain("Looking for the PC…");
+      expect(textOf(element("[data-code-form]"))).toContain("Looking for the PC…");
       await draw({ ...front, state: { kind: "code-entry", failure: "not-a-code" } });
       expect(view()).toBe("add-pc");
       expect(same()).toBe(true);
-      expect(renderer!.root.findAll((node) => node.props.role === "alert").map(textOf)).toContain("A code has ten letters and digits, like 7K3QD-M2XHA.");
+      expect(all('[role="alert"]').map(textOf)).toContain("A code has ten letters and digits, like 7K3QD-M2XHA.");
       // its Cancel ends the code, which brings the tabs back with the field closed
-      await act(async () => { renderer!.root.find((node) => node.props["data-code-form"] !== undefined).find((node) => node.type === "button" && textOf(node) === "Cancel").props.onClick(); });
+      await act(async () => { one("button", all<HTMLButtonElement>("button", element("[data-code-form]")).filter((node) => textOf(node) === "Cancel")).click(); });
       expect(calls.at(-1)).toBe("cancel");
       expect(title()).toBe("Connect a PC");
-      expect(renderer!.root.findAll((node) => node.props["data-code-form"] !== undefined)).toHaveLength(0);
+      expect(all("[data-code-form]")).toHaveLength(0);
       // a code found goes on to its own screen; back on the front page, the field is closed
       await typeCode("ABCDE-12345");
       await draw({ ...front, state: { kind: "code-compare", offer: { v: 1, server_id: ids.mini, server_public_key: "k", relay: AP, code: "ABCDE-12345", name: "Mac mini" } } });
-      expect(renderer!.root.findAllByType("h1").map(textOf)).toEqual(["Does Mac mini's screen show this ID?"]);
+      expect(all("h1").map(textOf)).toEqual(["Does Mac mini's screen show this ID?"]);
       await draw(front);
-      expect(renderer!.root.findAll((node) => node.props["data-code-form"] !== undefined)).toHaveLength(0);
+      expect(all("[data-code-form]")).toHaveLength(0);
     });
 
     it("reads the account's PCs again when a notice changed them (a PC confirmed or removed), so Your PCs shows it at once", async () => {
       let refreshed = 0;
       await mount({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none, onRefreshAccount: () => { refreshed += 1; } });
       expect(refreshed).toBe(0);
-      await act(async () => { window.dispatchEvent(new Event("ovis:account-pcs-changed")); });
+      await act(async () => { browser.window.dispatchEvent(new browser.window.Event("ovis:account-pcs-changed")); });
       expect(refreshed).toBe(1);
     });
 
     it("pairs with a code from Add PC's relay tab, signed in with no PC: the lookup in the field, the PC it found in the pairing dialog, over the tabs it closes back to", async () => {
       const calls: string[] = [];
-      const draw = (shown: RelayShellProps) => act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, shown) })); });
+      const draw = (shown: RelayShellProps) => browser.render(createElement(SettingsProvider, { children: createElement(RelayShell, shown) }));
       const shown: RelayShellProps = { ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none,
         onCodeStart: () => { calls.push("start"); }, onCodeSubmit: (code: string) => { calls.push(`submit ${code}`); }, onCancel: () => { calls.push("cancel"); void draw(shown); } };
       await mount(shown);
       await openAdd();
       expect(panel()).toBe("relay");
       // what to do on the PC comes first, the code under it
-      const relayText = textOf(renderer!.root.find((node) => node.props["data-tab-panel"] === "relay"));
+      const relayText = textOf(element('[data-tab-panel="relay"]'));
       expect(relayText.indexOf("Turn on Ovis on the PC and sign in with the same account.")).toBe(0);
       expect(relayText).toContain("Pair with a code");
       await typeCode("ABCDE-12345");
@@ -570,41 +619,54 @@ describe("the hosted front page", () => {
       await draw({ ...shown, state: { kind: "code-looking" } });
       expect(dialogs()).toHaveLength(0);
       await draw({ ...shown, state: { kind: "code-compare", offer: { v: 1, server_id: ids.mini, server_public_key: "k", relay: AP, code: "ABCDE-12345", name: "Mac mini" } } });
-      expect(dialog().props["data-pair-dialog"]).toBe("compare");
-      await act(async () => { button("Cancel").props.onClick(); });
+      expect(dialog().getAttribute("data-pair-dialog")).toBe("compare");
+      await act(async () => { button("Cancel").click(); });
       expect(calls.at(-1)).toBe("cancel");
       expect(dialogs()).toHaveLength(0);
       expect(view()).toBe("add-pc");
-      expect(renderer!.root.findAll((node) => node.props["data-code-form"] !== undefined)).toHaveLength(0);
+      expect(all("[data-code-form]")).toHaveLength(0);
     });
 
     it("opens an account with no PC yet on My PCs' empty state, whose Add PC opens the tabs and comes back to it", async () => {
       await mount({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none });
-      expect(renderer!.root.findAll((node) => node.props["data-approval-wait"] !== undefined)).toHaveLength(0);
-      expect(textOf(renderer!.root.find((node) => node.props["data-view"] === "my-pcs"))).toContain("Sign in with the same account on the PC where Ovis runs");
+      expect(all("[data-approval-wait]")).toHaveLength(0);
+      expect(textOf(element('[data-view="my-pcs"]'))).toContain("Sign in with the same account on the PC where Ovis runs");
       await openAdd();
-      await act(async () => { back()[0]!.props.onClick(); });
+      await act(async () => { back()[0]!.click(); });
       expect(view()).toBe("my-pcs");
     });
 
     it("tells of the account's news on My PCs (a new PC with its one-tap removal, a join request, a PC to confirm), and not on Add PC's tabs", async () => {
-      await mount(signedIn(four()));
-      const notices = () => [NewPcNotices, AccountJoinRequests, UnconfirmedPcNotices].map((type) => renderer!.root.findAllByType(type as never).filter(shown).length);
-      expect(notices()).toEqual([1, 1, 1]);
-      await openAdd();
-      expect(notices()).toEqual([0, 0, 0]);
+      // These components can mount without any current notice to draw. Mark their real output for this test.
+      const { NewPcNotices } = NewPcNoticesModule;
+      const { AccountJoinRequests } = AccountJoinRequestsModule;
+      const { UnconfirmedPcNotices } = UnconfirmedPcNoticesModule;
+      await mock.module("./NewPcNotices.tsx", () => ({ NewPcNotices: () => <><span data-notice-probe="new-pc" /><NewPcNotices /></> }));
+      await mock.module("./AccountJoinRequests.tsx", () => ({ AccountJoinRequests: () => <><span data-notice-probe="join-requests" /><AccountJoinRequests /></> }));
+      await mock.module("./UnconfirmedPcNotices.tsx", () => ({ UnconfirmedPcNotices: (props: Parameters<typeof UnconfirmedPcNotices>[0]) => <><span data-notice-probe="unconfirmed-pc" /><UnconfirmedPcNotices {...props} /></> }));
+      try {
+        await mount(signedIn(four()));
+        const notices = () => ["new-pc", "join-requests", "unconfirmed-pc"].map((name) => all(`[data-notice-probe="${name}"]`).filter(shown).length);
+        expect(notices()).toEqual([1, 1, 1]);
+        await openAdd();
+        expect(notices()).toEqual([0, 0, 0]);
+      } finally {
+        await mock.module("./NewPcNotices.tsx", () => ({ NewPcNotices }));
+        await mock.module("./AccountJoinRequests.tsx", () => ({ AccountJoinRequests }));
+        await mock.module("./UnconfirmedPcNotices.tsx", () => ({ UnconfirmedPcNotices }));
+      }
     });
 
     it("keeps My PCs and Add a PC side by side on a wide screen: the list on the left, the tabs always open on the right, no Add PC button", async () => {
       wide();
       await mount(signedIn(four()));
-      expect(renderer!.root.findAll((node) => node.type === "div" && typeof node.props["data-view"] === "string").map((node) => node.props["data-view"])).toEqual(["my-pcs", "add-pc"]);
-      expect(renderer!.root.findAll((node) => node.type === "button" && node.props["data-action"] === "add-pc")).toHaveLength(0);
-      expect(renderer!.root.findAllByType("h1").map(textOf)).toEqual(["Your PCs"]);
-      expect(renderer!.root.findAllByType("h2").map(textOf)).toContain("Add PC");
+      expect(all("div[data-view]").map((node) => node.getAttribute("data-view"))).toEqual(["my-pcs", "add-pc"]);
+      expect(all<HTMLButtonElement>('button[data-action="add-pc"]')).toHaveLength(0);
+      expect(all("h1").map(textOf)).toEqual(["Your PCs"]);
+      expect(all("h2").map(textOf)).toContain("Add PC");
       expect(back()).toHaveLength(0);
       expect(panel()).toBe("relay");
-      await act(async () => { tab("ssh").props.onClick(); });
+      await act(async () => { tab("ssh").click(); });
       expect(panel()).toBe("ssh");
       expect(rowTexts()).toHaveLength(4);
     });
@@ -612,32 +674,32 @@ describe("the hosted front page", () => {
     it("keeps Connect a PC one centred card on a wide screen, signed out with nothing saved here", async () => {
       wide();
       await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
-      expect(renderer!.root.findAll((node) => node.type === "div" && typeof node.props["data-view"] === "string").map((node) => [node.props["data-view"], node.props.className])).toEqual([["add-pc", "connect-add connect-add-front"]]);
+      expect(all("div[data-view]").map((node) => [node.getAttribute("data-view"), node.className])).toEqual([["add-pc", "connect-add connect-add-front"]]);
       expect(title()).toBe("Connect a PC");
     });
 
     it("finds a PC by name past eight, says so when none matches, and on a wide screen keeps to the PCs on or off", async () => {
-      const search = () => renderer!.root.findAll((node) => node.type === "input" && node.props.type === "search");
+      const search = () => all<HTMLInputElement>('input[type="search"]');
       const listed = (count: number, extra: Partial<RelayShellProps> = {}) => ({ ...props({ kind: "list", devices: many(count), account: { kind: "signed-in", provider: "github", error: null, pcs: [] } }), scoped: false, onSignIn: none, ...extra }) satisfies RelayShellProps;
       await mount(listed(8));
       expect(search()).toHaveLength(0);
-      await act(async () => { renderer!.unmount(); });
+      await browser.render(null);
       const off = new Map(many(9).filter((_, index) => index % 2 === 1).map((pc) => [pc.server_id, { kind: "offline", reason: "pc" } as const]));
       await mount(listed(9, { pcStatus: off }));
-      expect(search().map((node) => node.props["aria-label"])).toEqual(["Search PC names"]);
+      expect(search().map((node) => node.getAttribute("aria-label"))).toEqual(["Search PC names"]);
       // no chips on a phone
-      expect(renderer!.root.findAll((node) => node.type === "button" && node.props["data-show"] !== undefined)).toHaveLength(0);
-      await act(async () => { search()[0]!.props.onChange({ currentTarget: { value: "PC-1" }, target: { value: "PC-1" } }); });
+      expect(all<HTMLButtonElement>("button[data-show]")).toHaveLength(0);
+      await browser.type(search()[0]!, "PC-1");
       expect(rowTexts().map(([, text]) => text.split("Relay")[0])).toEqual(["pc-1"]);
-      await act(async () => { search()[0]!.props.onChange({ currentTarget: { value: "zzz" }, target: { value: "zzz" } }); });
+      await browser.type(search()[0]!, "zzz");
       expect(rowTexts()).toHaveLength(0);
-      expect(textOf(renderer!.root.find((node) => node.props["data-view"] === "my-pcs"))).toContain("No PC matches.");
-      await act(async () => { renderer!.unmount(); });
+      expect(textOf(element('[data-view="my-pcs"]'))).toContain("No PC matches.");
+      await browser.render(null);
       wide();
       await mount(listed(9, { pcStatus: off }));
-      const chips = () => renderer!.root.findAll((node) => node.type === "button" && node.props["data-show"] !== undefined);
-      expect(chips().map((node) => [textOf(node), node.props["aria-pressed"]])).toEqual([["All", true], ["On", false], ["Off", false]]);
-      await act(async () => { chips()[2]!.props.onClick(); });
+      const chips = () => all<HTMLButtonElement>("button[data-show]");
+      expect(chips().map((node) => [textOf(node), node.getAttribute("aria-pressed")])).toEqual([["All", "true"], ["On", "false"], ["Off", "false"]]);
+      await act(async () => { chips()[2]!.click(); });
       expect(rowTexts().map(([, text]) => text.split("Relay")[0])).toEqual(["pc-1", "pc-3", "pc-5", "pc-7"]);
     });
 
@@ -658,11 +720,11 @@ describe("the hosted front page", () => {
         } });
         try {
           await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
-          await act(async () => { renderer!.root.find((node) => node.type === "button" && node.props.className === "relay-add-saved-pc" && shown(node)).props.onClick(); });
-          const status = () => renderer!.root.findAll((node) => node.props["data-opening"] !== undefined && shown(node));
+          await act(async () => { one('button[class="relay-add-saved-pc"]', all<HTMLButtonElement>('button[class="relay-add-saved-pc"]').filter(shown)).click(); });
+          const status = () => all("[data-opening]").filter(shown);
           if (canCancel) {
             expect(status().map(textOf)).toEqual(["Opening desk.tail1e211e.ts.net…Cancel"]);
-            await act(async () => { status()[0]!.find((node) => node.type === "button").props.onClick(); });
+            await act(async () => { element("button", status()[0]!).click(); });
             expect(status()).toHaveLength(0);
             expect(called).toContain("HerdrShell.cancelOpen");
           } else {
@@ -672,7 +734,7 @@ describe("the hosted front page", () => {
             expect(status()).toHaveLength(0);
             expect(called).not.toContain("HerdrShell.cancelOpen");
           }
-          await act(async () => { renderer!.unmount(); });
+          await browser.render(null);
         } finally {
           if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
           else Reflect.deleteProperty(globalThis, "Capacitor");
@@ -696,30 +758,30 @@ describe("the hosted front page", () => {
         },
       } });
       const opens = () => called.filter((call) => call.startsWith("HerdrShell.open "));
-      const row = (way: string) => renderer!.root.find((node) => node.type === "li" && node.props["data-pc-way"] === way && shown(node)).find((node) => node.type === "button" && node.props.className === "relay-add-saved-pc");
-      const status = () => renderer!.root.findAll((node) => node.props["data-opening"] !== undefined && shown(node)).map(textOf);
+      const row = (way: string) => element("button.relay-add-saved-pc", one(`li[data-pc-way="${way}"]`, all(`li[data-pc-way="${way}"]`).filter(shown)));
+      const status = () => all("[data-opening]").filter(shown).map(textOf);
       try {
         await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
-        await act(async () => { row("tailscale").props.onClick(); });
+        await act(async () => { row("tailscale").click(); });
         // the tap says so at once, while the app is asked whether Tailscale is on
         expect(status()).toEqual(["Opening desk.tail1e211e.ts.net…Cancel"]);
         expect(opens()).toEqual([]);
-        await act(async () => { row("address").props.onClick(); });
+        await act(async () => { row("address").click(); });
         expect(opens()).toEqual(["HerdrShell.open http://192.168.0.5:7317/"]);
         expect(status()).toEqual(["Opening 192.168.0.5:7317…Cancel"]);
         await act(async () => { tailscale.resolve({ on: true }); await tailscale.promise; });
         expect(opens()).toEqual(["HerdrShell.open http://192.168.0.5:7317/"]);
         // while one opens, another tap opens nothing
-        await act(async () => { row("tailscale").props.onClick(); });
+        await act(async () => { row("tailscale").click(); });
         expect(opens()).toHaveLength(1);
         expect(called.filter((call) => call === "HerdrShell.tailscale")).toHaveLength(1);
-        await act(async () => { renderer!.unmount(); });
+        await browser.render(null);
         expect(called).toContain("HerdrShell.cancelOpen");
         // leaving while the app is asked: its late answer opens nothing
         tailscale = Promise.withResolvers<{ on?: boolean }>();
         await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
-        await act(async () => { row("tailscale").props.onClick(); });
-        await act(async () => { renderer!.unmount(); });
+        await act(async () => { row("tailscale").click(); });
+        await browser.render(null);
         await act(async () => { tailscale.resolve({ on: true }); await tailscale.promise; });
         expect(opens()).toHaveLength(1);
       } finally {
@@ -744,20 +806,20 @@ describe("the hosted front page", () => {
         } });
         try {
           await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
-          await act(async () => { renderer!.root.find((node) => node.type === "button" && node.props.className === "relay-add-saved-pc" && shown(node)).props.onClick(); });
-          const settled = () => called.some((call) => call.startsWith("HerdrShell.open ")) || renderer!.root.findAll((node) => node.props.role === "alert" && shown(node)).length > 0;
+          await act(async () => { one('button[class="relay-add-saved-pc"]', all<HTMLButtonElement>('button[class="relay-add-saved-pc"]').filter(shown)).click(); });
+          const settled = () => called.some((call) => call.startsWith("HerdrShell.open ")) || all('[role="alert"]').filter(shown).length > 0;
           // bounded: an app that never answers is taken as on once the short wait is over
           const deadline = Date.now() + 4_000;
           while (!settled()) {
             if (Date.now() > deadline) throw new Error(`${mode}: the open neither went ahead nor said why`);
             await act(async () => { await Promise.race([new Promise(() => {}), Bun.sleep(25)]); });
           }
-          expect(renderer!.root.findAll((node) => node.props["data-tailscale-off"] !== undefined)).toHaveLength(0);
+          expect(all("[data-tailscale-off]")).toHaveLength(0);
           if (mode === "no-open") {
-            expect(renderer!.root.findAll((node) => node.props.role === "alert" && shown(node)).map(textOf)).toContain("This app cannot open a PC by its address. Update the Ovis app.");
+            expect(all('[role="alert"]').filter(shown).map(textOf)).toContain("This app cannot open a PC by its address. Update the Ovis app.");
             expect(called.some((call) => call.startsWith("HerdrShell.open "))).toBe(false);
           } else expect(called).toContain("HerdrShell.open https://desk.tail1e211e.ts.net/");
-          await act(async () => { renderer!.unmount(); });
+          await browser.render(null);
         } finally {
           if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
           else Reflect.deleteProperty(globalThis, "Capacitor");
@@ -781,15 +843,15 @@ describe("the hosted front page", () => {
       } });
       try {
         await mount(signedIn(four()));
-        await act(async () => { renderer!.root.find((node) => node.type === "li" && node.props["data-pc-way"] === "address").find((node) => node.type === "button" && node.props.className === "relay-add-saved-pc").props.onClick(); });
-        await act(async () => { tab("tailscale").props.onClick(); });
-        const form = renderer!.root.find((node) => node.props["data-tab-panel"] === "tailscale").findByType("form");
-        await act(async () => { form.props.onSubmit({ preventDefault() {}, currentTarget: { elements: { namedItem: () => ({ value: "other.tail1e211e.ts.net" }) } } }); });
+        await act(async () => { element<HTMLButtonElement>('button[class="relay-add-saved-pc"]', element('li[data-pc-way="address"]')).click(); });
+        await act(async () => { tab("tailscale").click(); });
+        const form = element<HTMLFormElement>("form", element('[data-tab-panel="tailscale"]'));
+        await submit(form, "other.tail1e211e.ts.net");
         expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual(["HerdrShell.open http://192.168.0.5:7317/"]);
-        const status = () => renderer!.root.findAll((node) => node.props["data-opening"] !== undefined).map(textOf);
+        const status = () => all("[data-opening]").map(textOf);
         expect(status()).toEqual(["Opening 192.168.0.5:7317…Cancel", "Opening 192.168.0.5:7317…Cancel"]);
         // either Cancel stops the one open
-        await act(async () => { renderer!.root.find((node) => node.props["data-tab-panel"] === "tailscale").find((node) => node.props["data-opening"] !== undefined).findByType("button").props.onClick(); });
+        await act(async () => { element<HTMLButtonElement>("button", element("[data-opening]", element('[data-tab-panel="tailscale"]'))).click(); });
         expect(called.filter((call) => call === "HerdrShell.cancelOpen")).toHaveLength(1);
         expect(status()).toEqual([]);
       } finally {
@@ -813,10 +875,10 @@ describe("the hosted front page", () => {
         for (const screen of [{ ...props({ kind: "connecting", name: "Mac", pairing: true }), sheetJoin: { mode: "join" as const, server_id: ids.mini }, launchJoin: true },
           { ...props({ kind: "failed", failure: "revoked", name: "Mac", detail: null, server_id: ids.mini }), signedIn: true, onAskAgain: none }]) {
           await mount(screen);
-          await act(async () => { action("approval-wait-qr").props.onClick(); });
+          await act(async () => { action("approval-wait-qr").click(); });
           await act(async () => { await Promise.resolve(); });
-          expect(renderer!.root.findAll((node) => node.props["data-opening"] !== undefined).map(textOf)).toEqual(["Opening desk.tail1e211e.ts.net…Cancel"]);
-          await act(async () => { renderer!.unmount(); });
+          expect(all("[data-opening]").map(textOf)).toEqual(["Opening desk.tail1e211e.ts.net…Cancel"]);
+          await browser.render(null);
         }
       } finally {
         if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
@@ -837,9 +899,9 @@ describe("the hosted front page", () => {
       } });
       try {
         await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
-        const alerts = () => renderer!.root.findAll((node) => node.props.role === "alert").map(textOf);
+        const alerts = () => all('[role="alert"]').map(textOf);
         expect(alerts().join(" ")).toContain("Another app on this phone took the address the SSH PC opens on (127.0.0.1:41234)");
-        await act(async () => { renderer!.root.find((node) => node.type === "button" && node.props.className === "relay-add-saved-pc").props.onClick(); });
+        await act(async () => { element<HTMLButtonElement>('button[class="relay-add-saved-pc"]').click(); });
         expect(alerts()).toContain("desk.tail1e211e.ts.net was not found. Check the name, or open the address Ovis shows under Settings → Devices and PCs → Add a connection on the PC. This is a Tailscale address, and Tailscale may be off on this phone: turn it on in the Tailscale app.");
         expect(alerts()).not.toContain("unknown-host");
       } finally {
@@ -851,9 +913,9 @@ describe("the hosted front page", () => {
     describe("with no internet on the device", () => {
       const offline = (off: boolean): void => {
         (navigator as { onLine?: boolean }).onLine = !off;
-        window.dispatchEvent(new Event(off ? "offline" : "online"));
+        browser.window.dispatchEvent(new browser.window.Event(off ? "offline" : "online"));
       };
-      const alerts = () => renderer!.root.findAll((node) => node.props.role === "alert" && shown(node)).map(textOf);
+      const alerts = () => all('[role="alert"]').filter(shown).map(textOf);
       const unreached = "The account service could not be reached. The PCs this device is paired with still work.";
       const offlinePage = (extra: Partial<RelayShellProps> = {}): RelayShellProps => ({
         ...props({ kind: "empty", account: { kind: "signed-in", provider: "github", pcs: [], error: unreached, known: [{ server_id: ids.mac, name: "hasang-uui-MacBookPro" }] } }), scoped: false, onSignIn: none, ...extra,
@@ -879,22 +941,22 @@ describe("the hosted front page", () => {
           offline(true);
           await mount(offlinePage({ onRefreshAccount: () => { refreshed++; }, onCheckPcs: () => { checked++; } }));
           expect(alerts()).toEqual(["This phone is not connected to the internet. Try again"]);
-          expect(textOf(renderer!.root)).not.toContain("account service");
+          expect(textOf(document.body)).not.toContain("account service");
           // the account's PC it listed last stays, by its page, and the PC the app saved by its Tailscale address
-          const relay = renderer!.root.find((node) => node.type === "li" && node.props["data-pc-way"] === "relay").find((node) => node.type === "a");
-          expect(relay.props.href).toBe(`/s/${ids.mac}/`);
+          const relay = element<HTMLAnchorElement>("a", element('li[data-pc-way="relay"]'));
+          expect(relay.getAttribute("href")).toBe(`/s/${ids.mac}/`);
           expect(textOf(relay)).toBe("hasang-uui-MacBookPro" + "Relay");
           // a tap says the phone is offline: no name that was not found, no Tailscale that may be off
           let held = 0;
-          await act(async () => { relay.props.onClick({ preventDefault: () => { held++; } }); });
+          await act(async () => { if (clickLink(relay)) held++; });
           expect(held).toBe(1);
           expect(alerts()).toContain("Connect this phone to the internet to open the PC.");
-          const tailscale = () => renderer!.root.find((node) => node.type === "li" && node.props["data-pc-way"] === "tailscale").find((node) => node.type === "button" && node.props.className === "relay-add-saved-pc");
-          await act(async () => { tailscale().props.onClick(); });
+          const tailscale = () => element<HTMLButtonElement>('button[class="relay-add-saved-pc"]', element('li[data-pc-way="tailscale"]'));
+          await act(async () => { tailscale().click(); });
           expect(called.filter((call) => call.startsWith("HerdrShell.open ") || call === "HerdrShell.tailscale")).toEqual([]);
           expect(alerts().filter((text) => text.includes("not found") || text.includes("Tailscale may be off"))).toEqual([]);
           // Try again reads it all again
-          await act(async () => { renderer!.root.find((node) => node.type === "button" && textOf(node) === "Try again" && shown(node)).props.onClick(); });
+          await act(async () => { one("button", all<HTMLButtonElement>("button").filter((node) => textOf(node) === "Try again" && shown(node))).click(); });
           expect([refreshed, checked, called.filter((call) => call === "HerdrShell.getState").length]).toEqual([1, 1, 2]);
 
           // the network back: the line goes, and the screen reads the account, the app's PCs and the relay's again by itself
@@ -905,7 +967,7 @@ describe("the hosted front page", () => {
           expect(alerts()).toContain(`${unreached} Try again`);
 
           // an open the network dropped under says the phone went offline, not why the PC did not answer
-          await act(async () => { tailscale().props.onClick(); });
+          await act(async () => { tailscale().click(); });
           await act(async () => { await Promise.resolve(); });
           expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual(["HerdrShell.open https://macbookpro.tail1e211e.ts.net:17317/"]);
           (navigator as { onLine?: boolean }).onLine = false;
@@ -936,12 +998,12 @@ describe("the hosted front page", () => {
         } });
         try {
           await mount(offlinePage());
-          await act(async () => { renderer!.root.find((node) => node.type === "li" && node.props["data-pc-way"] === "tailscale").find((node) => node.type === "button" && node.props.className === "relay-add-saved-pc").props.onClick(); });
-          expect(renderer!.root.findAll((node) => node.props["data-opening"] !== undefined && shown(node))).toHaveLength(1);
+          await act(async () => { element<HTMLButtonElement>('button[class="relay-add-saved-pc"]', element('li[data-pc-way="tailscale"]')).click(); });
+          expect(all("[data-opening]").filter(shown)).toHaveLength(1);
           (navigator as { onLine?: boolean }).onLine = false;
           await act(async () => { tailscale.resolve({ on: true }); await tailscale.promise; });
           expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([]);
-          expect(renderer!.root.findAll((node) => node.props["data-opening"] !== undefined && shown(node))).toHaveLength(0);
+          expect(all("[data-opening]").filter(shown)).toHaveLength(0);
           expect(alerts()).toContain("Connect this phone to the internet to open the PC.");
         } finally {
           (navigator as { onLine?: boolean }).onLine = true;
@@ -950,20 +1012,131 @@ describe("the hosted front page", () => {
         }
       });
 
+      type Ask = { readonly url: string; readonly answer: ReturnType<typeof Promise.withResolvers<Response>> };
+      /** fetch as the screen's asks reach it, each answered by the test (settle); `restore` puts the real one back */
+      const heldAsks = (): { readonly asks: Ask[]; restore(): void } => {
+        const asks: Ask[] = [];
+        const realFetch = globalThis.fetch;
+        globalThis.fetch = Object.assign(async (input: Request | string | URL): Promise<Response> => {
+          const answer = Promise.withResolvers<Response>();
+          asks.push({ url: String(input), answer });
+          return await answer.promise;
+        }, { preconnect: realFetch.preconnect });
+        return { asks, restore: () => { globalThis.fetch = realFetch; } };
+      };
+      const settle = async (ask: Ask, answered: boolean): Promise<void> => {
+        await act(async () => {
+          // any answer is a network, an error status too (a static host has no /api/health)
+          if (answered) ask.answer.resolve(new Response(null, { status: 404 }));
+          // no answer within CHECK_NETWORK_MS: the ask's own timeout ends it
+          else ask.answer.reject(new DOMException("The operation timed out.", "TimeoutError"));
+          await ask.answer.promise.catch(() => undefined);
+          for (let turn = 0; turn < 3; turn++) await Promise.resolve();
+        });
+      };
+
+      // a Galaxy Z Flip6's WebView said navigator.onLine === false all along on working Wi-Fi (app 1.0.7); a shell built
+      // with no account service (OVIS_ACCOUNT_SERVICE_URL=off) asks its own origin instead, under /api/, which no worker answers
+      for (const [asked, service, url] of [
+        ["the account service", "https://account.example", "https://account.example/v1/providers"],
+        ["its own origin, with no account service,", null, "https://app.ovis.sh/api/health"],
+      ] as const) it(`believes ${asked} over a WebView that says offline: its answer takes the line away and a row opens, asked again on each open`, async () => {
+        if (service !== null) {
+          const meta = document.createElement("meta");
+          meta.setAttribute("name", "ovis-account-service");
+          meta.setAttribute("content", service);
+          document.head.append(meta);
+        }
+        const { asks, restore } = heldAsks();
+        const relayRow = () => element<HTMLAnchorElement>("a", element('li[data-pc-way="relay"]'));
+        const assigned: string[] = [];
+        (window.location as unknown as { assign: (href: string) => void }).assign = (href) => { assigned.push(href); };
+        try {
+          offline(true);
+          await mount(offlinePage());
+          // the screen asks on its own as it starts watching; no answer: the device is offline, as before
+          expect(asks.map((ask) => ask.url)).toEqual([url]);
+          await settle(asks[0]!, false);
+          expect(alerts()).toEqual(["This device is not connected to the internet. Try again"]);
+          // a tap asks, and Try again while that ask is out replaces it: the tap waits for Try again's answer, which takes
+          // the line away, and goes to the PC's page
+          let held = 0;
+          await act(async () => { if (clickLink(relayRow())) held++; });
+          await act(async () => { one("button", all<HTMLButtonElement>("button").filter((node) => textOf(node) === "Try again" && shown(node))).click(); });
+          expect([held, asks.length, assigned]).toEqual([1, 3, []]);
+          await settle(asks[1]!, true);
+          expect(assigned).toEqual([]);
+          await settle(asks[2]!, true);
+          expect(alerts().filter((text) => text.includes("internet"))).toEqual([]);
+          expect(assigned).toEqual([`/s/${ids.mac}/`]);
+          // a later tap asks once more rather than trusting that answer, and goes there once it answers
+          await act(async () => { if (clickLink(relayRow())) held++; });
+          expect([held, asks.length]).toEqual([2, 4]);
+          await settle(asks[3]!, true);
+          expect(assigned).toHaveLength(2);
+          // the network gone since, with the flag still false: the next tap's ask goes unanswered, and the row says so
+          await act(async () => { if (clickLink(relayRow())) held++; });
+          await settle(asks[4]!, false);
+          expect(assigned).toHaveLength(2);
+          expect(alerts()).toContain("Connect this device to the internet to open the PC.");
+        } finally {
+          restore();
+          offline(false);
+        }
+      });
+
+      it("holds a tap on a paired PC of a page with no account until the network answers, and shows the offline line when it does not", async () => {
+        const { asks, restore } = heldAsks();
+        const assigned: string[] = [];
+        (window.location as unknown as { assign: (href: string) => void }).assign = (href) => { assigned.push(href); };
+        const row = () => element<HTMLAnchorElement>('a[class="relay-shell-pc"]');
+        try {
+          offline(true);
+          await mount({ ...props({ kind: "list", devices: [device(ids.mac, "MacBook", AP)] }), scoped: false });
+          await settle(asks[0]!, true);
+          expect(alerts()).toEqual([]);
+          // the earlier answer is not trusted: the tap asks again, and no answer opens nothing and says the device is offline
+          let held = 0;
+          await act(async () => { if (clickLink(row())) held++; });
+          expect([held, asks.length]).toEqual([1, 2]);
+          await settle(asks[1]!, false);
+          expect([assigned, alerts()]).toEqual([[], ["This device is not connected to the internet. Try again"]]);
+          await act(async () => { if (clickLink(row())) held++; });
+          await settle(asks[2]!, true);
+          expect(assigned).toEqual([`/s/${ids.mac}/`]);
+        } finally {
+          restore();
+          offline(false);
+        }
+      });
+
       it("says this device, in a browser, and opens nothing while it is offline", async () => {
+        // no network at all: even the page's own origin does not answer
+        const asked: string[] = [];
+        const realFetch = globalThis.fetch;
+        globalThis.fetch = Object.assign(async (input: Request | string | URL): Promise<Response> => {
+          asked.push(String(input));
+          throw new TypeError("Failed to fetch");
+        }, { preconnect: realFetch.preconnect });
+        const assigned: string[] = [];
+        (window.location as unknown as { assign: (href: string) => void }).assign = (href) => { assigned.push(href); };
         offline(true);
         try {
           await mount(offlinePage());
+          await act(async () => { for (let turn = 0; turn < 3; turn++) await Promise.resolve(); });
           expect(alerts()).toEqual(["This device is not connected to the internet. Try again"]);
           let held = 0;
-          await act(async () => { renderer!.root.find((node) => node.type === "li" && node.props["data-pc-way"] === "relay").find((node) => node.type === "a").props.onClick({ preventDefault: () => { held++; } }); });
+          await act(async () => { if (clickLink(element<HTMLAnchorElement>("a", element('li[data-pc-way="relay"]')))) held++; });
+          await act(async () => { for (let turn = 0; turn < 3; turn++) await Promise.resolve(); });
           expect(held).toBe(1);
           expect(alerts()).toContain("Connect this device to the internet to open the PC.");
+          expect([new Set(asked), assigned]).toEqual([new Set(["https://app.ovis.sh/api/health"]), []]);
           // online, a row opens its page as before
           await act(async () => { offline(false); });
-          await act(async () => { renderer!.root.find((node) => node.type === "li" && node.props["data-pc-way"] === "relay").find((node) => node.type === "a").props.onClick({ preventDefault: () => { held++; } }); });
+          await act(async () => { if (clickLink(element<HTMLAnchorElement>("a", element('li[data-pc-way="relay"]')))) held++; });
           expect(held).toBe(1);
         } finally {
+          globalThis.fetch = realFetch;
           (navigator as { onLine?: boolean }).onLine = true;
         }
       });
@@ -984,13 +1157,13 @@ describe("the hosted front page", () => {
         try {
           await mount(signedIn(four()));
           expect(rowTexts().map(([, text]) => text.replace(/Forget$/, ""))).toContain(`${mark}In use now`.replace("DeskTailscale", "DeskTailscaledesk.tail1e211e.ts.net"));
-          const backs = renderer!.root.findAll((node) => node.type === "button" && typeof node.props["aria-label"] === "string" && node.props["aria-label"].startsWith("Back to "));
+          const backs = all<HTMLButtonElement>("button[aria-label]").filter((node) => node.getAttribute("aria-label")?.startsWith("Back to "));
           expect(backs.length).toBe(canGoBack ? 1 : 0);
           if (canGoBack) {
-            await act(async () => { backs[0]!.props.onClick(); });
+            await act(async () => { backs[0]!.click(); });
             expect(called).toContain("HerdrShell.backToCurrent");
           }
-          await act(async () => { renderer!.unmount(); });
+          await browser.render(null);
         } finally {
           if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
           else Reflect.deleteProperty(globalThis, "Capacitor");
@@ -1014,15 +1187,15 @@ describe("the hosted front page", () => {
         await mount(signedOut);
         expect(asked).toBe(0);
         expect(view()).toBe("add-pc");
-        await act(async () => { renderer!.unmount(); });
+        await browser.render(null);
         // one whose getState never settles: the controls once the short wait is over, and a late answer lists its PCs
         Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: app(["getState", "open"]) });
         await mount(signedOut);
         expect(asked).toBe(1);
-        expect(renderer!.root.findAll((node) => typeof node.props["data-view"] === "string")).toHaveLength(0);
+        expect(all("[data-view]")).toHaveLength(0);
         // the wait is bounded: the controls come by themselves well within it
         const deadline = Date.now() + 5_000;
-        while (renderer!.root.findAll((node) => typeof node.props["data-view"] === "string").length === 0) {
+        while (all("[data-view]").length === 0) {
           if (Date.now() > deadline) throw new Error("the front page stayed blank while the app did not answer");
           await act(async () => { await Promise.race([answer.promise, Bun.sleep(25)]); });
         }
@@ -1049,11 +1222,11 @@ describe("the hosted front page", () => {
         expect(view()).toBe("add-pc");
         expect(title()).toBe("Connect a PC");
         expect(buttons("Continue with GitHub")).toHaveLength(1);
-        await act(async () => { renderer!.unmount(); });
+        await browser.render(null);
         let backed = 0;
         await mount({ ...props({ kind: "empty" }), onBack: () => { backed += 1; } });
         expect(view()).toBe("add-pc");
-        await act(async () => { back()[0]!.props.onClick(); });
+        await act(async () => { back()[0]!.click(); });
         expect(backed).toBe(1);
       } finally {
         if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
@@ -1065,19 +1238,19 @@ describe("the hosted front page", () => {
       const pushed: unknown[] = [];
       (window.history as unknown as { pushState: (state: unknown) => void }).pushState = (state) => { pushed.push(state); };
       const focused: string[] = [];
-      const tracking = (element: { type: unknown; props: Record<string, unknown> }) => ({ ...node(), focus: () => { focused.push(element.type === "button" ? String(element.props["data-action"] ?? element.props["aria-label"]) : String(element.type)); } });
-      await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(RelayShell, signedIn(four())) }), { createNodeMock: tracking as never }); });
+      trackFocus(focused);
+      await mount(signedIn(four()));
       expect(pushed).toHaveLength(0);
-      await act(async () => { action("add-pc").props.onClick(); });
+      await act(async () => { action("add-pc").click(); });
       expect(view()).toBe("add-pc");
       expect(pushed).toHaveLength(1);
       expect(focused.at(-1)).toBe("h1");
-      await act(async () => { back()[0]!.props.onClick(); });
+      await act(async () => { back()[0]!.click(); });
       expect(view()).toBe("my-pcs");
       expect(focused.at(-1)).toBe("add-pc");
       // a tab is no step of the history
-      await act(async () => { action("add-pc").props.onClick(); });
-      await act(async () => { tab("ssh").props.onClick(); });
+      await act(async () => { action("add-pc").click(); });
+      await act(async () => { tab("ssh").click(); });
       expect(pushed).toHaveLength(2);
     });
 
@@ -1088,13 +1261,13 @@ describe("the hosted front page", () => {
         PluginHeaders: [{ name: "CapacitorBarcodeScanner", methods: [{ name: "scanBarcode" }] }],
         nativePromise: async () => ({}),
       } });
-      const ways = () => [action("scan-qr"), action("add-code")].map((node) => [node.props["data-action"], node.props.disabled === true]);
+      const ways = () => [action("scan-qr"), action("add-code")].map((node) => [node.getAttribute("data-action"), node.disabled === true]);
       try {
         await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
         expect(ways()).toEqual([["scan-qr", false], ["add-code", false]]);
-        await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, { ...props({ kind: "empty", account: { kind: "signing-in", provider: "google" } }), scoped: false, onSignIn: none }) })); });
+        await browser.render(createElement(SettingsProvider, { children: createElement(RelayShell, { ...props({ kind: "empty", account: { kind: "signing-in", provider: "google" } }), scoped: false, onSignIn: none }) }));
         expect(ways()).toEqual([["scan-qr", true], ["add-code", true]]);
-        await act(async () => { renderer!.unmount(); });
+        await browser.render(null);
         await mount({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none });
         await openAdd();
         expect(ways()).toEqual([["scan-qr", false], ["add-code", false]]);
@@ -1120,18 +1293,18 @@ describe("the hosted front page", () => {
         } });
         try {
           await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
-          await act(async () => { renderer!.root.find((node) => node.type === "button" && node.props.className === "relay-add-saved-pc").props.onClick(); });
-          const card = () => renderer!.root.findAll((node) => node.props["data-tailscale-off"] !== undefined);
+          await act(async () => { element<HTMLButtonElement>('button[class="relay-add-saved-pc"]').click(); });
+          const card = () => all("[data-tailscale-off]");
           if (on) {
             expect(card()).toHaveLength(0);
             expect(called).toContain("HerdrShell.open https://desk.tail1e211e.ts.net/");
           } else {
             expect(card().map(textOf)).toEqual(["Turn on Tailscale to connectOpen Tailscale"]);
             expect(called.some((call) => call.startsWith("HerdrShell.open "))).toBe(false);
-            await act(async () => { card()[0]!.find((node) => node.type === "button").props.onClick(); });
+            await act(async () => { element("button", card()[0]!).click(); });
             expect(called).toContain("HerdrShell.openTailscale");
           }
-          await act(async () => { renderer!.unmount(); });
+          await browser.render(null);
         } finally {
           if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
           else Reflect.deleteProperty(globalThis, "Capacitor");
@@ -1156,20 +1329,20 @@ describe("the hosted front page", () => {
       } });
       try {
         await mount({ ...props({ kind: "list", devices: many(9), account: { kind: "signed-in", provider: "github", error: null, pcs: [] } }), scoped: false, onSignIn: none });
-        const search = () => one("searches", renderer!.root.findAll((node) => node.type === "input" && node.props.type === "search"));
-        await act(async () => { search().props.onChange({ currentTarget: { value: "192" }, target: { value: "192" } }); });
-        await act(async () => { renderer!.root.find((node) => node.type === "li" && node.props["data-pc-way"] === "address").find((node) => node.type === "button" && node.props.className === "relay-add-saved-pc").props.onClick(); });
+        const search = () => one("searches", all<HTMLInputElement>('input[type="search"]'));
+        await browser.type(search(), "192");
+        await act(async () => { element<HTMLButtonElement>('button[class="relay-add-saved-pc"]', element('li[data-pc-way="address"]')).click(); });
         await openAdd();
-        await act(async () => { tab("ssh").props.onClick(); });
+        await act(async () => { tab("ssh").click(); });
         await act(async () => { screen.set(true); });
         expect(views()).toEqual(["my-pcs", "add-pc"]);
         expect(panel()).toBe("ssh");
-        expect(search().props.value).toBe("192");
+        expect(search().value).toBe("192");
         await act(async () => { screen.set(false); });
         expect(view()).toBe("add-pc");
         expect(panel()).toBe("ssh");
         // nothing was mounted again: the open goes on, never cancelled by the move
-        expect(renderer!.root.findAll((node) => node.props["data-opening"] !== undefined && shown(node)).map(textOf)).toEqual(["Opening 192.168.0.5:7317…Cancel"]);
+        expect(all("[data-opening]").filter(shown).map(textOf)).toEqual(["Opening 192.168.0.5:7317…Cancel"]);
         expect(called).not.toContain("HerdrShell.cancelOpen");
       } finally {
         if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
@@ -1182,7 +1355,7 @@ describe("the hosted front page", () => {
       screen.set(false);
       const pushed: unknown[] = [];
       (window.history as unknown as { pushState: (state: unknown) => void }).pushState = (state) => { pushed.push(state); };
-      const draw = (shown_: RelayShellProps) => act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, shown_) })); });
+      const draw = (shown_: RelayShellProps) => browser.render(createElement(SettingsProvider, { children: createElement(RelayShell, shown_) }));
       const front: RelayShellProps = { ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none, onCancel: () => { void draw(front); } };
       await mount(front);
       await openAdd();
@@ -1190,10 +1363,10 @@ describe("the hosted front page", () => {
       await act(async () => { screen.set(true); });
       await typeCode("ABCDE-12345");
       await draw({ ...front, state: { kind: "code-compare", offer: { v: 1, server_id: ids.mini, server_public_key: "k", relay: AP, code: "ABCDE-12345", name: "Mac mini" } } });
-      expect(dialog().props["data-pair-dialog"]).toBe("compare");
+      expect(dialog().getAttribute("data-pair-dialog")).toBe("compare");
       await act(async () => { screen.set(false); });
       expect(pushed).toHaveLength(1);
-      await act(async () => { button("Cancel").props.onClick(); });
+      await act(async () => { button("Cancel").click(); });
       expect(dialogs()).toHaveLength(0);
       expect(view()).toBe("add-pc");
       expect(pushed).toHaveLength(2);
@@ -1211,9 +1384,9 @@ describe("the hosted front page", () => {
       try {
         await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
         expect(view()).toBe("my-pcs");
-        const backs = renderer!.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Back to this PC" && shown(node));
+        const backs = all<HTMLButtonElement>('button[aria-label="Back to this PC"]').filter(shown);
         expect(backs).toHaveLength(1);
-        await act(async () => { backs[0]!.props.onClick(); });
+        await act(async () => { backs[0]!.click(); });
         expect(called).toContain("HerdrShell.backToCurrent");
       } finally {
         if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
@@ -1232,7 +1405,7 @@ describe("the hosted front page", () => {
       try {
         await mount(signedIn(four()));
         expect(rowTexts().filter(([, text]) => text.includes("In use now")).map(([, text]) => text.split("Address")[0])).toEqual(["Laptop"]);
-        expect(renderer!.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Back to Laptop" && shown(node))).toHaveLength(1);
+        expect(all<HTMLButtonElement>('button[aria-label="Back to Laptop"]').filter(shown)).toHaveLength(1);
       } finally {
         if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
         else Reflect.deleteProperty(globalThis, "Capacitor");
@@ -1242,9 +1415,9 @@ describe("the hosted front page", () => {
     it("says a failed sign-in once on a wide screen, beside the sign-in it can try again", async () => {
       wide();
       await mount({ ...props({ kind: "list", devices: [device(ids.desk, "p620", AP)], account: { kind: "signed-out", error: "The sign-in did not finish." } }), scoped: false, onSignIn: none });
-      const alerts = renderer!.root.findAll((node) => node.props.role === "alert" && shown(node) && textOf(node).includes("The sign-in did not finish."));
+      const alerts = all('[role="alert"]').filter((node) => shown(node) && textOf(node).includes("The sign-in did not finish."));
       expect(alerts).toHaveLength(1);
-      expect(renderer!.root.find((node) => node.props["data-view"] === "add-pc").findAll((node) => node === alerts[0])).toHaveLength(1);
+      expect(all("*", element('[data-view="add-pc"]')).filter((node) => node === alerts[0])).toHaveLength(1);
     });
 
     /** a phone app whose plugins answer as `answer` says, every call written down */
@@ -1267,8 +1440,8 @@ describe("the hosted front page", () => {
         else Reflect.deleteProperty(globalThis, "Capacitor");
       }
     };
-    const statusShown = () => renderer!.root.findAll((node) => node.props["data-opening"] !== undefined && shown(node)).map(textOf);
-    const savedRow = (way: string) => renderer!.root.find((node) => node.type === "li" && node.props["data-pc-way"] === way).find((node) => node.type === "button" && node.props.className === "relay-add-saved-pc");
+    const statusShown = () => all("[data-opening]").filter(shown).map(textOf);
+    const savedRow = (way: string) => element<HTMLButtonElement>('button[class="relay-add-saved-pc"]', element(`li[data-pc-way="${way}"]`));
 
     it("keeps an open the person started in view when they go on to Add PC: its status follows, and only then does the app open it", async () => {
       await withApp(async () => {
@@ -1276,7 +1449,7 @@ describe("the hosted front page", () => {
         const called = app([{ name: "HerdrShell", methods: ["getState", "open", "tailscale", "cancelOpen"] }], (method) =>
           method === "getState" ? { saved: ["https://desk.tail1e211e.ts.net"], names: {} } : method === "tailscale" ? tailscale.promise : method === "open" ? new Promise(() => {}) : {});
         await mount(signedIn(four()));
-        await act(async () => { savedRow("tailscale").props.onClick(); });
+        await act(async () => { savedRow("tailscale").click(); });
         await openAdd();
         expect(statusShown()).toEqual(["Opening desk.tail1e211e.ts.net…Cancel"]);
         await act(async () => { tailscale.resolve({ on: true }); await tailscale.promise; });
@@ -1290,8 +1463,8 @@ describe("the hosted front page", () => {
         const scanned = Promise.withResolvers<{ ScanResult: string }>();
         const called = app([{ name: "HerdrShell", methods: ["open"] }, { name: "CapacitorBarcodeScanner", methods: ["scanBarcode"] }], (method) => method === "scanBarcode" ? scanned.promise : method === "open" ? new Promise(() => {}) : {});
         await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
-        await act(async () => { action("scan-qr").props.onClick(); });
-        await act(async () => { tab("ssh").props.onClick(); });
+        await act(async () => { action("scan-qr").click(); });
+        await act(async () => { tab("ssh").click(); });
         await act(async () => { scanned.resolve({ ScanResult: "https://desk.tail1e211e.ts.net" }); await scanned.promise; });
         expect(called.filter((call) => call.startsWith("HerdrShell.open"))).toEqual([]);
         expect(statusShown()).toEqual([]);
@@ -1303,10 +1476,10 @@ describe("the hosted front page", () => {
       await withApp(async () => {
         const called = app([{ name: "HerdrShell", methods: ["getState", "open", "cancelOpen"] }], (method) => method === "getState" ? { saved: [], names: {} } : method === "open" ? new Promise(() => {}) : {});
         await mount(signedIn(four()));
-        await act(async () => { tab("tailscale").props.onClick(); });
-        const form = renderer!.root.find((node) => node.props["data-tab-panel"] === "tailscale").findByType("form");
-        await act(async () => { form.props.onSubmit({ preventDefault() {}, currentTarget: { elements: { namedItem: () => ({ value: "other.tail1e211e.ts.net" }) } } }); });
-        await act(async () => { tab("ssh").props.onClick(); });
+        await act(async () => { tab("tailscale").click(); });
+        const form = element<HTMLFormElement>("form", element('[data-tab-panel="tailscale"]'));
+        await submit(form, "other.tail1e211e.ts.net");
+        await act(async () => { tab("ssh").click(); });
         expect(called).not.toContain("HerdrShell.cancelOpen");
         // still in view, beside the list and on the tab now chosen
         expect(statusShown()).toEqual(["Opening other.tail1e211e.ts.net…Cancel", "Opening other.tail1e211e.ts.net…Cancel"]);
@@ -1319,15 +1492,15 @@ describe("the hosted front page", () => {
         await withApp(async () => {
           const called = app([{ name: "HerdrShell", methods: ["getState", "open"] }], (method) => method === "getState" ? { saved: ["http://192.168.0.5:7317", "http://192.168.0.6:7317"], names: {} } : method === "open" ? new Promise(() => {}) : {});
           await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
-          const rows = () => renderer!.root.findAll((node) => node.type === "li" && node.props["data-pc-way"] === "address").map((node) => node.find((each) => each.type === "button" && each.props.className === "relay-add-saved-pc"));
-          await act(async () => { rows()[0]!.props.onClick(); });
+          const rows = () => all('li[data-pc-way="address"]').map((node) => element<HTMLButtonElement>('button[class="relay-add-saved-pc"]', node));
+          await act(async () => { rows()[0]!.click(); });
           expect(statusShown()).toEqual(["Opening 192.168.0.5:7317…"]);
-          await act(async () => { rows()[1]!.props.onClick(); });
+          await act(async () => { rows()[1]!.click(); });
           expect(called.filter((call) => call.startsWith("HerdrShell.open"))).toHaveLength(1);
           await act(async () => { jest.advanceTimersByTime(30_000); });
           expect(statusShown()).toEqual([]);
-          expect(renderer!.root.findAll((node) => node.props.role === "alert" && shown(node)).map(textOf).join(" ")).toContain("192.168.0.5:7317 did not answer within 20 seconds.");
-          await act(async () => { rows()[1]!.props.onClick(); });
+          expect(all('[role="alert"]').filter(shown).map(textOf).join(" ")).toContain("192.168.0.5:7317 did not answer within 20 seconds.");
+          await act(async () => { rows()[1]!.click(); });
           expect(called.filter((call) => call.startsWith("HerdrShell.open"))).toEqual(["HerdrShell.open http://192.168.0.5:7317/", "HerdrShell.open http://192.168.0.6:7317/"]);
         });
       } finally { jest.useRealTimers(); }
@@ -1339,16 +1512,16 @@ describe("the hosted front page", () => {
         Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
         await mount(signedIn(four()));
         await openAdd();
-        await act(async () => { tab("tailscale").props.onClick(); });
+        await act(async () => { tab("tailscale").click(); });
         const asked = () => called.filter((call) => call === "HerdrShell.tailscale").length;
         expect(asked()).toBe(1);
-        await act(async () => { back()[0]!.props.onClick(); });
-        await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+        await act(async () => { back()[0]!.click(); });
+        await act(async () => { browser.window.document.dispatchEvent(new browser.window.Event("visibilitychange")); });
         expect(asked()).toBe(1);
         await openAdd();
         // on screen again: asked once, and again when the app comes back
         expect(asked()).toBe(2);
-        await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+        await act(async () => { browser.window.document.dispatchEvent(new browser.window.Event("visibilitychange")); });
         expect(asked()).toBe(3);
       });
     });
@@ -1357,20 +1530,20 @@ describe("the hosted front page", () => {
       const compare = { kind: "code-compare" as const, offer: { v: 1 as const, server_id: ids.mini, server_public_key: "k", relay: AP, code: "ABCDE-12345", name: "Mac mini" } };
       // folding its field, Add PC's Back, another tab
       const leave: (() => Promise<void>)[] = [
-        async () => { await act(async () => { action("add-code").props.onClick(); }); },
-        async () => { await act(async () => { back()[0]!.props.onClick(); }); },
-        async () => { await act(async () => { tab("tailscale").props.onClick(); }); },
+        async () => { await act(async () => { action("add-code").click(); }); },
+        async () => { await act(async () => { back()[0]!.click(); }); },
+        async () => { await act(async () => { tab("tailscale").click(); }); },
       ];
       for (const go of leave) {
         const calls: string[] = [];
-        const draw = (shown_: RelayShellProps) => act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, shown_) })); });
+        const draw = (shown_: RelayShellProps) => browser.render(createElement(SettingsProvider, { children: createElement(RelayShell, shown_) }));
         const page: RelayShellProps = { ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none, onCancel: () => { calls.push("cancel"); } };
         await mount(page);
         await openAdd();
         await typeCode("ABCDE-12345");
         await draw({ ...page, state: { kind: "code-looking" } });
         // the field is read-only while it looks
-        expect(renderer!.root.find((node) => node.type === "input" && node.props.name === "code").props.readOnly).toBe(true);
+        expect(element<HTMLInputElement>('input[name="code"]').readOnly).toBe(true);
         await go();
         expect(calls).toEqual(["cancel"]);
         // the shell, cancelled, reads the front page again
@@ -1379,7 +1552,7 @@ describe("the hosted front page", () => {
         await draw({ ...page, state: compare });
         expect(dialogs()).toHaveLength(0);
         await draw(page);
-        await act(async () => { renderer!.unmount(); });
+        await browser.render(null);
       }
       // the comparison's Cancel, while the front page the shell reads again is still on its way: the dialog stays closed
       const calls: string[] = [];
@@ -1387,20 +1560,20 @@ describe("the hosted front page", () => {
       await mount(page);
       await openAdd();
       await typeCode("ABCDE-12345");
-      await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, { ...page, state: compare }) })); });
-      expect(dialog().props["data-pair-dialog"]).toBe("compare");
-      await act(async () => { button("Cancel").props.onClick(); });
+      await browser.render(createElement(SettingsProvider, { children: createElement(RelayShell, { ...page, state: compare }) }));
+      expect(dialog().getAttribute("data-pair-dialog")).toBe("compare");
+      await act(async () => { button("Cancel").click(); });
       expect(calls).toEqual(["cancel"]);
       expect(dialogs()).toHaveLength(0);
-      await act(async () => { renderer!.unmount(); });
+      await browser.render(null);
       // a sign-in started over a failed code ends the code first
       const signed: string[] = [];
       const out: RelayShellProps = { ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: () => { signed.push("sign-in"); }, onCancel: () => { signed.push("cancel"); } };
       await mount(out);
       await typeCode("x");
-      await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, { ...out, state: { kind: "code-entry", failure: "not-a-code" } }) })); });
-      expect(renderer!.root.find((node) => node.type === "input" && node.props.name === "code").props.readOnly).toBe(false);
-      await act(async () => { button("Continue with GitHub").props.onClick(); });
+      await browser.render(createElement(SettingsProvider, { children: createElement(RelayShell, { ...out, state: { kind: "code-entry", failure: "not-a-code" } }) }));
+      expect(element<HTMLInputElement>('input[name="code"]').readOnly).toBe(false);
+      await act(async () => { button("Continue with GitHub").click(); });
       expect(signed).toEqual(["cancel", "sign-in"]);
     });
 
@@ -1408,9 +1581,9 @@ describe("the hosted front page", () => {
       screen.install();
       screen.set(false);
       const focused: string[] = [];
-      const tracking = (element: { type: unknown; props: Record<string, unknown> }) => ({ ...node(), focus: () => { focused.push(element.type === "button" ? String(element.props["data-action"] ?? element.props["aria-label"]) : String(element.type)); } });
-      await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(RelayShell, signedIn(four())) }), { createNodeMock: tracking as never }); });
-      await act(async () => { action("add-pc").props.onClick(); });
+      trackFocus(focused);
+      await mount(signedIn(four()));
+      await act(async () => { action("add-pc").click(); });
       expect(focused.filter((each) => each === "h1")).toHaveLength(1);
       await act(async () => { screen.set(true); });
       await act(async () => { screen.set(false); });
@@ -1419,26 +1592,26 @@ describe("the hosted front page", () => {
 
     it("keeps a failed sign-in in view on another tab, on a wide screen and on a phone, said once", async () => {
       const failing = { ...props({ kind: "list", devices: [device(ids.desk, "p620", AP)], account: { kind: "signed-out", error: "The sign-in did not finish." } }), scoped: false, onSignIn: none } satisfies RelayShellProps;
-      const said = () => renderer!.root.findAll((node) => node.props.role === "alert" && shown(node) && textOf(node).includes("The sign-in did not finish.")).length;
+      const said = () => all('[role="alert"]').filter((node) => shown(node) && textOf(node).includes("The sign-in did not finish.")).length;
       wide();
       await mount(failing);
       expect(said()).toBe(1);
-      await act(async () => { tab("tailscale").props.onClick(); });
+      await act(async () => { tab("tailscale").click(); });
       expect(said()).toBe(1);
-      await act(async () => { renderer!.unmount(); });
+      await browser.render(null);
       screen.set(false);
       await mount(failing);
       expect(said()).toBe(1);
       await openAdd();
       expect(said()).toBe(1);
-      await act(async () => { tab("ssh").props.onClick(); });
+      await act(async () => { tab("ssh").click(); });
       expect(said()).toBe(1);
     });
 
     it("never says Needs approval: an account PC this device is not let into yet is On or Off like any other", async () => {
       await mount(signedIn(four()));
       expect(rowTexts()).toEqual([["relay", "Desk PCRelayOn"], ["relay", "MacBookRelay"], ["relay", "Home serverRelayOff"], ["relay", "Mac miniRelayOn"]]);
-      expect(textOf(renderer!.root)).not.toContain("Needs approval");
+      expect(textOf(document.body)).not.toContain("Needs approval");
     });
 
     it("lists the phone app's own PCs on My PCs after the relay's, each opened at its own address, Forget on a Tailscale or address one, and no list on the tabs", async () => {
@@ -1458,23 +1631,23 @@ describe("the hosted front page", () => {
         expect(view()).toBe("my-pcs");
         // the relay's PC first, then the app's: Tailscale, then the others in the order the app saved them
         expect(rowTexts()).toEqual([["relay", "MacBookRelay"], ["tailscale", "DeskTailscaledesk.tail1e211e.ts.net"], ["address", "192.168.0.5:7317Address"], ["ssh", "lab-linuxSSH127.0.0.1:41234"]]);
-        expect(renderer!.root.find((node) => node.type === "a" && node.props.className === "relay-add-saved-pc").props.href).toBe(`/s/${ids.mac}/`);
-        const rows = () => renderer!.root.findAll((node) => node.type === "li" && node.props["data-pc-way"] !== "relay" && typeof node.props["data-pc-way"] === "string");
+        expect(element<HTMLAnchorElement>('a[class="relay-add-saved-pc"]').getAttribute("href")).toBe(`/s/${ids.mac}/`);
+        const rows = () => all("li[data-pc-way]").filter((node) => node.getAttribute("data-pc-way") !== "relay");
         for (const [index, opens] of ["https://desk.tail1e211e.ts.net/", "http://192.168.0.5:7317/", "http://127.0.0.1:41234/"].entries()) {
-          await act(async () => { rows()[index]!.find((node) => node.type === "button" && node.props.className === "relay-add-saved-pc").props.onClick(); });
+          await act(async () => { element("button.relay-add-saved-pc", rows()[index]!).click(); });
           expect(called.filter((call) => call.startsWith("HerdrShell.open")).at(-1)).toBe(`HerdrShell.open ${opens}`);
         }
-        await act(async () => { action("account-menu").props.onClick(); });
-        await act(async () => { renderer!.root.find((node) => node.type === "button" && node.props["data-item"] === "forget-pcs").props.onClick(); });
-        const deskRow = renderer!.root.find((node) => node.type === "li" && node.props["data-tailnet-pc"] === "https://desk.tail1e211e.ts.net");
-        await act(async () => { deskRow.find((node) => node.type === "button" && node.props["data-action"] === "forget-pc").props.onClick(); });
+        await act(async () => { action("account-menu").click(); });
+        await act(async () => { element<HTMLButtonElement>('button[data-item="forget-pcs"]').click(); });
+        const deskRow = element('li[data-tailnet-pc="https://desk.tail1e211e.ts.net"]');
+        await act(async () => { element('button[data-action="forget-pc"]', deskRow).click(); });
         expect(called).toContain("HerdrShell.forget https://desk.tail1e211e.ts.net");
         expect(called.filter((call) => call === "HerdrShell.getState")).toHaveLength(2);
-        await act(async () => { action("forget-done").props.onClick(); });
+        await act(async () => { action("forget-done").click(); });
         await openAdd();
         for (const way of ["tailscale", "ssh"]) {
-          await act(async () => { tab(way).props.onClick(); });
-          expect(renderer!.root.findAll((node) => node.props["data-pc-way"] !== undefined && shown(node))).toHaveLength(0);
+          await act(async () => { tab(way).click(); });
+          expect(all("[data-pc-way]").filter(shown)).toHaveLength(0);
         }
       } finally {
         if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
@@ -1505,23 +1678,23 @@ describe("the hosted front page", () => {
         expect(rowTexts().map(([way, text]) => [way, text.replace(/Forget$/, "")])).toEqual([["tailscale", "DeskTailscaledesk.tail1e211e.ts.net"], ["tailscale", "100.101.1.2:7317Tailscale"], ["address", "192.168.0.5:7317Address"]]);
         await openAdd();
         // the code line too, beside the QR way: the PC offers both
-        expect(renderer!.root.findAll((node) => node.type === "button" && node.props["data-action"] === "add-code")).toHaveLength(1);
-        await act(async () => { action("scan-qr").props.onClick(); });
+        expect(all<HTMLButtonElement>('button[data-action="add-code"]')).toHaveLength(1);
+        await act(async () => { action("scan-qr").click(); });
         expect(assigned).toEqual([`https://app.ovis.sh/s/${ids.mini}/#offer=abc`]);
-        await act(async () => { tab("tailscale").props.onClick(); });
-        expect(renderer!.root.findAll((node) => node.type === "input")).toHaveLength(1);
-        expect(renderer!.root.findAll((node) => node.props["data-tailnet-pc"] !== undefined && shown(node))).toHaveLength(0);
-        await act(async () => { renderer!.unmount(); });
+        await act(async () => { tab("tailscale").click(); });
+        expect(all<HTMLInputElement>("input")).toHaveLength(1);
+        expect(all("[data-tailnet-pc]").filter(shown)).toHaveLength(0);
+        await browser.render(null);
         tailscaleOn = false;
         await mount(page);
         await openAdd();
-        await act(async () => { tab("tailscale").props.onClick(); });
+        await act(async () => { tab("tailscale").click(); });
         // a home Wi-Fi address opens without Tailscale: its field stays, under the card
-        const tailscalePanel = renderer!.root.find((node) => node.props["data-tab-panel"] === "tailscale");
-        const [card, field] = [tailscalePanel.find((node) => node.props["data-tailscale-off"] !== undefined), tailscalePanel.find((node) => node.type === "input")];
-        const order = tailscalePanel.findAll((node) => node === card || node === field);
+        const tailscalePanel = element('[data-tab-panel="tailscale"]');
+        const [card, field] = [element("[data-tailscale-off]", tailscalePanel), element("input", tailscalePanel)];
+        const order = all("*", tailscalePanel).filter((node) => node === card || node === field);
         expect(order).toEqual([card, field]);
-        await act(async () => { button("Open Tailscale").props.onClick(); });
+        await act(async () => { button("Open Tailscale").click(); });
         expect(called).toContain("HerdrShell.openTailscale");
       } finally {
         if (capacitor) Object.defineProperty(globalThis, "Capacitor", capacitor);
@@ -1544,8 +1717,8 @@ describe("the hosted front page", () => {
         await openAdd();
         const scan = async (qr: string): Promise<string> => {
           scanned = qr;
-          await act(async () => { renderer!.root.find((node) => node.type === "button" && node.props["data-action"] === "scan-qr").props.onClick(); });
-          return renderer!.root.findAll((node) => node.props.role === "alert").map(textOf).join("");
+          await act(async () => { element<HTMLButtonElement>('button[data-action="scan-qr"]').click(); });
+          return all('[role="alert"]').map(textOf).join("");
         };
         expect(await scan(signInLink("https://app.ovis.sh", ids.mini, "github"))).toBe("");
         expect(await scan(signInLink("https://app.ovis.sh", ids.desk, null))).toBe("");
@@ -1571,17 +1744,17 @@ describe("the hosted front page", () => {
     it("hands SSH from the SSH tab's first field to the phone app's own SSH screen, with Add by address under it, and offers no SSH in a browser", async () => {
       const called: string[] = [];
       const shown = { ...props({ kind: "empty", account: { kind: "signed-in", provider: "google", error: null, pcs: [] } }), scoped: false, onSignIn: none } satisfies RelayShellProps;
-      const sshField = () => renderer!.root.find((node) => node.type === "input" && node.props.name === "address");
+      const sshField = () => element<HTMLInputElement>('input[name="address"]');
       const submitSsh = async (typed: string) => {
-        const form = renderer!.root.find((node) => node.type === "form");
-        await act(async () => { form.props.onSubmit({ preventDefault() {}, currentTarget: { elements: { namedItem: () => ({ value: typed }) } } }); });
+        const form = element<HTMLFormElement>("form");
+        await submit(form, typed);
       };
       await mount(shown);
       await openAdd();
-      await act(async () => { tab("ssh").props.onClick(); });
-      expect(renderer!.root.findAll((node) => node.type === "input")).toHaveLength(0);
-      expect(button("Add by address").props.className).toBe("connect-address-link");
-      await act(async () => { renderer!.unmount(); });
+      await act(async () => { tab("ssh").click(); });
+      expect(all<HTMLInputElement>("input")).toHaveLength(0);
+      expect(button("Add by address").className).toBe("connect-address-link");
+      await browser.render(null);
       const capacitor = Object.getOwnPropertyDescriptor(globalThis, "Capacitor");
       Object.defineProperty(globalThis, "Capacitor", { configurable: true, value: {
         isNativePlatform: () => true, getPlatform: () => "android",
@@ -1594,9 +1767,9 @@ describe("the hosted front page", () => {
       try {
         await mount(shown);
         await openAdd();
-        await act(async () => { tab("ssh").props.onClick(); });
-        expect(textOf(renderer!.root.find((node) => node.type === "label"))).toBe("SSH");
-        expect(sshField().props.placeholder).toBe("user@host");
+        await act(async () => { tab("ssh").click(); });
+        expect(textOf(element("label"))).toBe("SSH");
+        expect(sshField().placeholder).toBe("user@host");
         await submitSsh("pi@192.168.0.20:2222");
         expect(called.filter((call) => call !== "HerdrShell.getState")).toEqual(["HerdrShell.openSshSetup pi@192.168.0.20:2222"]);
         // the hosted page never adds an SSH PC itself: the app's own page does, after the person confirms there
@@ -1617,13 +1790,13 @@ describe("the hosted front page", () => {
       await openAdd();
       await typeCode("ABCDE-12345");
       // the lookup and a failure stay in Add PC's own field
-      await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, { ...shown, state: { kind: "code-entry", failure: "no-pc" } }) })); });
+      await browser.render(createElement(SettingsProvider, { children: createElement(RelayShell, { ...shown, state: { kind: "code-entry", failure: "no-pc" } }) }));
       expect(view()).toBe("add-pc");
-      expect(renderer!.root.findAll((node) => node.type === "input" && node.props.name === "code")).toHaveLength(1);
+      expect(all<HTMLInputElement>('input[name="code"]')).toHaveLength(1);
       // Cancel: back on Add PC, whose Back is the list that still goes back to the PC
-      await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, shown) })); });
+      await browser.render(createElement(SettingsProvider, { children: createElement(RelayShell, shown) }));
       expect(view()).toBe("add-pc");
-      await act(async () => { back()[0]!.props.onClick(); });
+      await act(async () => { back()[0]!.click(); });
       expect(view()).toBe("my-pcs");
       expect(back()).toHaveLength(1);
     });
@@ -1634,8 +1807,8 @@ describe("the hosted front page", () => {
       await mount(shown);
       await openAdd();
       await typeCode("ABCDE-12345");
-      await act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, { ...shown, state: { kind: "code-compare", offer: { v: 1, server_id: ids.mini, server_public_key: "k", relay: AP, code: "ABCDE-12345", name: "Mac mini" } } }) })); });
-      expect(dialog().props["data-pair-dialog"]).toBe("compare");
+      await browser.render(createElement(SettingsProvider, { children: createElement(RelayShell, { ...shown, state: { kind: "code-compare", offer: { v: 1, server_id: ids.mini, server_public_key: "k", relay: AP, code: "ABCDE-12345", name: "Mac mini" } } }) }));
+      expect(dialog().getAttribute("data-pair-dialog")).toBe("compare");
     });
 
     it("marks on /#add the PC it was opened from In use now instead of its state, and its Back goes back to that PC, leaving My PCs without one", async () => {
@@ -1648,7 +1821,7 @@ describe("the hosted front page", () => {
       expect(rowTexts()).toEqual([["relay", "Desk PCRelayOn"], ["relay", "MacBookRelay"], ["relay", "Home serverRelayIn use now"], ["relay", "Mac miniRelayOn"]]);
       // the mark serves that one opening alone
       expect(sessionStorage.getItem(ADD_PC_FROM_KEY)).toBeNull();
-      await act(async () => { back()[0]!.props.onClick(); });
+      await act(async () => { back()[0]!.click(); });
       expect(went).toEqual(["back"]);
       // the front page it leaves for is My PCs, with no Back and no mark, and never the dashboard
       expect(back()).toHaveLength(0);
@@ -1656,11 +1829,11 @@ describe("the hosted front page", () => {
       expect(rowTexts().map(([, text]) => text)).toContain("Home serverRelayOff");
     });
 
-    const forgets = () => renderer!.root.findAll((node) => node.type === "button" && node.props["data-action"] === "forget-pc" && shown(node));
-    const openers = () => renderer!.root.findAll((node) => (node.type === "a" || node.type === "button") && node.props.className === "relay-add-saved-pc" && shown(node));
+    const forgets = () => all<HTMLButtonElement>('button[data-action="forget-pc"]').filter(shown);
+    const openers = () => all(':is(a, button)[class="relay-add-saved-pc"]').filter(shown);
     const forgetPcs = async () => {
-      await act(async () => { action("account-menu").props.onClick(); });
-      await act(async () => { renderer!.root.find((node) => node.type === "button" && node.props["data-item"] === "forget-pcs").props.onClick(); });
+      await act(async () => { action("account-menu").click(); });
+      await act(async () => { element<HTMLButtonElement>('button[data-item="forget-pcs"]').click(); });
     };
 
     it("carries no Forget on a row; the menu's Forget PCs, signed out too, puts Forget in place of each forgettable row's chevron, opens no row, and Done ends it", async () => {
@@ -1670,22 +1843,22 @@ describe("the hosted front page", () => {
         const forgot: string[] = [];
         await mount({ ...props({ kind: "list", devices: [device(ids.mac, "MacBook", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: (serverId) => { forgot.push(serverId); } });
         // nothing to forget by mistake on a row, whose name has the row to itself
-        expect(renderer!.root.findAll((node) => node.type === "button" && textOf(node) === "Forget" && shown(node))).toHaveLength(0);
+        expect(all<HTMLButtonElement>("button").filter((node) => textOf(node) === "Forget" && shown(node))).toHaveLength(0);
         expect(openers()).toHaveLength(4);
         await forgetPcs();
         // the SSH PC goes from the app's own screen, with its keys: no Forget here, as before
-        expect(forgets().map((node) => node.props["aria-label"])).toEqual(["Forget MacBook", "Forget Desk", "Forget 192.168.0.5:7317"]);
+        expect(forgets().map((node) => node.getAttribute("aria-label"))).toEqual(["Forget MacBook", "Forget Desk", "Forget 192.168.0.5:7317"]);
         expect(openers()).toHaveLength(0);
-        expect(renderer!.root.findAll((node) => node.props.className === "relay-shell-pc-glyph" && shown(node))).toHaveLength(0);
+        expect(all('[class="relay-shell-pc-glyph"]').filter(shown)).toHaveLength(0);
         // what Forget does stays as it was, row by row
-        await act(async () => { forgets()[0]!.props.onClick(); });
-        await act(async () => { forgets()[1]!.props.onClick(); });
+        await act(async () => { forgets()[0]!.click(); });
+        await act(async () => { forgets()[1]!.click(); });
         expect(forgot).toEqual([ids.mac]);
         expect(called).toContain("HerdrShell.forget https://desk.tail1e211e.ts.net");
-        await act(async () => { action("forget-done").props.onClick(); });
+        await act(async () => { action("forget-done").click(); });
         expect(forgets()).toHaveLength(0);
         expect(openers()).toHaveLength(4);
-        expect(renderer!.root.findAll((node) => node.type === "button" && node.props["data-action"] === "add-pc" && shown(node))).toHaveLength(1);
+        expect(all<HTMLButtonElement>('button[data-action="add-pc"]').filter(shown)).toHaveLength(1);
       });
     });
 
@@ -1695,23 +1868,23 @@ describe("the hosted front page", () => {
           method === "getState" ? { saved: ["https://desk.tail1e211e.ts.net", "http://192.168.0.5:7317"], names: { "https://desk.tail1e211e.ts.net": "Desk" }, choosing: true, current: "http://192.168.0.5:7317" } : {});
         await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
         await forgetPcs();
-        const inUse = () => forgets().find((node) => node.props["aria-label"] === "Forget 192.168.0.5:7317")!;
-        const ask = () => renderer!.root.findAll((node) => node.props["data-forget-ask"] !== undefined && shown(node));
-        await act(async () => { inUse().props.onClick(); });
+        const inUse = () => forgets().find((node) => node.getAttribute("aria-label") === "Forget 192.168.0.5:7317")!;
+        const ask = () => all("[data-forget-ask]").filter(shown);
+        await act(async () => { inUse().click(); });
         expect(called.filter((call) => call.startsWith("HerdrShell.forget"))).toEqual([]);
         expect(ask().map(textOf)).toEqual(["This is the PC in use now. Forget it?ForgetCancel"]);
-        await act(async () => { ask()[0]!.findAll((node) => node.type === "button").find((node) => textOf(node) === "Cancel")!.props.onClick(); });
+        await act(async () => { one("Cancel", all("button", ask()[0]!).filter((node) => textOf(node) === "Cancel")).click(); });
         expect(ask()).toHaveLength(0);
         expect(called.filter((call) => call.startsWith("HerdrShell.forget"))).toEqual([]);
-        await act(async () => { inUse().props.onClick(); });
-        await act(async () => { ask()[0]!.findAll((node) => node.type === "button").find((node) => textOf(node) === "Forget")!.props.onClick(); });
+        await act(async () => { inUse().click(); });
+        await act(async () => { one("Forget", all("button", ask()[0]!).filter((node) => textOf(node) === "Forget")).click(); });
         expect(called.filter((call) => call.startsWith("HerdrShell.forget"))).toEqual(["HerdrShell.forget http://192.168.0.5:7317"]);
-        await act(async () => { renderer!.unmount(); });
+        await browser.render(null);
         // only an SSH PC saved: nothing this screen forgets, so no menu signed out
         app([{ name: "HerdrShell", methods: ["getState", "open", "forget"] }], (method) => method === "getState" ? { saved: ["http://127.0.0.1:41234"], names: {} } : {});
         await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
         expect(view()).toBe("my-pcs");
-        expect(renderer!.root.findAll((node) => node.type === "button" && node.props["data-action"] === "account-menu" && shown(node))).toHaveLength(0);
+        expect(all<HTMLButtonElement>('button[data-action="account-menu"]').filter(shown)).toHaveLength(0);
       });
     });
 
@@ -1721,13 +1894,13 @@ describe("the hosted front page", () => {
           method === "getState" ? { saved: ["https://desk.tail1e211e.ts.net", "http://127.0.0.1:41234"], names: { "http://127.0.0.1:41234": "lab-linux" } } : {});
         const mac = pc(ids.mac, "hasang-uui-MacBookPro", "paired", { paired: false, linked: false, last_seen_at: new Date().toISOString(), join: { server_public_key: "k", relay: AP } });
         await mount({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "github", error: null, pcs: [mac] } }), scoped: false, onSignIn: none });
-        const reasons = () => renderer!.root.findAll((node) => node.props["data-kept"] !== undefined && shown(node)).map((node) => [node.props["data-kept"], textOf(node)]);
+        const reasons = () => all("[data-kept]").filter(shown).map((node) => [node.getAttribute("data-kept"), textOf(node)]);
         expect(reasons()).toEqual([]);
         await forgetPcs();
-        expect(forgets().map((node) => node.props["aria-label"])).toEqual(["Forget desk"]);
+        expect(forgets().map((node) => node.getAttribute("aria-label"))).toEqual(["Forget desk"]);
         // in Forget's place, in a few words: the row keeps its height
         expect(reasons()).toEqual([["account", "Account PC"], ["ssh", "SSH PC"]]);
-        expect(renderer!.root.findAll((node) => node.props["data-kept"] !== undefined && shown(node)).map((node) => node.parent?.props.className)).toEqual(["my-pc", "my-pc"]);
+        expect(all("[data-kept]").filter(shown).map((node) => node.parentElement?.className)).toEqual(["my-pc", "my-pc"]);
       });
     });
 
@@ -1736,15 +1909,16 @@ describe("the hosted front page", () => {
       const page = (error: string | null) => ({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "github", error, pcs: [mac] } }), scoped: false, onSignIn: none });
       await mount(page(null));
       expect(rowTexts()).toEqual([["relay", "hasang-uui-MacBookProRelayOn"]]);
-      await act(async () => { renderer!.unmount(); });
+      await browser.render(null);
       await mount(page("The account service could not be reached. The PCs this device is paired with still work."));
       expect(rowTexts()).toEqual([["relay", "hasang-uui-MacBookProRelay"]]);
     });
 
-    const lines = () => renderer!.root.findAll((node) => node.props["data-way-line"] !== undefined && shown(node)).map((line) => {
-      const after = line.parent!.children.slice(line.parent!.children.indexOf(line) + 1).find((next) => typeof next !== "string" && (next.type === "button" || next.props["data-kept"] !== undefined || next.type === "span"));
-      const end = after === undefined || typeof after === "string" ? "" : after.type === "button" ? textOf(after) : textOf(after);
-      return [line.props["data-way-line"], textOf(line), end];
+    const lines = () => all("[data-way-line]").filter(shown).map((line) => {
+      let after = line.nextElementSibling;
+      while (after !== null && !after.matches("button, [data-kept], span")) after = after.nextElementSibling;
+      const end = after === null ? "" : textOf(after);
+      return [line.getAttribute("data-way-line"), textOf(line), end];
     });
     const tail = "https://macbookpro.tail1e211e.ts.net:17317", scope = `https://app.ovis.sh/s/${ids.mac}/`, desk = "https://desk.tail1e211e.ts.net", sshMac = "http://127.0.0.1:47317";
 
@@ -1757,8 +1931,8 @@ describe("the hosted front page", () => {
         // row, whatever its name
         expect(rowTexts()).toEqual([["relay", "hasang-uui-MacBookProRelay · Tailscale"], ["tailscale", "hasang-uui-MacBookProTailscaledesk.tail1e211e.ts.net"]]);
         // its Tailscale page loaded last in the app, and still the row is the relay's page
-        expect(openers()[0]!.type).toBe("a");
-        expect(openers()[0]!.props.href).toBe(`/s/${ids.mac}/`);
+        expect(openers()[0]!.localName).toBe("a");
+        expect(openers()[0]!.getAttribute("href")).toBe(`/s/${ids.mac}/`);
         expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([]);
       });
     });
@@ -1771,7 +1945,7 @@ describe("the hosted front page", () => {
         await mount({ ...props({ kind: "list", devices: [unnamed], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: none });
         // the Tailscale page the app keeps open is that address's, not the relay PC's: no In use now on it, and no name
         expect(rowTexts()).toEqual([["relay", "Unnamed PCRelay · Tailscale"]]);
-        expect(openers()[0]!.props.href).toBe(`/s/${ids.mac}/`);
+        expect(openers()[0]!.getAttribute("href")).toBe(`/s/${ids.mac}/`);
       });
     });
 
@@ -1784,13 +1958,13 @@ describe("the hosted front page", () => {
         await mount({ ...props({ kind: "list", devices: [device(ids.mac, "hasang-uui-MacBookPro", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: (serverId) => { forgot.push(serverId); } });
         await forgetPcs();
         expect(lines()).toEqual([["relay", "Relay", "Forget"], ["tailscale", "Tailscalemacbookpro.tail1e211e.ts.net:17317", "Forget"]]);
-        expect(forgets().map((node) => node.props["aria-label"])).toEqual(["Forget hasang-uui-MacBookPro · Relay", "Forget hasang-uui-MacBookPro · Tailscale"]);
-        await act(async () => { forgets()[1]!.props.onClick(); });
+        expect(forgets().map((node) => node.getAttribute("aria-label"))).toEqual(["Forget hasang-uui-MacBookPro · Relay", "Forget hasang-uui-MacBookPro · Tailscale"]);
+        await act(async () => { forgets()[1]!.click(); });
         expect(called.filter((call) => call.startsWith("HerdrShell.forget"))).toEqual([`HerdrShell.forget ${tail}`]);
         expect(forgot).toEqual([]);
-        await act(async () => { forgets()[0]!.props.onClick(); });
+        await act(async () => { forgets()[0]!.click(); });
         expect(forgot).toEqual([ids.mac]);
-        await act(async () => { renderer!.unmount(); });
+        await browser.render(null);
 
         // relay pairing + SSH: the SSH way goes from the app's own screen, with its keys
         called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget"] }], (method) =>
@@ -1798,7 +1972,7 @@ describe("the hosted front page", () => {
         await mount({ ...props({ kind: "list", devices: [device(ids.mac, "hasang-uui-MacBookPro", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: none });
         await forgetPcs();
         expect(lines()).toEqual([["relay", "Relay", "Forget"], ["ssh", "SSH127.0.0.1:47317", "SSH PC"]]);
-        await act(async () => { renderer!.unmount(); });
+        await browser.render(null);
 
         // an account PC + Tailscale address: the account's way says so, the address is forgotten on its own
         called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget"] }], (method) =>
@@ -1807,7 +1981,7 @@ describe("the hosted front page", () => {
         await mount({ ...props({ kind: "empty", account: { kind: "signed-in", provider: "github", error: null, pcs: [mac] } }), scoped: false, onSignIn: none });
         await forgetPcs();
         expect(lines()).toEqual([["relay", "Relay", "Account PC"], ["tailscale", "Tailscalemacbookpro.tail1e211e.ts.net:17317", "Forget"]]);
-        await act(async () => { forgets()[0]!.props.onClick(); });
+        await act(async () => { forgets()[0]!.click(); });
         expect(called.filter((call) => call.startsWith("HerdrShell.forget"))).toEqual([`HerdrShell.forget ${tail}`]);
       });
     });
@@ -1820,9 +1994,9 @@ describe("the hosted front page", () => {
         await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
         await forgetPcs();
         expect(lines()).toEqual([["tailscale", "Tailscalemacbookpro.tail1e211e.ts.net:17317", "Forget"], ["address", "Address192.168.0.5:7317", "Forget"]]);
-        await act(async () => { forgets()[1]!.props.onClick(); });
+        await act(async () => { forgets()[1]!.click(); });
         // no question for one way of a PC not in use, and only that way goes
-        expect(renderer!.root.findAll((node) => node.props["data-forget-ask"] !== undefined && shown(node))).toHaveLength(0);
+        expect(all("[data-forget-ask]").filter(shown)).toHaveLength(0);
         expect(called.filter((call) => call.startsWith("HerdrShell.forget"))).toEqual([`HerdrShell.forget ${lan}`]);
       });
     });
@@ -1834,11 +2008,11 @@ describe("the hosted front page", () => {
         const forgot: string[] = [];
         await mount({ ...props({ kind: "list", devices: [device(ids.mac, "hasang-uui-MacBookPro", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: (serverId) => { forgot.push(serverId); } });
         await forgetPcs();
-        const ask = () => renderer!.root.findAll((node) => node.props["data-forget-ask"] !== undefined && shown(node));
-        await act(async () => { forgets()[0]!.props.onClick(); });
+        const ask = () => all("[data-forget-ask]").filter(shown);
+        await act(async () => { forgets()[0]!.click(); });
         expect(ask().map(textOf)).toEqual(["This is the PC in use now. Forget it?ForgetCancel"]);
         expect(forgot).toEqual([]);
-        await act(async () => { ask()[0]!.findAll((node) => node.type === "button").find((node) => textOf(node) === "Forget")!.props.onClick(); });
+        await act(async () => { one("Forget", all("button", ask()[0]!).filter((node) => textOf(node) === "Forget")).click(); });
         expect(forgot).toEqual([ids.mac]);
         expect(called.filter((call) => call.startsWith("HerdrShell.forget"))).toEqual([]);
       });
@@ -1852,24 +2026,24 @@ describe("the hosted front page", () => {
             : method === "open" && options.url === `${tail}/` ? Promise.reject(Object.assign(new Error("unknown-host"), { code: "unknown-host" })) : method === "open" ? new Promise(() => {}) : {});
         await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
         expect(rowTexts()).toEqual([["tailscale", "macbookproTailscale · Addressmacbookpro.tail1e211e.ts.net:17317"]]);
-        await act(async () => { openers()[0]!.props.onClick(); });
+        await act(async () => { openers()[0]!.click(); });
         await act(async () => { await Promise.resolve(); });
-        const offer = () => renderer!.root.findAll((node) => node.type === "button" && node.props["data-action"] === "open-other-way" && shown(node));
+        const offer = () => all<HTMLButtonElement>('button[data-action="open-other-way"]').filter(shown);
         // it names the host it opens, whole: the person sees what answers, not only that it is "the PC at its address"
-        expect(offer().map((node) => [node.props["aria-label"], textOf(node)])).toEqual([["Open 192.168.0.5:7317 (Address)", "AddressOpen 192.168.0.5:7317"]]);
-        await act(async () => { offer()[0]!.props.onClick(); });
+        expect(offer().map((node) => [node.getAttribute("aria-label"), textOf(node)])).toEqual([["Open 192.168.0.5:7317 (Address)", "AddressOpen 192.168.0.5:7317"]]);
+        await act(async () => { offer()[0]!.click(); });
         expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([`HerdrShell.open ${tail}/`, `HerdrShell.open ${lan}/`]);
-        await act(async () => { renderer!.unmount(); });
+        await browser.render(null);
 
         // the relay PC's own page, whose open over the relay failed: the Tailscale address the app saved it by
         const again = app([{ name: "HerdrShell", methods: ["getState", "open"] }], (method) =>
           method === "getState" ? { saved: [tail], names: {}, ids: { [tail]: ids.mac } } : method === "open" ? new Promise(() => {}) : {});
         await mount({ ...props({ kind: "failed", failure: "pc-offline", name: "hasang-uui-MacBookPro", detail: null, server_id: ids.mac }) });
         await act(async () => { await Promise.resolve(); });
-        expect(offer().map((node) => [node.props["aria-label"], textOf(node)])).toEqual([["Open macbookpro.tail1e211e.ts.net:17317 (Tailscale)", "TailscaleOpen macbookpro.tail1e211e.ts.net:17317"]]);
-        await act(async () => { offer()[0]!.props.onClick(); });
+        expect(offer().map((node) => [node.getAttribute("aria-label"), textOf(node)])).toEqual([["Open macbookpro.tail1e211e.ts.net:17317 (Tailscale)", "TailscaleOpen macbookpro.tail1e211e.ts.net:17317"]]);
+        await act(async () => { offer()[0]!.click(); });
         expect(again.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([`HerdrShell.open ${tail}/`]);
-        await act(async () => { renderer!.unmount(); });
+        await browser.render(null);
         // a key that is not the PC's offers no other way
         app([{ name: "HerdrShell", methods: ["getState", "open"] }], (method) => method === "getState" ? { saved: [tail], names: {}, ids: { [tail]: ids.mac } } : {});
         await mount({ ...props({ kind: "failed", failure: "identity-changed", name: "hasang-uui-MacBookPro", detail: null, server_id: ids.mac }) });
@@ -1881,8 +2055,8 @@ describe("the hosted front page", () => {
     it("ends the other way's open of a Tailscale address in the Tailscale-off card while the phone's Tailscale is off: a relay PC's own page, and My PCs", async () => {
       await withApp(async () => {
         const lan = "http://192.168.0.5:7317";
-        const offer = () => renderer!.root.findAll((node) => node.type === "button" && node.props["data-action"] === "open-other-way" && shown(node));
-        const card = () => renderer!.root.findAll((node) => node.props["data-tailscale-off"] !== undefined && shown(node));
+        const offer = () => all<HTMLButtonElement>('button[data-action="open-other-way"]').filter(shown);
+        const card = () => all("[data-tailscale-off]").filter(shown);
         const settle = async () => { for (let turn = 0; turn < 4; turn += 1) await act(async () => { await Promise.resolve(); }); };
         // the relay PC's own page, whose open over the relay failed, offers the Tailscale address the app saved it by
         const called = app([{ name: "HerdrShell", methods: ["getState", "open", "tailscale", "openTailscale"] }], (method) =>
@@ -1890,33 +2064,33 @@ describe("the hosted front page", () => {
         await mount({ ...props({ kind: "failed", failure: "pc-offline", name: "hasang-uui-MacBookPro", detail: null, server_id: ids.mac }) });
         await settle();
         expect(card()).toHaveLength(0);
-        await act(async () => { offer()[0]!.props.onClick(); });
+        await act(async () => { offer()[0]!.click(); });
         await settle();
         // as a Tailscale row of My PCs does with Tailscale off: the line and Open Tailscale, nothing opened
         expect(card().map(textOf)).toEqual(["Turn on Tailscale to connectOpen Tailscale"]);
         expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([]);
-        await act(async () => { card()[0]!.find((node) => node.type === "button").props.onClick(); });
+        await act(async () => { element("button", card()[0]!).click(); });
         expect(called).toContain("HerdrShell.openTailscale");
-        await act(async () => { renderer!.unmount(); });
+        await browser.render(null);
 
         // My PCs: a row of two saved ways opens by the one that loaded last; that open fails, and the Tailscale way it offers meets Tailscale off
         const again = app([{ name: "HerdrShell", methods: ["getState", "open", "tailscale", "openTailscale"] }], (method, options) =>
           method === "getState" ? { saved: [lan, tail], names: {}, ids: { [tail]: ids.mac, [lan]: ids.mac } } : method === "tailscale" ? { on: false }
             : method === "open" && options.url === `${lan}/` ? Promise.reject(Object.assign(new Error("unknown-host"), { code: "unknown-host" })) : method === "open" ? new Promise(() => {}) : {});
         await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
-        await act(async () => { openers()[0]!.props.onClick(); });
+        await act(async () => { openers()[0]!.click(); });
         await settle();
-        expect(offer().map((node) => node.props["aria-label"])).toEqual(["Open macbookpro.tail1e211e.ts.net:17317 (Tailscale)"]);
-        await act(async () => { offer()[0]!.props.onClick(); });
+        expect(offer().map((node) => node.getAttribute("aria-label"))).toEqual(["Open macbookpro.tail1e211e.ts.net:17317 (Tailscale)"]);
+        await act(async () => { offer()[0]!.click(); });
         await settle();
         expect(card().map(textOf)).toEqual(["Turn on Tailscale to connectOpen Tailscale"]);
         expect(again.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([`HerdrShell.open ${lan}/`]);
       });
     });
 
-    const moreWays = () => renderer!.root.findAll((node) => node.type === "button" && node.props["data-action"] === "more-ways" && shown(node));
-    const wayButtons = () => renderer!.root.findAll((node) => node.type === "button" && node.props["data-action"] === "open-other-way" && shown(node));
-    const wayLines = () => wayButtons().map((node) => [node.props["aria-label"], textOf(node)]);
+    const moreWays = () => all<HTMLButtonElement>('button[data-action="more-ways"]').filter(shown);
+    const wayButtons = () => all<HTMLButtonElement>('button[data-action="open-other-way"]').filter(shown);
+    const wayLines = () => wayButtons().map((node) => [node.getAttribute("aria-label"), textOf(node)]);
 
     for (const screenWide of [false, true]) {
       it(`lists a row's other saved ways behind its More ways, closed at first, each line its tag and whole host opening that way; the row still opens by the relay (${screenWide ? "wide" : "phone"})`, async () => {
@@ -1929,16 +2103,16 @@ describe("the hosted front page", () => {
           const rows = rowTexts();
           expect(rows).toEqual([["relay", "hasang-uui-MacBookProRelay · Tailscale · Address"], ["relay", "Desk PCRelay"], ["tailscale", "deskTailscaledesk.tail1e211e.ts.net"]]);
           // one disclosure, on the row of several ways alone, closed, named for its PC
-          expect(moreWays().map((node) => [node.props["aria-label"], node.props["aria-expanded"]])).toEqual([["More ways to open hasang-uui-MacBookPro", false]]);
+          expect(moreWays().map((node) => [node.getAttribute("aria-label"), node.getAttribute("aria-expanded")])).toEqual([["More ways to open hasang-uui-MacBookPro", "false"]]);
           expect(wayLines()).toEqual([]);
           // what it controls is there while closed too, hidden
-          const controlled = () => renderer!.root.findAll((node) => typeof node.type === "string" && node.props.id === moreWays()[0]!.props["aria-controls"]).map((node) => node.props.hidden);
+          const controlled = () => all("[id]").filter((node) => node.id === moreWays()[0]!.getAttribute("aria-controls")).map((node) => node.hidden);
           expect(controlled()).toEqual([true]);
           // the row's own tap is still the relay's page
-          expect(openers()[0]!.type).toBe("a");
-          expect(openers()[0]!.props.href).toBe(`/s/${ids.mac}/`);
-          await act(async () => { moreWays()[0]!.props.onClick(); });
-          expect(moreWays()[0]!.props["aria-expanded"]).toBe(true);
+          expect(openers()[0]!.localName).toBe("a");
+          expect(openers()[0]!.getAttribute("href")).toBe(`/s/${ids.mac}/`);
+          await act(async () => { moreWays()[0]!.click(); });
+          expect(moreWays()[0]!.getAttribute("aria-expanded")).toBe("true");
           expect(controlled()).toEqual([false]);
           // each other way, one to a line: its tag and the host it opens, whole, in its accessible name too
           expect(wayLines()).toEqual([
@@ -1947,11 +2121,11 @@ describe("the hosted front page", () => {
           ]);
           // opening the list opens nothing; the relay row keeps its name, its way tags and where it leads
           expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([]);
-          expect(openers()[0]!.props.href).toBe(`/s/${ids.mac}/`);
-          await act(async () => { wayButtons()[1]!.props.onClick(); });
+          expect(openers()[0]!.getAttribute("href")).toBe(`/s/${ids.mac}/`);
+          await act(async () => { wayButtons()[1]!.click(); });
           expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([`HerdrShell.open ${lan}/`]);
           // closed again, the rows read as they did
-          await act(async () => { moreWays()[0]!.props.onClick(); });
+          await act(async () => { moreWays()[0]!.click(); });
           expect(wayLines()).toEqual([]);
           expect(rowTexts()).toEqual(rows);
         });
@@ -1965,9 +2139,9 @@ describe("the hosted front page", () => {
         const called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget", "tailscale"] }], (method) =>
           method === "getState" ? { saved: [lan, tail], names: {}, ids: { [tail]: ids.mac, [lan]: ids.mac } } : method === "tailscale" ? { on: true } : method === "open" ? new Promise(() => {}) : {});
         await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
-        await act(async () => { moreWays()[0]!.props.onClick(); });
+        await act(async () => { moreWays()[0]!.click(); });
         expect(wayLines()).toEqual([["Open macbookpro.tail1e211e.ts.net:17317 (Tailscale)", "TailscaleOpen macbookpro.tail1e211e.ts.net:17317"]]);
-        await act(async () => { wayButtons()[0]!.props.onClick(); });
+        await act(async () => { wayButtons()[0]!.click(); });
         for (let turn = 0; turn < 4; turn += 1) await act(async () => { await Promise.resolve(); });
         expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([`HerdrShell.open ${tail}/`]);
       });
@@ -1981,9 +2155,9 @@ describe("the hosted front page", () => {
           method === "getState" ? { saved: [lan, tail], names: {}, ids: { [tail]: ids.mac, [lan]: ids.mac }, choosing: true, current: tail } : method === "tailscale" ? { on: true } : method === "open" ? new Promise(() => {}) : {});
         await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
         expect(rowTexts()).toEqual([["tailscale", "macbookproTailscale · Addressmacbookpro.tail1e211e.ts.net:17317In use now"]]);
-        await act(async () => { moreWays()[0]!.props.onClick(); });
+        await act(async () => { moreWays()[0]!.click(); });
         expect(wayLines()).toEqual([["Open 192.168.0.5:7317 (Address)", "AddressOpen 192.168.0.5:7317"]]);
-        await act(async () => { openers()[0]!.props.onClick(); });
+        await act(async () => { openers()[0]!.click(); });
         expect(called).toContain("HerdrShell.backToCurrent");
         expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([]);
       });
@@ -1994,9 +2168,9 @@ describe("the hosted front page", () => {
         const called = app([{ name: "HerdrShell", methods: ["getState", "open", "forget", "tailscale", "openTailscale"] }], (method) =>
           method === "getState" ? { saved: [tail], names: {}, ids: { [tail]: ids.mac } } : method === "tailscale" ? { on: false } : method === "open" ? new Promise(() => {}) : {});
         await mount({ ...props({ kind: "list", devices: [device(ids.mac, "hasang-uui-MacBookPro", AP)], account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none, onForgetSaved: none });
-        const card = () => renderer!.root.findAll((node) => node.props["data-tailscale-off"] !== undefined && shown(node));
-        await act(async () => { moreWays()[0]!.props.onClick(); });
-        await act(async () => { wayButtons()[0]!.props.onClick(); });
+        const card = () => all("[data-tailscale-off]").filter(shown);
+        await act(async () => { moreWays()[0]!.click(); });
+        await act(async () => { wayButtons()[0]!.click(); });
         for (let turn = 0; turn < 4; turn += 1) await act(async () => { await Promise.resolve(); });
         expect(card().map(textOf)).toEqual(["Turn on Tailscale to connectOpen Tailscale"]);
         expect(called.filter((call) => call.startsWith("HerdrShell.open "))).toEqual([]);
@@ -2006,7 +2180,7 @@ describe("the hosted front page", () => {
     it("offers Forget PCs in the signed-in menu too", async () => {
       await mount({ ...signedIn(four()), onForgetSaved: none });
       await forgetPcs();
-      expect(forgets().map((node) => node.props["aria-label"])).toEqual(["Forget Desk PC", "Forget MacBook", "Forget Home server"]);
+      expect(forgets().map((node) => node.getAttribute("aria-label"))).toEqual(["Forget Desk PC", "Forget MacBook", "Forget Home server"]);
     });
 
     it("goes back to the PC in use when its row is tapped, as Back does, rather than opening that PC again", async () => {
@@ -2015,18 +2189,18 @@ describe("the hosted front page", () => {
       (window.history as { back: () => void }).back = () => { went.push("back"); };
       sessionStorage.setItem(ADD_PC_FROM_KEY, `/s/${ids.home}/`);
       await mount({ ...signedIn(four()), addEntry: true });
-      const inUse = () => renderer!.root.find((node) => node.type === "li" && textOf(node).includes("In use now")).find((node) => node.props.className === "relay-add-saved-pc");
-      expect(inUse().type).toBe("button");
-      await act(async () => { inUse().props.onClick(); });
+      const inUse = () => element('[class="relay-add-saved-pc"]', one("li", all("li").filter((node) => textOf(node).includes("In use now"))));
+      expect(inUse().localName).toBe("button");
+      await act(async () => { inUse().click(); });
       expect(went).toEqual(["back"]);
-      await act(async () => { renderer!.unmount(); });
+      await browser.render(null);
       // the PC the phone app keeps open while the person chooses another: back to it
       (window.location as { hash?: string }).hash = "";
       await withApp(async () => {
         const called = app([{ name: "HerdrShell", methods: ["getState", "open", "backToCurrent"] }], (method) =>
           method === "getState" ? { saved: ["https://desk.tail1e211e.ts.net"], names: { "https://desk.tail1e211e.ts.net": "Desk" }, choosing: true, current: "https://desk.tail1e211e.ts.net" } : {});
         await mount(signedIn(four()));
-        await act(async () => { inUse().props.onClick(); });
+        await act(async () => { inUse().click(); });
         expect(called).toContain("HerdrShell.backToCurrent");
         expect(called.filter((call) => call.startsWith("HerdrShell.open"))).toEqual([]);
       });
@@ -2034,16 +2208,16 @@ describe("the hosted front page", () => {
 
     it("says over the signed-out relay tab's sign-in what an account gives, and under its ways in that Tailscale and SSH need none", async () => {
       await mount({ ...props({ kind: "empty", account: { kind: "signed-out", error: null } }), scoped: false, onSignIn: none });
-      const relay = textOf(renderer!.root.find((node) => node.props["data-tab-panel"] === "relay"));
+      const relay = textOf(element('[data-tab-panel="relay"]'));
       const at = (words: string) => relay.indexOf(words);
       expect(at("Reach your PCs from anywhere with your Ovis account")).toBeGreaterThanOrEqual(0);
       expect(at("Reach your PCs from anywhere with your Ovis account")).toBeLessThan(at("Continue with GitHub"));
       expect(at("Tailscale and SSH need no sign-in.")).toBeGreaterThan(at("Pair with a code"));
-      await act(async () => { renderer!.unmount(); });
+      await browser.render(null);
       // signed in, neither: there is no sign-in to explain
       await mount(signedIn(four()));
       await openAdd();
-      const signedInRelay = textOf(renderer!.root.find((node) => node.props["data-tab-panel"] === "relay"));
+      const signedInRelay = textOf(element('[data-tab-panel="relay"]'));
       expect([signedInRelay.includes("Reach your PCs"), signedInRelay.includes("need no sign-in")]).toEqual([false, false]);
     });
 
@@ -2144,9 +2318,6 @@ describe("Back from Add a PC opened by its address", () => {
 });
 
 describe("#16: the one plain screen a phone waits on after its sign-in", () => {
-  let windowBefore: PropertyDescriptor | undefined;
-  beforeEach(() => { windowBefore = Object.getOwnPropertyDescriptor(globalThis, "window"); Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { hash: "" } } }); });
-  afterEach(() => { if (windowBefore) Object.defineProperty(globalThis, "window", windowBefore); else Reflect.deleteProperty(globalThis, "window"); });
   const id = "a".repeat(32);
   const noTabsNoList = (html: string): void => {
     expect(shownOf(html)).not.toContain("data-tab=");
@@ -2173,9 +2344,6 @@ describe("#16: the one plain screen a phone waits on after its sign-in", () => {
 });
 
 describe("#16 sweep, folded into My PCs: a signed-in front page with nothing on or nothing yet is My PCs, never a page of its own", () => {
-  let windowBefore: PropertyDescriptor | undefined;
-  beforeEach(() => { windowBefore = Object.getOwnPropertyDescriptor(globalThis, "window"); Object.defineProperty(globalThis, "window", { configurable: true, value: { location: { hash: "" } } }); });
-  afterEach(() => { if (windowBefore) Object.defineProperty(globalThis, "window", windowBefore); else Reflect.deleteProperty(globalThis, "window"); });
   const id = "a".repeat(32);
   const mac = { server_id: id, name: "Mac", state: "offline" as const, last_seen_at: null, added_at: null, listed: true, paired: false, linked: false, join: { server_public_key: "k", relay: "wss://relay.example" } };
   const rows = (html: string) => [...html.matchAll(/<a class="relay-add-saved-pc" href="[^"]+">([\s\S]*?)<\/a>/g)].map(([, inner]) => inner!.replace(/<svg[\s\S]*?<\/svg>/g, "").replace(/<[^>]+>/g, " ").trim().replace(/\s+/g, " "));
@@ -2233,6 +2401,13 @@ describe("#16 sweep, folded into My PCs: a signed-in front page with nothing on 
     const removed = failed("revoked");
     expect(plain(removed)).toBe("removed");
     expect(removed).toContain("This device was removed from Mac. Ask again to join it.");
+    // refused before anybody was asked (a PC in no account yet, one paused after too many tries): nobody declined it
+    const refused = failed("pair-unavailable");
+    expect(plain(refused)).toBe("refused");
+    expect(refused).toContain("Mac cannot take this device yet");
+    expect(refused).toContain('data-action="ask-again"');
+    expect(refused).not.toContain("Not allowed");
+    expect(refused).not.toContain("[Allow]");
     const off = failed("pc-offline");
     expect(plain(off)).toBe("off");
     expect(off).toContain('data-action="check-again"');

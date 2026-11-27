@@ -2,6 +2,7 @@
  * What an app and a PC say to each other about the account's devices: notices, block receipts, holds
  * and the recovery acts. Shapes and validators only, and nothing here is sent while the release flag is off.
  */
+import { isListHash, isListKeyEncoding } from "./account-list-entry.ts";
 import { AccountRecordError, isAccountKeyEncoding, parseSafetyRecord, type BlockRecord, type SafetyRecord } from "./account-records.ts";
 import { PAIR_FINGERPRINT_PATTERN } from "./pair-fingerprint.ts";
 
@@ -13,14 +14,9 @@ import { PAIR_FINGERPRINT_PATTERN } from "./pair-fingerprint.ts";
 /** How long this PC's screen keeps an asked act open (server/account/local-confirm.ts); the app shows its deadline. */
 export const CONFIRM_MS = 2 * 60_000;
 
-export const OVIS_ACCOUNT_OPENS_ALL = "OVIS_ACCOUNT_OPENS_ALL";
+export { accountOpensAll, OVIS_ACCOUNT_OPENS_ALL } from "./account-opens-all.ts";
 /** The capability a PC advertises while Step 2 is on; an app shows nothing of Step 2 for a PC without it. */
 export const ACCOUNT_OPENS_ALL_CAPABILITY = "account-opens-all/1";
-
-export function accountOpensAll(value = process.env[OVIS_ACCOUNT_OPENS_ALL]): boolean {
-  // Require an explicit opt-out: a padded or otherwise mistyped value must not disable Step 2.
-  return value !== "0";
-}
 
 export class AccountDevicesApiError extends Error {
   readonly code = "request_invalid";
@@ -35,6 +31,11 @@ export type NoticeKind = "admit" | "drop" | "remove" | "block" | "lift" | "promo
 
 /** Device table P18, T34, T58: the registering sign-in provider for a list admission, if the snapshot still names it. */
 export type NoticeSignInMethod = "github" | "google" | "apple" | null;
+/** A way of signing in to an account, as the account service names it. */
+export type SignInMethod = Exclude<NoticeSignInMethod, null>;
+export function isSignInMethod(value: unknown): value is SignInMethod {
+  return value === "github" || value === "google" || value === "apple";
+}
 /**
  * Device table T34, T58, section 5b: two-step sign-in as the account record states it, never inferred by the app.
  * List admissions report `set` (not proof this sign-in used two-step) or `unknown`, even without a provider.
@@ -144,11 +145,15 @@ export type RecoveryAction =
   | { readonly act: "undo"; readonly rows: readonly string[] | null }
   | { readonly act: "remove"; readonly targets: readonly string[] }
   | { readonly act: "revoke_all" }
+  | { readonly act: "account_status" }
+  | { readonly act: "restamp"; readonly confirm?: string }
   | { readonly act: "lift"; readonly blocks: readonly string[] }
   | { readonly act: "admit"; readonly pending: string; readonly fingerprint: string }
   // adding this PC to its owner's account from another PC over SSH (docs/account.md, "Adding a PC over SSH")
   | { readonly act: "account_add_inspect" }
-  | { readonly act: "account_add_take"; readonly account: string; readonly server_id: string };
+  // `list` and `adder`, both or neither: the account keeps a signed list, and this take names it and the key whose entry
+  // adds this PC to it (docs/account.md, "Adding a PC over SSH to an account that keeps a list")
+  | { readonly act: "account_add_take"; readonly account: string; readonly server_id: string; readonly list?: string; readonly adder?: string };
 
 /** A safety record still in force, named by the ID the recovery socket accepts for a lift. */
 export type RecoveryStanding = {
@@ -210,13 +215,15 @@ export function parseBlockReceipt(value: unknown): BlockReceipt {
 
 /** Device table R11: one recovery act; throws AccountDevicesApiError. Every list names 1-64 entries. */
 export function parseRecoveryAction(value: unknown): RecoveryAction {
-  const action = shape(value, ["act", "rows", "targets", "blocks", "pending", "fingerprint", "account", "server_id"]);
+  const action = shape(value, ["act", "rows", "targets", "blocks", "pending", "fingerprint", "account", "server_id", "list", "adder", "confirm"]);
   const only = (...fields: string[]) => Object.keys(action).every((name) => name === "act" || fields.includes(name));
   const ok = (() => {
     switch (action.act) {
-      case "list": case "revoke_all": case "account_add_inspect": return only();
-      case "account_add_take": return only("account", "server_id") && typeof action.account === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(action.account)
+      case "list": case "revoke_all": case "account_status": case "account_add_inspect": return only();
+      case "account_add_take": return (only("account", "server_id") || (only("account", "server_id", "list", "adder") && typeof action.list === "string" && isListHash(action.list)
+        && typeof action.adder === "string" && isListKeyEncoding(action.adder))) && typeof action.account === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(action.account)
         && typeof action.server_id === "string" && HEX32.test(action.server_id);
+      case "restamp": return only("confirm") && (!("confirm" in action) || (typeof action.confirm === "string" && HEX32.test(action.confirm)));
       case "release": return only("rows") && ids(action.rows, ROW_ID);
       case "undo": return only("rows") && (action.rows === null || ids(action.rows, ROW_ID));
       // a row id or an account key, nothing in between

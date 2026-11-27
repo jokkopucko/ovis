@@ -1,0 +1,119 @@
+{
+  "opencode": "2.2.2",
+  "recorded": "GET /api/event of an isolated `opencode serve` (model teamproxy/gpt-5.6-terra, permissions {\"*\":\"deny\",question:\"allow\"}): two sessions of one directory, each asked to call the question tool; the first form answered with POST /api/session/{id}/form/{formID}/reply, the second session interrupted with POST /api/session/{id}/interrupt. Form events only; directory replaced",
+  "events": [
+    {
+      "id": "evt_2196e611e002Xbdyz4kmdfy5Xw",
+      "created": 1795722993950,
+      "type": "form.created",
+      "location": {
+        "directory": "/home/user/project"
+      },
+      "data": {
+        "form": {
+          "id": "frm_2196e611e001jPN9qE5Pn3NTE7",
+          "sessionID": "ses_de691c437ffedOKfe3C0Oo1l8W",
+          "title": "Questions",
+          "metadata": {
+            "kind": "question",
+            "tool": {
+              "messageID": "msg_2196e57a8001liQyZY3e2ZhLRF",
+              "id": "call_565cb3d5febf42c1baa86d4478c3e244"
+            }
+          },
+          "fields": [
+            {
+              "key": "q0",
+              "title": "Color",
+              "description": "Which color do you like?",
+              "type": "string",
+              "options": [
+                {
+                  "value": "Red",
+                  "label": "Red",
+                  "description": "Choose red."
+                },
+                {
+                  "value": "Blue",
+                  "label": "Blue",
+                  "description": "Choose blue."
+                }
+              ],
+              "custom": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "evt_2196fa4ec001y7TXpAPu9RIAlt",
+      "created": 1795723076844,
+      "type": "form.replied",
+      "location": {
+        "directory": "/home/user/project"
+      },
+      "data": {
+        "id": "frm_2196e611e001jPN9qE5Pn3NTE7",
+        "sessionID": "ses_de691c437ffedOKfe3C0Oo1l8W",
+        "answer": {
+          "q0": "Blue"
+        }
+      }
+    },
+    {
+      "id": "evt_2196fc5390026nFhzJrRkUxytU",
+      "created": 1795723085113,
+      "type": "form.created",
+      "location": {
+        "directory": "/home/user/project"
+      },
+      "data": {
+        "form": {
+          "id": "frm_2196fc539001r72Uo31dG0o0sr",
+          "sessionID": "ses_de691c406ffeMheJQ3IlwmKN21",
+          "title": "Questions",
+          "metadata": {
+            "kind": "question",
+            "tool": {
+              "messageID": "msg_2196fbafe001Fl1PEhkOCfwi9m",
+              "id": "call_49f78945ad034217855801e5bde00f8e"
+            }
+          },
+          "fields": [
+            {
+              "key": "q0",
+              "title": "Favorite color",
+              "description": "Which color do you like?",
+              "type": "string",
+              "options": [
+                {
+                  "value": "Red",
+                  "label": "Red",
+                  "description": "Choose red."
+                },
+                {
+                  "value": "Blue",
+                  "label": "Blue",
+                  "description": "Choose blue."
+                }
+              ],
+              "custom": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "evt_2196fc53e001kTfo5y0hj2twvN",
+      "created": 1795723085118,
+      "type": "form.cancelled",
+      "location": {
+        "directory": "/home/user/project"
+      },
+      "data": {
+        "id": "frm_2196fc539001r72Uo31dG0o0sr",
+        "sessionID": "ses_de691c406ffeMheJQ3IlwmKN21"
+      }
+    }
+  ]
+}

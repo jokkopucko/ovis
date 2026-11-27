@@ -143,9 +143,10 @@ export class MachineSession {
   onDisconnect(handler: () => void): () => void { return this.socket.onDisconnect(handler); }
   connect(): void { if (!this.closed) this.socket.connect(); }
 
-  acceptPending(paneId: string, message: PendingMessage, capturedEpoch: number): void {
-    const scope = !this.closed && this.socket.connected && this.currentEpoch === capturedEpoch ? this.currentScope : null;
+  acceptPending(paneId: string, message: PendingMessage, capturedEpoch: number, replayed = false): void {
+    const scope = !replayed && !this.closed && this.socket.connected && this.currentEpoch === capturedEpoch ? this.currentScope : null;
     const owner = paneStorageId(this.machineId, paneId);
+    if (replayed && this.store.read(owner).some((row) => row.id === message.id)) return;
     if (this.store.isOwned(owner, message.id, scope)) return;
     this.store.accept(owner, message, scope);
   }

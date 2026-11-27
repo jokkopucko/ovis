@@ -4,11 +4,13 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
+import { appContext } from "./app-context.ts";
 import { buildDemoApp, buildDevelopmentDemoApp } from "./demo-build.ts";
 import { DEMO_FILE_PREVIEW_SCRIPT } from "./demo-file-preview.ts";
 import { openSettingsFolds, openSettingsPage, themeSide } from "./settings-page.ts";
 import { SETTINGS, closeSettings, dialogOf, historyHolds, openPalette, openSettings } from "./settings-pages-harness.ts";
 import { DEFAULT_SETTINGS, TERMINAL_FONT_MAX, TERMINAL_FONT_MIN } from "../src/lib/settings.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 // All files and HTTP traffic stay in these disposable, loopback-only apps; no herdr session is opened.
 const app = mkdtempSync(join(tmpdir(), "herdr-settings-demo-"));
@@ -41,7 +43,7 @@ interface HeldVoice { voiceAsked: () => number; releaseVoice: () => void; groupO
  * followed into view when the held answer comes.
  */
 async function heldGroupLanding(browser: import("playwright-core").Browser, url: string): Promise<void> {
-  const context = await browser.newContext({ viewport: { width: 390, height: 480 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: "en" });
+  const context = await appContext(browser, { viewport: { width: 390, height: 480 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: "en" });
   try {
     await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify(SETTINGS));
     const page = await context.newPage();
@@ -87,7 +89,7 @@ async function heldGroupLanding(browser: import("playwright-core").Browser, url:
 }
 
 async function focusAndLandings(browser: import("playwright-core").Browser, url: string): Promise<void> {
-  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: "en" });
+  const context = await appContext(browser, { viewport: { width: 1440, height: 900 }, locale: "en" });
   try {
     await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify(SETTINGS));
     const page = await context.newPage();
@@ -152,7 +154,7 @@ async function focusAndLandings(browser: import("playwright-core").Browser, url:
 
 async function dialogSearch(browser: import("playwright-core").Browser, url: string): Promise<void> {
   for (const width of [1440, 390] as const) {
-    const context = await browser.newContext(width === 390 ? { viewport: { width, height: 844 }, isMobile: true, hasTouch: true, locale: "en" } : { viewport: { width, height: 900 }, locale: "en" });
+    const context = await appContext(browser, width === 390 ? { viewport: { width, height: 844 }, isMobile: true, hasTouch: true, locale: "en" } : { viewport: { width, height: 900 }, locale: "en" });
     try {
       await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify(SETTINGS));
       const page = await context.newPage();
@@ -295,7 +297,7 @@ async function dialogSearch(browser: import("playwright-core").Browser, url: str
 
 async function foldedGroups(browser: import("playwright-core").Browser, url: string): Promise<void> {
   for (const width of [1440, 390] as const) {
-    const context = await browser.newContext(width === 390 ? { viewport: { width, height: 844 }, isMobile: true, hasTouch: true, locale: "en" } : { viewport: { width, height: 900 }, locale: "en" });
+    const context = await appContext(browser, width === 390 ? { viewport: { width, height: 844 }, isMobile: true, hasTouch: true, locale: "en" } : { viewport: { width, height: 900 }, locale: "en" });
     try {
       await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify({ ...SETTINGS, sidebarPeek: true }));
       const page = await context.newPage();
@@ -345,7 +347,7 @@ async function foldedGroups(browser: import("playwright-core").Browser, url: str
 
 async function runtimeInUse(browser: import("playwright-core").Browser, url: string): Promise<void> {
   for (const width of [390, 1280]) {
-    const context = await browser.newContext({ viewport: { width, height: width === 390 ? 844 : 800 }, isMobile: width === 390, hasTouch: width === 390, locale: "en" });
+    const context = await appContext(browser, { viewport: { width, height: width === 390 ? 844 : 800 }, isMobile: width === 390, hasTouch: width === 390, locale: "en" });
     try {
       await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify(SETTINGS));
       const page = await context.newPage();
@@ -375,7 +377,7 @@ async function runtimeInUse(browser: import("playwright-core").Browser, url: str
 }
 
 async function installedNotes(browser: import("playwright-core").Browser, url: string): Promise<void> {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en" });
+  const context = await appContext(browser, { viewport: { width: 1280, height: 800 }, locale: "en" });
   try {
     await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify(SETTINGS));
     await context.addInitScript((revision) => {
@@ -410,7 +412,7 @@ async function installedNotes(browser: import("playwright-core").Browser, url: s
 }
 
 async function alertChipsReset(browser: import("playwright-core").Browser, url: string): Promise<void> {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en" });
+  const context = await appContext(browser, { viewport: { width: 1280, height: 800 }, locale: "en" });
   try {
     await context.addInitScript((settings) => {
       localStorage.setItem("ovis:settings", settings);
@@ -442,7 +444,7 @@ async function alertChipsReset(browser: import("playwright-core").Browser, url: 
 async function accountPcList(browser: import("playwright-core").Browser, url: string): Promise<void> {
   const service = "https://account.ovis.sh";
   for (const [width, theme] of [[390, "light"], [390, "dark"], [1280, "light"], [1280, "dark"]] as const) {
-    const context = await browser.newContext({ viewport: { width, height: width === 390 ? 844 : 800 }, isMobile: width === 390, hasTouch: width === 390, locale: "en" });
+    const context = await appContext(browser, { viewport: { width, height: width === 390 ? 844 : 800 }, isMobile: width === 390, hasTouch: width === 390, locale: "en" });
     const removed: string[] = [];
     try {
       await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify({ ...SETTINGS, theme }));
@@ -557,7 +559,7 @@ async function accountGoogle(browser: import("playwright-core").Browser, url: st
     for (const offered of [["github", "google"], ["github"]] as const) {
       for (const signedIn of [false, true]) {
         if (signedIn && offered.length === 1) continue;
-        const context = await browser.newContext({ viewport: { width, height: width === 390 ? 844 : 800 }, isMobile: width === 390, hasTouch: width === 390, locale: "en" });
+        const context = await appContext(browser, { viewport: { width, height: width === 390 ? 844 : 800 }, isMobile: width === 390, hasTouch: width === 390, locale: "en" });
         try {
           await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify({ ...SETTINGS, theme: "light" }));
           await context.route((address) => address.href.startsWith(url) && (address.pathname.endsWith("/") || address.pathname.endsWith("/index.html")), async (route) => {
@@ -666,7 +668,7 @@ async function accountGoogle(browser: import("playwright-core").Browser, url: st
 }
 
 async function rowResets(browser: import("playwright-core").Browser, url: string): Promise<void> {
-  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: "en" });
+  const context = await appContext(browser, { viewport: { width: 1440, height: 900 }, locale: "en" });
   try {
     await context.addInitScript((settings) => { if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", settings); }, JSON.stringify(SETTINGS));
     const page = await context.newPage();
@@ -676,7 +678,7 @@ async function rowResets(browser: import("playwright-core").Browser, url: string
     const reset = (row: string) => page.getByRole("button", { name: `Restore defaults: ${row}`, exact: true });
     await page.goto(`${url}?settings=appearance`);
     await page.locator(".conn-live").waitFor({ state: "attached" });
-    await page.locator(".theme-cards").waitFor();
+    await page.locator(".theme-cards:has([data-theme-card])").waitFor();
     const mode = page.getByRole("group", { name: "Theme", exact: true });
     await mode.getByRole("button", { name: "Light", exact: true }).click();
     await page.getByRole("radiogroup", { name: "Light theme", exact: true }).waitFor();
@@ -703,7 +705,7 @@ async function rowResets(browser: import("playwright-core").Browser, url: string
     await custom.waitFor({ state: "detached" });
     assert.equal(await uiFont.inputValue(), "default", "the select shows Default once the font is put back");
     await page.goto(`${url}?settings=appearance`);
-    await page.locator(".theme-cards").waitFor();
+    await page.locator(".theme-cards:has([data-theme-card])").waitFor();
     assert.equal(await page.getByLabel("Interface font", { exact: true }).inputValue(), "default", "the font put back stays put back after a reload");
 
     const dark = themeSide(page, "dark");
@@ -742,10 +744,10 @@ async function rowSentences(browser: import("playwright-core").Browser, url: str
   const appearance = async (page: Page, query = ""): Promise<void> => {
     await page.goto(`${url}?settings=appearance${query}`);
     await page.locator(".conn-live").waitFor({ state: "attached" });
-    await page.locator(".theme-cards").waitFor();
+    await page.locator(".theme-cards:has([data-theme-card])").waitFor();
   };
 
-  const desktop = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: "en" });
+  const desktop = await appContext(browser, { viewport: { width: 1440, height: 900 }, locale: "en" });
   try {
     await desktop.addInitScript((settings) => { if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", settings); }, JSON.stringify(SETTINGS));
     const page = await desktop.newPage();
@@ -1017,7 +1019,7 @@ async function rowSentences(browser: import("playwright-core").Browser, url: str
     await desktop.close();
   }
 
-  const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: "en" });
+  const phone = await appContext(browser, { viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: "en" });
   try {
     await phone.addInitScript((settings) => { if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", settings); }, JSON.stringify(SETTINGS));
     const page = await phone.newPage();
@@ -1073,7 +1075,7 @@ async function rowSentences(browser: import("playwright-core").Browser, url: str
 }
 
 async function mergedRows(browser: import("playwright-core").Browser, url: string): Promise<void> {
-  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: "en" });
+  const context = await appContext(browser, { viewport: { width: 1440, height: 900 }, locale: "en" });
   try {
     await context.addInitScript((settings) => { if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", settings); }, JSON.stringify({ ...SETTINGS, voiceInput: "on", voiceEngine: "auto" }));
     const page = await context.newPage();
@@ -1135,6 +1137,7 @@ try {
   const url = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/`;
   const devUrl = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/dev/`;
   try {
+    checkChromeTmpdir();
     const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
     try {
       await dialogSearch(browser, url);

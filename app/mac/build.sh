@@ -37,6 +37,7 @@ done
 iconutil -c icns build/AppIcon.iconset -o "$app/Contents/Resources/AppIcon.icns"
 cp -R Resources/ko.lproj "$app/Contents/Resources/"
 cp Resources/carry-drafts.js "$app/Contents/Resources/"
+cp Resources/title-bar.js "$app/Contents/Resources/"
 
 if [ -n "${OVIS_SIGN_IDENTITY:-}" ]; then
   codesign --force --options runtime --timestamp --entitlements Ovis.entitlements "$@" --sign "$OVIS_SIGN_IDENTITY" "$app"

@@ -4,19 +4,26 @@ import { Smartphone } from "lucide-react";
 import "./DevicePairedNotice.css";
 import "./RelayPairingPrompt.css";
 
-import type { OwnJoinRequest, PendingKey } from "../../shared/machines.ts";
+import type { ListAddState, OwnJoinRequest, PendingKey } from "../../shared/machines.ts";
 import type { TailnetNodePrompt } from "../../shared/tailnet-nodes.ts";
 import type { RelayPairingRequest } from "../../shared/protocol.ts";
-import { answerTailnetNode, declinePendingKey, decideOwnJoin, decideRelayPairing, openConfirmPage } from "../lib/api.ts";
+import { answerTailnetNode, ApiError, cancelListAdd, confirmListAdd, declinePendingKey, decideOwnJoin, decideRelayPairing, openConfirmPage } from "../lib/api.ts";
 import { useT } from "../lib/i18n.ts";
 import { inFocusTrap } from "../lib/useFocusTrap.ts";
 import { failureText } from "./RelayPanel.tsx";
 
 /**
  * A prompt this layer decides: a device waiting with the same digits (`relay-pairings`), or, with `own_window: "join"`, a
- * first join (an account join on a PC with no member) that this PC's own window alone decides beside its digits.
+ * first join (an account join on a PC with no member) that this PC's own window alone decides beside its digits, or an
+ * add of this PC by its account's signed list (AddPrompt).
  */
-export type DecidedPrompt = (RelayPairingRequest & { readonly own_window?: "join" }) | TailnetPrompt;
+export type DecidedPrompt = (RelayPairingRequest & { readonly own_window?: "join" }) | TailnetPrompt | AddPrompt;
+/**
+ * This PC is being added to an account that keeps a signed list (`ovis add`, server/account/list-add.ts), and shows the
+ * number to compare with the device that adds it: the person at this PC says here that the two are the same (**The
+ * numbers match**), which alone names the list to this PC, or gives the add up. `run` names the add the answer is for.
+ */
+export type AddPrompt = RelayPairingRequest & { readonly own_window: "add"; readonly run: string };
 /**
  * A Tailscale device removed on this PC that asks to get back in by the owner's login (server/tailnet-nodes.ts): its node
  * id in `digits`, shown as it is. Plain Allow or Decline, on this PC's own window: the tailnet authenticated the node and
@@ -31,11 +38,19 @@ export type TailnetPrompt = RelayPairingRequest & { readonly own_window: "tailne
 export type KeyPrompt = RelayPairingRequest & { readonly own_window: "key" };
 export type PromptPairing = DecidedPrompt | KeyPrompt;
 
-/** This PC's own window's account joins that come with their digits (first joins), as prompts of this layer. */
+/**
+ * This PC's own window's account joins that come with their digits (first joins), as prompts of this layer. Never one
+ * this PC cannot let in (`list_unknown`): nothing allows it, and its card says why (OwnJoins.tsx OwnJoinCard).
+ */
 export function firstJoinPrompts(joins: readonly OwnJoinRequest[], now = Date.now()): PromptPairing[] {
-  return joins.flatMap((join) => join.digits === undefined ? [] : [{
+  return joins.flatMap((join) => join.digits === undefined || join.list_unknown === true ? [] : [{
     id: join.id, label: join.label, digits: join.digits, expires_at: new Date(now + join.left_ms).toISOString(), left_ms: join.left_ms, intent: "account" as const, own_window: "join" as const,
   }]);
+}
+
+/** The number of a running add of this PC by its account's list, as a prompt of its own window; none while no number shows. */
+export function listAddPrompts(state: ListAddState | null): AddPrompt[] {
+  return state === null || state.state !== "number" ? [] : [{ id: `add-${state.run}-${state.digits}`, label: state.account, digits: state.digits, expires_at: state.until, own_window: "add", run: state.run }];
 }
 
 /** The keys waiting for this PC's screen, as prompts of its own window: the fingerprint to compare, and no time told. */
@@ -55,6 +70,8 @@ function answer(pairing: DecidedPrompt, decision: "approve" | "decline"): Promis
     case undefined: return decideRelayPairing(pairing.id, decision);
     case "join": return decideOwnJoin(pairing.id, decision);
     case "tailnet": return answerTailnetNode(pairing.id, decision === "approve" ? "allow" : "decline");
+    // the number shown is the one confirmed: a number that changed meanwhile confirms nothing (409 wrong_number)
+    case "add": return decision === "approve" ? confirmListAdd(pairing.run, pairing.digits) : cancelListAdd(pairing.run);
     default: {
       const exhaustive: never = own;
       return exhaustive;
@@ -152,7 +169,7 @@ export function inputAge(timeStamp: unknown, now: number = performance.now()): n
  * into (`approve`). It is a group, not a dialog: it
  * covers nothing, so the page's "a dialog is open" checks (Escape handlers, pane cover) must not count it.
  */
-export function RelayPairingPrompt({ pairings }: { pairings: readonly PromptPairing[] }) {
+export function RelayPairingPrompt({ pairings, onDecided }: { pairings: readonly PromptPairing[]; readonly onDecided?: () => void }) {
   const t = useT();
   const id = useId();
   const [busy, setBusy] = useState<{ id: string; decision: "approve" | "decline" } | null>(null);
@@ -161,8 +178,12 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly PromptPair
     setBusy({ id: pairing.id, decision });
     setFailure(null);
     try { await answer(pairing, decision); }
-    catch (error) { setFailure({ id: pairing.id, text: failureText(error instanceof Error ? error : new Error(String(error))) }); }
-    finally { setBusy(null); }
+    catch (error) {
+      const text = error instanceof ApiError && error.code === "wrong_number" ? t("That is no longer the number this PC shows, so nothing was confirmed. Have the device ask again.")
+        : failureText(error instanceof Error ? error : new Error(String(error)));
+      setFailure({ id: pairing.id, text });
+    }
+    finally { setBusy(null); onDecided?.(); }
   };
 
   const ids = pairings.map((pairing) => pairing.id).join(" ");
@@ -268,7 +289,9 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly PromptPair
         // a key's fingerprint is shown as the device shows it; digits in two halves
         const digits = <strong className="relay-pairing-digits">{pairing.own_window === "key" || pairing.own_window === "tailnet" ? pairing.digits : `${pairing.digits.slice(0, 3)} ${pairing.digits.slice(3)}`}</strong>;
         // the device this PC is added from shows an input, not digits (AddPcSheet): its person types this PC's there
-        const [before, after] = pairing.own_window === "tailnet"
+        const [before, after] = pairing.own_window === "add"
+          ? aroundDigits(t("This PC is being added to your account. Does the device adding it show {digits}?"), pairing.label)
+          : pairing.own_window === "tailnet"
           ? aroundDigits(t("{name} was removed on this PC and asks to get back in over Tailscale. Node {digits}"), pairing.label)
           : pairing.own_window !== undefined
           ? aroundDigits(t("{name} wants to connect {digits}"), pairing.label)
@@ -288,6 +311,8 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly PromptPair
               {/* nobody else checks a first join's digits: the owner compares them with the phone here */}
               {pairing.own_window === "tailnet" && pairing.login !== null && <span className="relay-pairing-left" data-testid="relay-pairing-login"> · {pairing.login}</span>}
               {pairing.own_window === "join" && <span className="relay-pairing-left" data-testid="relay-pairing-check"> · {t("Allow only if your phone shows this number")}</span>}
+              {/* only the person's yes here names the account's list to this PC (docs/account.md, "A PC is added to the list") */}
+              {pairing.own_window === "add" && <span className="relay-pairing-left" data-testid="relay-pairing-check"> · {t("Confirm only if that device shows the same number")}</span>}
               {failure?.id === pairing.id && <span className="relay-error" role="alert"> {failure.text}</span>}
             </span>
             {pairing.own_window === "key" ? (
@@ -307,8 +332,8 @@ export function RelayPairingPrompt({ pairings }: { pairings: readonly PromptPair
                 <button type="button" className="btn btn-primary" disabled={deciding !== null} aria-busy={deciding === "approve" ? true : undefined}
                   onKeyDown={(event) => { if ((event.key === "Enter" || event.key === " ") && !event.repeat) pressed.current = { id: pairing.id, key: true, at: event.timeStamp }; }}
                   onPointerDown={(event) => { pressed.current = { id: pairing.id, key: false, at: event.timeStamp }; }}
-                  onClick={(event) => approve(pairing, event)}>{pairing.own_window === undefined ? t("Approve") : t("Allow")}</button>
-                <button type="button" className="btn" disabled={deciding !== null} aria-busy={deciding === "decline" ? true : undefined} onClick={() => void decide(pairing, "decline")}>{t("Decline")}</button>
+                  onClick={(event) => approve(pairing, event)}>{pairing.own_window === undefined ? t("Approve") : pairing.own_window === "add" ? t("The numbers match") : t("Allow")}</button>
+                <button type="button" className="btn" disabled={deciding !== null} aria-busy={deciding === "decline" ? true : undefined} onClick={() => void decide(pairing, "decline")}>{pairing.own_window === "add" ? t("Cancel") : t("Decline")}</button>
               </div>
             )}
           </div>

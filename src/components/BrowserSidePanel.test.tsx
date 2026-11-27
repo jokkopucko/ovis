@@ -1,14 +1,12 @@
 import { afterEach, beforeEach, expect, jest, test } from "bun:test";
-import { createElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, createElement } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import { BrowserSidePanel, type BrowserSidePanelPane } from "./BrowserSidePanel.tsx";
 import { useDesktopBrowser } from "../lib/desktopBrowser.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 
-const globals = ["IS_REACT_ACT_ENVIRONMENT", "window", "document", "getComputedStyle", "navigator"];
-const saved = new Map(globals.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
-let renderer: ReactTestRenderer | undefined;
+let page: Page;
 
 interface Stub {
   current: () => Promise<unknown>;
@@ -34,15 +32,7 @@ function stub(current: () => Promise<unknown>): Stub {
 }
 
 function install(bridge: Stub | undefined): void {
-  const listen = { addEventListener() {}, removeEventListener() {} };
-  const style = { setProperty() {}, removeProperty() {}, getPropertyValue: () => "", backgroundColor: "" };
-  Object.assign(globalThis, {
-    IS_REACT_ACT_ENVIRONMENT: true,
-    window: { ...listen, localStorage: { getItem: () => null, setItem() {} }, matchMedia: () => ({ ...listen, matches: false }), ...(bridge ? { ovisBrowser: bridge } : {}) },
-    document: { ...listen, documentElement: { lang: "", dataset: {}, style }, querySelector: () => null },
-    getComputedStyle: () => style,
-    navigator: { languages: ["en"] },
-  });
+  Object.defineProperty(page.window, "ovisBrowser", { configurable: true, value: bridge });
 }
 
 const opened: number[] = [];
@@ -53,7 +43,7 @@ function Harness({ pane }: { pane: BrowserSidePanelPane | null }) {
 }
 
 const render = async (pane: BrowserSidePanelPane | null = null) => {
-  await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(Harness, { pane }) })); });
+  await page.render(createElement(SettingsProvider, { children: createElement(Harness, { pane }) }));
 };
 
 const view = {
@@ -64,27 +54,25 @@ const view = {
   results: [{ id: "r1", kind: "download", name: "report.pdf", at: 1_700_000_000_000, bytes: 10, done: true, tab: 2, profile: "agent" }],
 };
 
-beforeEach(() => { jest.useFakeTimers(); });
+beforeEach(() => {
+  page = openPage();
+  jest.useFakeTimers();
+});
 
 afterEach(async () => {
-  await act(async () => renderer?.unmount());
-  renderer = undefined;
   jest.useRealTimers();
+  await page.close();
   jest.restoreAllMocks();
-  for (const [name, descriptor] of saved) {
-    if (descriptor) Object.defineProperty(globalThis, name, descriptor);
-    else Reflect.deleteProperty(globalThis, name);
-  }
 });
 
 test("shows nothing without the desktop app's bridge, or while main answers that the browser is off", async () => {
   install(undefined);
   await render();
-  expect(renderer?.toJSON()).toBeNull();
-  await act(async () => renderer?.unmount());
+  expect(page.container.childNodes).toHaveLength(0);
+  await page.render(null);
   install(stub(async () => null));
   await render();
-  expect(renderer?.toJSON()).toBeNull();
+  expect(page.container.childNodes).toHaveLength(0);
 });
 
 test("follows main's changes, and keeps an off main sent over an older answer still on its way", async () => {
@@ -94,9 +82,9 @@ test("follows main's changes, and keeps an off main sent over an older answer st
   await render();
   await act(async () => { bridge.tell(null); });
   await act(async () => { answer(view); });
-  expect(renderer?.toJSON()).toBeNull();
+  expect(page.container.childNodes).toHaveLength(0);
   await act(async () => { bridge.tell(view); });
-  expect(renderer?.root.findAllByProps({ className: "browser-side-card" })).toHaveLength(1);
+  expect([...page.container.querySelectorAll('[class="browser-side-card"]')]).toHaveLength(1);
 });
 
 test("lists agent tabs only, opens one large from its card, closes one with x and shows a kept file in its folder", async () => {
@@ -104,14 +92,14 @@ test("lists agent tabs only, opens one large from its card, closes one with x an
   const bridge = stub(async () => view);
   install(bridge);
   await render();
-  const cards = renderer!.root.findAllByProps({ className: "browser-side-card" });
-  expect(cards.map((card) => card.props["aria-label"])).toEqual(["Agent tab"]);
-  expect(cards[0]!.findByProps({ className: "browser-side-card-who" }).children.join("")).toContain("Claude Code");
-  await act(async () => { cards[0]!.findByProps({ className: "browser-side-card-open" }).props.onClick(); });
+  const cards = [...page.container.querySelectorAll('[class="browser-side-card"]')];
+  expect(cards.map((card) => card.getAttribute("aria-label"))).toEqual(["Agent tab"]);
+  expect(page.one('[class="browser-side-card"] [class="browser-side-card-who"]').textContent).toContain("Claude Code");
+  await act(async () => { page.one('[class="browser-side-card"] [class="browser-side-card-open"]').click(); });
   expect(opened).toEqual([2]);
-  await act(async () => { cards[0]!.findByProps({ "aria-label": "Close tab" }).props.onClick(); });
+  await act(async () => { page.one('[class="browser-side-card"] [aria-label="Close tab"]').click(); });
   expect(bridge.close).toHaveBeenCalledWith(2);
-  await act(async () => { renderer!.root.findByProps({ className: "browser-side-result" }).props.onClick(); });
+  await act(async () => { page.one('[class="browser-side-result"]').click(); });
   expect(bridge.reveal).toHaveBeenCalledWith("r1");
 });
 
@@ -122,8 +110,7 @@ test("takes a card's picture again every few seconds while it is shown, and stop
   const first = pictures;
   await act(async () => { jest.advanceTimersByTime(8_000); });
   expect(pictures).toBe(first + 2);
-  await act(async () => renderer?.unmount());
-  renderer = undefined;
+  await page.render(null);
   await act(async () => { jest.advanceTimersByTime(8_000); });
   expect(pictures).toBe(first + 2);
 });
@@ -134,22 +121,33 @@ test("drops a card's picture once three in a row do not come", async () => {
   bridge.thumbnail = async () => answer;
   install(bridge);
   await render();
-  const card = () => renderer!.root.findByProps({ className: "browser-side-card-shot" });
-  expect(card().findAllByType("img")).toHaveLength(1);
+  const card = () => page.one('[class="browser-side-card-shot"]');
+  expect(card().querySelectorAll("img")).toHaveLength(1);
   answer = null;
   await act(async () => { jest.advanceTimersByTime(8_000); });
-  expect(card().findAllByType("img")).toHaveLength(1);
+  expect(card().querySelectorAll("img")).toHaveLength(1);
   await act(async () => { jest.advanceTimersByTime(4_000); });
-  expect(card().findAllByType("img")).toHaveLength(0);
+  expect(card().querySelectorAll("img")).toHaveLength(0);
 });
 
 test("takes no card picture while the app is hidden", async () => {
   pictures = 0;
   install(stub(async () => view));
-  (globalThis.document as unknown as { visibilityState: string }).visibilityState = "hidden";
+  Object.defineProperty(page.window.document, "visibilityState", { configurable: true, value: "hidden" });
   await render();
   await act(async () => { jest.advanceTimersByTime(8_000); });
   expect(pictures).toBe(0);
+});
+
+test("takes a card's picture at once when the app shows again", async () => {
+  pictures = 0;
+  install(stub(async () => view));
+  Object.defineProperty(page.window.document, "visibilityState", { configurable: true, value: "hidden" });
+  await render();
+  expect(pictures).toBe(0);
+  Object.defineProperty(page.window.document, "visibilityState", { configurable: true, value: "visible" });
+  await act(async () => { page.window.document.dispatchEvent(new page.window.Event("visibilitychange")); });
+  expect(pictures).toBe(1);
 });
 
 test("asks a Claude pane for its pages once per status, never again while the answer is empty", async () => {

@@ -1,0 +1,392 @@
+{
+  "recorded": "Codex 0.171.0 TUI on `codex app-server --listen unix://...` (codex --remote), a second client as Ovis connects; isolated CODEX_HOME, 2026-11-27",
+  "initialize": {
+    "id": 1,
+    "result": {
+      "userAgent": "codex-tui/0.171.0 (Ubuntu 26.4.0; x86_64) ghostty (ovis; 0)",
+      "codexHome": "<codex-home>",
+      "platformFamily": "unix",
+      "platformOs": "linux"
+    }
+  },
+  "loaded": {
+    "atStart": {
+      "data": [
+        "01a2196f-48d2-7353-b50a-04524b6d1886"
+      ],
+      "nextCursor": null
+    },
+    "afterFirstAnswer": {
+      "data": [
+        "01a2196f-48d2-7353-b50a-04524b6d1886",
+        "01a2196f-99e7-7e53-b630-ea472eff1933"
+      ],
+      "nextCursor": null
+    },
+    "afterNew": {
+      "data": [
+        "01a2196f-48d2-7353-b50a-04524b6d1886",
+        "01a2196f-99e7-7e53-b630-ea472eff1933",
+        "01a2196f-f948-7c51-9c2d-9790944fe6d6"
+      ],
+      "nextCursor": null
+    }
+  },
+  "read": {
+    "01a2196f-48d2-7353-b50a-04524b6d1886": {
+      "thread": {
+        "id": "01a2196f-48d2-7353-b50a-04524b6d1886",
+        "environments": [
+          {
+            "environmentId": "local",
+            "cwd": "<cwd>",
+            "runtimeWorkspaceRoots": [
+              "<cwd>"
+            ]
+          }
+        ],
+        "extra": null,
+        "sessionId": "01a2196f-48d2-7353-b50a-04524b6d1886",
+        "forkedFromId": null,
+        "attachedToThreadId": null,
+        "parentThreadId": null,
+        "preview": "Reply with exactly: ONE",
+        "ephemeral": false,
+        "section": null,
+        "sectionEnteredAt": null,
+        "projectId": null,
+        "historyMode": "paginated",
+        "modelProvider": "teamproxy",
+        "model": "gpt-6.2-sol-fast",
+        "reasoningEffort": "low",
+        "createdAt": 1795723053,
+        "updatedAt": 1795723086,
+        "recencyAt": 1795723085,
+        "status": {
+          "type": "idle"
+        },
+        "path": "<codex-home>/sessions/2026/11/27/rollout-2026-11-27T04-57-33-01a2196f-48d2-7353-b50a-04524b6d1886.jsonl",
+        "cwd": "<cwd>",
+        "cliVersion": "0.171.0",
+        "originator": "codex-tui",
+        "source": "vscode",
+        "canAcceptDirectInput": true,
+        "threadSource": "user",
+        "agentNickname": null,
+        "agentRole": null,
+        "gitInfo": null,
+        "name": "Reply with ONE",
+        "daybreakEnabled": null,
+        "turns": []
+      },
+      "readState": {
+        "firstUnread": null,
+        "revision": "cadd51f9-6523-4d97-9668-412e249aedfd"
+      }
+    },
+    "01a2196f-99e7-7e53-b630-ea472eff1933": {
+      "thread": {
+        "id": "01a2196f-99e7-7e53-b630-ea472eff1933",
+        "environments": [
+          {
+            "environmentId": "local",
+            "cwd": "<cwd>",
+            "runtimeWorkspaceRoots": []
+          }
+        ],
+        "extra": null,
+        "sessionId": "01a2196f-99e7-7e53-b630-ea472eff1933",
+        "forkedFromId": null,
+        "attachedToThreadId": null,
+        "parentThreadId": null,
+        "preview": "",
+        "ephemeral": true,
+        "section": null,
+        "sectionEnteredAt": null,
+        "projectId": null,
+        "historyMode": "paginated",
+        "modelProvider": "teamproxy",
+        "model": "gpt-6.2-sol-fast",
+        "reasoningEffort": "low",
+        "createdAt": 1795723105,
+        "updatedAt": 1795723105,
+        "recencyAt": 1795723105,
+        "status": {
+          "type": "idle"
+        },
+        "path": null,
+        "cwd": "<cwd>",
+        "cliVersion": "0.171.0",
+        "originator": "codex-tui",
+        "source": "vscode",
+        "canAcceptDirectInput": true,
+        "threadSource": "thread_title",
+        "agentNickname": null,
+        "agentRole": null,
+        "gitInfo": null,
+        "name": null,
+        "daybreakEnabled": null,
+        "turns": []
+      },
+      "readState": null
+    },
+    "01a2196f-f948-7c51-9c2d-9790944fe6d6": {
+      "thread": {
+        "id": "01a2196f-f948-7c51-9c2d-9790944fe6d6",
+        "environments": [
+          {
+            "environmentId": "local",
+            "cwd": "<cwd>",
+            "runtimeWorkspaceRoots": [
+              "<cwd>"
+            ]
+          }
+        ],
+        "extra": null,
+        "sessionId": "01a2196f-f948-7c51-9c2d-9790944fe6d6",
+        "forkedFromId": null,
+        "attachedToThreadId": null,
+        "parentThreadId": null,
+        "preview": "",
+        "ephemeral": false,
+        "section": null,
+        "sectionEnteredAt": null,
+        "projectId": null,
+        "historyMode": "paginated",
+        "modelProvider": "teamproxy",
+        "model": "gpt-6.2-sol-fast",
+        "reasoningEffort": "low",
+        "createdAt": 1795723105,
+        "updatedAt": 1795723105,
+        "recencyAt": 1795723105,
+        "status": {
+          "type": "idle"
+        },
+        "path": "<codex-home>/sessions/2026/11/27/rollout-2026-11-27T04-58-18-01a2196f-f948-7c51-9c2d-9790944fe6d6.jsonl",
+        "cwd": "<cwd>",
+        "cliVersion": "0.171.0",
+        "originator": "codex-tui",
+        "source": "vscode",
+        "canAcceptDirectInput": true,
+        "threadSource": "user",
+        "agentNickname": null,
+        "agentRole": null,
+        "gitInfo": null,
+        "name": null,
+        "daybreakEnabled": null,
+        "turns": []
+      },
+      "readState": null
+    }
+  },
+  "rollout": [
+    {
+      "timestamp": "2026-11-26T19:57:53.919Z",
+      "ordinal": 0,
+      "type": "session_meta",
+      "payload": {
+        "account_scoped": true,
+        "session_id": "01a2196f-48d2-7353-b50a-04524b6d1886",
+        "id": "01a2196f-48d2-7353-b50a-04524b6d1886",
+        "timestamp": "2026-11-26T19:57:33.270Z",
+        "cwd": "<cwd>",
+        "runtime_workspace_roots": [
+          "<cwd>"
+        ],
+        "originator": "codex-tui",
+        "cli_version": "0.171.0",
+        "source": "vscode",
+        "thread_source": "user",
+        "model_provider": "teamproxy",
+        "history_mode": "paginated",
+        "context_window": {
+          "window_id": "01a2196f-48d6-7c70-93c1-82ce23f4d445"
+        }
+      }
+    },
+    {
+      "timestamp": "2026-11-26T19:57:53.992Z",
+      "ordinal": 11,
+      "type": "response_item",
+      "payload": {
+        "type": "message",
+        "id": "msg_01a2196f-99c8-7d81-b3b8-c5420d67599e",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Reply with exactly: ONE"
+          }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a2196f-9975-7193-9c2e-3ce9b8a81547",
+          "create_time": 1795723073.9921162,
+          "content_item_kinds": [
+            "user.text"
+          ],
+          "content_item_metadata": [
+            {
+              "provenance": {
+                "type": "user"
+              }
+            }
+          ]
+        }
+      },
+      "metadata": {
+        "history_sequence": 7,
+        "sampled_through_sequence": 0,
+        "retained_source": {
+          "id": {
+            "message_id": "msg_01a2196f-99c8-7d81-b3b8-c5420d67599e",
+            "turn_id": "01a2196f-9975-7193-9c2e-3ce9b8a81547",
+            "role": "user"
+          },
+          "revision": "retained_01a2196f-99c8-7d81-b3b8-c55a0fb67fd5",
+          "complete": true
+        },
+        "client_authored": false,
+        "user_input_order": 0,
+        "mcp_attribution": {
+          "status": "none"
+        },
+        "model_search_state": "unused"
+      }
+    },
+    {
+      "timestamp": "2026-11-26T19:57:55.074Z",
+      "ordinal": 14,
+      "type": "response_item",
+      "payload": {
+        "type": "message",
+        "status": "completed",
+        "id": "msg_04925dcd340e65a9016b088f42d5b887d0a05b8adce3b85e86",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "ONE",
+            "annotations": [],
+            "logprobs": []
+          }
+        ],
+        "phase": "final_answer",
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a2196f-9975-7193-9c2e-3ce9b8a81547",
+          "create_time": 1795723075.0444865,
+          "content_item_kinds": [
+            "unknown"
+          ]
+        }
+      },
+      "metadata": {
+        "history_sequence": 8,
+        "sampled_through_sequence": 7,
+        "retained_source": {
+          "id": {
+            "message_id": "msg_04925dcd340e65a9016b088f42d5b887d0a05b8adce3b85e86",
+            "turn_id": "01a2196f-9975-7193-9c2e-3ce9b8a81547",
+            "role": "assistant"
+          },
+          "revision": "retained_01a2196f-9e02-77b2-a643-6daa1baa8062",
+          "complete": true
+        },
+        "client_authored": false,
+        "user_input_order": 1,
+        "model_search_state": "unused"
+      }
+    },
+    {
+      "timestamp": "2026-11-26T19:58:05.431Z",
+      "ordinal": 20,
+      "type": "response_item",
+      "payload": {
+        "type": "message",
+        "id": "msg_01a2196f-c676-7633-908e-341a15985599",
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "Reply with exactly: TWO"
+          }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a2196f-c65c-7162-a54e-769787e02b76",
+          "create_time": 1795723085.4309611,
+          "content_item_kinds": [
+            "user.text"
+          ],
+          "content_item_metadata": [
+            {
+              "provenance": {
+                "type": "user"
+              }
+            }
+          ]
+        }
+      },
+      "metadata": {
+        "history_sequence": 9,
+        "sampled_through_sequence": 7,
+        "retained_source": {
+          "id": {
+            "message_id": "msg_01a2196f-c676-7633-908e-341a15985599",
+            "turn_id": "01a2196f-c65c-7162-a54e-769787e02b76",
+            "role": "user"
+          },
+          "revision": "retained_01a2196f-c677-7390-854a-5a2884172888",
+          "complete": true
+        },
+        "client_authored": false,
+        "user_input_order": 2,
+        "mcp_attribution": {
+          "status": "none"
+        },
+        "model_search_state": "unused"
+      }
+    },
+    {
+      "timestamp": "2026-11-26T19:58:06.581Z",
+      "ordinal": 23,
+      "type": "response_item",
+      "payload": {
+        "type": "message",
+        "status": "completed",
+        "id": "msg_04925dcd340e65a9016b088f4e576c87d0bf7a8fbc268dfd53",
+        "role": "assistant",
+        "content": [
+          {
+            "type": "output_text",
+            "text": "TWO",
+            "annotations": [],
+            "logprobs": []
+          }
+        ],
+        "phase": "final_answer",
+        "internal_chat_message_metadata_passthrough": {
+          "turn_id": "01a2196f-c65c-7162-a54e-769787e02b76",
+          "create_time": 1795723086.5558913,
+          "content_item_kinds": [
+            "unknown"
+          ]
+        }
+      },
+      "metadata": {
+        "history_sequence": 10,
+        "sampled_through_sequence": 9,
+        "retained_source": {
+          "id": {
+            "message_id": "msg_04925dcd340e65a9016b088f4e576c87d0bf7a8fbc268dfd53",
+            "turn_id": "01a2196f-c65c-7162-a54e-769787e02b76",
+            "role": "assistant"
+          },
+          "revision": "retained_01a2196f-caf5-7bc1-b60d-3220a498494f",
+          "complete": true
+        },
+        "client_authored": false,
+        "user_input_order": 3,
+        "model_search_state": "unused"
+      }
+    }
+  ]
+}

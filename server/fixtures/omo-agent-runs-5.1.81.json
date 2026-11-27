@@ -1,0 +1,119 @@
+{
+  "about": "What OmO 5.1.81 (senpi 2026.11.19-5) told an extension of its runs, recorded in an isolated HOME with a DeepSeek model (hook-cleanup-d, 2026-11-25): agent_start, agent_end (its willRetry, aborted, abortSource, and the stopReason of its last message) and agent_settled. agent_settled came 0.1 s after the last agent_end in print mode and after an abort, but 10-11 s after it at the end of a turn in the terminal UI.",
+  "answered": [
+    {
+      "type": "agent_start"
+    },
+    {
+      "type": "agent_end",
+      "willRetry": false,
+      "stopReason": "stop"
+    },
+    {
+      "type": "agent_settled"
+    }
+  ],
+  "toolUse": [
+    {
+      "type": "agent_start"
+    },
+    {
+      "type": "agent_end",
+      "willRetry": false,
+      "stopReason": "stop"
+    },
+    {
+      "type": "agent_settled"
+    }
+  ],
+  "retriedThenGaveUp": [
+    {
+      "type": "agent_start"
+    },
+    {
+      "type": "agent_end",
+      "willRetry": true,
+      "stopReason": "error"
+    },
+    {
+      "type": "agent_start"
+    },
+    {
+      "type": "agent_end",
+      "willRetry": true,
+      "stopReason": "error"
+    },
+    {
+      "type": "agent_start"
+    },
+    {
+      "type": "agent_end",
+      "willRetry": true,
+      "stopReason": "error"
+    },
+    {
+      "type": "agent_start"
+    },
+    {
+      "type": "agent_end",
+      "willRetry": true,
+      "stopReason": "error"
+    },
+    {
+      "type": "agent_start"
+    },
+    {
+      "type": "agent_end",
+      "willRetry": true,
+      "stopReason": "error"
+    },
+    {
+      "type": "agent_start"
+    },
+    {
+      "type": "agent_end",
+      "willRetry": false,
+      "stopReason": "error"
+    },
+    {
+      "type": "agent_settled"
+    }
+  ],
+  "tui": [
+    {
+      "type": "agent_start"
+    },
+    {
+      "type": "agent_end",
+      "willRetry": false,
+      "aborted": true,
+      "abortSource": "user",
+      "stopReason": "aborted"
+    },
+    {
+      "type": "agent_settled"
+    },
+    {
+      "type": "agent_start"
+    },
+    {
+      "type": "agent_end",
+      "willRetry": false,
+      "stopReason": "stop"
+    },
+    {
+      "type": "agent_settled"
+    },
+    {
+      "type": "agent_start"
+    },
+    {
+      "type": "agent_end",
+      "willRetry": false,
+      "stopReason": "stop"
+    },
+    {
+      "type": "agent_settled"
+    }
+  ]
+}

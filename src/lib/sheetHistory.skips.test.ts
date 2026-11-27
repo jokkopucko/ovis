@@ -1,5 +1,8 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, jest } from "bun:test";
-import { sheetStep } from "./historyKeys.ts";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, jest, mock } from "bun:test";
+import { act, createElement, useReducer } from "react";
+import { FILE_PREVIEW_KEY, sheetStep } from "./historyKeys.ts";
+import { openPage, type Page } from "./page.fixture.ts";
+import { addressBarRefs, useAddressBarOf, type ShownPlace, type Snapshot } from "./useAddressBar.fixture.ts";
 
 /**
  * The module on a browser whose Back skips the entries of a page that added one with no tap since
@@ -17,6 +20,9 @@ function fakeBrowser() {
   const activation = { isActive: false };
   /** the browser drops the next traversal asked for by key, as when another one overtakes it */
   let dropping = false;
+  /** the next way asked for by key stays on its way until the test drops it */
+  let stalled: "next" | (() => void) | null = null;
+  let silentBack = false;
   type Pop = { state: unknown; stopImmediatePropagation: () => void };
   const listeners = new Map<string, Array<(event: Pop) => void>>();
   const land = (next: number): void => {
@@ -33,30 +39,44 @@ function fakeBrowser() {
     get state() { return entries[index]!.state; },
     pushState(state: unknown, _title: string, url?: string | null) { entries.splice(index + 1); keys += 1; entries.push({ state, href: url ?? entries[index]!.href, key: `k${keys}` }); index += 1; },
     replaceState(state: unknown, _title: string, url?: string | null) { entries[index] = { state, href: url ?? entries[index]!.href, key: entries[index]!.key }; },
-    back() { land(index - 1); },
+    back() {
+      if (silentBack) { silentBack = false; index -= 1; return; }
+      land(index - 1);
+    },
     forward() { land(index + 1); },
     // a step by count is what the browser drops with a way by key: `back` and `forward` are the user's own here
     go(by: number) { if (!dropping) land(index + by); },
   };
   const window = {
     history,
-    get location() { return { href: entries[index]!.href }; },
+    get location() {
+      const { href } = entries[index]!;
+      const { pathname, search, hash } = new URL(href, "http://localhost");
+      return { href, pathname, search, hash };
+    },
     navigation: {
       get currentEntry() { return { key: entries[index]!.key, index }; },
       entries() { return entries.map((entry, at) => ({ key: entry.key, index: at })); },
       traverseTo(key: string) {
         if (dropping) return { committed: Promise.reject(new Error("dropped")), finished: Promise.reject(new Error("dropped")) };
+        if (stalled === "next") {
+          const committed = new Promise<void>((_landed, dropped) => { stalled = () => dropped(new Error("dropped")); });
+          return { committed, finished: committed };
+        }
         land(entries.findIndex((entry) => entry.key === key));
         return { committed: Promise.resolve(), finished: Promise.resolve() };
       },
     },
     addEventListener(type: string, listener: (event: Pop) => void) { listeners.set(type, [...(listeners.get(type) ?? []), listener]); },
+    removeEventListener(type: string, listener: (event: Pop) => void) { listeners.set(type, (listeners.get(type) ?? []).filter((kept) => kept !== listener)); },
   };
   return {
     window, entries, activation,
     at: () => index,
     key: () => entries[index]!.key,
     drop: (on: boolean) => { dropping = on; },
+    stall: (): (() => void) => { stalled = "next"; return () => { if (typeof stalled === "function") stalled(); stalled = null; }; },
+    muteNextBack: () => { silentBack = true; },
     /** an entry the browser makes by itself, as for a #fragment: none of the page's writers sees it */
     fragment: (href: string) => { entries.splice(index + 1); keys += 1; entries.push({ state: null, href, key: `k${keys}` }); index += 1; },
     first: (listener: (event: Pop) => void) => { listeners.set("popstate", [listener, ...(listeners.get("popstate") ?? [])]); },
@@ -114,6 +134,70 @@ describe("a phone's sheet where Back skips an entry made with no tap", () => {
     fake.tap();
     expect(fake.at()).toBe(start + 1);
     leaveSecond(); await settled();
+    expect(fake.at()).toBe(start);
+  });
+
+  it("steps off a later sheet after Chromium committed a Back without firing any events", async () => {
+    const start = fake.at();
+    fake.tap();
+    const leaveFirst = enter(() => {});
+    fake.muteNextBack();
+    leaveFirst(); await settled();
+    expect(fake.at()).toBe(start);
+    fake.tap();
+    const leaveNext = enter(() => {});
+    expect(fake.at()).toBe(start + 1);
+    leaveNext(); await settled();
+    expect(fake.at()).toBe(start);
+  });
+
+  it("does not strand the entry of an automatic approval that opens after a silent Back", async () => {
+    const start = fake.at();
+    fake.tap();
+    fake.muteNextBack();
+    enter(() => {})(); await settled();
+    fake.activation.isActive = false;
+    const leaveApproval = enter(() => false);
+    fake.tap();
+    leaveApproval(); await settled();
+    enter(() => {})(); await settled();
+    expect(fake.at()).toBe(start);
+  });
+
+  it.each(["/?", "/#"])("steps off the confirmation after widening restores the sidebar preference in its %s URL", async (base) => {
+    const start = fake.at();
+    const history = fake.window.history;
+    const before = fake.window.location.href;
+    const document = Object.getOwnPropertyDescriptor(globalThis, "document");
+    if (base === "/#") Object.defineProperty(globalThis, "document", { configurable: true, value: { querySelector: () => ({ getAttribute: () => "relay" }) } });
+    try {
+      history.replaceState(history.state, "", `${base}pane=a&settings=devices`);
+      fake.tap();
+      const leave = enter(() => {});
+      history.replaceState(history.state, "", `${fake.window.location.href}&sidebar=hidden`);
+      leave(); await settled();
+      expect(fake.at()).toBe(start);
+    } finally {
+      history.replaceState(history.state, "", before);
+      if (document) Object.defineProperty(globalThis, "document", document); else Reflect.deleteProperty(globalThis, "document");
+    }
+  });
+
+  it("rebuilds Settings levels when dismissing a confirmation lands without a popstate", async () => {
+    const settingsPath = "./settingsHistory.ts?sheet-history-skips-test";
+    const settings: typeof import("./settingsHistory.ts") = await import(settingsPath);
+    const start = fake.at();
+    fake.tap();
+    settings.recordSettings(settings.settingsLevels(true, "devices", false));
+    const leave = enter(() => {});
+    settings.recordSettings(settings.settingsLevels(false, "devices", false));
+    fake.muteNextBack();
+    leave(); await settled();
+    jest.advanceTimersByTime(1000);
+    await settled();
+    expect(settings.settingsEntry(h.state)).toEqual({ page: "devices", keyBar: false, depth: 1 });
+    settings.recordSettings([]);
+    await settled();
     expect(fake.at()).toBe(start);
   });
 
@@ -901,4 +985,293 @@ describe("a phone's sheet where Back skips an entry made with no tap, in a brows
     h.go(-2); await settled();
     expect(fake.at()).toBe(start);
   });
+});
+
+describe("the address bar over a phone's sheets: a pane's address goes onto that pane's own entry, never onto another pane's", () => {
+  const panes = (): Snapshot => ({
+    workspaces: [{ workspace_id: "w", label: "api" }],
+    panes: ["a", "b", "c"].map((pane_id) => ({ pane_id, workspace_id: "w", focused: pane_id === "a" })),
+    layouts: [],
+  }) as unknown as Snapshot;
+  const address = (pane: string, rest = ""): string => `/?ws=w-api&pane=${pane}&view=chat${rest}`;
+  const refs = addressBarRefs();
+  let place: ShownPlace;
+  let redraw: (() => void) | undefined;
+  let page: Page;
+  let settings: typeof import("./settingsHistory.ts");
+  let unmock = (): void => {};
+
+  function Probe() {
+    const [, refresh] = useReducer((version: number) => version + 1, 0);
+    redraw = refresh;
+    useAddressBarOf(place, refs, { showInbox: () => {}, leaveInbox: () => {}, leaveFile: () => false, setNewSessionOpen: () => {} });
+    return null;
+  }
+
+  // the hook answers from the history modules that run on this file's browser, not from the ones another file loaded
+  beforeAll(async () => {
+    const loaded = { sheet: { ...(await import("./sheetHistory.ts")) }, settings: { ...(await import("./settingsHistory.ts")) } };
+    const settingsPath = "./settingsHistory.ts?sheet-history-skips-test";
+    settings = await import(settingsPath);
+    mock.module("./sheetHistory.ts", () => sheetHistory);
+    mock.module("./settingsHistory.ts", () => settings);
+    unmock = () => { mock.module("./sheetHistory.ts", () => loaded.sheet); mock.module("./settingsHistory.ts", () => loaded.settings); };
+  });
+  afterAll(() => { unmock(); });
+  const up: Array<() => void> = [];
+  /** A sheet that goes with its test: one a failed test left up would answer the next test's Back. */
+  const sheet = (onBack: () => boolean | void): (() => void) => { const leave = enter(onBack); up.push(leave); return leave; };
+  // the page's document closes on real timers
+  afterEach(async () => {
+    for (const leave of up.splice(0)) leave();
+    settings.recordSettings([]);
+    jest.advanceTimersByTime(1);
+    jest.useRealTimers();
+    await page.close();
+  });
+
+  /**
+   * The app opened on pane a's address, on an entry of its own: returns where that entry is. One `unkeyed` is an entry
+   * no writer of the page made, as the one a page loads on: with no Navigation API it has no key until the page's first push.
+   */
+  async function open(unkeyed = false): Promise<number> {
+    if (unkeyed) fake.fragment("/?pane=a");
+    else h.pushState(null, "", "/?pane=a");
+    place = { machineId: "local", paneId: "a", newSessionOpen: false, newFields: null, sidebarCollapsed: false, snapshot: panes(), viewing: null, linkLanded: true, inbox: { open: false, enabled: false } };
+    refs.selectTarget.current = (_machineId, paneId) => { if (paneId !== null) { place.paneId = paneId; redraw?.(); } };
+    const browser = { window: Object.getOwnPropertyDescriptor(globalThis, "window")!, navigator: Object.getOwnPropertyDescriptor(globalThis, "navigator")! };
+    // React draws in a page's document, while the window and its history stay this file's browser
+    page = openPage();
+    Object.defineProperty(globalThis, "window", browser.window);
+    Object.defineProperty(globalThis, "navigator", browser.navigator);
+    await page.render(createElement(Probe));
+    return fake.at();
+  }
+  const show = (change: Partial<ShownPlace>): Promise<void> => act(async () => { Object.assign(place, change); redraw?.(); });
+  /** A roster the server sends again: the same panes in a new snapshot, which runs the address bar's effect. */
+  const rosterAgain = (): Promise<void> => show({ snapshot: panes() });
+  const lands = (step: () => void): Promise<void> => act(async () => { step(); await settled(); await settled(); });
+  const addresses = (from: number): string[] => fake.entries.slice(from).map((entry) => entry.href);
+  /** The browser of the group before: a Chromium with no Navigation API, whose entries this module counts in their state. */
+  async function withoutNavigationApi(run: () => Promise<void>): Promise<void> {
+    const api = fake.window.navigation;
+    (fake.window as { navigation?: unknown }).navigation = undefined;
+    try { await run(); } finally { fake.window.navigation = api; }
+  }
+
+  /** Panes a, b and c on an entry each, Back onto b's, then a request with no entry of its own that refuses the next Back: the history lands on a's entry with b still shown. */
+  async function backRefusedOntoA(way: "dropped" | "stalled"): Promise<{ start: number; leave: () => void; drop: () => void }> {
+    const start = await open();
+    await show({ paneId: "b" });
+    await show({ paneId: "c" });
+    await lands(() => h.back());
+    const leave = sheet(() => false);
+    const drop = way === "stalled" ? fake.stall() : () => {};
+    fake.drop(way === "dropped");
+    await lands(() => h.back());
+    fake.drop(false);
+    expect(fake.at()).toBe(start); expect(place.paneId).toBe("b");
+    return { start, leave, drop };
+  }
+
+  it("keeps pane a's entry when the way back onto b's, on its way while a roster was drawn, is dropped and the request that refused closes (#4400)", async () => {
+    const { start, leave, drop } = await backRefusedOntoA("stalled");
+    await rosterAgain();
+    expect(fake.entries[start]!.href).toBe(address("a"));
+    await lands(drop);
+    expect(fake.entries[start]!.href).toBe(address("a"));
+    await lands(leave);
+    await rosterAgain();
+    expect(addresses(start)).toEqual([address("a"), address("b"), address("c")]);
+  });
+
+  it("keeps pane a's entry through a roster drawn after the way back onto b's was dropped, and writes b on the entry a tap then makes for the request (#4400)", async () => {
+    const { start, leave } = await backRefusedOntoA("dropped");
+    await rosterAgain();
+    expect(fake.entries[start]!.href).toBe(address("a"));
+    await lands(() => fake.tap());
+    expect(fake.at()).toBe(start + 1);
+    expect(addresses(start)).toEqual([address("a"), address("b")]);
+    await lands(leave);
+    await rosterAgain();
+    expect(addresses(start)).toEqual([address("a"), address("b")]);
+  });
+
+  it("keeps pane a's entry when a drawer on b closes while its way back from a jump onto a's entry is on its way, and writes on b's entry again once the user is back on it (#4400)", async () => {
+    const start = await open();
+    await show({ paneId: "b" });
+    // a's entry was the place's once more on the way here: Back onto it, and Forward again
+    await lands(() => h.back());
+    await lands(() => h.forward());
+    await lands(() => fake.tap());
+    const leaveDrawer = sheet(() => {});
+    const leaveMenu = sheet(() => {});
+    const drop = fake.stall();
+    await lands(() => h.go(-2));
+    expect(fake.at()).toBe(start); expect(place.paneId).toBe("b");
+    leaveMenu();
+    await rosterAgain();
+    expect(fake.entries[start]!.href).toBe(address("a"));
+    await lands(leaveDrawer);
+    await rosterAgain();
+    expect(fake.entries[start]!.href).toBe(address("a"));
+    await lands(drop);
+    await rosterAgain();
+    expect(fake.entries[start]!.href).toBe(address("a"));
+    await lands(() => h.forward());
+    await show({ sidebarCollapsed: true });
+    expect(addresses(start).slice(0, 2)).toEqual([address("a"), address("b", "&sidebar=hidden")]);
+  });
+
+  it("keeps pane a's entry when a jump lands on it from a drawer over pane b, which took the place over on the entry of a dialog opened over a's", async () => {
+    const start = await open();
+    await lands(() => fake.tap());
+    const leaveDialog = sheet(() => {});
+    await show({ newSessionOpen: true, newFields: { cwd: "/api", name: null, agent: null } });
+    await show({ paneId: "b" });
+    await show({ newSessionOpen: false, newFields: null });
+    await lands(leaveDialog);
+    expect(addresses(start)).toEqual([address("a"), address("b")]);
+    const leaveDrawer = sheet(() => {});
+    const leaveMenu = sheet(() => {});
+    const drop = fake.stall();
+    await lands(() => h.go(-2));
+    expect(fake.at()).toBe(start); expect(place.paneId).toBe("b");
+    leaveMenu();
+    await lands(leaveDrawer);
+    await lands(drop);
+    await rosterAgain();
+    expect(addresses(start).slice(0, 2)).toEqual([address("a"), address("b")]);
+  });
+
+  it("writes the pane that took the place over under Settings on the entry Settings was opened over, once Settings steps back onto it, also after a sheet closed over that entry", async () => {
+    const start = await open();
+    await lands(() => fake.tap());
+    await lands(sheet(() => {}));
+    expect(fake.at()).toBe(start);
+    settings.recordSettings(settings.settingsLevels(false, "devices", false));
+    await show({ settings: "devices" });
+    expect(addresses(start)).toEqual([address("a"), address("a", "&settings=devices")]);
+    await show({ paneId: "b" });
+    await show({ settings: null });
+    await lands(() => settings.recordSettings([]));
+    expect(fake.at()).toBe(start);
+    expect(fake.entries[start]!.href).toBe(address("b"));
+  });
+
+  for (const [keys, browser] of [["the Navigation API's", (run: () => Promise<void>) => run()], ["those kept in each entry's state", withoutNavigationApi]] as const) {
+    it(`follows the user's Back onto pane a's entry right after a closed sheet's own Back landed unheard, and keeps both panes' entries, by entry keys that are ${keys} (#4393)`, () => browser(async () => {
+      const start = await open();
+      await show({ paneId: "b" });
+      await lands(() => fake.tap());
+      const leave = sheet(() => {});
+      fake.muteNextBack();
+      await lands(leave);
+      expect(fake.at()).toBe(start + 1);
+      await lands(() => h.back());
+      expect(fake.at()).toBe(start);
+      expect(place.paneId).toBe("a");
+      await rosterAgain();
+      expect(addresses(start).slice(0, 2)).toEqual([address("a"), address("b")]);
+    }));
+  }
+
+  it("writes an address held while a closed sheet's own Back was on its way, once that Back is found to have landed unheard (#4393)", async () => {
+    const start = await open();
+    await show({ paneId: "b" });
+    await lands(() => fake.tap());
+    const leave = sheet(() => {});
+    fake.muteNextBack();
+    await lands(leave);
+    await show({ sidebarCollapsed: true });
+    await act(async () => { jest.advanceTimersByTime(1000); });
+    expect(addresses(start).slice(0, 2)).toEqual([address("a"), address("b", "&sidebar=hidden")]);
+  });
+
+  it("writes pane b's file on the file's new entry and keeps pane a's, with no Navigation API and the drawer's way back from a's entry dropped (#4400)", () => withoutNavigationApi(async () => {
+    const start = await open();
+    await show({ paneId: "b" });
+    await lands(() => fake.tap());
+    const leaveDrawer = sheet(() => {});
+    const leaveMenu = sheet(() => {});
+    // the user's jump lands on a's entry; the way back onto b's drawer, a step by count, is dropped with no word
+    let jumped = false;
+    fake.first(() => { if (!jumped) { jumped = true; fake.drop(true); } });
+    await lands(() => h.go(-2));
+    fake.drop(false);
+    expect(fake.at()).toBe(start); expect(place.paneId).toBe("b");
+    leaveMenu();
+    await lands(leaveDrawer);
+    await rosterAgain();
+    expect(fake.entries[start]!.href).toBe(address("a"));
+    const file = { path: "README.md", paneId: "b", machineId: "local" };
+    await act(async () => { h.pushState({ [FILE_PREVIEW_KEY]: file }, ""); place.viewing = file; redraw?.(); });
+    expect(addresses(start)).toEqual([address("a"), address("b", "&file=README.md")]);
+  }));
+
+  it("keeps pane a's entry when Settings, opened over it after the way back onto b's was dropped, steps back onto it (#4400)", async () => {
+    const { start, leave } = await backRefusedOntoA("dropped");
+    await lands(leave);
+    settings.recordSettings(settings.settingsLevels(false, "devices", false));
+    await show({ settings: "devices" });
+    expect(addresses(start)).toEqual([address("a"), address("b", "&settings=devices")]);
+    await show({ settings: null });
+    await lands(() => settings.recordSettings([]));
+    await rosterAgain();
+    expect(fake.at()).toBe(start);
+    expect(addresses(start)).toEqual([address("a"), address("b")]);
+  });
+
+  it("keeps pane a's entry when a request refuses Back onto it from Settings, which was opened over it and under which pane b took the place over (#4400)", async () => {
+    const start = await open();
+    await show({ paneId: "c" });
+    // back on a's entry with no tap since, so the request below gets no entry of its own
+    await lands(() => h.back());
+    settings.recordSettings(settings.settingsLevels(false, "devices", false));
+    await show({ settings: "devices" });
+    await show({ paneId: "b" });
+    const leave = sheet(() => false);
+    fake.drop(true);
+    await lands(() => h.back());
+    fake.drop(false);
+    expect(fake.at()).toBe(start); expect(place.paneId).toBe("b");
+    await lands(leave);
+    await rosterAgain();
+    expect(addresses(start)).toEqual([address("a"), address("b", "&settings=devices")]);
+  });
+
+  it("keeps pane a's entry under a file's, which Settings was opened over and stepped back onto with pane b, when a jump from a drawer lands on it (#4400)", async () => {
+    const start = await open();
+    await lands(() => fake.tap());
+    const file = { path: "README.md", paneId: "a", machineId: "local" };
+    await act(async () => { h.pushState({ [FILE_PREVIEW_KEY]: file }, ""); place.viewing = file; redraw?.(); });
+    settings.recordSettings(settings.settingsLevels(false, "devices", false));
+    await show({ settings: "devices" });
+    await show({ paneId: "b", viewing: null });
+    await show({ settings: null });
+    await lands(() => settings.recordSettings([]));
+    expect(addresses(start).slice(0, 2)).toEqual([address("a"), address("b")]);
+    const leaveDrawer = sheet(() => {});
+    const leaveMenu = sheet(() => {});
+    const drop = fake.stall();
+    await lands(() => h.go(-2));
+    expect(fake.at()).toBe(start);
+    leaveMenu();
+    await lands(leaveDrawer);
+    await lands(drop);
+    await rosterAgain();
+    expect(addresses(start).slice(0, 2)).toEqual([address("a"), address("b")]);
+  });
+
+  it("writes the pane that took the place over under Settings on the entry Settings was opened over, which had no key until Settings made the page's first entry, with no Navigation API", () => withoutNavigationApi(async () => {
+    const start = await open(true);
+    settings.recordSettings(settings.settingsLevels(false, "devices", false));
+    await show({ settings: "devices" });
+    await show({ paneId: "b" });
+    await show({ settings: null });
+    await lands(() => settings.recordSettings([]));
+    await rosterAgain();
+    expect(fake.at()).toBe(start);
+    expect(fake.entries[start]!.href).toBe(address("b"));
+  }));
 });

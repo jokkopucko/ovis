@@ -349,3 +349,55 @@ describe("what the record of how long a key has been let in reads of the rows (w
   });
 });
 
+describe("a key a person at this PC has just let in", () => {
+  test("waits no join hold on its row, also while no notice can be made: making that row live takes none", () => {
+    const dir = stateDir();
+    const slots = { free: true };
+    const { ports: p } = ports(dir, { hasNoticeSlot: () => slots.free });
+    const store = new AccountDeviceStore(dir, SERVER, p);
+    store.commitList(list(["k-1", "k-2"]));
+    expect(store.rows().map((row) => row.state)).toEqual(["hold", "hold"]);
+    // every notice is taken: nobody new is admitted, and the row of the key a person let in goes live all the same
+    slots.free = false;
+    expect(store.commitList(list(["k-1", "k-2", "k-3"], [], 2), undefined, (key) => key === keyOf("k-2")).admitted).toEqual([]);
+    expect(store.rows().map((row) => [nameOf(row.key), row.state])).toEqual([["k-1", "hold"], ["k-2", "live"]]);
+  });
+});
+
+describe("a row that moves with its device's hand-over (a list's `moved`)", () => {
+  test("a held row that waits for a whole read keeps waiting under its new key, and gets a fresh hold when the read comes, as it would have under the old", () => {
+    const dir = stateDir();
+    const { ports: p } = ports(dir);
+    const store = new AccountDeviceStore(dir, SERVER, p);
+    store.commitList(list(["k-old"]));
+    const [held] = store.rows();
+    expect(held).toMatchObject({ state: "hold" });
+    // no whole read for an hour: every row waits for one (T56), and the hold's deadline passes meanwhile
+    store.waitForRead();
+    clock.now += 2 * JOIN_HOLD_MS;
+    const moved = { ...list(["k-new"]), moved: [{ from: keyOf("k-old"), to: keyOf("k-new") }] };
+    store.commitList(moved);
+    const row = store.rows().find((candidate) => candidate.key === keyOf("k-new"))!;
+    expect(row).toMatchObject({ no: held!.no, state: "hold" });
+    // the read that ended its wait starts its hold again: it is not let in at once
+    expect(Date.parse(row.hold_until!)).toBe(clock.now + JOIN_HOLD_MS);
+    expect(store.access(row.id)).toMatchObject({ refused: "join_hold" });
+  });
+});
+
+describe("the names of the rows", () => {
+  test("a row still named by the placeholder takes the list's name for it, from the list's commits alone: a snapshot's leaves it as it is", () => {
+    const dir = stateDir();
+    const store = new AccountDeviceStore(dir, SERVER, ports(dir).ports);
+    const named = (label: string) => ({ ...list(["k-1"]), devices: list(["k-1"]).devices.map((entry) => ({ ...entry, label })) });
+    store.commitList(named("Device"));
+    expect(store.rows()[0]?.label).toBe("Device");
+    // a whole read of the account service's snapshot (a PC that follows no list) names nothing anew
+    store.commitList(named("Dana's tablet"));
+    expect(store.rows()[0]?.label).toBe("Device");
+    // the list's own commit (names: true) does
+    store.commitList({ ...named("Dana's tablet"), names: true });
+    expect(store.rows()[0]?.label).toBe("Dana's tablet");
+  });
+});
+

@@ -1,24 +1,20 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { BrowserContext, Page } from "playwright-core";
 import type { ConversationPart, ConversationTurn } from "../shared/protocol.ts";
 import { appFaces } from "./app-faces.ts";
 import panes from "../site/demo/fixtures/panes.json";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
-import { serveDemo } from "./demo-server.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 
 // Everything stays in this disposable, loopback-only app; no herdr session is opened.
-const app = mkdtempSync(join(tmpdir(), "herdr-todo-snapshots-demo-"));
 const evidence = process.env["UI_EVIDENCE_DIR"] || null;
 
 // playwright-core's bundle lazily requires packages the lockfile does not carry (chromium-bidi):
 // fine at run time, unresolvable to `bun build` — so it is imported past the bundler's analysis
 const playwrightCore = "playwright-core";
-const { chromium, devices } = (await import(playwrightCore)) as typeof import("playwright-core");
+const { devices } = (await import(playwrightCore)) as typeof import("playwright-core");
 
 type Tool = Extract<ConversationPart, { kind: "tool" }>;
 type State = Tool["state"];
@@ -212,262 +208,249 @@ const CONFIGS: Config[] = [
   { width: 390, theme: "light", language: "ko", phone: true, scale: 3 },
 ];
 
-try {
-  await buildDemoApp(app);
-  if (evidence !== null) mkdirSync(evidence, { recursive: true });
-  const index = join(app, "index.html");
-  const html = readFileSync(index, "utf8");
-  assert.match(html, /<script type="module"/);
-  const wrapper = `<script>(() => {
-    const demo = window.fetch;
-    window.todoTurns = {};
-    window.todoReads = {};
-    window.todoOffline = false;
-    const DemoSocket = window.WebSocket;
-    const sockets = new Set();
-    const Socket = function (...args) {
-      const socket = new DemoSocket(...args);
-      if (window.todoOffline) queueMicrotask(() => socket.close());
-      else sockets.add(socket);
-      return socket;
-    };
-    Socket.prototype = DemoSocket.prototype;
-    Object.setPrototypeOf(Socket, DemoSocket);
-    window.WebSocket = Socket;
-    window.todoSockets = sockets;
-    let signature = 0;
-    window.announceTodos = (pane) => {
-      signature += 1;
-      for (const socket of sockets) if (socket.readyState === 1) socket.push({ type: "conversation-changed", pane_id: pane, signature: "todos:" + signature });
-    };
-    window.fetch = (input, init) => {
-      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
-      const pane = url.searchParams.get("pane_id");
-      if (url.pathname === "/api/pane/conversation" && pane !== null && window.todoTurns[pane] && !url.searchParams.has("before") && !url.searchParams.has("from")) {
-        window.todoReads[pane] = (window.todoReads[pane] || 0) + 1;
-        const source = pane === ${JSON.stringify(panes.web)} ? "codex-transcript" : pane === ${JSON.stringify(panes.omp)} ? "omp-transcript" : "claude-transcript";
-        return Promise.resolve(new Response(JSON.stringify({ source, turns: window.todoTurns[pane], metadata: { model: "fixture", reasoning_effort: "medium" }, cursor: null }), { headers: { "content-type": "application/json" } }));
-      }
-      return demo(input, init);
-    };
-  })();</script>`;
-  writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${wrapper}\n    <script type="module"`));
+const wrapper = `<script>(() => {
+  const demo = window.fetch;
+  window.todoTurns = {};
+  window.todoReads = {};
+  window.todoOffline = false;
+  const DemoSocket = window.WebSocket;
+  const sockets = new Set();
+  const Socket = function (...args) {
+    const socket = new DemoSocket(...args);
+    if (window.todoOffline) queueMicrotask(() => socket.close());
+    else sockets.add(socket);
+    return socket;
+  };
+  Socket.prototype = DemoSocket.prototype;
+  Object.setPrototypeOf(Socket, DemoSocket);
+  window.WebSocket = Socket;
+  window.todoSockets = sockets;
+  let signature = 0;
+  window.announceTodos = (pane) => {
+    signature += 1;
+    for (const socket of sockets) if (socket.readyState === 1) socket.push({ type: "conversation-changed", pane_id: pane, signature: "todos:" + signature });
+  };
+  window.fetch = (input, init) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href);
+    const pane = url.searchParams.get("pane_id");
+    if (url.pathname === "/api/pane/conversation" && pane !== null && window.todoTurns[pane] && !url.searchParams.has("before") && !url.searchParams.has("from")) {
+      window.todoReads[pane] = (window.todoReads[pane] || 0) + 1;
+      const source = pane === ${JSON.stringify(panes.web)} ? "codex-transcript" : pane === ${JSON.stringify(panes.omp)} ? "omp-transcript" : "claude-transcript";
+      return Promise.resolve(new Response(JSON.stringify({ source, turns: window.todoTurns[pane], metadata: { model: "fixture", reasoning_effort: "medium" }, cursor: null }), { headers: { "content-type": "application/json" } }));
+    }
+    return demo(input, init);
+  };
+})();</script>`;
 
-  const server = serveDemo(app);
-  const base = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/`;
-  try {
-    const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
+await withDemoBrowser({ tempPrefix: "herdr-todo-snapshots-demo-", afterTransport: `\n    ${wrapper}` }, async ({ newContext, baseUrl: base }) => {
+  for (const config of CONFIGS) {
+    const en = config.language === "en";
+    const context = await newContext(config.phone
+      ? { ...devices["iPhone 14"], locale: en ? "en-US" : "ko-KR" }
+      : { viewport: { width: 1440, height: 900 } });
     try {
-      for (const config of CONFIGS) {
-        const en = config.language === "en";
-        const context = await browser.newContext(config.phone
-          ? { ...devices["iPhone 14"], locale: en ? "en-US" : "ko-KR" }
-          : { viewport: { width: 1440, height: 900 }, locale: "en-US" });
-        try {
-          await context.addInitScript(([value, ids]) => {
-            localStorage.setItem("ovis:settings", value);
-            for (const id of ids) localStorage.setItem(`ovis:view:${id}`, "chat");
-          }, [settings(config.theme, config.language), [panes.flaky, panes.web, panes.omp, panes.api]] as const);
-          const label = `${config.width} ${config.theme}${en ? "" : " ko"}`;
+      await context.addInitScript(([value, ids]) => {
+        localStorage.setItem("ovis:settings", value);
+        for (const id of ids) localStorage.setItem(`ovis:view:${id}`, "chat");
+      }, [settings(config.theme, config.language), [panes.flaky, panes.web, panes.omp, panes.api]] as const);
+      const label = `${config.width} ${config.theme}${en ? "" : " ko"}`;
 
-          if (en && config.width === 1440 && config.theme === "light") {
-            const page = await open(context, base, panes.flaky);
-            const served = await page.evaluate(async (ids) => Object.fromEntries(await Promise.all(Object.entries(ids).map(async ([key, id]) => {
-              const body = await (await fetch(`/api/pane/conversation?pane_id=${encodeURIComponent(id)}`)).json() as { turns: { parts: Record<string, unknown>[] }[] };
-              return [key, body.turns.flatMap((turn) => turn.parts).filter((part) => part["kind"] === "tool").map((part) => [part["call_id"] ?? null, "state" in part ? part["state"] : "omitted"])];
-            }))), { api: panes.api, flaky: panes.flaky, web: panes.web, omp: panes.omp });
-            for (const key of ["api", "flaky"]) assert.ok(served[key].length > 0 && served[key].every(([id, state]: [string | null, string]) => typeof id === "string" && id.startsWith("toolu_") && state === "ok"), `${key}: ${JSON.stringify(served[key])}`);
-            assert.ok(served["web"].length > 0 && served["web"].every(([id, state]: [string | null, string]) => typeof id === "string" && id.startsWith("call_") && state === "omitted"), `web: ${JSON.stringify(served["web"])}`);
-            assert.ok(served["omp"].length > 0 && served["omp"].every(([id, state]: [string | null, string]) => id === null && state === "omitted"), `omp: ${JSON.stringify(served["omp"])}`);
-            const head = page.locator(".chat-turn-agent .work-block-head").last();
-            if (await head.getAttribute("aria-expanded") === "false") await head.click();
-            await page.locator("[data-todo-group]").waitFor();
-            const [curated] = await groups(page);
-            assert.match(curated!.head, /^Plan 2 updates · 1\/3 done$/, "a curated Claude run claims its ok list");
-            await page.close();
-            for (const [pane, name] of [[panes.web, "Codex"], [panes.omp, "omp"]] as const) {
-              const other = await open(context, base, pane);
-              const block = other.locator(".chat-turn-agent .work-block-head").first();
-              if (await block.getAttribute("aria-expanded") === "false") await block.click();
-              await other.locator("[data-todo-group]").waitFor();
-              const [run] = await groups(other);
-              assert.match(run!.head, /outcome not recorded/, `a curated ${name} run claims no success: ${run!.head}`);
-              await other.close();
-            }
-            console.log("PASS curated demo chats carry Claude ids and ok, Codex ids alone, omp neither; only Claude's run claims its list");
-          }
-
-          const page = await open(context, base, panes.flaky);
-          const errors: string[] = [];
-          page.on("pageerror", (error) => errors.push(error.message));
-          await feed(page, S.pending, 1);
-          let [run] = await groups(page);
-          const firstId = run!.id;
-          if (en) assert.equal(run!.head, "Plan 2 updates · no update completed 2 pending", label);
-          await shoot(page, config, "pending");
-          await expand(page);
-          if (en) {
-            [run] = await groups(page);
-            assert.equal(run!.caption, "No update has completed, so there is no current list.");
-            assert.deepEqual(run!.list, [], "no list is invented from pending calls");
-          }
-          await page.locator("[data-todo-group] > .work-row-head").focus();
-          await page.locator("[data-todo-group]").evaluate((node) => { (node as HTMLElement & { mark?: boolean }).mark = true; });
-          await feed(page, S.append, 1);
-          [run] = await groups(page);
-          assert.equal(run!.id, firstId, `${label}: the run keeps its identity through append`);
-          assert.equal(run!.expanded, true, `${label}: the run stays open through append`);
-          assert.equal(await page.locator("[data-todo-group]").evaluate((node) => (node as HTMLElement & { mark?: boolean }).mark === true && document.activeElement === node.querySelector(":scope > .work-row-head")), true, `${label}: same node and focus after append`);
-          if (en) {
-            assert.equal(run!.head, "Plan 3 updates · 1/3 done 1 pending 1 failed");
-            assert.equal(run!.caption, "Current list");
-            assert.deepEqual(run!.list, STEPS);
-            assert.deepEqual(run!.attempts.map((text) => /\b(succeeded|failed|pending|outcome not recorded)\b/.exec(text)?.[1]), ["succeeded", "failed", "pending"]);
-          }
-          await shoot(page, config, "streamed-append");
-          await measure(page, config, "streamed-append");
-          await feed(page, S.append, 1, true);
-          [run] = await groups(page);
-          assert.equal(run!.id, firstId);
-          assert.equal(await page.locator("[data-todo-group]").evaluate((node) => (node as HTMLElement & { mark?: boolean }).mark === true && document.activeElement === node.querySelector(":scope > .work-row-head")), true, `${label}: same node and focus after the poll`);
-          await shoot(page, config, "expanded");
-          await page.locator("[data-todo-group] > .work-row-head").blur();
-          await collapse(page);
-          await shoot(page, config, "collapsed");
-          await measure(page, config, "collapsed");
-          await page.keyboard.press("Shift");
-          await page.locator("[data-todo-group] > .work-row-head").focus();
-          assert.equal(await page.locator("[data-todo-group] > .work-row-head").evaluate((node) => node.matches(":focus-visible")), true, `${label}: keyboard focus is visible`);
-          await shoot(page, config, "focus-visible");
-          await page.locator("[data-todo-group] > .work-row-head").blur();
-          if (!config.phone) {
-            await page.locator("[data-todo-group] > .work-row-head").hover();
-            await shoot(page, config, "hover");
-          }
-          const box = (await page.locator("[data-todo-group] > .work-row-head").boundingBox())!;
-          if (config.phone) assert.ok(box.height >= 44 && box.width >= 44, `${label}: disclosure target ${box.width}x${box.height}`);
-          await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-          await page.mouse.down();
-          await shoot(page, config, "pressed");
-          await page.mouse.up();
-          await page.locator("[data-todo-group] .work-todo-attempts").waitFor();
-          await page.mouse.move(0, 0);
-          if (config.phone) {
-            const targets = await page.locator("[data-todo-group] .work-todo-attempts .work-row-head").evaluateAll((nodes) => nodes.map((node) => node.getBoundingClientRect().height));
-            assert.ok(targets.every((height) => height >= 44), `${label}: attempt rows ${JSON.stringify(targets)}`);
-          }
-          await noSidewaysScroll(page, `${label} append`);
-          console.log(`PASS ${label}: Claude pending calls, appended results and a poll keep one open, focused run with its id; ok, failed and pending apart`);
-
-          await feed(page, S.narration, 2);
-          await expand(page);
-          const split = await groups(page);
-          const rowKey = await page.locator(".chat-virtual-row").filter({ has: page.locator("[data-todo-group]") }).getAttribute("data-chat-row");
-          assert.deepEqual(split.map((group) => group.id), [JSON.stringify([rowKey, "toolu_n1"]), JSON.stringify([rowKey, "toolu_n4"])], `${label}: named by the turn row and each run's first call`);
-          run = split[1];
-          assert.equal(await page.locator(".work-narration", { hasText: PROSE }).count(), 1, "the narration stays in the open");
-          assert.equal(await page.locator(".chat-turn-agent .work-block-rows > .work-row:not(.work-row-thinking)").count(), 3, "the first run of two folds, the one alone stays a row, then the last run");
-          if (en) assert.deepEqual(split.map((group) => group.head), ["Plan 2 updates · 1/3 done", "Plan 2 updates · 2/3 done 1 failed"]);
-          await shoot(page, config, "narration-boundary", true);
-          await noSidewaysScroll(page, `${label} narration`);
-
-          await feed(page, S.failed, 1);
-          await expand(page);
-          [run] = await groups(page);
-          if (en) {
-            assert.equal(run!.head, "Plan 3 updates · 1/3 done 1 pending 1 failed");
-            assert.deepEqual(run!.list, STEPS);
-          }
-          assert.equal(run!.failedClipped, false, `${label}: the failure count is never cut`);
-          await shoot(page, config, "failed-latest");
-          await measure(page, config, "failed-latest");
-
-          await feed(page, S.allFailed, 1);
-          await expand(page);
-          [run] = await groups(page);
-          if (en) assert.equal(run!.head, "Plan 2 updates · no update completed 2 failed");
-          assert.deepEqual(run!.list, []);
-          await shoot(page, config, "all-failed");
-
-          await feed(page, S.unreadable, 1);
-          await expand(page);
-          [run] = await groups(page);
-          if (en) {
-            assert.equal(run!.head, "Plan 2 updates · latest list unreadable");
-            assert.equal(run!.caption, "The latest successful update's list can't be read. An earlier list is not shown in its place.");
-          }
-          assert.deepEqual(run!.list, [], "an earlier list never stands in for an unreadable one");
-          await shoot(page, config, "unreadable");
-
-          await feed(page, S.identical, 1);
-          await expand(page);
-          [run] = await groups(page);
-          assert.equal(run!.attempts.length, 2, "identical calls stay two attempts");
-
-          await feed(page, S.long, 1);
-          await expand(page);
-          await noSidewaysScroll(page, `${label} long labels`);
-          await shoot(page, config, "long-labels");
-          await shoot(page, config, "list-end", true);
-          console.log(`PASS ${label}: narration and hidden thinking split runs; failed, all-failed, unreadable, identical and long runs read right`);
-
-          await feed(page, S.narration, 2);
-          await page.evaluate(() => { for (const socket of (window as unknown as { todoSockets: Set<{ send: (text: string) => void; readyState: number }> }).todoSockets) if (socket.readyState === 1) socket.send(JSON.stringify({ type: "role", mode: "observe" })); });
-          await expand(page);
-          assert.equal(await page.locator(".work-narration", { hasText: PROSE }).count(), 1);
-          await shoot(page, config, "observe-readonly", true);
-          await page.evaluate(() => {
-            const view = window as unknown as { todoOffline: boolean; todoSockets: Set<{ close: () => void }> };
-            view.todoOffline = true;
-            for (const socket of view.todoSockets) socket.close();
-          });
-          await page.locator(".conn-live").waitFor({ state: "detached", timeout: 10_000 });
-          assert.equal(await page.locator("[data-todo-group]").count(), 2, "an offline chat keeps the runs");
-          assert.equal(await page.locator(".work-narration", { hasText: PROSE }).count(), 1, "and the narration");
-          await shoot(page, config, "offline", true);
-          console.log(`PASS ${label}: observe-only and offline transcripts keep the run and the narration readable`);
-          assert.deepEqual(errors, []);
-          await page.close();
-
-          const codexPage = await open(context, base, panes.web);
-          await feed(codexPage, S.codexPending, 1);
-          [run] = await groups(codexPage);
-          const codexId = run!.id;
-          if (en) assert.equal(run!.head, "Plan 2 updates · no update completed 2 pending");
-          await feed(codexPage, S.codexDone, 1);
-          await expand(codexPage);
-          [run] = await groups(codexPage);
-          assert.equal(run!.id, codexId, `${label}: the Codex run keeps its identity`);
-          if (en) {
-            assert.equal(run!.head, "Plan 2 updates · 1/3 done, outcome not recorded");
-            assert.equal(run!.caption, "Latest list. The transcript does not record whether this update succeeded.");
-            assert.ok(run!.attempts.every((text) => text.endsWith("outcome not recorded")), JSON.stringify(run!.attempts));
-          }
-          assert.deepEqual(run!.list, STEPS);
-          await shoot(codexPage, config, "codex-no-success");
-          await feed(codexPage, S.codexAfterOk, 1);
-          [run] = await groups(codexPage);
-          if (en) assert.equal(run!.head, "Plan 2 updates · 2/3 done, outcome not recorded", "a completed snapshot after an older ok one claims nothing");
-          await codexPage.close();
-
-          const ompPage = await open(context, base, panes.omp);
-          await feed(ompPage, S.legacy, 1);
-          await expand(ompPage);
-          [run] = await groups(ompPage);
-          assert.equal(run!.id, JSON.stringify([await ompPage.locator(".chat-virtual-row").filter({ has: ompPage.locator("[data-todo-group]") }).getAttribute("data-chat-row"), "#0"]), `${label}: a run without ids is named by its row and first index`);
-          if (en) {
-            assert.equal(run!.head, "Plan 2 updates · 1/3 done, outcome not recorded");
-            assert.ok(!run!.attempts.some((text) => text.includes("succeeded")));
-          }
-          await shoot(ompPage, config, "legacy");
-          await ompPage.close();
-          console.log(`PASS ${label}: Codex pending then omitted state and an agent without the fields never claim success`);
-        } finally { await context.close(); }
+      if (en && config.width === 1440 && config.theme === "light") {
+        const page = await open(context, base, panes.flaky);
+        const served = await page.evaluate(async (ids) => Object.fromEntries(await Promise.all(Object.entries(ids).map(async ([key, id]) => {
+          const body = await (await fetch(`/api/pane/conversation?pane_id=${encodeURIComponent(id)}`)).json() as { turns: { parts: Record<string, unknown>[] }[] };
+          return [key, body.turns.flatMap((turn) => turn.parts).filter((part) => part["kind"] === "tool").map((part) => [part["call_id"] ?? null, "state" in part ? part["state"] : "omitted"])];
+        }))), { api: panes.api, flaky: panes.flaky, web: panes.web, omp: panes.omp });
+        for (const key of ["api", "flaky"]) assert.ok(served[key].length > 0 && served[key].every(([id, state]: [string | null, string]) => typeof id === "string" && id.startsWith("toolu_") && state === "ok"), `${key}: ${JSON.stringify(served[key])}`);
+        assert.ok(served["web"].length > 0 && served["web"].every(([id, state]: [string | null, string]) => typeof id === "string" && id.startsWith("call_") && state === "omitted"), `web: ${JSON.stringify(served["web"])}`);
+        assert.ok(served["omp"].length > 0 && served["omp"].every(([id, state]: [string | null, string]) => id === null && state === "omitted"), `omp: ${JSON.stringify(served["omp"])}`);
+        const head = page.locator(".chat-turn-agent .work-block-head").last();
+        if (await head.getAttribute("aria-expanded") === "false") await head.click();
+        await page.locator("[data-todo-group]").waitFor();
+        const [curated] = await groups(page);
+        assert.match(curated!.head, /^Plan 2 updates · 1\/3 done$/, "a curated Claude run claims its ok list");
+        await page.close();
+        for (const [pane, name] of [[panes.web, "Codex"], [panes.omp, "omp"]] as const) {
+          const other = await open(context, base, pane);
+          const block = other.locator(".chat-turn-agent .work-block-head").first();
+          if (await block.getAttribute("aria-expanded") === "false") await block.click();
+          await other.locator("[data-todo-group]").waitFor();
+          const [run] = await groups(other);
+          assert.match(run!.head, /outcome not recorded/, `a curated ${name} run claims no success: ${run!.head}`);
+          await other.close();
+        }
+        console.log("PASS curated demo chats carry Claude ids and ok, Codex ids alone, omp neither; only Claude's run claims its list");
       }
-    } finally { await browser.close(); }
-  } finally { server.stop(true); }
-  if (evidence !== null) {
-    writeFileSync(join(evidence, "todo-snapshots-shots.json"), `${JSON.stringify(shots, null, 2)}\n`);
-    writeFileSync(join(evidence, "todo-snapshots-measurements.json"), `${JSON.stringify(measurements, null, 2)}\n`);
+
+      const page = await open(context, base, panes.flaky);
+      const errors: string[] = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      await feed(page, S.pending, 1);
+      let [run] = await groups(page);
+      const firstId = run!.id;
+      if (en) assert.equal(run!.head, "Plan 2 updates · no update completed 2 pending", label);
+      await shoot(page, config, "pending");
+      await expand(page);
+      if (en) {
+        [run] = await groups(page);
+        assert.equal(run!.caption, "No update has completed, so there is no current list.");
+        assert.deepEqual(run!.list, [], "no list is invented from pending calls");
+      }
+      await page.locator("[data-todo-group] > .work-row-head").focus();
+      await page.locator("[data-todo-group]").evaluate((node) => { (node as HTMLElement & { mark?: boolean }).mark = true; });
+      await feed(page, S.append, 1);
+      [run] = await groups(page);
+      assert.equal(run!.id, firstId, `${label}: the run keeps its identity through append`);
+      assert.equal(run!.expanded, true, `${label}: the run stays open through append`);
+      assert.equal(await page.locator("[data-todo-group]").evaluate((node) => (node as HTMLElement & { mark?: boolean }).mark === true && document.activeElement === node.querySelector(":scope > .work-row-head")), true, `${label}: same node and focus after append`);
+      if (en) {
+        assert.equal(run!.head, "Plan 3 updates · 1/3 done 1 pending 1 failed");
+        assert.equal(run!.caption, "Current list");
+        assert.deepEqual(run!.list, STEPS);
+        assert.deepEqual(run!.attempts.map((text) => /\b(succeeded|failed|pending|outcome not recorded)\b/.exec(text)?.[1]), ["succeeded", "failed", "pending"]);
+      }
+      await shoot(page, config, "streamed-append");
+      await measure(page, config, "streamed-append");
+      await feed(page, S.append, 1, true);
+      [run] = await groups(page);
+      assert.equal(run!.id, firstId);
+      assert.equal(await page.locator("[data-todo-group]").evaluate((node) => (node as HTMLElement & { mark?: boolean }).mark === true && document.activeElement === node.querySelector(":scope > .work-row-head")), true, `${label}: same node and focus after the poll`);
+      await shoot(page, config, "expanded");
+      await page.locator("[data-todo-group] > .work-row-head").blur();
+      await collapse(page);
+      await shoot(page, config, "collapsed");
+      await measure(page, config, "collapsed");
+      await page.keyboard.press("Shift");
+      await page.locator("[data-todo-group] > .work-row-head").focus();
+      assert.equal(await page.locator("[data-todo-group] > .work-row-head").evaluate((node) => node.matches(":focus-visible")), true, `${label}: keyboard focus is visible`);
+      await shoot(page, config, "focus-visible");
+      await page.locator("[data-todo-group] > .work-row-head").blur();
+      if (!config.phone) {
+        await page.locator("[data-todo-group] > .work-row-head").hover();
+        await shoot(page, config, "hover");
+      }
+      const box = (await page.locator("[data-todo-group] > .work-row-head").boundingBox())!;
+      if (config.phone) assert.ok(box.height >= 44 && box.width >= 44, `${label}: disclosure target ${box.width}x${box.height}`);
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.mouse.down();
+      await shoot(page, config, "pressed");
+      await page.mouse.up();
+      await page.locator("[data-todo-group] .work-todo-attempts").waitFor();
+      await page.mouse.move(0, 0);
+      if (config.phone) {
+        const targets = await page.locator("[data-todo-group] .work-todo-attempts .work-row-head").evaluateAll((nodes) => nodes.map((node) => node.getBoundingClientRect().height));
+        assert.ok(targets.every((height) => height >= 44), `${label}: attempt rows ${JSON.stringify(targets)}`);
+      }
+      await noSidewaysScroll(page, `${label} append`);
+      console.log(`PASS ${label}: Claude pending calls, appended results and a poll keep one open, focused run with its id; ok, failed and pending apart`);
+
+      await feed(page, S.narration, 2);
+      await expand(page);
+      const split = await groups(page);
+      const rowKey = await page.locator(".chat-virtual-row").filter({ has: page.locator("[data-todo-group]") }).getAttribute("data-chat-row");
+      assert.deepEqual(split.map((group) => group.id), [JSON.stringify([rowKey, "toolu_n1"]), JSON.stringify([rowKey, "toolu_n4"])], `${label}: named by the turn row and each run's first call`);
+      run = split[1];
+      assert.equal(await page.locator(".work-narration", { hasText: PROSE }).count(), 1, "the narration stays in the open");
+      assert.equal(await page.locator(".chat-turn-agent .work-block-rows > .work-row:not(.work-row-thinking)").count(), 3, "the first run of two folds, the one alone stays a row, then the last run");
+      if (en) assert.deepEqual(split.map((group) => group.head), ["Plan 2 updates · 1/3 done", "Plan 2 updates · 2/3 done 1 failed"]);
+      await shoot(page, config, "narration-boundary", true);
+      await noSidewaysScroll(page, `${label} narration`);
+
+      await feed(page, S.failed, 1);
+      await expand(page);
+      [run] = await groups(page);
+      if (en) {
+        assert.equal(run!.head, "Plan 3 updates · 1/3 done 1 pending 1 failed");
+        assert.deepEqual(run!.list, STEPS);
+      }
+      assert.equal(run!.failedClipped, false, `${label}: the failure count is never cut`);
+      await shoot(page, config, "failed-latest");
+      await measure(page, config, "failed-latest");
+
+      await feed(page, S.allFailed, 1);
+      await expand(page);
+      [run] = await groups(page);
+      if (en) assert.equal(run!.head, "Plan 2 updates · no update completed 2 failed");
+      assert.deepEqual(run!.list, []);
+      await shoot(page, config, "all-failed");
+
+      await feed(page, S.unreadable, 1);
+      await expand(page);
+      [run] = await groups(page);
+      if (en) {
+        assert.equal(run!.head, "Plan 2 updates · latest list unreadable");
+        assert.equal(run!.caption, "The latest successful update's list can't be read. An earlier list is not shown in its place.");
+      }
+      assert.deepEqual(run!.list, [], "an earlier list never stands in for an unreadable one");
+      await shoot(page, config, "unreadable");
+
+      await feed(page, S.identical, 1);
+      await expand(page);
+      [run] = await groups(page);
+      assert.equal(run!.attempts.length, 2, "identical calls stay two attempts");
+
+      await feed(page, S.long, 1);
+      await expand(page);
+      await noSidewaysScroll(page, `${label} long labels`);
+      await shoot(page, config, "long-labels");
+      await shoot(page, config, "list-end", true);
+      console.log(`PASS ${label}: narration and hidden thinking split runs; failed, all-failed, unreadable, identical and long runs read right`);
+
+      await feed(page, S.narration, 2);
+      await page.evaluate(() => { for (const socket of (window as unknown as { todoSockets: Set<{ send: (text: string) => void; readyState: number }> }).todoSockets) if (socket.readyState === 1) socket.send(JSON.stringify({ type: "role", mode: "observe" })); });
+      await expand(page);
+      assert.equal(await page.locator(".work-narration", { hasText: PROSE }).count(), 1);
+      await shoot(page, config, "observe-readonly", true);
+      await page.evaluate(() => {
+        const view = window as unknown as { todoOffline: boolean; todoSockets: Set<{ close: () => void }> };
+        view.todoOffline = true;
+        for (const socket of view.todoSockets) socket.close();
+      });
+      await page.locator(".conn-live").waitFor({ state: "detached", timeout: 10_000 });
+      assert.equal(await page.locator("[data-todo-group]").count(), 2, "an offline chat keeps the runs");
+      assert.equal(await page.locator(".work-narration", { hasText: PROSE }).count(), 1, "and the narration");
+      await shoot(page, config, "offline", true);
+      console.log(`PASS ${label}: observe-only and offline transcripts keep the run and the narration readable`);
+      assert.deepEqual(errors, []);
+      await page.close();
+
+      const codexPage = await open(context, base, panes.web);
+      await feed(codexPage, S.codexPending, 1);
+      [run] = await groups(codexPage);
+      const codexId = run!.id;
+      if (en) assert.equal(run!.head, "Plan 2 updates · no update completed 2 pending");
+      await feed(codexPage, S.codexDone, 1);
+      await expand(codexPage);
+      [run] = await groups(codexPage);
+      assert.equal(run!.id, codexId, `${label}: the Codex run keeps its identity`);
+      if (en) {
+        assert.equal(run!.head, "Plan 2 updates · 1/3 done, outcome not recorded");
+        assert.equal(run!.caption, "Latest list. The transcript does not record whether this update succeeded.");
+        assert.ok(run!.attempts.every((text) => text.endsWith("outcome not recorded")), JSON.stringify(run!.attempts));
+      }
+      assert.deepEqual(run!.list, STEPS);
+      await shoot(codexPage, config, "codex-no-success");
+      await feed(codexPage, S.codexAfterOk, 1);
+      [run] = await groups(codexPage);
+      if (en) assert.equal(run!.head, "Plan 2 updates · 2/3 done, outcome not recorded", "a completed snapshot after an older ok one claims nothing");
+      await codexPage.close();
+
+      const ompPage = await open(context, base, panes.omp);
+      await feed(ompPage, S.legacy, 1);
+      await expand(ompPage);
+      [run] = await groups(ompPage);
+      assert.equal(run!.id, JSON.stringify([await ompPage.locator(".chat-virtual-row").filter({ has: ompPage.locator("[data-todo-group]") }).getAttribute("data-chat-row"), "#0"]), `${label}: a run without ids is named by its row and first index`);
+      if (en) {
+        assert.equal(run!.head, "Plan 2 updates · 1/3 done, outcome not recorded");
+        assert.ok(!run!.attempts.some((text) => text.includes("succeeded")));
+      }
+      await shoot(ompPage, config, "legacy");
+      await ompPage.close();
+      console.log(`PASS ${label}: Codex pending then omitted state and an agent without the fields never claim success`);
+    } finally { await context.close(); }
   }
-} finally { rmSync(app, { recursive: true, force: true }); }
+});
+if (evidence !== null) {
+  writeFileSync(join(evidence, "todo-snapshots-shots.json"), `${JSON.stringify(shots, null, 2)}\n`);
+  writeFileSync(join(evidence, "todo-snapshots-measurements.json"), `${JSON.stringify(measurements, null, 2)}\n`);
+}

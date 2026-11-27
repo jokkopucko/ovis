@@ -1,8 +1,9 @@
-import type { IBuffer, ILink, ILinkDecorations, ILinkProvider } from "@xterm/xterm";
+import type { ILink, ILinkDecorations, ILinkProvider } from "./terminalSelection/types.ts";
 import { fileUriPath } from "../../shared/fileUri.ts";
 import { terminalPathMatches } from "../../shared/terminal-links.ts";
 import { isWebLink } from "./externalLink.ts";
 import { isCodeName } from "./filePaths.ts";
+import type { ScreenRows } from "./terminalScreen.ts";
 
 const FILE_URI = /file:\/\/\/[^\s<>"`]+/gi;
 const MAX_LINE_CHARS = 8192;
@@ -82,7 +83,7 @@ interface LogicalLine {
   clipped: boolean;
 }
 
-function logicalLine(buffer: IBuffer, lineNumber: number): LogicalLine | null {
+function logicalLine(buffer: ScreenRows, lineNumber: number): LogicalLine | null {
   let first = lineNumber - 1;
   while (first > 0 && buffer.getLine(first)?.isWrapped) first--;
   let text = "";
@@ -106,7 +107,8 @@ function logicalLine(buffer: IBuffer, lineNumber: number): LogicalLine | null {
 
 type FileLink = Omit<ILink, "activate"> & { activate: (event: MouseEvent) => void };
 
-export function terminalFileLinks(buffer: IBuffer, lineNumber: number, open: (path: string, event: MouseEvent) => void, bare?: BareNameLinks): FileLink[] {
+/** `now`: the rows as they are at a click, read again then (a reader's rows can be held as they were when it was made) */
+export function terminalFileLinks(buffer: ScreenRows, lineNumber: number, open: (path: string, event: MouseEvent) => void, bare?: BareNameLinks, now: () => ScreenRows = () => buffer): FileLink[] {
   const line = logicalLine(buffer, lineNumber);
   if (line === null) return [];
   const { text, positions } = line;
@@ -125,9 +127,9 @@ export function terminalFileLinks(buffer: IBuffer, lineNumber: number, open: (pa
       // click, and it opens only if the same whole link is still there (`foo.ts` grown to `foo.tsx` is not)
       activate: (event) => {
         if (keyed && !keyed.pressed(event)) return;
-        const same = terminalFileLinks(buffer, lineNumber, () => {}, bare).some((now) => now.text === shown
-          && now.range.start.x === start.x && now.range.start.y === start.y
-          && now.range.end.x === last.x + last.width - 1 && now.range.end.y === last.y);
+        const same = terminalFileLinks(now(), lineNumber, () => {}, bare).some((found) => found.text === shown
+          && found.range.start.x === start.x && found.range.start.y === start.y
+          && found.range.end.x === last.x + last.width - 1 && found.range.end.y === last.y);
         if (same) open(path, event);
       },
     };
@@ -151,6 +153,14 @@ export function terminalFileLinks(buffer: IBuffer, lineNumber: number, open: (pa
   return links;
 }
 
-export function terminalFileLinkProvider(buffer: () => IBuffer, open: (path: string, event: MouseEvent) => void, bare?: BareNameLinks): ILinkProvider {
-  return { provideLinks: (line, callback) => callback(terminalFileLinks(buffer(), line, open, bare)) };
+export function terminalFileLinkProvider(buffer: () => ScreenRows, open: (path: string, event: MouseEvent) => void, bare?: BareNameLinks): ILinkProvider {
+  // a click reads the rows again (libghostty's are held as they were read), on the screen the link was found on: a
+  // full-screen program that came up between the press and the release does not take the link away
+  const screenOf = (rows: ScreenRows): boolean => ("alternate" in rows ? rows.alternate === true : (rows as { type?: string }).type === "alternate");
+  return {
+    provideLinks: (line, callback) => {
+      const found = buffer();
+      callback(terminalFileLinks(found, line, open, bare, () => { const now = buffer(); return screenOf(now) === screenOf(found) ? now : found; }));
+    },
+  };
 }

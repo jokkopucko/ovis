@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium, webkit, type Page } from "playwright-core";
 import { FOLD_CODE_AFTER_LINES, FOLDED_CODE_LINES } from "../shared/markdown.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 const root = mkdtempSync(join(tmpdir(), "herdr-chat-selection-copy-"));
 const longCode = Array.from({ length: FOLD_CODE_AFTER_LINES + 1 }, (_, index) => `line ${index + 1}`).join("\n");
@@ -49,6 +50,7 @@ try {
     return new Response(Bun.file(join(root, path.slice(1))));
   } });
   try {
+    if (!safari) checkChromeTmpdir();
     const browser = await (safari ? webkit : chromium).launch({ executablePath: safari ? undefined : process.env.CHROME_PATH, headless: true });
     try {
       for (const width of [1440, 390]) {

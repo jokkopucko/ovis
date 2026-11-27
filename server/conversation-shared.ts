@@ -175,3 +175,49 @@ export type ConversationPage = {
   before?: string; since?: string; from?: string; history_id?: string;
   prompts?: number;
 };
+
+/**
+ * Shared in-memory pagination for transcripts projected into a full `ConversationTurn[]`:
+ * builds stable prefix-hash cursors, validates `before`/`since`/`from` against `HistoryChanged`,
+ * optionally slices by trailing user-prompt count, and stamps `version`.
+ */
+export function paginateTurns(options: {
+  source: RecognizedConversation["source"];
+  turns: ConversationTurn[];
+  history: string;
+  metadata: ConversationMetadata;
+  textDigest: string;
+  page?: ConversationPage;
+  defaultWindow?: number;
+  supportsPrompts?: boolean;
+}): RecognizedConversation {
+  const { source, turns, history, metadata, textDigest, page = {}, defaultWindow = 50, supportsPrompts = false } = options;
+  const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+  const cursor = (index: number) => `${history}:${index}:${hash(JSON.stringify(turns.slice(0, index))).slice(0, 16)}`;
+  const parse = (value: string | undefined, fallback: number) => {
+    if (value === undefined) return fallback;
+    const index = Number(value.split(":")[1]);
+    if (!Number.isSafeInteger(index) || index < 0 || index > turns.length || value !== cursor(index)) throw new HistoryChanged();
+    return index;
+  };
+  const end = parse(page.before, turns.length);
+  const since = parse(page.since, 0);
+  let back = Math.max(since, end - defaultWindow);
+  if (supportsPrompts) {
+    const asked = typeof page.prompts === "number" && Number.isFinite(page.prompts) ? Math.min(defaultWindow, Math.max(1, Math.floor(page.prompts))) : null;
+    if (asked !== null) {
+      back = since;
+      for (let index = end - 1, users = 0; index >= since; index--) if (turns[index]!.role === "user" && ++users === asked) { back = index; break; }
+    }
+  }
+  const from = parse(page.from, back);
+  const start = Math.max(since, Math.min(from, end));
+  return {
+    source,
+    turns: turns.slice(start, end),
+    metadata,
+    cursor: start > 0 ? cursor(start) : null,
+    history_id: history,
+    version: answerVersion(history, `${textDigest}\0${start}\0${end}`),
+  };
+}

@@ -1,6 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, type Dispatch, type RefObject, type SetStateAction } from "react";
-import type { Terminal } from "@xterm/xterm";
-import type { FitAddon } from "@xterm/addon-fit";
+import type { GhosttyFit, GhosttyTerminal } from "./ghostty/terminal.ts";
 import type { HerdrSocket } from "./ws.ts";
 import { EMPTY_DRAFT, holdBefore, restoreDraft, type InputDraft } from "./draft.ts";
 import { paneStorageId } from "../../shared/machines.ts";
@@ -23,7 +22,7 @@ export interface PaneAttachDeps {
   fontSettledRef: RefObject<FontSettled>;
   draftPaneRef: RefObject<string | null>;
   findOpenRef: RefObject<boolean>;
-  fitRef: RefObject<FitAddon | null>;
+  fitRef: RefObject<GhosttyFit | null>;
   fittedRef: RefObject<() => void>;
   fixedGridRef: RefObject<boolean>;
   frameGateRef: RefObject<{ reset: () => void }>;
@@ -57,7 +56,7 @@ export interface PaneAttachDeps {
   socketRef: RefObject<HerdrSocket | null>;
   stalledRef: RefObject<boolean>;
   terminalId: string | null;
-  termRef: RefObject<Terminal | null>;
+  termRef: RefObject<GhosttyTerminal | null>;
   chatViewRef: RefObject<boolean>;
   cancelLeaveRef: RefObject<() => void>;
   cachedRef: RefObject<boolean>;
@@ -140,7 +139,7 @@ export function usePaneAttach(deps: PaneAttachDeps): void {
       }
       const away = !inUse();
       typeAheadRef.current(paneId);
-      socket.attach(paneId, term.cols, term.rows, chatViewRef.current || away || !shownRef.current || followRef.current || coveredRef.current || held);
+      socket.attach(paneId, term.cols, term.rows, chatViewRef.current || away || !shownRef.current || followRef.current || coveredRef.current || held, true);
       // no blur or hidden comes for a tab already out of use: it lets go of this pane after a moment too
       if (away) leaveRef.current();
       // the chat lens covers the grid and its composer takes the keyboard: focusing the hidden

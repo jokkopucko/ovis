@@ -336,6 +336,170 @@
   white-space: nowrap;
 }
 
+.markdown-style-art {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--space-1);
+  aspect-ratio: 16 / 10;
+  padding: var(--space-1-5) var(--space-2);
+  overflow: hidden;
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+}
+
+.markdown-style-art-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-px-3);
+}
+
+.markdown-style-art-h {
+  display: block;
+  width: 58%;
+  height: var(--space-1);
+  border-radius: var(--radius-pill);
+  background: var(--text-strong);
+}
+
+.markdown-style-art-rule {
+  display: block;
+  width: 100%;
+  height: var(--hairline);
+  background: transparent;
+}
+
+.markdown-style-art-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.markdown-style-art-text {
+  display: block;
+  flex: 1 1 auto;
+  height: var(--space-px-3);
+  border-radius: var(--radius-pill);
+  background: var(--text-dim);
+  opacity: 0.7;
+}
+
+.markdown-style-art-em {
+  display: block;
+  width: 24%;
+  height: var(--space-px-3);
+  border-radius: var(--radius-pill);
+  background: var(--text-dim);
+  opacity: 0.7;
+}
+
+.markdown-style-art-code {
+  display: block;
+  width: 30%;
+  height: calc(var(--space-1-5) + var(--hairline));
+  border: var(--hairline) solid transparent;
+  border-radius: calc(var(--radius-sm) / 2);
+  background: var(--bg-elevated);
+  position: relative;
+}
+
+.markdown-style-art-code::after {
+  content: "";
+  position: absolute;
+  inset: var(--space-half) var(--space-half);
+  border-radius: var(--radius-pill);
+  background: var(--text-strong);
+}
+
+.markdown-style-art-quote {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-half) var(--space-1);
+  border-left: var(--space-half) solid var(--border-strong);
+  border-radius: 0 calc(var(--radius-sm) / 2) calc(var(--radius-sm) / 2) 0;
+}
+
+.markdown-style-art-dot {
+  display: block;
+  flex: none;
+  width: var(--space-1);
+  height: var(--space-1);
+  border-radius: var(--radius-pill);
+  background: var(--text-dim);
+}
+
+.markdown-style-art-quote .markdown-style-art-text {
+  width: 65%;
+  flex: 0 1 65%;
+}
+
+.markdown-style-art.is-editorial .markdown-style-art-rule {
+  background: color-mix(in srgb, var(--border-strong) 65%, transparent);
+}
+
+.markdown-style-art.is-editorial .markdown-style-art-code {
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+  border-color: color-mix(in srgb, var(--accent) 26%, var(--border));
+}
+
+.markdown-style-art.is-editorial .markdown-style-art-code::after {
+  background: color-mix(in srgb, var(--syntax-function) 35%, var(--text-strong));
+}
+
+.markdown-style-art.is-editorial .markdown-style-art-quote {
+  border-left-color: color-mix(in srgb, var(--accent) 65%, var(--border-strong));
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+.markdown-style-art.is-editorial .markdown-style-art-dot {
+  background: color-mix(in srgb, var(--accent) 65%, var(--text-dim));
+}
+
+.markdown-style-art.is-tinted .markdown-style-art-h {
+  background: color-mix(in srgb, var(--syntax-function) 48%, var(--text-strong));
+}
+
+.markdown-style-art.is-tinted .markdown-style-art-code {
+  background: color-mix(in srgb, var(--syntax-keyword) 10%, var(--bg));
+  border-color: color-mix(in srgb, var(--syntax-keyword) 24%, var(--border));
+}
+
+.markdown-style-art.is-tinted .markdown-style-art-code::after {
+  background: color-mix(in srgb, var(--syntax-keyword) 45%, var(--text-strong));
+}
+
+.markdown-style-art.is-tinted .markdown-style-art-quote {
+  border-left-color: color-mix(in srgb, var(--syntax-type) 65%, var(--border-strong));
+  background: color-mix(in srgb, var(--syntax-type) 7%, transparent);
+}
+
+.markdown-style-art.is-tinted .markdown-style-art-dot {
+  background: color-mix(in srgb, var(--syntax-function) 60%, var(--text-dim));
+}
+
+.markdown-style-art.is-colorful .markdown-style-art-h {
+  background: color-mix(in srgb, var(--syntax-function) 75%, var(--text-strong));
+}
+
+.markdown-style-art.is-colorful .markdown-style-art-em {
+  background: color-mix(in srgb, var(--syntax-meta) 75%, var(--text-strong));
+  opacity: 1;
+}
+
+.markdown-style-art.is-colorful .markdown-style-art-code::after {
+  background: color-mix(in srgb, var(--syntax-keyword) 75%, var(--text-strong));
+}
+
+.markdown-style-art.is-colorful .markdown-style-art-quote {
+  border-left-color: color-mix(in srgb, var(--syntax-type) 75%, var(--text-strong));
+}
+
+.markdown-style-art.is-colorful .markdown-style-art-dot {
+  background: color-mix(in srgb, var(--syntax-function) 75%, var(--text-strong));
+}
+
 .settings-card > .settings-item.theme-strip {
   border-top: 0;
   padding-top: 0;

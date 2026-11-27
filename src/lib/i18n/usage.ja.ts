@@ -61,6 +61,11 @@ export const USAGE_JA: Record<string, string> = {
   "Sign in again to {name}": "{name} にもう一度サインイン",
   "{name} asked to slow down. These are the last numbers.": "{name} からリクエストの制限を受けました。最後に取得した値です。",
   "{name} could not be reached.": "{name} に接続できませんでした。",
+  "{name} is busy or down. Try again later.": "{name} が混雑しているか停止しています。しばらくしてからもう一度お試しください。",
+  "{name} took too long to answer.": "{name} からの応答がタイムアウトしました。",
+  "{name} sent an answer Ovis cannot read.": "{name} から Ovis が読み取れない応答が返りました。",
+  "This PC could not connect to {name}.": "この PC から {name} に接続できませんでした。",
+  "Hub could not read this account.": "ハブがこのアカウントを読み取れませんでした。",
   "The server cannot open the keychain holding this sign-in.": "このサインイン情報を保存したキーチェーンをサーバーが開けません。",
   "Read from Claude's status line instead": "代わりに Claude のステータスラインから読む",
   "Could not change Claude's status line": "Claude のステータスラインを変更できませんでした",
@@ -99,4 +104,5 @@ export const USAGE_JA: Record<string, string> = {
   "Recorded by {tool}": "{tool} の記録",
   "Recorded by {tool}, {when}": "{tool} の記録、{when}",
   "It may have changed since.": "その後変わった可能性があります。",
+  "Open terminal": "ターミナルを開く",
 };

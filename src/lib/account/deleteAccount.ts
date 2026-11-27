@@ -4,22 +4,41 @@
  * Nothing is revoked on a PC: its own device list decides who gets in (rule 1), so every pairing,
  * this device's included, stays until it is revoked on that PC, as one made by QR code stays.
  */
-import { sameSignIn, type AccountService } from "./service.ts";
+import { AccountService, sameSignIn } from "./service.ts";
 import type { AccountSession, AccountStore } from "./store.ts";
 
 /**
  * `session` is the sign-in the person deleted from, read when they asked: only that account is
  * deleted, and a sign-in made meanwhile is neither deleted nor forgotten (SignedOutError).
  */
-export async function deleteAccount(options: { service: AccountService; accountStore: AccountStore; session: AccountSession }): Promise<void> {
+export async function deleteAccount(options: {
+  service: AccountService; accountStore: AccountStore; session: AccountSession;
+  /**
+   * Whether another account's saved list still holds this account key as this device's (one key serves every account
+   * of this device): the key and the encryption key then stay, and only the deleted account's sign-in goes.
+   */
+  keeps?: (key: string) => Promise<boolean>;
+}): Promise<void> {
   await options.service.forSignIn(options.session).deleteAccount();
+  // a look that fails keeps the key: a key another account's list may hold is never cleared on a guess, and the
+  // deletion the service confirmed is finished here all the same (only this sign-in and its unsent blocks go)
+  const key = await options.accountStore.key().then((held) => held.public_spki, () => null);
+  if (key === null || await (options.keeps?.(key) ?? Promise.resolve(false)).catch(() => true)) {
+    await options.accountStore.update("session", (current) => current !== undefined && sameSignIn(current, options.session) ? undefined : current);
+    await options.accountStore.update("unsent_blocks", (current) => {
+      if (current === undefined) return undefined;
+      const kept = Object.fromEntries(Object.entries(current).filter(([, entry]) => entry.account !== options.session.account));
+      return Object.keys(kept).length === 0 ? undefined : kept;
+    });
+    return;
+  }
   // the sign-in, the key and the records were the deleted account's: a later sign-in gets a new key (a kept pairing
   // holds its own copy). A sign-in that took its place while the delete was out keeps all of it, the session included,
   // and a sign-in another tab began (its `pending` state) is no account's: it stays to finish.
   // No sign-in stored at all is the deleted one ended meanwhile (another tab's request refused once the account was gone):
   // its key and records are still the deleted account's, so they go too. Another account's unsent blocks stay (S32-1).
   await options.accountStore.clear(undefined, {
-    only: (current) => current === undefined || sameSignIn(current, options.session), spare: ["pending"],
+    only: (current) => current === undefined || sameSignIn(current, options.session), spare: ["pending", "generation"],
     unsent: (entry) => entry.account !== options.session.account,
   });
   // the deleted account's unsent blocks go even when a sign-in took its place meanwhile: no sign-in can send them now
@@ -36,7 +55,14 @@ export async function deleteAccount(options: { service: AccountService; accountS
  * made meanwhile.
  */
 export function holdingSessionStore(store: AccountStore): AccountStore {
-  return { ...store, set: (async (name, value) => { if (name !== "session") await store.set(name, value as never); }) as AccountStore["set"] };
+  return {
+    ...store,
+    set: (name, value) => name === "session" ? Promise.resolve() : store.set(name, value),
+    updateMany: (names, change) => store.updateMany(names, (current) => {
+      const next = change(current);
+      return { ...next, session: "session" in current ? current.session : undefined };
+    }),
+  };
 }
 
 /**
@@ -44,11 +70,5 @@ export function holdingSessionStore(store: AccountStore): AccountStore {
  * delete it is for has not been called off), both asked inside that update; whether it did.
  */
 export async function installSignInAgain(store: AccountStore, from: AccountSession, again: AccountSession, stillOn: () => boolean): Promise<boolean> {
-  let installed = false;
-  await store.update("session", (current) => {
-    if (!stillOn() || current === undefined || !sameSignIn(current, from)) return current;
-    installed = true;
-    return again;
-  });
-  return installed;
+  return AccountService.storeSignIn(store, again, { wanted: (current) => stillOn() && current !== undefined && sameSignIn(current, from) });
 }

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { act, createElement } from "react";
-import { create, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import type { Machine } from "../../shared/machines.ts";
 import type { PaneInfo, SessionSnapshot, WorkspaceInfo } from "../../shared/protocol.ts";
@@ -34,44 +34,38 @@ const actionsOf = (offer: LayoutOffer, own: Partial<AppActions> = {}) => new Pro
 const LAYOUT_ROWS = ["Rename tab", "Split pane right", "Split pane down", "Split pane right and open it", "Split pane down and open it", "Zoom pane"];
 
 describe("the command palette on a PC the Herdr app lays out", () => {
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  const stored = new Map<string, string>();
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
+  let htmlElement: PropertyDescriptor | undefined;
   let phone = false;
 
   beforeEach(() => {
-    for (const key of ["window", "document", "navigator", "getComputedStyle", "localStorage", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    stored.clear();
-    const storage = { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => { stored.set(key, value); }, removeItem: (key: string) => { stored.delete(key); } };
-    const events = new EventTarget();
+    page = openPage("http://localhost:7317/");
     phone = false;
-    const media = (query: string) => ({ get matches() { return phone && query.includes("max-height"); }, addEventListener() {}, removeEventListener() {} });
-    const define = (key: string, value: unknown) => Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
-    define("IS_REACT_ACT_ENVIRONMENT", true);
-    define("HTMLElement", class HTMLElement {});
-    define("localStorage", storage);
-    define("navigator", { languages: ["en-US"], platform: "Linux" });
-    define("window", { localStorage: storage, matchMedia: media, location: { protocol: "http:", hostname: "localhost", origin: "http://localhost:7317" }, innerWidth: 1280, innerHeight: 800, history: { state: null, pushState() {}, replaceState() {}, back() {} }, addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), requestAnimationFrame: () => 1, cancelAnimationFrame() {}, setTimeout, clearTimeout });
-    define("document", { visibilityState: "visible", activeElement: null, documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } }, querySelector: () => null, querySelectorAll: () => [], addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events) });
-    define("getComputedStyle", () => ({ getPropertyValue: () => "" }));
+    Object.defineProperty(page.window, "matchMedia", { configurable: true, value: (query: string) => ({ get matches() { return phone && query.includes("max-height"); }, addEventListener() {}, removeEventListener() {} }) });
+    htmlElement = Object.getOwnPropertyDescriptor(globalThis, "HTMLElement");
+    Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: page.window.HTMLElement });
   });
 
   afterEach(async () => {
-    await act(async () => renderer?.unmount());
-    renderer = undefined;
-    for (const [key, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
+    await page.close();
+    if (htmlElement) Object.defineProperty(globalThis, "HTMLElement", htmlElement);
+    else Reflect.deleteProperty(globalThis, "HTMLElement");
   });
 
+  const listed = (): string[] => [...page.container.querySelectorAll('[class="menu-item-main"]')]
+    .filter((node) => node.childNodes.length === 1 && node.firstChild?.nodeType === 3).map((node) => node.textContent ?? "");
+
+  function addDialog(): void {
+    const dialog = page.window.document.createElement("section");
+    dialog.setAttribute("aria-modal", "true");
+    page.window.document.body.append(dialog);
+  }
+
   async function rows(offer: LayoutOffer, selectedPaneId: string, initialQuery: string, actions = actionsOf(offer), shown = snapshot, online = false, inboxMode = false): Promise<string[]> {
-    await act(async () => { renderer?.unmount(); });
-    await act(async () => {
-      renderer = create(createElement(SettingsProvider, null, createElement(AppLayoutContext.Provider, { value: offer },
-        createElement(CommandPalette, { open: true, initialQuery, onClose: () => {}, machines, onSelect: () => {}, snapshot: shown, online, selectedPaneId, view: "chat", actions, inboxMode }))));
-    });
-    return renderer!.root.findAll((node) => node.props.className === "menu-item-main" && typeof node.props.children === "string").map((node) => node.props.children as string);
+    await page.render(null);
+    await page.render(createElement(SettingsProvider, null, createElement(AppLayoutContext.Provider, { value: offer },
+      createElement(CommandPalette, { open: true, initialQuery, onClose: () => {}, machines, onSelect: () => {}, snapshot: shown, online, selectedPaneId, view: "chat", actions, inboxMode }))));
+    return listed();
   }
 
   it("lists a TUI PC's rename, split, zoom and move rows", async () => {
@@ -82,13 +76,13 @@ describe("the command palette on a PC the Herdr app lays out", () => {
 
   it("keeps the footer's path line when a settings action replaces a pane under the pointer", async () => {
     await rows(TUI, "p1", "theme");
-    const path = () => renderer!.root.findByProps({ className: "palette-footer-path" });
-    expect(path().children).toEqual([]);
-    const settings = renderer!.root.findByProps({ "data-section": "settings-pages" });
-    const first = settings.findAllByProps({ role: "option" })[0]!;
-    await act(async () => first.props.onMouseMove());
-    expect(path().children).toEqual([]);
-    expect(renderer!.root.findByProps({ className: "palette-footer-place" }).children).toEqual(["Appearance"]);
+    const path = () => page.one(".palette-footer-path");
+    expect([...path().childNodes]).toEqual([]);
+    const first = page.window.document.querySelector('[data-section="settings-pages"] [role="option"]');
+    if (!first) throw new Error("No settings option");
+    await act(async () => { first.dispatchEvent(new page.window.MouseEvent("mousemove", { bubbles: true })); });
+    expect([...path().childNodes]).toEqual([]);
+    expect([...page.one(".palette-footer-place").childNodes].map((node) => node.nodeType === 3 ? node.textContent : node)).toEqual(["Appearance"]);
   });
 
   it("lists Close pane where App offers it, and not when opened over another dialog, where it would close the pane under it", async () => {
@@ -96,7 +90,7 @@ describe("the command palette on a PC the Herdr app lays out", () => {
     const closing = actionsOf(TUI, { closePane: () => { closes += 1; } });
     expect(await rows(TUI, "p1", ">close pane", closing)).toEqual(["Close pane"]);
     expect(await rows(TUI, "p1", ">close pane", actionsOf(TUI, { closePane: null }))).toEqual([]);
-    (document as unknown as { querySelectorAll: () => unknown[] }).querySelectorAll = () => [{}];
+    addDialog();
     expect(await rows(TUI, "p1", ">close pane", closing)).toEqual([]);
     expect(closes).toBe(0);
   });
@@ -105,7 +99,7 @@ describe("the command palette on a PC the Herdr app lays out", () => {
     const closing = actionsOf(TUI, { closeTab: () => {} });
     expect(await rows(TUI, "p1", ">close tab", closing)).toEqual(["Close tab"]);
     expect(await rows(TUI, "p1", ">close tab")).toEqual([]);
-    (document as unknown as { querySelectorAll: () => unknown[] }).querySelectorAll = () => [{}];
+    addDialog();
     expect(await rows(TUI, "p1", ">close tab", closing)).toEqual([]);
   });
 
@@ -136,12 +130,12 @@ describe("the command palette on a PC the Herdr app lays out", () => {
     expect(await rows(TUI, "p1", ">inbox")).toEqual([]);
     const into = actionsOf(TUI, { inboxMode: { on: false, go: () => { went.push("in"); } } });
     expect(await rows(TUI, "p1", ">open agent inbox", into)).toEqual(["Open agent inbox"]);
-    await act(async () => renderer!.root.find((node) => node.props.id === "palette-item-0").props.onClick());
+    await act(async () => page.one("#palette-item-0").click());
     const out = actionsOf(TUI, { inboxMode: { on: true, go: () => { went.push("out"); } } });
     expect(await rows(TUI, "p1", ">back to ovis", out, snapshot, false, true)).toEqual(["Back to Ovis"]);
-    const glyphs = renderer!.root.find((node) => node.props.id === "palette-item-0").findAll((node) => node.type === "img");
-    expect(glyphs.map((node) => node.props.className)).toEqual(["ovis-mark"]);
-    await act(async () => renderer!.root.find((node) => node.props.id === "palette-item-0").props.onClick());
+    const glyphs = [...page.container.querySelectorAll("#palette-item-0 img")];
+    expect(glyphs.map((node) => node.className)).toEqual(["ovis-mark"]);
+    await act(async () => page.one("#palette-item-0").click());
     expect(went).toEqual(["in", "out"]);
   });
 
@@ -157,7 +151,7 @@ describe("the command palette on a PC the Herdr app lays out", () => {
     expect(await rows(TUI, "p1", ">", pages)).toContain("Open a page on this PC…");
     const listed = await rows(TUI, "p1", "localhost:8448/#/repository", pages);
     expect(listed[0]).toBe("Open localhost:8448/#/repository");
-    await act(async () => renderer!.root.find((node) => node.props.id === "palette-item-0").props.onClick());
+    await act(async () => page.one("#palette-item-0").click());
     expect(opened).toEqual(["http://localhost:8448/#/repository"]);
     expect(await rows(TUI, "p1", "localhost:7317", pages)).not.toContain("Open localhost:7317");
     expect(await rows(TUI, "p1", "localhost:8448")).not.toContain("Open localhost:8448");
@@ -201,7 +195,6 @@ describe("the command palette on a PC the Herdr app lays out", () => {
       const worktreeRows = ["New worktree", "Open worktree…"];
       await rows(TUI, "p1", ">", undefined, snapshot, true);
       await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
-      const listed = () => renderer!.root.findAll((node) => node.props.className === "menu-item-main" && typeof node.props.children === "string").map((node) => node.props.children as string);
       expect(listed().filter((row) => worktreeRows.includes(row))).toEqual(worktreeRows);
       expect((await rows(TUI, "p3", ">", undefined, snapshot, true)).filter((row) => worktreeRows.includes(row))).toEqual([]);
     } finally {

@@ -11,7 +11,7 @@ import { hostname, networkInterfaces } from "node:os";
 import { importPublicKey, importSecretKey } from "../shared/relay-e2ee.ts";
 import { answerServerChallenge } from "../shared/relay-server-proof.ts";
 import type { RelayIdentity } from "./relay/identity.ts";
-import { DirectCarrierUnusableError, openRelayChannel, openRelayChannelWithFallback, orderDirectRoutes, probeDirect, UnsafeRelayDestinationError } from "../shared/relay-channel.ts";
+import { DirectCarrierUnusableError, openRelayChannel, openRelayChannelWithFallback, orderDirectRoutes, probeDirect, RelayPcOfflineError, UnsafeRelayDestinationError } from "../shared/relay-channel.ts";
 import type { RelayChannelOptions } from "../shared/relay-channel.ts";
 import type { RelayChannel, RelaySocket } from "../shared/relay-channel.ts";
 import { base64url, ServerIdentityChangedError } from "../shared/relay-device.ts";
@@ -565,8 +565,14 @@ function vouchedPairing(pairing: { identity: RelayIdentity; waiting(): void; sig
   };
 }
 
-/** What another PC of the account answers when asked to pair with this one: nothing is sent to pair, and nothing counted there. */
-export type VouchedSupport = "ready" | "outdated" | "offline";
+/**
+ * What another PC of the account answers when asked to pair with this one: nothing is sent to pair, and nothing counted
+ * there. `offline`: the relay took the connection and nothing answered within the wait (RelayPcOfflineError, this side's
+ * own timer). The relay says nothing of the PC, so a PC that is off, not on that relay, or busy all look so: it is shown
+ * as one that cannot be reached and may be off, never as one known to be off. `unreachable`: anything else that kept the
+ * answer away (the relay unreachable from here or turning this PC away, a PC that began and did not finish).
+ */
+export type VouchedSupport = "ready" | "outdated" | "offline" | "unreachable";
 
 /**
  * Whether `offer`'s PC would take a pairing from this one through the account (PAIR_INTENT_VOUCHED): the channel is
@@ -586,7 +592,7 @@ export async function vouchedSupport(offer: RelayOffer, options: { socket?: (url
   } catch (error) {
     if (error instanceof Answered) return error.ready ? "ready" : "outdated";
     if (error instanceof MuxProtocolError && (error.code === "unsupported_version" || error.code === "unsupported_extension")) return "outdated";
-    return "offline";
+    return error instanceof RelayPcOfflineError ? "offline" : "unreachable";
   }
 }
 

@@ -10,7 +10,7 @@ import { shownRow } from "./shown-rows.ts";
 export async function checkTerminalCopy(browser: Browser, origin: string): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "herdr-copy-ui-"));
   const prompt = "copy-fixture$ ";
-  const created = await workspaceCreate({ cwd: root, label: "ovis-test-copy-ui", env: { PS1: prompt } });
+  const created = await workspaceCreate({ cwd: root, label: "ovis-test-copy-ui" });
   const pane = created.root_pane.pane_id;
   const script = join(root, "show.cjs");
   writeFileSync(script, `
@@ -22,6 +22,10 @@ setInterval(() => {}, 1000);
 `);
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   try {
+    // Set in the shell, not the pane's env: where /bin/sh is bash (Arch, Fedora), the test shell's #!/bin/sh
+    // wrapper runs non-interactive and drops PS1 before bash starts. The split quotes keep the typed
+    // line itself from matching the prompt.
+    await paneSendText(pane, `PS1='copy-fixture''$ '; clear\r`);
     await context.addInitScript((id) => {
       localStorage.setItem(`ovis:view:${id}`, "terminal");
       // WebKit requires the write to start in the gesture, even when its text is

@@ -26,7 +26,7 @@ test("CI runs both crates' unit tests, and the release build runs the script tha
   for (const crate of ["pty-sidecar", "acp-keeper"]) expect(runs).toContain(`cargo test --locked --manifest-path crates/${crate}/Cargo.toml`);
   const jobs = workflow("ci.yml").jobs;
   const keeper = jobs["rust-pty-host"]!.steps!;
-  const acp = keeper.findIndex((step) => step.run === "bun test server/acp server/approvals/acp.test.ts server/core/acp-composer.test.ts");
+  const acp = keeper.findIndex((step) => step.run === "bun test ./server/acp ./server/agent-tools/turns.test.ts ./server/agent-tools/child.contract.test.ts ./server/agent-tools/pane.test.ts ./server/agent-tools/stop.contract.test.ts ./server/approvals/acp.test.ts ./server/core/acp-composer.test.ts");
   expect(keeper[acp]?.env?.["OVIS_REQUIRE_ACP_KEEPER"]).toBe("1");
   expect(runs.slice(0, acp)).toContain("cargo build --release --locked --manifest-path crates/acp-keeper/Cargo.toml --examples --bins");
   const live = jobs["herdr-core-live"]!.steps!;

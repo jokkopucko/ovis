@@ -1,19 +1,25 @@
 /**
  * Claude Code's adapter to the approval hub (server/approvals/hub.ts): its approvals of a shell command, a file it
- * writes or edits, a page it fetches and an MCP tool through its own PermissionRequest hook, and its turns through its
- * UserPromptSubmit and Stop hooks. The hooks go in a `--settings` file (0600, in the hub's folder), never the user's
- * settings.
+ * writes or edits, a page it fetches and an MCP tool through its own PermissionRequest hook, its turns through its
+ * UserPromptSubmit and Stop hooks, and the commands it ran through its PostCompact, SessionStart and UserPromptExpansion
+ * hooks. The hooks go in a `--settings` file (0600, in the hub's folder), never the user's
+ * settings, with the status line that hands Ovis Claude's context window (statusLineOf).
  * Measured on Claude Code 2.1.330:
  * - the terminal draws its own dialog while the hook waits, and whichever answers first wins;
  * - answered in the terminal, the hook's request stays open and a later answer to it is ignored, so a request the
  *   screen no longer shows is released (answered with no decision);
  * - a hook that ends with no decision leaves the terminal's dialog as it is, at once.
  * So every card still has its keys: the hook is only how a Yes or No goes when it holds the very request on screen.
+ * A question Claude asks (AskUserQuestion) comes through the same hook, also while its dialog is drawn, and is answered
+ * the same way: an allow with the request's input and the answer (`answers`, by the question's words), measured on
+ * 2.1.330 for a pick and for words typed. Answered in the terminal first, the hook's later answer is ignored there too.
  */
-import { isAbsolute, relative } from "node:path";
+import { homedir } from "node:os";
+import { isAbsolute, join, relative } from "node:path";
 
 import { meetsMinVersion } from "../../shared/agent-catalog.ts";
 import { settingsFile } from "../claude-settings-file.ts";
+import { configuredStatusLine, shellQuote, type SettingSource } from "../statusline-install.ts";
 import type { ApprovalAdapter, ApprovalDecision, ApprovalRequest } from "./hub.ts";
 
 /**
@@ -27,7 +33,45 @@ export const CLAUDE_HOOK_MIN_VERSION = "2.1.286";
  * posts a Monitor command as a Bash call, whose allow it then ignores (its hooks reference, 2.1.314 on); matched by name
  * it comes as itself, and is left to the terminal (toCard).
  */
-const MATCHER = "^(?:Bash|Monitor|Edit|Write|WebFetch|mcp__.+)$";
+const MATCHER = "^(?:Bash|Monitor|Edit|Write|WebFetch|AskUserQuestion|mcp__.+)$";
+
+/**
+ * The hooks that tell a command Claude ran (command), each matched to the case that is one: a SessionStart's matcher is its
+ * source, a PostCompact's its trigger. Every other start, resume and compact runs no hook of Ovis's.
+ */
+const COMMAND_EVENTS: Record<string, string | null> = { PostCompact: "manual", SessionStart: "clear", UserPromptExpansion: null };
+/** Seconds Claude waits on such a hook at most (its default is ten minutes) */
+const TOLD_TIMEOUT_S = 10;
+
+/**
+ * The settings sources a launch's `--setting-sources` lets Claude read (all three without it), so the status line is
+ * looked for only where Claude would look.
+ */
+function settingSources(flags: readonly string[]): SettingSource[] {
+  const at = flags.findIndex((arg) => arg === "--setting-sources" || arg.startsWith("--setting-sources="));
+  if (at < 0) return ["user", "project", "local"];
+  const value = flags[at] === "--setting-sources" ? flags[at + 1] ?? "" : flags[at]!.slice("--setting-sources=".length);
+  return value.split(",").map((source) => source.trim()).filter((source): source is SettingSource => source === "user" || source === "project" || source === "local");
+}
+
+/**
+ * The status line of a Claude Ovis starts in `cwd`, which hands Ovis the payload Claude gives its status line (its
+ * context window, among the rest) and draws the user's own line (`approval-hook --statusline`, server/approvals/
+ * statusline.ts): the one Claude would draw, from the `--settings` the launch had or else the settings files it reads,
+ * with its own members (padding, refreshInterval). Only where the user set one: Claude 2.1.330 drops the `? for
+ * shortcuts` hint from its footer under any status line, even one that prints nothing, and a pane must look as it would
+ * without Ovis. None where the project folder is not known (its settings rank above the user's), nor on Windows, where
+ * the line is not run through `sh`.
+ */
+function statusLineOf(given: unknown, hook: { command: string; args: string[] }, sources: readonly SettingSource[], cwd: string | null): Record<string, unknown> | null {
+  if (process.platform === "win32") return null;
+  const lineOf = (value: unknown): Record<string, unknown> | null => typeof value === "object" && value !== null && !Array.isArray(value)
+    && typeof (value as Record<string, unknown>)["command"] === "string" && ((value as Record<string, unknown>)["command"] as string).trim() !== "" ? value as Record<string, unknown> : null;
+  const line = lineOf(given) ?? (cwd === null ? null : configuredStatusLine(process.env["CLAUDE_CONFIG_DIR"]?.trim() || join(homedir(), ".claude"), cwd, sources, homedir()));
+  if (line === null) return null;
+  const words = [hook.command, ...hook.args, "--statusline", "--statusline-command", Buffer.from(line["command"] as string).toString("base64")];
+  return { ...line, type: "command", command: words.map(shellQuote).join(" ") };
+}
 
 /** Yes allows and No declines; any other option of the dialog goes as its keys. */
 export function permissionDecision(label: string): ApprovalDecision | null {
@@ -43,7 +87,7 @@ export const claudeApprovals: ApprovalAdapter = {
    * An inline JSON `--settings` the launch already has (the dialog's) goes into the hook's file with it; a `--settings`
    * that names a file, or more than one, could not be merged, and gets no hook.
    */
-  launchArgs(args, hook, dir) {
+  launchArgs(args, hook, dir, cwd = null) {
     const given = args ?? [];
     const end = given.indexOf("--");
     const flags = end < 0 ? given : given.slice(0, end);
@@ -72,7 +116,12 @@ export const claudeApprovals: ApprovalAdapter = {
     const relay = [{ type: "command", command: hook.command, args: hook.args }];
     hooks["PermissionRequest"] = [...theirs("PermissionRequest"), { matcher: MATCHER, hooks: relay }];
     for (const event of ["UserPromptSubmit", "Stop"]) hooks[event] = [...theirs(event), { hooks: relay }];
-    const path = settingsFile(JSON.stringify({ ...settings, hooks }), dir);
+    // told only, and never waited on for long: the hub answers them at once
+    const told = [{ ...relay[0]!, timeout: TOLD_TIMEOUT_S }];
+    hooks["StopFailure"] = [...theirs("StopFailure"), { hooks: told }];
+    for (const [event, matcher] of Object.entries(COMMAND_EVENTS)) hooks[event] = [...theirs(event), { ...(matcher ? { matcher } : {}), hooks: told }];
+    const statusLine = statusLineOf(settings["statusLine"], hook, settingSources(flags), cwd);
+    const path = settingsFile(JSON.stringify({ ...settings, hooks, ...(statusLine === null ? {} : { statusLine }) }), dir);
     if (replaced === null) return ["--settings", path, ...given];
     return [...given.slice(0, replaced.from), "--settings", path, ...given.slice(replaced.to)];
   },
@@ -91,24 +140,53 @@ export const claudeApprovals: ApprovalAdapter = {
    * screen's and transcript's.
    */
   turn(event) {
-    const input = event as { hook_event_name?: unknown; prompt_id?: unknown; background_tasks?: unknown; session_crons?: unknown } | null;
+    const input = event as { hook_event_name?: unknown; prompt_id?: unknown; background_tasks?: unknown; session_crons?: unknown; error?: unknown; agent_id?: unknown } | null;
     const name = input?.hook_event_name;
     const prompt = typeof input?.prompt_id === "string" && input.prompt_id !== "" ? input.prompt_id : null;
     if (name === "UserPromptSubmit") return { turn: "began", prompt };
+    // Unlike Stop, StopFailure is a terminal API error and its hook cannot tell Claude to keep working.
+    // Only the main agent's failure ends the pane's turn. The error text stays in the transcript.
+    if (name === "StopFailure") return input?.agent_id === undefined && text(input?.error) !== null ? { turn: "ended", prompt, failed: true } : null;
     if (name !== "Stop") return null;
     const none = (list: unknown) => list === undefined || (Array.isArray(list) && list.length === 0);
     return none(input!.background_tasks) && none(input!.session_crons) ? { turn: "ended", prompt } : null;
   },
 
+  /**
+   * Measured on 2.1.330, where its own commands tell no UserPromptSubmit: a `/compact` the user ran ends with a manual
+   * PostCompact, a `/clear` starts the next session with a SessionStart from `clear`, and a skill or custom command comes
+   * as a UserPromptExpansion that names it. A compact Claude began by itself, and a session it started or resumed, are
+   * no command.
+   */
+  command(event) {
+    const input = event as { hook_event_name?: unknown; trigger?: unknown; source?: unknown; command_name?: unknown; command_args?: unknown } | null;
+    switch (input?.hook_event_name) {
+      case "PostCompact": return input.trigger === "manual" ? { name: "compact", builtin: true } : null;
+      case "SessionStart": return input.source === "clear" ? { name: "clear", builtin: true } : null;
+      case "UserPromptExpansion": return text(input.command_name) === null ? null
+        : { name: input.command_name as string, builtin: false, ...(typeof input.command_args === "string" ? { args: input.command_args } : {}) };
+      default: return null;
+    }
+  },
+
+  /** Every hook of the main agent names its mode and session (2.1.330); a subagent's (`agent_id`) has its own mode. */
+  mode(event) {
+    const input = event as { permission_mode?: unknown; session_id?: unknown; agent_id?: unknown } | null;
+    const mode = text(input?.permission_mode), session = text(input?.session_id);
+    return mode === null || session === null || input?.agent_id !== undefined ? null : { mode, session };
+  },
+
   decision: permissionDecision,
 
-  toAnswer(decision) {
+  toAnswer(decision, answered) {
     if (decision === null) return "{}";
     return JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "PermissionRequest",
-        // No, as the terminal's No: Claude stops and waits for the user
-        decision: decision === "allow" ? { behavior: "allow" } : { behavior: "deny", message: "The user declined this command in Ovis.", interrupt: true },
+        // No, as the terminal's No: Claude stops and waits for the user. A question's answer replaces its input whole,
+        // so it goes with the questions it was asked
+        decision: decision === "deny" ? { behavior: "deny", message: "The user declined this command in Ovis.", interrupt: true }
+          : answered === undefined ? { behavior: "allow" } : { behavior: "allow", updatedInput: { ...answered.input, answers: answered.answers } },
       },
     });
   },
@@ -133,10 +211,26 @@ const marked = (mark: string, value: string): string[] => value === "" ? [] : va
  * The card a tool's request makes, or null for one left to the terminal: a Monitor command, a tool not named here, or a
  * request missing what its card shows. A card shows the whole of what is allowed: a shell command; the file's path and
  * the text written to it whole, or the lines an edit takes out and puts in; the address fetched and what is asked of the
- * page, as the dialog shows them; an MCP tool's name and each of its arguments, as the dialog shows them.
+ * page, as the dialog shows them; an MCP tool's name and each of its arguments, as the dialog shows them. A question:
+ * only one, of one pick, its options' labels whole. The terminal keeps the rest: several questions (a tab each), a
+ * multiple choice (whose picks one answer string cannot tell apart when a label holds ", "), and options with a
+ * preview (which the terminal's answer carries to Claude beside the label, `annotations`).
  */
 function requestOf(name: string, tool: Record<string, unknown>, cwd: string | null): ApprovalRequest | null {
   switch (name) {
+    case "AskUserQuestion": {
+      const questions = tool["questions"];
+      if (!Array.isArray(questions) || questions.length !== 1 || tool["answers"] !== undefined) return null;
+      const asked = questions[0] as { question?: unknown; options?: unknown; multiSelect?: unknown } | null;
+      const question = text(asked?.question);
+      const given = Array.isArray(asked?.options) ? asked.options as ({ label?: unknown; preview?: unknown } | null)[] : [];
+      const options = given.flatMap((option) => {
+        const label = text(option?.label);
+        return label === null || option?.preview !== undefined ? [] : [label];
+      });
+      if (question === null || asked?.multiSelect === true || options.length === 0 || options.length !== given.length) return null;
+      return { command: question, description: null, dialog: "question", input: tool, question: { text: question, options } };
+    }
     case "Bash": {
       const command = text(tool["command"]);
       return command === null ? null : { command, description: text(tool["description"]) };

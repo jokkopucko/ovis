@@ -113,6 +113,64 @@ export function claimsOf(body: unknown): ListClaim[] | null {
   return [...claims.values()];
 }
 
+/** The comparison of numbers under way for a PC's post: who opened it and with what commitment, the PC's nonce once it answered, the adder's once revealed. */
+export interface ListAttempt {
+  readonly adder: string;
+  readonly commitment: string;
+  readonly nonce: string | null;
+  readonly reveal: string | null;
+}
+
+/**
+ * A PC that asks to be added to the list: the keys and the card it posted with a proof of its own relay key, as the
+ * account service shows them. `server_id` is only what the service says: the id that counts is the one `endpoint` gives.
+ */
+export interface ListPost {
+  readonly endpoint: string;
+  readonly server_id: string;
+  readonly key: string;
+  readonly enc: string;
+  readonly card: string;
+  readonly attempt: ListAttempt | null;
+  /**
+   * A PC that joined with an invite's line: the invite's public key, and the line's own signature over this very post
+   * (shared/account-list-invite.ts lineProofBytes). Both or neither; the account service only carries them.
+   */
+  readonly invite?: string;
+  readonly invite_proof?: string;
+}
+
+/** The most posts one answer is read for. */
+const LIST_POSTS_MAX = 64;
+const NONCE = /^[A-Za-z0-9_-]{43}$/;
+
+/** The attempt an answer carries, null for none; undefined for one out of form. */
+export function attemptOf(value: unknown): ListAttempt | null | undefined {
+  if (value === null || value === undefined) return null;
+  if (!isRecord(value) || typeof value.adder !== "string" || !isListKeyEncoding(value.adder) || typeof value.commitment !== "string" || !NONCE.test(value.commitment)) return undefined;
+  const part = (text: unknown): string | null | undefined => text === null || text === undefined ? null : typeof text === "string" && NONCE.test(text) ? text : undefined;
+  const [nonce, reveal] = [part(value.nonce), part(value.reveal)];
+  return nonce === undefined || reveal === undefined ? undefined : { adder: value.adder, commitment: value.commitment, nonce, reveal };
+}
+
+/** The posts an answer holds, each relay key once; null for an answer out of form. */
+export function postsOf(body: unknown): ListPost[] | null {
+  if (!isRecord(body) || !Array.isArray(body.posts) || body.posts.length > LIST_POSTS_MAX) return null;
+  const posts = new Map<string, ListPost>();
+  for (const post of body.posts as readonly unknown[]) {
+    if (!isRecord(post) || typeof post.endpoint !== "string" || !isListHash(post.endpoint) || typeof post.server_id !== "string" || !/^[0-9a-f]{32}$/.test(post.server_id)
+      || typeof post.key !== "string" || !isListKeyEncoding(post.key) || typeof post.enc !== "string" || !isListKeyEncoding(post.enc)
+      || typeof post.card !== "string" || post.card.length !== CARD_CHARS || posts.has(post.endpoint)) return null;
+    const attempt = attemptOf(post.attempt);
+    if (attempt === undefined) return null;
+    // an invite and its proof, both in their form, or neither is taken: the post is then one of a PC that only asks
+    const invited = typeof post.invite === "string" && isListKeyEncoding(post.invite) && typeof post.invite_proof === "string" && /^[A-Za-z0-9_-]{86}$/.test(post.invite_proof)
+      ? { invite: post.invite, invite_proof: post.invite_proof } : {};
+    posts.set(post.endpoint, { endpoint: post.endpoint, server_id: post.server_id, key: post.key, enc: post.enc, card: post.card, attempt, ...invited });
+  }
+  return [...posts.values()];
+}
+
 /** An epoch key wrapped to one member, as a placement carries it. */
 export interface PlacedWrap {
   readonly epoch: number;

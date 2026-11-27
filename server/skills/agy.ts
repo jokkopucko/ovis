@@ -66,6 +66,7 @@ const aliasForms = Object.fromEntries(
 
 export const source: AgentCommandSource = {
   builtins: Object.keys(descriptions),
+  chatPaletteHidden: ["plan", "planning"],
   descriptions,
   // the recorded 1.4.0 palette the builtin list and descriptions were checked against
   pin: "1.4.0",

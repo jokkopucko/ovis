@@ -17,7 +17,7 @@
  * moves it into place in one rename. A checkout whose crate sources no release was built from (a beta
  * build of main, .github/workflows/beta.yml) takes the host of the `pty-sidecar-<host tree>-<keeper tree>` prerelease
  * the beta workflow publishes for those sources instead, checked the same way. Without one, it says
- * why and exits 0: the server then runs the Node sidecar where the PC has Node, or mirrors its panes, and runs no ACP keeper. `--strict` exits 1 instead.
+ * why and exits 0: the server then mirrors herdr's panes and runs no ACP keeper. `--strict` exits 1 instead.
  */
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -42,7 +42,7 @@ export const PLATFORM_ASSET: Record<string, string> = {
 export interface Part { crate: string; name: string; usage: string; label: string; without: string }
 export const PTY_HOST: Part = {
   crate: "crates/pty-sidecar", name: "ovis-pty-sidecar", usage: "pty-sidecar: usage:", label: "Rust PTY host",
-  without: "terminals use the Node PTY sidecar where this PC has Node, or are mirrored",
+  without: "herdr's terminals are mirrored until a host runs here: build one with cargo build --release --manifest-path crates/pty-sidecar/Cargo.toml (a checkout of main whose crates/pty-sidecar no release was built from gets one from the next daily beta's prerelease), or set OVIS_PTY_SIDECAR_BIN to a built one",
 };
 export const ACP_KEEPER: Part = {
   crate: "crates/acp-keeper", name: "ovis-acp-keeper", usage: "Usage: ovis-acp-keeper ", label: "ACP keeper",

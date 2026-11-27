@@ -9,8 +9,13 @@ import { relayFailureText } from "../../components/relayFailureText.ts";
 import { memoryAccountStore } from "../account/store.ts";
 import { translate, type Vars } from "../i18n.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
+import type { AccountList, AccountListView, ListWriter } from "../account/accountList.ts";
 import type { RelayDevice, ShellDeviceStore, SavedDevice } from "./device.ts";
 import { ADMISSION_WAIT_MS, LINK_RETRY_MAX_MS } from "./accountController.ts";
+import { readSeenPcs } from "../account/seenPcs.ts";
+import { keepTypedCode } from "./shellState.ts";
+import { askingPc } from "../account/accountList.test-helpers.ts";
+import { signCard } from "../../../shared/account-list.ts";
 import { ACCOUNT_STEPS_WAIT_MS, mountRelayShell } from "./shell.tsx";
 import { createShellTestPage } from "./shell.test.tsx";
 import { RelayTransport, type RelayTransportOptions } from "./transport.ts";
@@ -101,6 +106,20 @@ describe("the admission before a first link", () => {
     readonly holdMarkedRead?: boolean;
     /** the first link waits until the test releases it */
     readonly holdFirstLink?: boolean;
+    /**
+     * This device follows its account's signed list and may write it, and the PC takes the list named over the session
+     * of the pairing: it says it read its entry at the first ask, as a PC the list holds already does.
+     */
+    readonly namedList?: boolean;
+    /**
+     * As namedList, but the PC never says that it read its entry: it answers with its card for the list at every ask,
+     * and the list holds the PC's key already (an earlier press placed it), so nothing is signed here either
+     */
+    readonly namedUnread?: boolean;
+    /** the code was typed on this device and compared there (codeMatch), not scanned */
+    readonly typedCode?: boolean;
+    /** another tab signs in to another account the moment the PC admits the pairing */
+    readonly switchAtPair?: boolean;
   }
 
   async function pairing(options: Options = {}) {
@@ -158,6 +177,27 @@ describe("the admission before a first link", () => {
     let listed = options.listed === true;
     let postSignal: AbortSignal | undefined;
     let apps = 0, opens = 0, linked = false, directoryReads = 0;
+    // the list named to the PC over a pairing's session, and each session opened: with the key the list holds, or not
+    const namings: unknown[] = [];
+    const byListKey: boolean[] = [];
+    const LIST = "5c".repeat(32);
+    const endpoint = Buffer.from(identity.publicKey).toString("hex");
+    const listView = (): AccountListView => ({
+      account: "acct-test", reached: true, status: { at: "following", list: LIST, standing: "in", head: namings.length === 0 ? 1 : 2, read_at: 1, trouble: null },
+      devices: [{ key: key.public_spki, self: true, power: "full", role: "drive", until: null, carried: false, name: null }],
+      pcs: namings.length === 0 ? [] : [{ endpoint, server_id: offer.server_id, how: "added", allows: true, name: { label: "Desk", os: null }, seq: 2, by: key.public_spki, new_at: null }],
+    });
+    // the PC's own keys for the list, and its card, where it answers the naming with them
+    const pcKeys = options.namedUnread ? await askingPc() : null;
+    const pcCard = pcKeys === null ? null : await signCard({ key: pcKeys.key, enc: pcKeys.enc, list: LIST, endpoint, invite: null }, pcKeys.signs);
+    const accountList: AccountList | undefined = !options.namedList && !options.namedUnread ? undefined : {
+      sync: async () => listView(), follows: async () => true, view: listView, subscribe: () => () => {}, holdsPc: () => namings.length > 0, pcOfKey: () => null, due: () => null, shown: () => Math.floor(Date.now() / 1000),
+      shadow: async () => null, dropNames: async () => {}, forget: async () => {}, pinnedElsewhere: async () => null, adopt: async () => listView(), placeAt: () => null, holdsEntry: () => false, gossip: () => null, pageAfter: () => null, compare: () => null, takeFromPeer: async () => null, knowsPc: () => false,
+      kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => "gone" as const,
+      // the PC answers that it read its entry, so nothing is signed with this: only whose list it is and which is asked
+      writer: () => ({ account: "acct-test", list: LIST, keys: { key: key.public_spki },
+        state: { footing: { seq: 2, hash: "ab".repeat(32) }, pcs: pcKeys === null ? {} : { [endpoint]: { key: pcKeys.key, enc: pcKeys.enc, removed: null } } } }) as unknown as ListWriter,
+    };
     // the row the PC ended, by its device id: a sign-in with that row is refused, one with another row is not
     let ended: string | null | undefined;
     const fatal: ((error: Error) => void)[] = [];
@@ -194,6 +234,13 @@ describe("the admission before a first link", () => {
           }
           case "/api/account/enroll": return Response.json({ results: [] });
           case "/api/account/introduction": return Response.json({ pcs: [] });
+          case "/api/account/list/named": {
+            if (!options.namedList && !options.namedUnread) return Response.json({ error: { code: "not_found" } }, { status: 404 });
+            events.push("named");
+            namings.push(JSON.parse(String(init?.body)));
+            if (pcKeys !== null) return Response.json({ state: "waiting", standing: "waiting", key: pcKeys.key, enc: pcKeys.enc, card: pcCard });
+            return Response.json({ state: "added", account: "acct-test" });
+          }
           default: throw new TypeError(`Unexpected PC request: ${path}`);
         }
       }
@@ -209,10 +256,12 @@ describe("the admission before a first link", () => {
     const current = (): RelayShellProps => { if (!props) throw new TypeError("Shell not rendered"); return props; };
     const listedPc = { server_id: offer.server_id, label: "Desk", added_at: "2026-11-01T00:00:00Z", last_seen_at: null };
     if (options.typedConfirmed) sessionStorage.setItem("ovis-confirmed-pc", offer.server_id);
+    if (options.typedCode) keepTypedCode(offer);
     // the tab's memory of the reloads it made for a newer PC (skew.ts reloadOnce)
     if (options.pcVersion !== undefined) (window as unknown as { sessionStorage: Storage }).sessionStorage = sessionStorage;
     await mountRelayShell({
       container: Object.create(null), entryUrl: options.reopen ? `https://app.ovis.sh/s/${offer.server_id}/` : encodeOffer(offer, "https://app.ovis.sh"), shellVersion: "1.0.0", store, accountStore,
+      ...(accountList === undefined ? {} : { accountList }),
       accountService: "https://account.ovis.sh",
       accountFetch: async (input, init) => {
         const path = new URL(String(input instanceof Request ? input.url : input)).pathname;
@@ -259,7 +308,10 @@ describe("the admission before a first link", () => {
         opens++;
         // as a transport does, an attempt that ended opens nothing
         transportOptions.signal?.throwIfAborted();
-        if (opening.code !== undefined) { events.push("pair"); devices.set(offer.server_id, { ...older, device_id: NEWER_ID }); }
+        byListKey.push(transportOptions.accountListKey === true);
+        if (opening.code !== undefined) { events.push("pair"); devices.set(offer.server_id, { ...older, device_id: NEWER_ID }); if (options.switchAtPair) await accountStore.set("session", sessionOf("acct-other")); }
+        // a session by the key the list holds for this device rests on no pairing: the PC knows the key from its list
+        else if (transportOptions.accountListKey === true) events.push("list key");
         else if (ended !== undefined && devices.get(offer.server_id)?.device_id === ended) throw new MuxProtocolError("auth_failed", "the PC ended this row");
         else devices.set(offer.server_id, devices.get(offer.server_id) ?? older);
         if (transportOptions.onFatal) fatal.push(transportOptions.onFatal);
@@ -283,7 +335,7 @@ describe("the admission before a first link", () => {
     /** every session the attempt opened is closed: it is over, and nothing more of it reaches the PC */
     const over = (): Promise<void> => until(() => opened.length > 0 && opened.every((transport) => transport.closed));
     const enrollment = async (): Promise<string | undefined> => ((await store.get(offer.server_id)) as SavedDevice | undefined)?.account_enrollment?.state;
-    return { current, drawn: () => drawn, press, switchAccount, armed, over, enrollment, directoryReads: () => directoryReads, reloads: () => reloads,
+    return { current, drawn: () => drawn, press, switchAccount, armed, over, enrollment, directoryReads: () => directoryReads, reloads: () => reloads, namings, byListKey, devices, serverId: offer.server_id,
       markedReadHeld: markedReadHeld.promise, releaseMarkedRead: () => markedReadRelease.resolve(), linkHeld: linkHeld.promise, releaseLink: () => linkRelease.resolve(), readHeld: readHeld.promise, releaseRead: () => readRelease.resolve(), secondPostHeld: secondPostHeld.promise, releaseSecondPost: () => secondPostRelease.resolve(), events, pcEvents, posted, quiet, sent, failure, endRow, admissionGate, store, offer, apps: () => apps, opens: () => opens, postSignal: () => postSignal };
   }
 
@@ -306,6 +358,71 @@ describe("the admission before a first link", () => {
       expect(run.quiet).toEqual([true]);
     });
   }
+
+  it("a scanned PC that takes the account's list named is opened anew with the key the list holds: no link is sent, and the pairing that named it is gone", async () => {
+    const run = await pairing({ mark: true, listed: true, namedList: true });
+    run.admissionGate.resolve();
+    await until(() => run.byListKey.at(-1) === true);
+    // the pairing's own session named the list and nothing else, then the PC is opened as a PC of the list
+    expect(run.events.filter((event) => event === "pair" || event === "named" || event === "link" || event === "list key")).toEqual(["pair", "named", "list key"]);
+    expect(run.namings).toEqual([{ account: "acct-test", list: "5c".repeat(32) }]);
+    // the pairing, its own sign-in as before, then the list's key
+    expect(run.byListKey).toEqual([false, false, true]);
+    expect(run.sent).toEqual([]);
+    expect(run.devices.has(run.serverId)).toBe(false);
+    await until(() => run.apps() >= 1);
+    // the app opens once, on the list's session: the pairing's screen stayed until then, and no screen said it failed
+    expect(run.apps()).toBe(1);
+    expect(run.drawn().some((state) => state.kind === "failed")).toBe(false);
+  });
+
+  // The device's own record of its PCs (account/seenPcs.ts): a QR code of that PC scanned for the account is `added`; a
+  // code typed here is a pairing at the PC (`paired`), never more; and the act goes to the account it was confirmed for
+  describe("what the pairing writes in the device's record of its PCs", () => {
+    const endpointOf = (offer: { readonly server_public_key: string }): string => Buffer.from(Uint8Array.from(atob(offer.server_public_key.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0))).toString("hex");
+    it("a QR code of that PC, scanned for the account: added", async () => {
+      const run = await pairing({ mark: true, listed: true });
+      run.admissionGate.resolve();
+      await until(() => run.apps() === 1 && run.sent.length === 1);
+      await until(() => readSeenPcs("acct-test").pcs[endpointOf(run.offer)] !== undefined);
+      expect(readSeenPcs("acct-test").pcs[endpointOf(run.offer)]?.how).toBe("added");
+    });
+
+    it("a scanned code that carries no account mark pairs with the PC alone: paired, never added", async () => {
+      const run = await pairing({ listed: true });
+      await until(() => run.apps() === 1 && run.sent.length === 1);
+      await until(() => readSeenPcs("acct-test").pcs[endpointOf(run.offer)] !== undefined);
+      expect(readSeenPcs("acct-test").pcs[endpointOf(run.offer)]?.how).toBe("paired");
+    });
+
+    it("a code typed on this device and compared here: paired, never added", async () => {
+      const run = await pairing({ mark: true, listed: true, typedConfirmed: true, typedCode: true });
+      run.admissionGate.resolve();
+      await until(() => run.apps() === 1 && run.sent.length === 1);
+      await until(() => readSeenPcs("acct-test").pcs[endpointOf(run.offer)] !== undefined);
+      expect(readSeenPcs("acct-test").pcs[endpointOf(run.offer)]?.how).toBe("paired");
+    });
+
+    it("goes to the account the pairing was confirmed for, though another tab signed in as someone else since", async () => {
+      const run = await pairing({ mark: true, listed: true, switchAtPair: true });
+      run.admissionGate.resolve();
+      await until(() => readSeenPcs("acct-test").pcs[endpointOf(run.offer)] !== undefined);
+      expect([readSeenPcs("acct-test").pcs[endpointOf(run.offer)]?.how, readSeenPcs("acct-other").pcs]).toEqual(["added", {}]);
+    });
+  });
+
+  it("a scanned PC whose entry is in the list but that has not read it yet keeps the pairing, opens nothing over its session, and shows the front page", async () => {
+    const run = await pairing({ mark: true, listed: true, namedUnread: true });
+    run.admissionGate.resolve();
+    await until(() => run.current().state.kind === "list" || run.current().state.kind === "empty");
+    // the pairing's session named the list, as many times as the PC counts, and nothing else went to the PC
+    expect(run.events.filter((event) => event === "pair" || event === "named" || event === "link" || event === "list key")).toEqual(["pair", "named", "named", "named", "named"]);
+    expect([run.sent, run.byListKey.includes(true), run.apps()]).toEqual([[], false, 0]);
+    // the pairing is not spent: its row stays, the device's own, with nothing said of an account at it
+    const kept = run.devices.get(run.serverId) as SavedDevice | undefined;
+    expect([kept?.device_id, kept?.account_enrollment, kept?.account]).toEqual([NEWER_ID, undefined, undefined]);
+    expect(run.drawn().some((state) => state.kind === "failed")).toBe(false);
+  }, 15_000);
 
   it("with the mark, ends the post itself when the person cancels while it waits, and pairs nothing", async () => {
     const run = await pairing({ mark: true, listed: true });
@@ -431,6 +548,29 @@ describe("the admission before a first link", () => {
       await until(async () => await run.store.get(run.offer.server_id) === undefined);
     });
   }
+
+  // a PC the account's signed list removed takes no link into that account: it comes back only as a new PC
+  it("says that the account's list removed the PC, in words of its own, with nothing to try again", async () => {
+    const run = await pairing({ mark: true, listed: true, links: [() => Response.json({ error: { code: "list_removed", message: "private refusal" } }, { status: 409 })] });
+    run.admissionGate.resolve();
+    await until(() => run.current().state.kind === "failed");
+    expect(run.failure()).toBe("list-removed");
+    expect(run.apps()).toBe(0);
+    const said = relayFailureText(t, "list-removed", "Desk");
+    expect([said.title, said.retry]).toEqual(["Desk was removed from your account", false]);
+    expect(said.copy).toContain("only as a new PC");
+    expect(JSON.stringify(said)).not.toContain("private refusal");
+  });
+
+  // a pairing with no mark is the device's own and stands whatever the link answers: the words are said all the same
+  it("says that the account's list removed the PC for a plain code's link too, and keeps the pairing that was made", async () => {
+    const run = await pairing({ pcIn: true, listed: true, links: [() => Response.json({ error: { code: "list_removed", message: "private refusal" } }, { status: 409 })] });
+    run.admissionGate.resolve();
+    await until(() => run.current().state.kind === "failed");
+    expect([run.failure(), run.apps()]).toEqual(["list-removed", 0]);
+    // nothing of this device's was forgotten: the pairing made with the PC itself still opens it
+    expect(await run.store.get(run.offer.server_id)).toMatchObject({ server_id: run.offer.server_id });
+  });
 
   // a PC already in an account keeps a row whose link names another account, and the device drives it as before
   for (const mark of [false, true]) {

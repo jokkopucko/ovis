@@ -13,11 +13,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { reserveTab } from "../externalLink.ts";
 import { deviceOs, thisDeviceLabel } from "../phone.ts";
+import { AccountHintError, isEmailHintProvider, type AccountHint, type AccountHintChoice, type SignInCreation } from "./accountHint.ts";
 import { holdingSessionStore } from "./deleteAccount.ts";
 import { desktopAccount } from "./desktop.ts";
 import { startDeviceSignIn, startLinkPageSignIn, type DeviceSignIn } from "./deviceSignIn.ts";
-import { ownSignIn as startOwnSignIn, useOwnWindowRedirect } from "./ownWindow.ts";
-import { offeredProviders, type OfferedProviders } from "./service.ts";
+import { addOwnSignInMethod, ownSignIn as startOwnSignIn, useOwnWindowRedirect } from "./ownWindow.ts";
+import { AccountService, AccountServiceError, offeredProviders, SignedOutError, type OfferedProviders } from "./service.ts";
+import { SignInError } from "./signin.ts";
 import { indexedAccountStore, type AccountProvider, type AccountSession } from "./store.ts";
 
 export type LinkPageSignInState =
@@ -27,6 +29,7 @@ export type LinkPageSignInState =
   | { kind: "waiting"; started: Pick<DeviceSignIn, "provider" | "userCode" | "verificationUri" | "verificationUriComplete">; opened: boolean }
   /** an own sign-in at the provider's pages; `link`: the page the browser would not open in a tab of its own */
   | { kind: "redirecting"; link: string | null }
+  | { kind: "hint"; hint: AccountHint }
   | { kind: "signed-in"; session: AccountSession }
   | { kind: "failed"; error: unknown };
 
@@ -43,10 +46,13 @@ export interface LinkPageSignIn {
   /** the providers the link page offers, as its copy names them */
   readonly linkPage: readonly AccountProvider[];
   readonly start: (provider?: AccountProvider) => void;
+  readonly chooseAccountHint: (choice: AccountHintChoice) => void;
   readonly cancel: () => void;
 }
 
-export function useLinkPageSignIn(service: string, onSignedIn: (session: AccountSession) => void): LinkPageSignIn {
+export interface LinkRefusal { readonly provider: AccountProvider; readonly code: string }
+
+export function useLinkPageSignIn(service: string, onSignedIn: (session: AccountSession, refusal?: LinkRefusal) => void): LinkPageSignIn {
   const [state, setState] = useState<LinkPageSignInState>({ kind: "idle" });
   const [offer, setOffer] = useState<OfferedProviders | null>(null);
   const bridge = desktopAccount();
@@ -74,7 +80,7 @@ export function useLinkPageSignIn(service: string, onSignedIn: (session: Account
   const deviceOnly = offer !== null && !ownSignIn && ownRedirect !== undefined && offer.page.length === 0 && offer.device.length > 0;
   const own = offer === null ? null : ownSignIn ? offer.providers : deviceOnly ? offer.device : null;
   const unavailable = offer !== null && !ownSignIn && ownRedirect !== undefined && offer.page.length === 0 && offer.device.length === 0;
-  const start = useCallback((provider?: AccountProvider) => {
+  const start = useCallback((provider?: AccountProvider, creation: SignInCreation | null = { create: "ask" }) => {
     if (offer === null) return;
     if (ownSignIn && provider !== undefined) {
       running.current?.abort();
@@ -82,21 +88,38 @@ export function useLinkPageSignIn(service: string, onSignedIn: (session: Account
       running.current = controller;
       setState({ kind: "redirecting", link: null });
       // held back until it is known not to be cancelled: a sign-in finished after Cancel is never kept
-      const store = holdingSessionStore(indexedAccountStore);
       const blocked = (link: string): void => setState({ kind: "redirecting", link });
-      startOwnSignIn(provider, { bridge, service, redirect: ownRedirect ?? null, store, signal: controller.signal, blocked }).then(async (session) => {
+      const options = { bridge, service, redirect: ownRedirect ?? null, store: indexedAccountStore, signal: controller.signal, blocked };
+      const connecting = creation?.create === "never";
+      const intent = connecting ? { ...creation, wanted: () => !controller.signal.aborted } : creation ?? undefined;
+      startOwnSignIn(provider, { ...options, store: connecting ? indexedAccountStore : holdingSessionStore(indexedAccountStore), intent }).then(async (session) => {
         // kept only if not cancelled, decided inside the write itself: a Cancel after it is too late and shows the sign-in
-        let kept = false;
-        await indexedAccountStore.update("session", (current) => { if (controller.signal.aborted) return current; kept = true; return session; });
-        if (!kept) return;
+        if (!connecting && !await AccountService.storeSignIn(indexedAccountStore, session, { wanted: () => !controller.signal.aborted })) {
+          await AccountService.revokeSession(session);
+          if (controller.signal.aborted) return;
+          throw new SignedOutError();
+        }
+        let installed = session;
+        let refusal: LinkRefusal | undefined;
+        if (creation?.create === "never") {
+          try {
+            installed = await addOwnSignInMethod(creation.thenAdd, session, options);
+          } catch (error) {
+            if (!controller.signal.aborted && !(error instanceof DOMException && error.name === "AbortError")) {
+              if (!(error instanceof Error)) throw error;
+              refusal = { provider: creation.thenAdd, code: error instanceof AccountServiceError || error instanceof SignInError || error instanceof SignedOutError ? error.code : "failed" };
+            }
+          }
+        }
         if (running.current === controller) running.current = null;
-        setState({ kind: "signed-in", session });
-        signedIn.current(session);
+        else if (running.current !== null) return;
+        setState({ kind: "signed-in", session: installed });
+        signedIn.current(installed, refusal);
       }).catch((error: unknown) => {
         if (controller.signal.aborted) return;
         if (running.current === controller) running.current = null;
         console.warn("Ovis: the sign-in did not finish", error instanceof Error ? error.name : error);
-        setState({ kind: "failed", error });
+        setState(error instanceof AccountHintError ? { kind: "hint", hint: error.hint } : { kind: "failed", error });
       });
       return;
     }
@@ -133,5 +156,13 @@ export function useLinkPageSignIn(service: string, onSignedIn: (session: Account
     }).finally(() => { if (running.current === controller) running.current = null; });
   }, [service, offer, ownSignIn, deviceOnly, bridge, ownRedirect]);
 
-  return { state, ready: offer !== null && ownRedirect !== undefined, own, unavailable, linkPage: offer === null ? [] : offer.page.length > 0 ? offer.page : offer.device, start, cancel };
+  const chooseAccountHint = (choice: AccountHintChoice): void => {
+    if (state.kind !== "hint") return;
+    const { hint } = state;
+    if (choice === "create") start(hint.provider, null);
+    else if (isEmailHintProvider(hint.existingProvider) && own?.includes(hint.existingProvider)) {
+      start(hint.existingProvider, { create: "never", thenAdd: hint.provider });
+    }
+  };
+  return { state, ready: offer !== null && ownRedirect !== undefined, own, unavailable, linkPage: offer === null ? [] : offer.page.length > 0 ? offer.page : offer.device, start, chooseAccountHint, cancel };
 }

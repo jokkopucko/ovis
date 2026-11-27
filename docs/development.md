@@ -90,7 +90,7 @@ A release validated by main's run (`main-run-<id>`) is made of these checks of i
 | Fast checks | the Release run, and main's run | GitHub's runner, and the self-hosted PC |
 | Rust PTY host build, with the crate's tests and the PtySession checks on the built Linux binaries | the Release run | GitHub's runners |
 | Integration tests, both Browser regression jobs | main's run | the self-hosted PC, unless the runner variables keep `main` on GitHub's ([self-hosted runner](../scripts/self-hosted-runner/README.md)) |
-| herdr-core live contract | main's run | the self-hosted PC, unless the runner variables keep the light jobs on GitHub's |
+| herdr-core live contract | main's run | GitHub's runner, unless `CI_HC_LIVE_LABELS` moves it to the self-hosted PC |
 | Native Windows install, Native macOS session identity | main's run | GitHub's runners |
 | Rust PTY host | main's run | GitHub's runners, or the self-hosted Rust slots once `CI_RUST_SELF_HOSTED` is `true` |
 
@@ -120,8 +120,10 @@ the `crates/pty-sidecar` git tree they were built from, and each file's SHA-256)
 all attached when the release is created, so no tag is seen without them. `bun
 scripts/pty-sidecar.ts install` (herdr's plugin build, each update installed from the app, and
 `install.sh`) puts the binary for its PC in `bin/ovis-pty-sidecar` only when the release's crate
-tree matches the checkout and the SHA-256 matches; otherwise that install runs the Node sidecar where
-the PC has Node, and mirrors its panes where it has none.
+tree matches the checkout and the SHA-256 matches (a checkout whose crate tree no release has takes the
+daily beta's `pty-sidecar-<tree>` prerelease); otherwise that install mirrors its panes and says how to
+build one. `test:unit` and `test:integration` run the same install where no host runs, and without one
+stop and say how to build one.
 A release without them gets them from **Actions → Attach the Rust PTY host** with its tag.
 
 It also builds the server as one compiled binary per platform (`server-binary`, on the same runners as the
@@ -371,6 +373,19 @@ daily actives by country come from the telemetry database instead:
 run `bunx wrangler login` from `telemetry/` once, then
 `bun scripts/telemetry-report.ts --out <file.md>` from the repository root
 ([telemetry/README.md](../telemetry/README.md#reading-the-counts)).
+
+## Agent CLI versions
+
+Ovis reads an agent as data only on the versions it was measured on: its approval hook's
+(`supports` of each adapter in [`server/approvals/adapters.ts`](../server/approvals/adapters.ts))
+and Codex's own server's (`supportsCodexServer` in
+[`server/approvals/codex.ts`](../server/approvals/codex.ts)). A release outside them runs without
+that link: Ovis reads the agent's terminal without a word, and pi, which asks nothing itself, runs
+commands without the approval dialog the hook adds. `bun scripts/harness-drift.ts` reads each
+agent's latest version from the npm registry and prints a table of the agents whose latest release
+is outside its window, or could not be read, and exits 1 when there is one. For a release outside,
+measure it, then widen the window in its adapter or in `supportsCodexServer`; an unread one is run
+again later. A new hooked agent needs its npm package in the script's `RELEASES`.
 
 ## Stored-format changes
 

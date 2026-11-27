@@ -116,7 +116,6 @@ export function clearNewSessionDrafts(): void {
 
 /** how long the fields rest before the address follows them: Safari refuses a burst of history writes */
 const DRAFT_MS = 400;
-const RECENT_FOLDERS_SHOWN = 8;
 
 function directoryBasename(value: string): string {
   const trimmed = value.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -175,7 +174,7 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onPend
   const openings = useRef(0);
   const agentReads = useRef(latestRead());
   const [recentFolders, setRecentFolders] = useState(() => recentDirectories.read(machineId));
-  const shownFolders = recentFolders.filter((path) => !passingFolder(path, worktrees)).slice(0, RECENT_FOLDERS_SHOWN);
+  const shownFolders = recentFolders.filter((path) => !passingFolder(path, worktrees));
   const firstFieldRef = useRef<HTMLButtonElement>(null);
   const promptField = useRef<HTMLTextAreaElement>(null);
   // one Start at a time, whatever the fields' disabled state has rendered yet: a double tap sends one create
@@ -416,7 +415,7 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onPend
       }
       const outcome = firstMessageOutcome(request, result);
       if (outcome.kind === "not_queued") {
-        composerDrafts.set(`ovis:composer-draft:${paneStorageId(machineId, result.pane_id)}`, request.first_message!);
+        composerDrafts.set(`ovis:composer-draft:${paneStorageId(machineId, result.pane_id)}`, request.first_message!, "replace");
         writeNewSessionDraft(draftKey, null);
         setPending(false);
         setError({

@@ -1,9 +1,8 @@
 import { paneRead, paneScrollInfo } from "./herdr/client.ts";
 
 /**
- * omp draws its own context in its status bar — `⠋ 46s · ◒ deepseek-flash · 📁 ~/coding_agent ·
- * ◫ 48.1%/1M ⟲ · $105.66` — which is the one place both numbers live: its transcript reports the
- * tokens a request filled but never the window.
+ * For panes without a reporting extension, omp's status bar is the fallback — `⠋ 46s · ◒ deepseek-flash ·
+ * 📁 ~/coding_agent · ◫ 48.1%/1M ⟲ · $105.66`. The transcript reports the tokens a request filled but not the window.
  */
 
 /** `◫ 48.1%/1M`: percent filled, then the window's size (`200k`, `1M`) */

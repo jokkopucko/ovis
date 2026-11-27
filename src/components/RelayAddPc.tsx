@@ -8,7 +8,7 @@ import { callNative, hasNativeMethod, hasNativePlugin } from "../lib/nativeApp.t
 import { ACCOUNT_PROVIDERS } from "../lib/account/store.ts";
 import { isLoopbackHost, tailnetHost } from "../lib/phone.ts";
 import { serverIdOfPath, serverScopePath } from "../lib/shellMode.ts";
-import { deviceOffline } from "../lib/useOffline.ts";
+import { confirmOffline, navigatorOffline } from "../lib/useOffline.ts";
 
 /** The phone app's QR scanner (@capacitor/barcode-scanner, app/package.json) and its SSH screen (Android's OvisSsh). */
 const SCANNER = "CapacitorBarcodeScanner";
@@ -114,7 +114,7 @@ export function openFailureText(t: Translate, url: URL, code: string | undefined
   }
 }
 
-/** What opening a PC says while this device has no network (deviceOffline): the phone app's words name the phone. */
+/** What opening a PC says while this device has no network (confirmOffline): the phone app's words name the phone. */
 export function offlineOpenText(t: Translate): string {
   return hasNativePlugin(SHELL) ? t("Connect this phone to the internet to open the PC.") : t("Connect this device to the internet to open the PC.");
 }
@@ -283,14 +283,15 @@ export function useAddressOpen(view = "page") {
     const deadline = setTimeout(() => {
       if (attempt?.id !== id) return;
       stopAttempt();
-      setOutcome(deviceOffline() ? { view, kind: "error", text: offlineOpenText(t) } : { view, kind: "error", text: openFailureText(t, url, "timeout", ""), ...more });
+      void confirmOffline().then((offline) => setOutcome(offline ? { view, kind: "error", text: offlineOpenText(t) } : { view, kind: "error", text: openFailureText(t, url, "timeout", ""), ...more }));
     }, OPEN_WAIT_MS);
-    void callNative(SHELL, "open", { url: url.href, check: true }).then(() => undefined, (cause: unknown) => {
+    void callNative(SHELL, "open", { url: url.href, check: true }).then(() => undefined, async (cause: unknown) => {
       if (attempt?.id !== id) return;
       const code = typeof (cause as { code?: unknown } | null)?.code === "string" ? (cause as { code: string }).code : undefined;
+      if (code === "cancelled") return;
       // the network went away under the open: that is why, whatever the address answered
-      const said = code === "cancelled" ? "" : deviceOffline() ? offlineOpenText(t) : openFailureText(t, url, code, cause instanceof Error ? cause.message : String(cause));
-      if (said !== "") setOutcome({ view, kind: "error", text: said, ...(deviceOffline() ? {} : more) });
+      const offline = await confirmOffline();
+      setOutcome(offline ? { view, kind: "error", text: offlineOpenText(t) } : { view, kind: "error", text: openFailureText(t, url, code, cause instanceof Error ? cause.message : String(cause)), ...more });
     }).finally(() => {
       clearTimeout(deadline);
       if (attempt?.id === id) setAttempt(null);
@@ -303,12 +304,22 @@ export function useAddressOpen(view = "page") {
    * checks it is Ovis first (HerdrShell.open, app/web/connect.js), a browser goes there; anything else says so. In the app
    * one opens at a time: while one opens, another tap waits; one still asking about Tailscale gives way to the new one.
    * `askTailscale`: a saved Tailscale PC, which asks the app first whether Tailscale is on. With no network on this
-   * device nothing opens, and it says so (offlineOpenText), never why the address did not answer. `other`: the same PC by
-   * another way it is saved by, which an open that fails or is refused (Tailscale off) offers by name.
+   * device nothing opens, and it says so (offlineOpenText), never why the address did not answer: while the device says
+   * so, the account service is asked first (confirmOffline), and an answer goes on with this same open. `other`: the
+   * same PC by another way it is saved by, which an open that fails or is refused (Tailscale off) offers by name.
    */
   const take = (url: URL | null, options: { readonly askTailscale?: boolean; readonly other?: OtherWay } = {}): void => {
     if (url === null) { setError(t("That is not an http or https address.")); return; }
-    if (deviceOffline()) { clearOutcome(); setError(offlineOpenText(t)); return; }
+    if (navigatorOffline()) {
+      void confirmOffline().then((offline) => {
+        if (!live.current) return;
+        if (offline) { clearOutcome(); setError(offlineOpenText(t)); } else go(url, options);
+      });
+      return;
+    }
+    go(url, options);
+  };
+  const go = (url: URL, options: { readonly askTailscale?: boolean; readonly other?: OtherWay }): void => {
     const offer = url.hash.startsWith("#offer=");
     if (url.origin === window.location.origin) {
       const page = pcPage(url);
@@ -334,9 +345,12 @@ export function useAddressOpen(view = "page") {
       if (attempt?.id !== id) return;
       if (!on) { setAttempt(null); setOutcome({ view, kind: "tailscale-off", ...(options.other ? { other: options.other } : {}) }); return; }
       // the network went away while the app was asked: this attempt ends there, opening nothing
-      if (deviceOffline()) { setAttempt(null); setOutcome({ view, kind: "error", text: offlineOpenText(t) }); return; }
-      setAttempt({ id, host: url.host, phase: "opening", view });
-      openNow(url, id, options.other);
+      void confirmOffline().then((offline) => {
+        if (attempt?.id !== id) return;
+        if (offline) { setAttempt(null); setOutcome({ view, kind: "error", text: offlineOpenText(t) }); return; }
+        setAttempt({ id, host: url.host, phase: "opening", view });
+        openNow(url, id, options.other);
+      });
     });
   };
   /** `run` with what a scan (or its failure) answers, only while this opener is still on the page */

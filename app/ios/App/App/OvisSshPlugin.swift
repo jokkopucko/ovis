@@ -66,22 +66,13 @@ enum OvisSsh {
     static func pc(_ key: String?) -> SshPcs.Pc? { store.get(key.flatMap { PCStore.origin(ofKey: $0) }) }
 
     /// Makes `pc` listen on its address on this phone and puts its gate in the WebView's cookie store, before its
-    /// page loads. False when another app holds the address: the PC must not open then, as the page answering there
+    /// page loads. Throws when another app holds the address: the PC must not open then, as the page answering there
     /// would be that app's, with the app's bridge.
     @MainActor
-    static func prepare(_ pc: SshPcs.Pc) async -> Bool {
+    static func prepare(_ pc: SshPcs.Pc) async throws {
         watchNetwork()
-        do {
-            let tunnel = try await tunnels.open(pc)
-            await setGate(origin: pc.origin, name: tunnel.cookieName, gate: tunnel.gate)
-            return true
-        } catch let failure as SshFailure {
-            PCStore.fail("\(failure.kind): \(failure.message)", kind: "ssh-\(failure.kind)", command: failure.command)
-            return false
-        } catch {
-            PCStore.fail("127.0.0.1:\(pc.localPort): \(error)", kind: "ssh-port")
-            return false
-        }
+        let tunnel = try await tunnels.open(pc)
+        await setGate(origin: pc.origin, name: tunnel.cookieName, gate: tunnel.gate)
     }
 
     /// The WebView's pass to the tunnel: an HttpOnly cookie on the PC's own loopback origin, which no page script reads.

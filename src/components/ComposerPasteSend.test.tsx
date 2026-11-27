@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, mock, spyOn } from "bun:test";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 import { Composer, type ComposerProps } from "./Composer.tsx";
 import * as settingsModule from "../lib/settings.ts";
 import * as commandsModule from "../lib/usePaneCommands.ts";
@@ -13,26 +14,21 @@ import { paneLifetimes } from "../lib/paneLifetime.ts";
 
 const pane = "paste-pane", draftKey = `ovis:composer-draft:${pane}`;
 const otherPane = "paste-other", otherKey = `ovis:composer-draft:${otherPane}`;
-const globals = ["window", "document", "navigator", "requestAnimationFrame", "cancelAnimationFrame", "IS_REACT_ACT_ENVIRONMENT"];
+let page: Page;
+const frameGlobals = ["requestAnimationFrame", "cancelAnimationFrame", "ResizeObserver"] as const;
 const saved = new Map<string, PropertyDescriptor | undefined>();
-let renderer: ReactTestRenderer | undefined;
 let pasteSend = true;
 let readText: (() => Promise<string>) | undefined;
 
 beforeEach(() => {
   pasteSend = true;
   readText = async () => "from the clipboard";
-  for (const key of globals) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-  const listen = { addEventListener() {}, removeEventListener() {} };
-  const values: Record<string, unknown> = {
-    IS_REACT_ACT_ENVIRONMENT: true,
-    navigator: { languages: ["en"], userAgent: "test", maxTouchPoints: 0, get clipboard() { return readText === undefined ? undefined : { readText: () => readText!() }; } },
-    window: { ...listen, location: { href: "https://ovis.test/" }, matchMedia: () => ({ matches: false, ...listen }), setTimeout, clearTimeout },
-    document: { ...listen, querySelector: () => null },
-    requestAnimationFrame: () => 1,
-    cancelAnimationFrame: () => {},
-  };
-  for (const key of globals) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value: values[key] });
+  page = openPage("https://ovis.test/");
+  Object.defineProperty(page.window.navigator, "clipboard", { configurable: true, get: () => readText === undefined ? undefined : { readText } });
+  for (const key of frameGlobals) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+  Object.defineProperty(globalThis, "requestAnimationFrame", { configurable: true, value: () => 1 });
+  Object.defineProperty(globalThis, "cancelAnimationFrame", { configurable: true, value: () => {} });
+  Object.defineProperty(globalThis, "ResizeObserver", { configurable: true, value: page.window.ResizeObserver });
   const data = new Map<string, string>();
   spyOn(paneLifetimes.paneStorage, "getItem").mockImplementation((key) => data.get(key) ?? null);
   spyOn(paneLifetimes.paneStorage, "setItem").mockImplementation((key, value) => { data.set(key, value); });
@@ -42,15 +38,14 @@ beforeEach(() => {
   spyOn(usageModule, "useUsage").mockReturnValue({ report: null } as ReturnType<typeof usageModule.useUsage>);
   spyOn(facesModule, "useFacesArrived").mockReturnValue(0);
   spyOn(voiceModule, "useDictation").mockReturnValue({ shown: false, voice: { state: "idle" }, forget() {} } as unknown as ReturnType<typeof voiceModule.useDictation>);
-  composerDrafts.set(draftKey, "");
-  composerDrafts.set(otherKey, "");
+  composerDrafts.set(draftKey, "", "replace");
+  composerDrafts.set(otherKey, "", "replace");
 });
 
-afterEach(() => {
-  act(() => { renderer?.unmount(); });
-  renderer = undefined;
-  composerDrafts.set(draftKey, "");
-  composerDrafts.set(otherKey, "");
+afterEach(async () => {
+  await page.close();
+  composerDrafts.set(draftKey, "", "replace");
+  composerDrafts.set(otherKey, "", "replace");
   mock.restore();
   for (const [key, descriptor] of saved) {
     if (descriptor) Object.defineProperty(globalThis, key, descriptor);
@@ -63,21 +58,24 @@ function props(sent: unknown[][], result: ReturnType<ComposerProps["onSend"]> = 
   return { paneId: pane, agent: "claude", agentStatus: "idle", connected: true, autoFocus: false, onSend: (...args) => { sent.push(args); return result; }, onAbort() {}, onUploadImage: async () => "" };
 }
 
-const button = () => renderer!.root.findAllByProps({ "aria-label": "Paste and send" }).find((node) => node.type === "button");
-const note = () => renderer!.root.findAll((node) => node.props.className === "composer-note-text").map((node) => node.children.filter((child) => typeof child === "string").join(""))[0] ?? null;
+const button = () => page.container.querySelector<HTMLButtonElement>('button[aria-label="Paste and send"]');
+const note = () => {
+  const line = page.container.querySelector('[class="composer-note-text"]');
+  return line === null ? null : [...line.childNodes].filter((node) => node.nodeType === 3).map((node) => node.textContent).join("");
+};
 async function press(): Promise<void> {
-  await act(async () => { button()!.props.onClick(); });
+  await act(async () => { page.one('button[aria-label="Paste and send"]').click(); });
 }
 
 it("draws no Paste and send button until this device turns it on", async () => {
   pasteSend = false;
-  await act(async () => { renderer = create(<Composer {...props([])} />); });
-  expect(button()).toBeUndefined();
+  await page.render(<Composer {...props([])} />);
+  expect(button()).toBeNull();
 });
 
 it("sends the clipboard's text as a message, through Send", async () => {
   const sent: unknown[][] = [];
-  await act(async () => { renderer = create(<Composer {...props(sent)} />); });
+  await page.render(<Composer {...props(sent)} />);
   await press();
   expect(sent.map((call) => call[0])).toEqual(["from the clipboard"]);
   expect(composerDrafts.read(draftKey).text).toBe("");
@@ -85,7 +83,7 @@ it("sends the clipboard's text as a message, through Send", async () => {
 
 it("keeps the clipboard's text in the box when the send is refused", async () => {
   const sent: unknown[][] = [];
-  await act(async () => { renderer = create(<Composer {...props(sent, "The agent is busy.")} />); });
+  await page.render(<Composer {...props(sent, "The agent is busy.")} />);
   await press();
   expect(sent).toHaveLength(1);
   expect(composerDrafts.read(draftKey).text).toBe("from the clipboard");
@@ -94,9 +92,9 @@ it("keeps the clipboard's text in the box when the send is refused", async () =>
 
 it("is off over a draft, and leaves the draft alone", async () => {
   const sent: unknown[][] = [];
-  composerDrafts.set(draftKey, "my own words");
-  await act(async () => { renderer = create(<Composer {...props(sent)} />); });
-  expect(button()!.props.disabled).toBe(true);
+  composerDrafts.set(draftKey, "my own words", "replace");
+  await page.render(<Composer {...props(sent)} />);
+  expect(button()?.disabled).toBe(true);
   await press();
   expect(sent).toEqual([]);
   expect(composerDrafts.read(draftKey).text).toBe("my own words");
@@ -109,7 +107,7 @@ it.each([
 ])("sends nothing and says why on %s", async (_name, read, said) => {
   const sent: unknown[][] = [];
   readText = read;
-  await act(async () => { renderer = create(<Composer {...props(sent)} />); });
+  await page.render(<Composer {...props(sent)} />);
   await press();
   expect(sent).toEqual([]);
   expect(composerDrafts.read(draftKey).text).toBe("");
@@ -119,7 +117,7 @@ it.each([
 it("says to paste by hand where the clipboard cannot be read", async () => {
   const sent: unknown[][] = [];
   readText = undefined;
-  await act(async () => { renderer = create(<Composer {...props(sent)} />); });
+  await page.render(<Composer {...props(sent)} />);
   await press();
   expect(sent).toEqual([]);
   expect(note()).toBe("Paste is not available here. Use the keyboard's own paste in the message box.");
@@ -134,25 +132,23 @@ it.each([
   let answer: (text: string) => void = () => {};
   readText = () => new Promise((resolve) => { answer = resolve; });
   const base = props(sent);
-  await act(async () => { renderer = create(<Composer {...base} />); });
+  await page.render(<Composer {...base} />);
   await press();
-  await act(async () => {
-    if (change === null) composerDrafts.set(draftKey, "typed meanwhile");
-    else renderer!.update(change(base));
-  });
+  if (change === null) await act(async () => { composerDrafts.set(draftKey, "typed meanwhile", "replace"); });
+  else await page.render(change(base));
   await act(async () => { answer("from the clipboard"); });
   expect(sent).toEqual([]);
   expect(composerDrafts.read(key).text).toBe(change === null ? "typed meanwhile" : "");
 });
 
 it.each([
-  ["the box is typed in and cleared", [() => composerDrafts.set(draftKey, "typed"), () => composerDrafts.set(draftKey, "")], ""],
+  ["the box is typed in and cleared", [() => composerDrafts.set(draftKey, "typed", "replace"), () => composerDrafts.set(draftKey, "", "replace")], ""],
   ["another tab stores a draft", [() => paneLifetimes.paneStorage.setItem(draftKey, "another tab's draft")], "another tab's draft"],
 ] as const)("sends nothing when %s while the clipboard is read", async (_name, changes, left) => {
   const sent: unknown[][] = [];
   let answer: (text: string) => void = () => {};
   readText = () => new Promise((resolve) => { answer = resolve; });
-  await act(async () => { renderer = create(<Composer {...props(sent)} />); });
+  await page.render(<Composer {...props(sent)} />);
   await press();
   for (const change of changes) await act(async () => { change(); });
   await act(async () => { answer("from the clipboard"); });
@@ -165,9 +161,9 @@ it("reads the clipboard once for a double press", async () => {
   let reads = 0;
   let answer: (text: string) => void = () => {};
   readText = () => { reads++; return new Promise((resolve) => { answer = resolve; }); };
-  await act(async () => { renderer = create(<Composer {...props(sent)} />); });
+  await page.render(<Composer {...props(sent)} />);
   const first = button()!;
-  await act(async () => { first.props.onClick(); first.props.onClick(); });
+  await act(async () => { first.click(); first.click(); });
   await act(async () => { answer("from the clipboard"); });
   expect(reads).toBe(1);
   expect(sent).toHaveLength(1);
@@ -178,18 +174,19 @@ it("clears a sent paste with CRLF line breaks when an IME that changed nothing e
   let acknowledge: (result: true) => void = () => {};
   const results: ReturnType<ComposerProps["onSend"]>[] = ["The agent is busy.", new Promise<true>((resolve) => { acknowledge = resolve; })];
   readText = async () => "one\r\ntwo";
-  await act(async () => { renderer = create(<Composer {...props(sent)} onSend={(...args) => { sent.push(args); return results.shift()!; }} />); });
+  await page.render(<Composer {...props(sent)} onSend={(...args) => { sent.push(args); return results.shift()!; }} />);
   await press();
   expect(composerDrafts.read(draftKey).text).toBe("one\r\ntwo");
-  const box = renderer!.root.findAll((node) => node.type === "textarea" && node.props.onKeyDown !== undefined)[0]!;
+  const box = page.one<HTMLTextAreaElement>('textarea[aria-label="Message"]');
   await act(async () => {
-    box.props.onKeyDown({ key: "Enter", shiftKey: false, altKey: false, metaKey: false, ctrlKey: false, repeat: false, nativeEvent: { isComposing: false, keyCode: 13 }, preventDefault() {} });
+    box.dispatchEvent(new page.window.KeyboardEvent("keydown", { key: "Enter", keyCode: 13, bubbles: true, cancelable: true }) as unknown as Event);
   });
   expect(sent).toHaveLength(2);
   // a textarea reports its line breaks as \n whatever the draft holds
   await act(async () => {
-    box.props.onCompositionStart();
-    box.props.onCompositionEnd({ currentTarget: { value: "one\ntwo", selectionStart: 7 } });
+    box.setSelectionRange(7, 7);
+    box.dispatchEvent(new page.window.CompositionEvent("compositionstart", { bubbles: true }) as unknown as Event);
+    box.dispatchEvent(new page.window.CompositionEvent("compositionend", { bubbles: true }) as unknown as Event);
   });
   await act(async () => { acknowledge(true); });
   expect(composerDrafts.read(draftKey).text).toBe("");

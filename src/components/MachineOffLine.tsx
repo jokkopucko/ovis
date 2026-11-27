@@ -56,7 +56,7 @@ export function MachineOffLine({ state, reason, title, checking, failure = null,
   useLayoutEffect(() => () => { if (document.activeElement === button.current) focusBack.current?.()?.focus({ preventScroll: true }); }, []);
   return <div className="machine-off">
     <p className="machine-state is-off" role="status" title={title}>
-      <span className="machine-state-word">{state === "off" ? t("Switched off") : outOfReachWord("unreachable", t)}</span>
+      <span className="machine-state-word">{state === "off" ? t("Can't reach the PC: it may be off") : outOfReachWord("unreachable", t)}</span>
       {reason !== null && <span className="machine-state-detail">{reason}</span>}
     </p>
     {onCheck !== undefined && <button ref={button} type="button" className="btn machine-recheck" aria-disabled={checking || undefined} aria-busy={checking || undefined} onClick={() => { if (!checking) onCheck(); }}>{t(checking ? "Checking…" : "Check again")}</button>}

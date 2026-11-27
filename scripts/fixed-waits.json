@@ -15,7 +15,6 @@
   "scripts/plugin.test.ts": 5,
   "scripts/prompt-card-timing-demo-regression.ts": 3,
   "scripts/prompt-dock-demo-regression.ts": 5,
-  "scripts/pty-sidecar-bench.ts": 1,
   "scripts/restored-draft-demo-regression.ts": 1,
   "scripts/telemetry-regression.ts": 1,
   "scripts/terminal-command-backspace-regression.ts": 1,

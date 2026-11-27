@@ -441,3 +441,39 @@ describe("key proof (device-row-states T71, T72; S2-13 wire)", () => {
     rejects(() => decodeFrame(wire(FrameType.KEY_PROVE, JSON.stringify({ signature: "A".repeat(85) }), 0, 0)));
   });
 });
+
+describe("a join that brings the device's card for the account's signed list", () => {
+  const card = "A".repeat(86);
+  const request = (extra: Record<string, unknown>) => ({ type: FrameType.PAIR_REQUEST, flags: 0, stream_id: 0,
+    payload: { label: "Phone", public_key: spki, commitment: "A".repeat(43), ...extra } }) as MuxFrame;
+  const authOk = (list?: unknown) => ({ type: FrameType.AUTH_OK, flags: 0, stream_id: 0,
+    payload: { session_id: "a".repeat(32), device_id: "b".repeat(16), role: "drive", ...(list === undefined ? {} : { list }) } }) as MuxFrame;
+
+  it("carries the device's encryption key and its card in PAIR_REQUEST, both or neither", () => {
+    const both = request({ list_enc: spki, list_card: card });
+    expect(decodeFrame(encodeFrame(both)).payload).toEqual(both.payload);
+    expect(decodeFrame(encodeFrame(request({}))).payload).not.toHaveProperty("list_card");
+    rejects(() => encodeFrame(request({ list_enc: spki })));
+    rejects(() => encodeFrame(request({ list_card: card })));
+    rejects(() => encodeFrame(request({ list_enc: "not a key", list_card: card })));
+    rejects(() => encodeFrame(request({ list_enc: spki, list_card: "A".repeat(85) })));
+  });
+
+  it("reads a PAIR_REQUEST whose card is out of its form as the frame it was before the extension, and says so", () => {
+    for (const extra of [{ list_enc: spki }, { list_card: card }, { list_enc: "not a key", list_card: card }, { list_enc: spki, list_card: "A".repeat(85) }, { list_enc: 7, list_card: null }]) {
+      const read = decodeFrame(wire(FrameType.PAIR_REQUEST, JSON.stringify({ label: "Phone", public_key: spki, commitment: "A".repeat(43), ...extra }), 0, 0));
+      expect(read.payload).toEqual({ label: "Phone", public_key: spki, commitment: "A".repeat(43), list_malformed: true });
+    }
+    // nobody sends the mark itself
+    rejects(() => encodeFrame(request({ list_malformed: true })));
+  });
+
+  it("names the list and the place of the entry that let the device in, in AUTH_OK", () => {
+    const list = { id: "c".repeat(64), seq: 7, hash: "d".repeat(64) };
+    expect(decodeFrame(encodeFrame(authOk(list))).payload).toEqual(authOk(list).payload);
+    expect(decodeFrame(encodeFrame(authOk())).payload).not.toHaveProperty("list");
+    rejects(() => encodeFrame(authOk({ id: "c".repeat(63), seq: 7, hash: "d".repeat(64) })));
+    rejects(() => encodeFrame(authOk({ id: "c".repeat(64), seq: -1, hash: "d".repeat(64) })));
+    rejects(() => encodeFrame(authOk({ id: "c".repeat(64), seq: 7 })));
+  });
+});

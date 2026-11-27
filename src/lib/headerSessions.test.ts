@@ -1,9 +1,15 @@
-import { expect, it } from "bun:test";
-import { act, createElement } from "react";
-import { create } from "react-test-renderer";
+import { afterEach, expect, it } from "bun:test";
+import { createElement } from "react";
 import type { Machine } from "../../shared/machines.ts";
 import type { AgentStatus, HerdrPane, SessionSnapshot, TabInfo } from "../../shared/protocol.ts";
 import { nextWaitingTarget, sessionCounts, sessionCountsAcross, tabPosition, useWaitingRosters, waitingElsewhere, waitingTargets, type MachineRoster } from "./headerSessions.ts";
+import { openPage, type Page } from "./page.fixture.ts";
+
+let page: Page | undefined;
+afterEach(async () => {
+  await page?.close();
+  page = undefined;
+});
 
 const pane = (pane_id: string, agent_status: AgentStatus, tab_id = "t1", workspace_id = "w1", extra: Partial<HerdrPane> = {}): HerdrPane =>
   ({ pane_id, agent_status, tab_id, workspace_id, focused: false, agent: "claude", ...extra }) as HerdrPane;
@@ -126,18 +132,11 @@ it("counts the selected PC's waiting panes, and jumps to them, while the sidebar
   const hidden = pc("work", [pane("w1", "blocked"), pane("w2", "blocked")]);
   const status = (_machineId: string, p: HerdrPane) => p.agent_status;
   let rosters: MachineRoster<HerdrPane>[] = [];
-  const before = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-  try {
-    const Header = ({ selected }: { selected: Machine | undefined }) => { rosters = useWaitingRosters(shown, selected, status); return null; };
-    const renderer = await act(async () => create(createElement(Header, { selected: hidden })));
-    expect(sessionCountsAcross(rosters).waiting).toBe(2);
-    expect(nextWaitingTarget(rosters, { machineId: "work", paneId: "w1" })).toEqual({ machineId: "work", paneId: "w2" });
-    await act(async () => renderer.update(createElement(Header, { selected: shown[0] })));
-    expect(rosters.map((roster) => roster.machineId)).toEqual(["local"]);
-    await act(async () => renderer.unmount());
-  } finally {
-    if (before) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", before);
-    else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-  }
+  page = openPage();
+  const Header = ({ selected }: { selected: Machine | undefined }) => { rosters = useWaitingRosters(shown, selected, status); return null; };
+  await page.render(createElement(Header, { selected: hidden }));
+  expect(sessionCountsAcross(rosters).waiting).toBe(2);
+  expect(nextWaitingTarget(rosters, { machineId: "work", paneId: "w1" })).toEqual({ machineId: "work", paneId: "w2" });
+  await page.render(createElement(Header, { selected: shown[0] }));
+  expect(rosters.map((roster) => roster.machineId)).toEqual(["local"]);
 });

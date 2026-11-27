@@ -1,7 +1,8 @@
 import { afterEach, expect, it, jest } from "bun:test";
 import { MAX_ATTACHMENT_BYTES } from "../../shared/attachments.ts";
 import { NOTICE_VERSION } from "../../shared/telemetry-notice.ts";
-import { AttachmentTooLargeError, ApiError, cancelUsageLogin, changeTelemetry, errorFrom, fetchAgentCatalog, fetchAgentKinds, fetchPaneSummaries, fetchTelemetry, SUMMARY_REQUEST_MS, movePaneBeside, requestRelay, swapPaneWith, uploadPaneImage, verifySourceBoot } from "./api.ts";
+import { AttachmentTooLargeError, ApiError, cancelUsageLogin, changeTelemetry, errorFrom, fetchAgentCatalog, fetchAgentKinds, fetchPanePromptState, fetchPaneSummaries, fetchTelemetry, SUMMARY_REQUEST_MS, movePaneBeside, requestRelay, swapPaneWith, uploadPaneImage, verifySourceBoot } from "./api.ts";
+import { chatReadDeadlineMs } from "./chatReadDeadline.ts";
 import { movingHerdrFocusOn } from "./followFocus.ts";
 import { setCurrentLanguage } from "./i18n.ts";
 import { DEFAULT_SETTINGS, telemetrySettingsSnapshot } from "./settings.ts";
@@ -120,6 +121,75 @@ it("refuses a 40 MiB file in the browser with the 32 MB limit named, before uplo
   expect(MAX_ATTACHMENT_BYTES).toBe(32 * 1024 * 1024);
 });
 
+it("uploads an iPhone's HEIC or JPEG photo as the JPEG the browser drew, scaled to 2048 a side and never up", async () => {
+  const bodies: { content_type: string; name: string; data_base64: string }[] = [];
+  globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    return Response.json({ ok: true, path: "/work/.ovis/paste-20261123-212127-ee17a8b2.jpg" });
+  }) as typeof fetch;
+  const drawn: number[][] = [], encoded: unknown[][] = [], revoked: string[] = [];
+  const sizes: [number, number][] = [[8064, 6048], [4032, 3024], [1024, 768]];
+  const saved = { Image: globalThis.Image, document: globalThis.document, createObjectURL: URL.createObjectURL, revokeObjectURL: URL.revokeObjectURL };
+  Object.assign(globalThis, {
+    // a browser's image has no size until it is decoded
+    Image: class { src = ""; naturalWidth = 0; naturalHeight = 0; async decode() { [this.naturalWidth, this.naturalHeight] = sizes.shift() ?? [0, 0]; } },
+    document: { createElement: () => ({
+      width: 0, height: 0,
+      getContext() { return { drawImage: (_image: unknown, ...box: number[]) => drawn.push(box) }; },
+      toBlob(resolve: (blob: Blob) => void, ...format: unknown[]) { encoded.push(format); resolve(new Blob(["jpeg"], { type: "image/jpeg" })); },
+    }) },
+  });
+  URL.createObjectURL = () => "blob:photo";
+  URL.revokeObjectURL = (url: string) => { revoked.push(url); };
+  const stillHeic = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63, 0, 0, 0, 0, 0x6d, 0x69, 0x66, 0x31, 0x68, 0x65, 0x69, 0x63]);
+  try {
+    const paths = [
+      await uploadPaneImage("p1", new File([stillHeic], "IMG_0001.HEIC", { type: "image/heic" })),
+      await uploadPaneImage("p1", new File([new Uint8Array([0xff, 0xd8, 0xff, 0xd9])], "IMG_3718.jpeg", { type: "image/jpeg" })),
+      await uploadPaneImage("p1", new File([stillHeic], "IMG_0002.HEIC", { type: "image/heic" })),
+    ];
+    expect(paths).toEqual(Array(3).fill("/work/.ovis/paste-20261123-212127-ee17a8b2.jpg"));
+  } finally {
+    Object.assign(globalThis, { Image: saved.Image, document: saved.document });
+    URL.createObjectURL = saved.createObjectURL;
+    URL.revokeObjectURL = saved.revokeObjectURL;
+  }
+  expect(drawn).toEqual([[0, 0, 2048, 1536], [0, 0, 2048, 1536], [0, 0, 1024, 768]]);
+  expect(encoded).toEqual(Array(3).fill(["image/jpeg", 0.85]));
+  expect(revoked).toEqual(["blob:photo", "blob:photo", "blob:photo"]);
+  expect(bodies.map(({ content_type, name, data_base64 }) => [content_type, name, atob(data_base64)])).toEqual([["image/jpeg", "IMG_0001.jpg", "jpeg"], ["image/jpeg", "IMG_3718.jpg", "jpeg"], ["image/jpeg", "IMG_0002.jpg", "jpeg"]]);
+});
+
+it("falls back to the original HEIC file without encoding a blank JPEG when canvas 2D context is unavailable", async () => {
+  const bodies: { content_type: string; name: string; data_base64: string }[] = [];
+  let toBlobCalls = 0;
+  globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    return Response.json({ ok: true, path: "/work/.ovis/IMG_0001.heic" });
+  }) as typeof fetch;
+  const saved = { Image: globalThis.Image, document: globalThis.document, createObjectURL: URL.createObjectURL, revokeObjectURL: URL.revokeObjectURL };
+  Object.assign(globalThis, {
+    Image: class { src = ""; naturalWidth = 0; naturalHeight = 0; async decode() { this.naturalWidth = 1000; this.naturalHeight = 800; } },
+    document: { createElement: () => ({
+      width: 0, height: 0,
+      getContext() { return null; },
+      toBlob(resolve: (blob: Blob) => void) { toBlobCalls += 1; resolve(new Blob(["blank-jpeg"], { type: "image/jpeg" })); },
+    }) },
+  });
+  URL.createObjectURL = () => "blob:photo";
+  URL.revokeObjectURL = () => {};
+  const stillHeic = new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63, 0, 0, 0, 0, 0x6d, 0x69, 0x66, 0x31, 0x68, 0x65, 0x69, 0x63]);
+  try {
+    expect(await uploadPaneImage("p1", new File([stillHeic], "IMG_0001.HEIC", { type: "image/heic" }))).toBe("/work/.ovis/IMG_0001.heic");
+  } finally {
+    Object.assign(globalThis, { Image: saved.Image, document: saved.document });
+    URL.createObjectURL = saved.createObjectURL;
+    URL.revokeObjectURL = saved.revokeObjectURL;
+  }
+  expect(toBlobCalls).toBe(0);
+  expect(bodies.map(({ content_type, name, data_base64 }) => [content_type, name, Array.from(Uint8Array.from(atob(data_base64), (c) => c.charCodeAt(0)))])).toEqual([["image/heic", "IMG_0001.HEIC", Array.from(stillHeic)]]);
+});
+
 it("posts the full safe telemetry snapshot and current notice version", async () => {
   const settings = telemetrySettingsSnapshot({
     ...DEFAULT_SETTINGS,
@@ -185,6 +255,25 @@ it("gives up a summary request a stalled PC holds after SUMMARY_REQUEST_MS, as a
     jest.advanceTimersByTime(1);
     expect(await answer).toMatchObject({ name: "AbortError" });
   } finally { jest.useRealTimers(); }
+});
+
+it("gives up a stalled prompt read so chat can poll again", async () => {
+  jest.useFakeTimers();
+  const requests = heldFetch();
+  const machine = "stalled-pc";
+  const read = fetchPanePromptState("w1:p1", machine).catch((error: unknown) => error);
+  const request = requests[0];
+  if (request === undefined) throw new Error("Expected a prompt request");
+  try {
+    jest.advanceTimersByTime(chatReadDeadlineMs(machine) - 1);
+    expect(request.signal.aborted).toBe(false);
+    jest.advanceTimersByTime(1);
+    expect(request.signal.aborted).toBe(true);
+    expect(await read).toMatchObject({ name: "TimeoutError" });
+  } finally {
+    request.answer(Response.json({ prompt: null }));
+    await read;
+  }
 });
 
 it("asks a PC for its panes' summaries, and answers null each time a bridge has no summary route", async () => {

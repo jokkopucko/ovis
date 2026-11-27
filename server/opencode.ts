@@ -5,7 +5,8 @@
  * `OPENCODE_DB` naming another file, relative to the data dir (what `opencode debug paths` prints).
  * The service is started with the user's environment, so this server's environment finds it; the
  * pane's process environment would not. A session is a `session_v2` row and its conversation the
- * `session_message` rows of its id, ordered by `seq`, each a `type` and a JSON `data`. OpenCode 1.x
+ * `session_message` rows of its id, ordered by `seq`, each a `type` and a JSON `data`. OpenCode 2.4
+ * can store assistant content separately in `session_part`, ordered by `ordinal`. OpenCode 1.x
  * wrote `session`/`message`/`part` instead (2.0 copies them into `session_v2` when it migrates).
  *
  * herdr's OpenCode integration reports the session the TUI shows (`herdr:opencode`, kind `id`),
@@ -37,9 +38,9 @@ const NOTICE_CHARS = 16_000;
 const BUSY_TIMEOUT_MS = 250;
 
 const SESSION_ID = /^ses_[A-Za-z0-9]{1,64}$/;
-const MESSAGE_ID = /^msg_[A-Za-z0-9]{1,64}$/;
-export const OPENCODE_TOOL_REF = /^(msg_[A-Za-z0-9]{1,64}):(\d{1,4})$/;
-export const OPENCODE_IMAGE_REF = /^opencode:(msg_[A-Za-z0-9]{1,64}):(\d{1,3})$/;
+const MESSAGE_ID = /^msg_[A-Za-z0-9]{1,64}(?:_\d{1,12}){0,8}$/;
+export const OPENCODE_TOOL_REF = /^(msg_[A-Za-z0-9]{1,64}(?:_\d{1,12}){0,8}):(\d{1,4})$/;
+export const OPENCODE_IMAGE_REF = /^opencode:(msg_[A-Za-z0-9]{1,64}(?:_\d{1,12}){0,8}):(\d{1,3})$/;
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
 type Row = Record<string, unknown>;
@@ -125,15 +126,29 @@ export type OpencodeRecord =
   | { role: "assistant"; ts: string | null; end: string | null; parts: ConversationPart[]; stop: boolean }
   | { role: "idle" };
 
-/** The images a row carries, in the order its refs count them. Only inline data: a path is never followed. */
-function rowImages(type: string, data: Row): { media_type: string; data: string }[] {
-  const images: { media_type: string; data: string }[] = [];
+const MEDIA_REF = /^media:([0-9a-f]{64})$/i;
+
+type RowImage = { media_type: string; data: string } | { media_type: string; blobHash: string };
+
+/** The images a row carries, in the order its refs count them. Only inline data or session-scoped blob_ref entries: a path is never followed. */
+function rowImages(type: string, data: Row, hasBlobRef?: (hash: string) => boolean): RowImage[] {
+  const images: RowImage[] = [];
   const add = (value: unknown) => {
     const file = record(value);
     const uri = typeof file.uri === "string" ? /^data:([\w.+/-]+);base64,(.*)$/s.exec(file.uri) : null;
-    const type = uri?.[1] ?? file.mime;
+    const mediaType = uri?.[1] ?? file.mime;
     const base64 = uri?.[2] ?? (record(file.source).type === "inline" ? file.data : undefined);
-    if (typeof type === "string" && IMAGE_TYPES.has(type) && typeof base64 === "string" && base64.length > 0) images.push({ media_type: type, data: base64 });
+    if (typeof mediaType === "string" && IMAGE_TYPES.has(mediaType) && typeof base64 === "string" && base64.length > 0) {
+      images.push({ media_type: mediaType, data: base64 });
+      return;
+    }
+    if (hasBlobRef !== undefined && typeof file.uri === "string") {
+      const media = MEDIA_REF.exec(file.uri);
+      const hash = media?.[1]?.toLowerCase();
+      if (hash !== undefined && typeof file.mime === "string" && IMAGE_TYPES.has(file.mime) && hasBlobRef(hash)) {
+        images.push({ media_type: file.mime, blobHash: hash });
+      }
+    }
   };
   if (type === "user") (Array.isArray(data.files) ? data.files : []).forEach(add);
   if (type === "assistant") {
@@ -175,10 +190,10 @@ function unwrap(body: string): string {
   return (match?.[2] ?? body).trim();
 }
 
-export function opencodeRecord(id: string, type: string, data: Row): OpencodeRecord | null {
+export function opencodeRecord(id: string, type: string, data: Row, hasBlobRef?: (hash: string) => boolean): OpencodeRecord | null {
   const time = record(data.time);
   if (type === "user") {
-    const images = rowImages(type, data).map((image, index): ConversationPart => ({ kind: "image", media_type: image.media_type, ref: `opencode:${id}:${index}` }));
+    const images = rowImages(type, data, hasBlobRef).map((image, index): ConversationPart => ({ kind: "image", media_type: image.media_type, ref: `opencode:${id}:${index}` }));
     const display = text(record(data.metadata).displayText);
     const raw = text(data.text);
     const prompt = display ?? (raw === null ? null : opencodeSkillInvocation(raw));
@@ -208,6 +223,8 @@ export function opencodeRecord(id: string, type: string, data: Row): OpencodeRec
           input: JSON.stringify(input, null, 2),
           output: "",
         };
+        const callId = text(block.id);
+        if (callId !== null) part.call_id = callId;
         if (skill !== null) part.skill = skill;
         const outcome = toolState(state.status);
         if (outcome !== undefined) part.state = outcome;
@@ -215,7 +232,7 @@ export function opencodeRecord(id: string, type: string, data: Row): OpencodeRec
         const exit = record(state.metadata).exit;
         if (state.status === "error" || (typeof exit === "number" && exit !== 0)) part.error = true;
         const files = (Array.isArray(state.content) ? state.content : []).map(record).filter((item) => item.type === "file");
-        const shown = files.length === 0 ? [] : rowImages("assistant", { content: [block] });
+        const shown = files.length === 0 ? [] : rowImages("assistant", { content: [block] }, hasBlobRef);
         if (shown.length > 0) part.images = shown.map((found) => ({ media_type: found.media_type, ref: `opencode:${id}:${image++}` }));
         parts.push(part);
       }
@@ -285,7 +302,7 @@ export function opencodeTurns(records: readonly (OpencodeRecord | null)[]): Conv
   return turns.filter((turn) => turn.parts.length > 0);
 }
 
-export interface RowMeta { id: string; seq: number; type: string; updated: number; size: number }
+export interface RowMeta { id: string; seq: number; type: string; updated: number; size: number; partsUpdated?: string | null; partsMaxUpdated?: number | null }
 
 export function pageStart(rows: Iterable<RowMeta>, floor: number, widen: boolean, window = OPENCODE_WINDOW_BYTES, pagePrompts = MAX_PAGE_PROMPTS): number {
   let bytes = 0;
@@ -321,7 +338,8 @@ export type OpencodeAnswer =
  * `$onUpdate(Date.now)`), but two writes in one millisecond leave it where it was: the size tells
  * those apart too.
  */
-const newestRecords = new Map<string, Map<string, { updated: number; size: number; record: OpencodeRecord | null }>>();
+type CachedRecord = Pick<RowMeta, "updated" | "size" | "partsUpdated"> & { revision: number | null; record: OpencodeRecord | null };
+const newestRecords = new Map<string, Map<string, CachedRecord>>();
 const answers = new Map<string, { signature: string; answer: Extract<OpencodeAnswer, { kind: "page" }> }>();
 
 function remember<T>(map: Map<string, T>, key: string, value: T, limit: number): void {
@@ -453,6 +471,34 @@ function parseData(data: string): Row {
   try { return record(JSON.parse(data)); } catch { return {}; }
 }
 
+function messageReader(db: Database, sessionId: string) {
+  const parts = storeHasTable(db, "session_part") ? db.query<{ data: string }, [string, string]>(
+    "SELECT data FROM session_part WHERE session_id = ? AND message_id = ? ORDER BY ordinal",
+  ) : null;
+  const blobRef = storeHasTable(db, "blob") && storeHasTable(db, "blob_ref") ? db.query<{ ok: number }, [string, string, string]>(
+    "SELECT 1 AS ok FROM blob_ref WHERE session_id = ? AND message_id = ? AND hash = ?",
+  ) : null;
+  return {
+    split: parts !== null,
+    hasBlobRef(id: string): ((hash: string) => boolean) | undefined {
+      return blobRef === null ? undefined : (hash: string) => blobRef.get(sessionId, id, hash) !== null;
+    },
+    data(id: string, type: string, raw: string): Row {
+      const data = parseData(raw);
+      if (type !== "assistant" || parts === null) return data;
+      const blocks = parts.all(sessionId, id);
+      if (blocks.length === 0) return data;
+      const inline = Array.isArray(data.content) ? data.content : [];
+      return { ...data, content: [...blocks.map((block) => parseData(block.data)), ...inline] };
+    },
+  };
+}
+
+function sessionRevision(db: Database, sessionId: string): number | null {
+  if (!storeHasTable(db, "event_sequence")) return null;
+  return db.query<{ seq: number }, [string]>("SELECT seq FROM event_sequence WHERE aggregate_id = ?").get(sessionId)?.seq ?? null;
+}
+
 /**
  * Every cursor is the `seq` of a
  * page's first row, and a committed `/undo` deletes every row from its message on: a chat whose
@@ -496,12 +542,31 @@ const ROW_QUERIES: Record<OpencodeRowSize, { page: string; pageDescending: strin
   },
 };
 
+function* withPartStats(db: Database, sessionId: string, measure: OpencodeRowSize, rows: Iterable<RowMeta>): Iterable<RowMeta> {
+  const bytes = measure === OPENCODE_ROW_SIZE.octets ? OPENCODE_ROW_SIZE.octets : OPENCODE_ROW_SIZE.bytes;
+  // Use max + modulo sum instead of raw sum(time_updated) so millions of parts never overflow SQLite's 64-bit integer sum.
+  const stats = db.query<{ count: number; size: number; maxUpdated: number | null; modUpdated: number | null }, [string, string]>(
+    `SELECT count(*) AS count, coalesce(sum(${bytes}), 0) AS size, max(time_updated) AS maxUpdated, sum(time_updated % 1000000000) AS modUpdated
+      FROM session_part WHERE session_id = ? AND message_id = ?`,
+  );
+  for (const row of rows) {
+    if (row.type !== "assistant") { yield row; continue; }
+    const part = stats.get(sessionId, row.id)!;
+    yield {
+      ...row,
+      size: row.size + part.size,
+      partsUpdated: part.count === 0 ? null : `${part.count}:${part.maxUpdated}:${part.modUpdated}`,
+      partsMaxUpdated: part.maxUpdated,
+    };
+  }
+}
+
 export function opencodeConversation(path: string, sessionId: string, page: OpencodePage = {}, rowSize?: OpencodeRowSize): OpencodeAnswer {
   if (!SESSION_ID.test(sessionId)) return { kind: "unavailable", reason: "no_session_id" };
   const key = opencodeReadKey(path, sessionId);
   const cacheKey = `${key}\0${page.before ?? ""}\0${page.since ?? ""}\0${page.from ?? ""}\0${pagePrompts(page)}`;
   try {
-    const answer = withStore(path, (db): OpencodeAnswer => {
+    const answer = withStore(path, (db): OpencodeAnswer => db.transaction((): OpencodeAnswer => {
       if (storeFlavor(db) === "v1") {
         try { return conversation1(db, cacheKey, sessionId, page); }
         catch (error) {
@@ -511,12 +576,32 @@ export function opencodeConversation(path: string, sessionId: string, page: Open
       }
       const view = sessionView(db, sessionId);
       if (view === null) return { kind: "unavailable", reason: "session_not_found" };
+      const message = messageReader(db, sessionId);
+      const measure = rowSize ?? supportedRowSize(db);
+      const revision = sessionRevision(db, sessionId);
+      // When OpenCode's durable event_sequence is present, it advances on every part/message write,
+      // so the cache check avoids scanning session_part payloads (critical on SQLite without octet_length).
+      // Without event_sequence, fall back to overflow-safe part stats (count, max, mod-sum, length).
+      const partStats = message.split && revision === null ? db.query<{ count: number; maxUpdated: number | null; modUpdated: number | null; size: number }, [string]>(
+        `SELECT count(*) AS count, max(time_updated) AS maxUpdated, sum(time_updated % 1000000000) AS modUpdated, coalesce(sum(${measure === OPENCODE_ROW_SIZE.octets ? OPENCODE_ROW_SIZE.octets : OPENCODE_ROW_SIZE.bytes}), 0) AS size FROM session_part WHERE session_id = ?`,
+      ).get(sessionId) : null;
+      const signature = `${view.signature}${revision === null ? "" : `:r${revision}`}${partStats === null ? "" : `:${partStats.count}:${partStats.maxUpdated}:${partStats.modUpdated}:${partStats.size}`}`;
       const cached = answers.get(cacheKey);
-      if (cached?.signature === view.signature) return cached.answer;
+      if (cached?.signature === signature) return cached.answer;
 
       const end = view.end;
-      const measure = rowSize ?? supportedRowSize(db);
-      const descending = (from: number, to: number) => db.query<RowMeta, [string, number, number]>(ROW_QUERIES[measure].pageDescending).iterate(sessionId, from, to);
+      const descendedMeta = page.before === undefined ? new Map<string, RowMeta>() : null;
+      const descending = (from: number, to: number) => {
+        const rows = db.query<RowMeta, [string, number, number]>(ROW_QUERIES[measure].pageDescending).iterate(sessionId, from, to);
+        const withStats = message.split ? withPartStats(db, sessionId, measure, rows) : rows;
+        if (descendedMeta === null) return withStats;
+        return (function* () {
+          for (const row of withStats) {
+            descendedMeta.set(row.id, row);
+            yield row;
+          }
+        })();
+      };
       let start: number;
       let to = end;
       if (page.before !== undefined) {
@@ -534,14 +619,39 @@ export function opencodeConversation(path: string, sessionId: string, page: Open
 
       const records: (OpencodeRecord | null)[] = [];
       if (page.before === undefined) {
-        const known = newestRecords.get(key) ?? new Map<string, { updated: number; size: number; record: OpencodeRecord | null }>();
-        const kept = new Map<string, { updated: number; size: number; record: OpencodeRecord | null }>();
+        const known = newestRecords.get(key) ?? new Map<string, CachedRecord>();
+        const kept = new Map<string, CachedRecord>();
         const data = db.query<{ data: string }, [string, string]>("SELECT data FROM session_message WHERE id = ? AND session_id = ?");
-        for (const row of db.query<RowMeta, [string, number, number]>(ROW_QUERIES[measure].page).iterate(sessionId, start, to)) {
+        const rawRows = [...db.query<RowMeta, [string, number, number]>(ROW_QUERIES[measure].page).iterate(sessionId, start, to)];
+        const missingMeta = message.split ? rawRows.filter((row) => row.type === "assistant" && !descendedMeta!.has(row.id)) : [];
+        if (missingMeta.length > 0) {
+          for (const enriched of withPartStats(db, sessionId, measure, missingMeta)) descendedMeta!.set(enriched.id, enriched);
+        }
+        const pageRows = message.split ? rawRows.map((row) => descendedMeta!.get(row.id) ?? row) : rawRows;
+        let pageMaxPartUpdated: number | null = null;
+        if (message.split) {
+          for (const row of pageRows) {
+            if (row.partsMaxUpdated !== null && row.partsMaxUpdated !== undefined
+              && (pageMaxPartUpdated === null || row.partsMaxUpdated > pageMaxPartUpdated)) {
+              pageMaxPartUpdated = row.partsMaxUpdated;
+            }
+          }
+        }
+        const SMALL_SPLIT_REPARSE_BYTES = 256 * 1024;
+        for (const row of pageRows) {
           let entry = known.get(row.id);
-          if (entry?.updated !== row.updated || entry.size !== row.size) {
+          // Re-parse a cached split assistant message when its stats changed, it sits at the latest part tick,
+          // or event_sequence advanced and the row is small (catching same-ms equal-length rewrites without re-parsing multi-MiB blobs).
+          const atLatestPartTick = row.type === "assistant" && message.split
+            && pageMaxPartUpdated !== null && row.partsMaxUpdated === pageMaxPartUpdated;
+          const smallRevisionBump = row.type === "assistant" && message.split
+            && revision !== null && entry?.revision !== revision && row.size <= SMALL_SPLIT_REPARSE_BYTES;
+          if (entry?.updated !== row.updated || entry.size !== row.size || entry.partsUpdated !== row.partsUpdated || atLatestPartTick || smallRevisionBump) {
             const found = data.get(row.id, sessionId);
-            entry = { updated: row.updated, size: row.size, record: found === null ? null : opencodeRecord(row.id, row.type, parseData(found.data)) };
+            entry = {
+              updated: row.updated, size: row.size, partsUpdated: row.partsUpdated, revision,
+              record: found === null ? null : opencodeRecord(row.id, row.type, message.data(row.id, row.type, found.data), message.hasBlobRef(row.id)),
+            };
           }
           kept.set(row.id, entry);
           records.push(entry.record);
@@ -550,7 +660,7 @@ export function opencodeConversation(path: string, sessionId: string, page: Open
       } else {
         for (const row of db.query<{ id: string; type: string; data: string }, [string, number, number]>(
           "SELECT id, type, data FROM session_message WHERE session_id = ? AND seq >= ? AND seq < ? ORDER BY seq",
-        ).iterate(sessionId, start, to)) records.push(opencodeRecord(row.id, row.type, parseData(row.data)));
+        ).iterate(sessionId, start, to)) records.push(opencodeRecord(row.id, row.type, message.data(row.id, row.type, row.data), message.hasBlobRef(row.id)));
       }
       const result = {
         kind: "page" as const,
@@ -558,11 +668,11 @@ export function opencodeConversation(path: string, sessionId: string, page: Open
         metadata: sessionMetadata(db, key, sessionId, to, measure),
         cursor: start > 0 ? `${view.historyId}:${start}` : null,
         history_id: view.historyId,
-        signature: view.signature,
+        signature,
       };
-      remember(answers, cacheKey, { signature: view.signature, answer: result }, 32);
+      remember(answers, cacheKey, { signature, answer: result }, 32);
       return result;
-    });
+    })());
     return answer ?? { kind: "unavailable", reason: "transcript_missing" };
   } catch (error) {
     if (unusable(error)) return { kind: "unavailable", reason: "transcript_missing" };
@@ -583,16 +693,16 @@ function sessionRow(db: Database, sessionId: string, id: string): { type: string
     const hidden = db.query<{ seq: number }, [string, string]>("SELECT seq FROM session_message WHERE session_id = ? AND id = ?").get(sessionId, boundary);
     if (hidden !== null && row.seq >= hidden.seq) return null;
   }
-  return { type: row.type, data: parseData(row.data) };
+  return { type: row.type, data: messageReader(db, sessionId).data(id, row.type, row.data) };
 }
 
-function readRow<T>(path: string, sessionId: string, id: string, read: (row: { type: string; data: Row }) => T | null): T | null {
+function readRow<T>(path: string, sessionId: string, id: string, read: (row: { type: string; data: Row }, db: Database) => T | null): T | null {
   if (!SESSION_ID.test(sessionId) || !MESSAGE_ID.test(id)) return null;
   try {
-    return withStore(path, (db) => {
+    return withStore(path, (db) => db.transaction(() => {
       const row = storeFlavor(db) === "v1" ? sessionRow1(db, sessionId, id) : sessionRow(db, sessionId, id);
-      return row === null ? null : read(row);
-    });
+      return row === null ? null : read(row, db);
+    })());
   } catch (error) {
     if (unusable(error) || busy(error)) return null;
     throw error;
@@ -612,9 +722,23 @@ export function opencodeToolOutput(path: string, sessionId: string, ref: string)
 export function opencodeImage(path: string, sessionId: string, ref: string): { mediaType: string; bytes: Uint8Array<ArrayBuffer> } | null {
   const match = OPENCODE_IMAGE_REF.exec(ref);
   if (match === null) return null;
-  return readRow(path, sessionId, match[1]!, (row) => {
-    const image = rowImages(row.type, row.data)[Number(match[2])];
-    return image === undefined ? null : { mediaType: image.media_type, bytes: new Uint8Array(Buffer.from(image.data, "base64")) };
+  const messageId = match[1]!;
+  return readRow(path, sessionId, messageId, (row, db) => {
+    const hasBlobs = storeHasTable(db, "blob") && storeHasTable(db, "blob_ref");
+    const hasBlobRef = hasBlobs
+      ? (hash: string) => db.query<{ ok: number }, [string, string, string]>(
+          "SELECT 1 AS ok FROM blob_ref WHERE session_id = ? AND message_id = ? AND hash = ?",
+        ).get(sessionId, messageId, hash) !== null
+      : undefined;
+    const image = rowImages(row.type, row.data, hasBlobRef)[Number(match[2])];
+    if (image === undefined) return null;
+    if ("data" in image) return { mediaType: image.media_type, bytes: new Uint8Array(Buffer.from(image.data, "base64")) };
+    const stored = db.query<{ mime: string | null; data: Uint8Array | null }, [string, string, string]>(
+      "SELECT b.mime, b.data FROM blob_ref r JOIN blob b ON b.hash = r.hash WHERE r.session_id = ? AND r.message_id = ? AND r.hash = ?",
+    ).get(sessionId, messageId, image.blobHash);
+    if (stored === null || !(stored.data instanceof Uint8Array) || stored.data.byteLength === 0) return null;
+    const mediaType = typeof stored.mime === "string" && IMAGE_TYPES.has(stored.mime) ? stored.mime : image.media_type;
+    return { mediaType, bytes: new Uint8Array(stored.data) };
   });
 }
 
@@ -680,10 +804,13 @@ type StoreFlavor = "v2" | "v1" | "unknown";
 const MAX_V1_ROWS = 10_000;
 const MAX_V1_BYTES = 4 * OPENCODE_WINDOW_BYTES;
 
+function storeHasTable(db: Database, name: string): boolean {
+  return db.query<{ name: string }, [string]>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== null;
+}
+
 function storeFlavor(db: Database): StoreFlavor {
-  const table = (name: string) => db.query<{ name: string }, [string]>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== null;
-  if (table("session_v2")) return "v2";
-  if (table("session") && table("message") && table("part")) return "v1";
+  if (storeHasTable(db, "session_v2")) return "v2";
+  if (storeHasTable(db, "session") && storeHasTable(db, "message") && storeHasTable(db, "part")) return "v1";
   return "unknown";
 }
 

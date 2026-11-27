@@ -18,8 +18,9 @@ const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-prompt-lifetime-")));
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 let server: ReturnType<typeof Bun.serve> | undefined;
 let answer: { prompt: InteractivePrompt | null } | "fail" = { prompt: null };
-let readWaiters: Array<() => void> = [];
-const nextRead = (): Promise<void> => new Promise((resolve) => { readWaiters.push(resolve); });
+// each waiter is told when the server answered that read
+let readWaiters: Array<(at: number) => void> = [];
+const nextRead = (): Promise<number> => new Promise((resolve) => { readWaiters.push(resolve); });
 let heldAnswer: { arrived: () => void; release: Promise<void>; refuse?: boolean } | null = null;
 try {
   const repo = join(import.meta.dir, ".."), output = join(root, "dist");
@@ -32,8 +33,8 @@ try {
     const url = new URL(request.url);
     if (url.pathname === "/api/pane/prompt") {
       const response = answer === "fail" ? Response.json({ error: "unavailable" }, { status: 503 }) : Response.json({ ...answer, outcomes: [] });
-      const waiters = readWaiters; readWaiters = [];
-      queueMicrotask(() => { for (const wake of waiters) wake(); });
+      const waiters = readWaiters, at = performance.now(); readWaiters = [];
+      queueMicrotask(() => { for (const wake of waiters) wake(at); });
       return response;
     }
     if (url.pathname === "/api/pane/conversation") return Response.json({ source: "claude-transcript", cursor: null, turns });
@@ -204,15 +205,17 @@ try {
     try {
       await mounted;
       const first = nextRead();
-      const edge = Date.now();
       await setChat(page, { agentStatus: "blocked" });
-      await first;
+      const edgeRead = await first;
       answer = { prompt: question("d", "Deploy now?") };
+      const again = nextRead();
       await card(page).getByText("Deploy now?").waitFor();
-      const after = Date.now() - edge;
-      assert.ok(after < 1000, `the card follows the blocked edge promptly (${after} ms)`);
+      // timed between the two reads' arrival at the server, so a loaded runner's page and test steps do not count:
+      // a blocked pane reads again on the quick cadence (BLOCKED_PROMPT_READ_MS), not the 2 s poll
+      const after = Math.round(await again - edgeRead);
+      assert.ok(after < 1000, `the card's read follows the blocked edge promptly (${after} ms)`);
       assert.deepEqual(errors, []);
-      console.log(`PASS the card shows ${after} ms after the blocked edge`);
+      console.log(`PASS the card's read comes ${after} ms after the blocked edge's`);
     } finally { await close(); }
   });
   assert.deepEqual(failed, [], "every scenario passes");

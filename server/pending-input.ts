@@ -10,6 +10,8 @@ export interface PendingIdentity {
   omoSession?: string | null;
   /** the session Claude's PID record names: it changes with /clear and /resume in the same process, hook or not */
   claudeSession?: string | null;
+  /** Pi's extension-verified file when the backend does not report the session. */
+  piSession?: { readonly path: string; readonly fileIdentity: string | null };
 }
 
 /** Whether two reads of a process's start name the same process. macOS allows a second: its birth was once read from
@@ -48,7 +50,7 @@ export interface PendingRecord<Owner, Lease> {
 }
 type Fault = { code: string; message: string };
 interface HeldCopyReply { ok: boolean; code?: string; message?: string }
-type Removed = { id: string; outcome: "sent" | "discarded" | "dismissed" };
+type Removed = { id: string; outcome: "sent" | "discarded" | "consumed" | "dismissed" };
 /**
  * `joined`: until then a ready status may be the end of the turn a Send now's Enter joined, or of one that ended just
  * before that Enter landed and started a turn of its own. `lenient`: such a ready came, and the wait is for that own
@@ -76,6 +78,11 @@ export class PendingInputs<Owner, Lease> {
   private readonly statuses = new Map<string, AgentStatus>();
   private readonly events = new Map<string, number>();
   private readonly gates = new Map<string, TurnGate>();
+  /**
+   * The panes whose queue waits for a turn's end the agent itself tells (awaitTurn), each with that turn's wait: nothing
+   * herdr reads of the pane ends it.
+   */
+  private readonly turns = new Map<string, { gate: TurnGate }>();
   /** when a status of the pane was last taken, from an event or a read */
   private readonly readAt = new Map<string, number>();
   /**
@@ -87,6 +94,7 @@ export class PendingInputs<Owner, Lease> {
   private readonly waits = new Map<string, NonNullable<PendingMessage["waiting"]>>();
   private readonly closed = new Map<Owner, number>();
   private readonly movedInFlight = new WeakSet<PendingRecord<Owner, Lease>>();
+  private readonly reviewOnly = new WeakSet<PendingRecord<Owner, Lease>>();
   private readonly removed = new Map<string, { owner: Owner; paneId: string; outcome: Removed["outcome"]; at: number }>();
   private readonly resends = new Map<string, { id: string; paneId: string; fingerprint: string; reply: Promise<HeldCopyReply>; settledAt: number | null; uncertain: boolean }>();
 
@@ -121,6 +129,7 @@ export class PendingInputs<Owner, Lease> {
     if (previous) {
       if (previous.fingerprint !== fingerprint) throw new PendingInputError("invalid_submit_id", "This resend id already belongs to another message");
     }
+    if (outcome?.paneId === paneId && outcome.outcome === "consumed") return Promise.resolve({ ok: true });
     if (outcome?.paneId === paneId && outcome.outcome === "dismissed"
       || this.records.get(id)?.paneId === paneId && this.records.get(id)?.message.state === "uncertain"
       || [...this.resends.values()].some((entry) => entry.id === id && entry.paneId === paneId && entry.uncertain)) {
@@ -136,12 +145,12 @@ export class PendingInputs<Owner, Lease> {
         const item = this.records.get(id);
         const paneId = entry.paneId;
         if (reply.ok && item?.paneId === paneId) this.finish(item, "sent");
-        else if (entry.uncertain && item?.paneId === paneId) {
+        else if (entry.uncertain && item?.paneId === paneId && !this.reviewOnly.has(item)) {
           // Another connection may have committed input. An Edit already waiting
           // on its discard must see this uncertainty before it can withdraw.
           item.message.state = "uncertain";
           item.message.error = { code: reply.code ?? "pending_uncertain", message: reply.message ?? "Check the terminal before sending this message again" };
-          this.gates.delete(paneId);
+          if (this.gates.get(paneId)?.completed) this.gates.delete(paneId);
           this.holdPane(paneId, item.message.error);
           this.publish(item.owner, paneId);
         }
@@ -224,7 +233,8 @@ export class PendingInputs<Owner, Lease> {
     if (this.records.size + this.removed.size >= MAX_PENDING_DISPOSITIONS) {
       throw new PendingInputError("pending_limit", "Too many recent pending-message outcomes are retained; try again later");
     }
-    if ([...this.records.values()].some((item) => item.paneId === paneId && item.message.state === "uncertain")) throw new PendingInputError("pending_uncertain", "Check the terminal before sending more pending messages");
+    if ([...this.records.values()].some((item) => item.paneId === paneId && this.blocksQueue(item))) throw new PendingInputError("pending_uncertain", "Check the terminal before sending more pending messages");
+    if (this.closed.has(owner)) fault ??= { code: "input_not_ready", message: "The sending connection closed; review the saved message before sending it" };
     const item: PendingRecord<Owner, Lease> = {
       owner, paneId, lease, identity, inFlight: false,
       message: { id: this.newId(), request_id: requestId, text, state: held || fault ? "held" : "queued", created_at: new Date(this.now()).toISOString(), ...(agentOnly ? { agent_only: true as const } : {}),
@@ -247,9 +257,13 @@ export class PendingInputs<Owner, Lease> {
 
   holds(paneId: string): boolean { return [...this.records.values()].some((item) => item.paneId === paneId); }
 
+  private blocksQueue(item: PendingRecord<Owner, Lease>): boolean {
+    return item.message.state === "uncertain" && !this.reviewOnly.has(item);
+  }
+
   next(paneId: string): PendingRecord<Owner, Lease> | null {
-    if (!ready(this.statuses.get(paneId)) || this.gates.has(paneId)
-      || [...this.records.values()].some((item) => item.paneId === paneId && (item.inFlight || item.message.state === "uncertain"))) return null;
+    if (!ready(this.statuses.get(paneId)) || this.gates.has(paneId) || this.turns.has(paneId)
+      || [...this.records.values()].some((item) => item.paneId === paneId && (item.inFlight || this.blocksQueue(item)))) return null;
     return [...this.records.values()].find((item) => item.paneId === paneId && item.message.state === "queued") ?? null;
   }
 
@@ -298,11 +312,48 @@ export class PendingInputs<Owner, Lease> {
       : { by: "", committed: true, sawWorking: false, completed: false, deadline: now + this.startTimeoutMs, since: now });
   }
 
-  settle(item: PendingRecord<Owner, Lease>, fault?: Fault, uncertain = false, retryWhenReady = false): void {
+  /**
+   * The agent itself tells the end of the turn the pane runs (a Codex on the server Ovis started for it: that turn's
+   * turn/completed). Until `turnOver` takes the wait this gives, the queue gives out no message of the pane, whatever
+   * herdr reads of it, and no start timeout decides anything for it (expire). The turn's wait is that of the Enter
+   * committed for it, or one made here for a turn the queue did not start: herdr may have read that one at work already,
+   * and its next ready reading is then that turn's end.
+   */
+  awaitTurn(paneId: string): object {
+    const committed = this.gates.get(paneId);
+    const gate: TurnGate = committed?.committed ? committed : { by: "", committed: true, sawWorking: this.statuses.get(paneId) === "working", completed: false, deadline: null, since: this.now() };
+    this.gates.set(paneId, gate);
+    const turn = { gate };
+    this.turns.set(paneId, turn);
+    return turn;
+  }
+
+  /**
+   * The turn `wait` (awaitTurn) was for ended, as the agent `told`, or its end can no longer be told. Told, the turn's
+   * wait is over. Not told, it is as any committed Enter's again: by the statuses that came since, with a start timeout
+   * from now for a turn none of them showed to start. An Enter committed since has a wait of its own, which stays.
+   */
+  turnOver(paneId: string, wait: object, told: boolean): void {
+    const turn = this.turns.get(paneId);
+    if (turn !== wait) return;
+    this.turns.delete(paneId);
+    if (this.gates.get(paneId) !== turn.gate) return;
+    if (told) this.finished(paneId, turn.gate);
+    else if (!turn.gate.sawWorking) turn.gate.deadline = this.now() + this.startTimeoutMs;
+  }
+
+  /** The turn `gate` waits for was seen or told to finish: the wait ends once no send of the pane is on its way. */
+  private finished(paneId: string, gate: TurnGate): void {
+    gate.completed = true;
+    if (![...this.records.values()].some((item) => item.paneId === paneId && item.inFlight)) this.gates.delete(paneId);
+  }
+
+  settle(item: PendingRecord<Owner, Lease>, fault?: Fault, uncertain: boolean | "preserve-turn" = false, retryWhenReady = false): void {
     if (this.records.get(item.message.id) !== item || !item.inFlight) return;
     item.inFlight = false;
     // a send the pane's move overtook is never tried again by itself under the new ID: it waits for its Send
-    if (this.movedInFlight.delete(item)) retryWhenReady = false;
+    const moved = this.movedInFlight.delete(item);
+    if (moved) retryWhenReady = false;
     if (!fault) {
       this.finish(item, "sent");
       const gate = this.gates.get(item.paneId);
@@ -313,9 +364,23 @@ export class PendingInputs<Owner, Lease> {
     if (!uncertain) delete item.message.sending_at;
     if (retryWhenReady && !uncertain) delete item.message.error; else item.message.error = fault;
     const gate = this.gates.get(item.paneId);
-    if (uncertain || gate?.by === item.message.id || gate?.completed) this.gates.delete(item.paneId);
-    if (uncertain) this.holdPane(item.paneId, fault.code === "pasted_not_sent" ? BEHIND_PASTE : fault);
+    if (uncertain === "preserve-turn" && !moved) {
+      // Enter reached the terminal: keep its normal turn ordering while only this row waits for review.
+      this.reviewOnly.add(item);
+      if (gate?.completed) this.gates.delete(item.paneId);
+    } else {
+      // an uncertain send's committed Enter keeps its wait: its turn is still to be seen to start and finish
+      if ((!uncertain && gate?.by === item.message.id) || (gate?.by === item.message.id && !gate.committed) || gate?.completed) this.gates.delete(item.paneId);
+      if (uncertain) this.holdPane(item.paneId, fault.code === "pasted_not_sent" ? BEHIND_PASTE : fault);
+    }
     this.publish(item.owner, item.paneId);
+  }
+
+  /** Native transcript evidence settles only this uncertain ID; held followers stay held. */
+  confirmRecorded(item: PendingRecord<Owner, Lease>, remember: () => boolean): boolean {
+    if (this.records.get(item.message.id) !== item || item.inFlight || item.message.state !== "uncertain" || !remember()) return false;
+    this.finish(item, "consumed");
+    return true;
   }
 
   discard(item: PendingRecord<Owner, Lease>, withdrawalOnly = false): boolean {
@@ -376,13 +441,13 @@ export class PendingInputs<Owner, Lease> {
     this.apply(paneId, status, at);
   }
 
-  /** A message of the pane waits, or an Enter's turn has not been seen to start and finish: one sent now goes behind it. */
+  /** A message of the pane waits, or a turn has not been seen or told to finish: one sent now goes behind it. */
   waiting(paneId: string): boolean {
-    return this.gates.get(paneId)?.committed === true
-      || [...this.records.values()].some((item) => item.paneId === paneId && (item.inFlight || item.message.state === "queued"));
+    return this.gates.get(paneId)?.committed === true || this.turns.has(paneId)
+      || [...this.records.values()].some((item) => item.paneId === paneId && (item.inFlight || item.message.state === "queued" || this.blocksQueue(item)));
   }
 
-  forget(paneId: string): void { this.statuses.delete(paneId); this.events.delete(paneId); this.gates.delete(paneId); this.waits.delete(paneId); this.readAt.delete(paneId); this.readBy.delete(paneId); }
+  forget(paneId: string): void { this.statuses.delete(paneId); this.events.delete(paneId); this.gates.delete(paneId); this.turns.delete(paneId); this.waits.delete(paneId); this.readAt.delete(paneId); this.readBy.delete(paneId); }
 
   /** `at`: when the status was read; a Send now's `joined` window is judged by it, not by when it reached the queue */
   private apply(paneId: string, status: AgentStatus, at = this.now()): void {
@@ -406,8 +471,7 @@ export class PendingInputs<Owner, Lease> {
         Object.assign(gate, { sawWorking: false, deadline: this.now() + this.startTimeoutMs, lenient: true });
         return;
       }
-      gate.completed = true;
-      if (![...this.records.values()].some((item) => item.paneId === paneId && item.inFlight)) this.gates.delete(paneId);
+      this.finished(paneId, gate);
     }
   }
 
@@ -476,8 +540,13 @@ export class PendingInputs<Owner, Lease> {
     this.expireResends();
     const released: string[] = [];
     for (const [paneId, gate] of this.gates) {
-      if (gate.deadline !== null && this.now() >= gate.deadline && ![...this.records.values()].some((item) => item.paneId === paneId && item.inFlight)) {
-        if (gate.lenient) released.push(paneId);
+      // while the agent itself is to tell a turn's end, the queue is held by that turn: an Enter's start timeout that
+      // passed meanwhile is judged once that wait is over, so what was queued behind it since is held with the rest
+      if (gate.deadline !== null && this.now() >= gate.deadline && !this.turns.has(paneId)
+        && ![...this.records.values()].some((item) => item.paneId === paneId && item.inFlight)) {
+        // a Send now still waiting for review may not have started its turn yet: its pane's queue waits for the user
+        const reviewing = [...this.records.values()].some((item) => item.paneId === paneId && this.reviewOnly.has(item) && item.message.state === "uncertain");
+        if (gate.lenient && !reviewing) released.push(paneId);
         else this.holdPane(paneId, { code: "pending_turn_unconfirmed", message: "The next turn did not start in time; review and send the remaining messages explicitly" });
         this.gates.delete(paneId);
       }

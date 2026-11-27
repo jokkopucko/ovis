@@ -1,9 +1,9 @@
 import { afterEach, expect, it } from "bun:test";
-import { createElement, StrictMode } from "react";
-import { act, create } from "react-test-renderer";
+import { act, createElement, StrictMode } from "react";
 import { bounded, deferred, relayConnection, relayDevice, relayFixture, TestClock } from "../../../server/relay/test-helpers.ts";
 import type { RelaySessionOptions } from "../../../server/relay/session.ts";
 import type { WsStream } from "../../../shared/relay-mux-engine.ts";
+import { openPage, type Page } from "../page.fixture.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
 import type { WebSocketLike } from "../transport.ts";
 import { useResourceUrlState } from "../useResourceUrl.ts";
@@ -19,12 +19,26 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const cleanups: (() => void)[] = [];
-afterEach(() => {
+let browserPage: Page | undefined;
+function openBrowserPage(): Page {
+  return browserPage = openPage();
+}
+afterEach(async () => {
   for (const close of cleanups.splice(0).reverse()) close();
+  await browserPage?.close();
+  browserPage = undefined;
   setTransport(nativeTransport);
 });
 
-async function fixture(options: Partial<RelaySessionOptions> = {}, { relay = "wss://relay.example", unreachable = 0 } = {}) {
+async function fixture(options: Partial<RelaySessionOptions> = {}, { relay = "wss://relay.example", unreachable = 0, features, featuresOf, listPlace, listKey = false }: {
+  relay?: string; unreachable?: number;
+  /** what the PC selected in its answer to HELLO, and the place in its account's list it handed a device it let in */
+  features?: readonly string[]; listPlace?: { readonly id: string; readonly seq: number; readonly hash: string };
+  /** what the PC selects for each carrier as it comes up, where that changes between carriers (in place of `features`) */
+  featuresOf?: () => readonly string[] | undefined;
+  /** the device signs in with the key its account's list holds for it */
+  listKey?: boolean;
+} = {}) {
   const app = relayFixture();
   cleanups.push(() => app.close());
   const device = await relayDevice(app);
@@ -43,6 +57,8 @@ async function fixture(options: Partial<RelaySessionOptions> = {}, { relay = "ws
     server_public_key: "", relay };
   const transport = await openRelayTransport(offer, {
     clock,
+    // a session opened with the key the account's signed list holds for this device
+    ...(listKey ? { accountListKey: true } : {}),
     onFatal: (error) => fatal.push(error),
     onPcAway: () => { attempts.away++; },
     openChannel: async (channelOffer, config = {}) => {
@@ -73,7 +89,9 @@ async function fixture(options: Partial<RelaySessionOptions> = {}, { relay = "ws
       carriers.push(carrier);
       return {
         get carrierOpen() { return carrier.open; },
-        mux: connection.mux, role: "drive", connectionId: "ef".repeat(16), sessionId: "ab".repeat(16), server: { version: "0.4.20", relayProtocol: 1 },
+        mux: connection.mux, role: "drive", connectionId: "ef".repeat(16), sessionId: "ab".repeat(16),
+        server: (() => { const selected = featuresOf?.() ?? features; return { version: "0.4.20", relayProtocol: 1, ...(selected === undefined ? {} : { features: selected }) }; })(),
+        ...(listPlace === undefined ? {} : { listPlace }),
         device: { server_id: offer.server_id, device_id: device.id, private_key: device.keys.privateKey,
           public_spki: device.publicKey, label: "Test", server_public_key: "", relay: offer.relay },
         close: () => connection.stop(),
@@ -119,6 +137,32 @@ async function saturated() {
   const responses = await Promise.all(Array.from({ length: 12 }, (_, i) => f.transport.fetch(`/api/held/${i}`)));
   return { ...f, requested, responses };
 }
+
+it("says whether the PC lets its account's devices in by the list, and the place it handed a device it let in", async () => {
+  const place = { id: "5c".repeat(32), seq: 2, hash: "ab".repeat(32) };
+  for (const [features, listPlace, follows] of [[["account", "account-list-1"], place, true], [["account"], undefined, false], [undefined, undefined, false]] as const) {
+    const { transport } = await fixture({}, { ...(features === undefined ? {} : { features }), ...(listPlace === undefined ? {} : { listPlace }) });
+    expect([transport.followsList, transport.listPlace]).toEqual([follows, listPlace]);
+  }
+});
+
+it("tells whoever listens for the route the features of the carrier that just came up, not those of the one before", async () => {
+  let selected: readonly string[] = ["account"];
+  const f = await fixture({}, { featuresOf: () => selected });
+  expect(f.transport.followsList).toBe(false);
+  const seen: boolean[] = [];
+  f.transport.onRouteChange(() => { if (f.transport.route !== undefined) seen.push(f.transport.followsList); });
+  // the PC pins its account's list between two carriers: the listener of the second one hears it
+  selected = ["account", "account-list-1"];
+  await f.drop();
+  await f.transport.connect();
+  expect(seen).toEqual([true]);
+  // and the other way round
+  selected = ["account"];
+  await f.drop();
+  await f.transport.connect();
+  expect(seen).toEqual([true, false]);
+});
 
 it("queues HTTP behind eight WS and twelve HTTP streams until a receive reservation is released", async () => {
   const f = await saturated();
@@ -593,10 +637,7 @@ it("tells the shell each time a reconnect finds nobody for the PC at the relay, 
 });
 
 it("keeps the growing pause after such waits while the page is hidden", async () => {
-  const page = Object.assign(new EventTarget(), { visibilityState: "hidden" });
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
-  Object.defineProperty(globalThis, "document", { configurable: true, value: page });
-  cleanups.push(() => { if (descriptor) Object.defineProperty(globalThis, "document", descriptor); else Reflect.deleteProperty(globalThis, "document"); });
+  page("hidden");
   const f = await fixture({ dispatch: async () => Response.json({ ok: true }) });
   f.attempts.offline = 2;
   await f.drop();
@@ -622,6 +663,25 @@ it("stops reconnecting once the PC refuses the device for good, and tells the sh
   await expect(f.transport.fetch("/api/after")).rejects.toBeInstanceOf(TypeError);
   f.clock.advance(60_000);
   expect(f.attempts.count).toBe(2);
+});
+
+it("a session opened with the list key stops reconnecting when the PC refuses the account's way in, as one opened with the sign-in's key does (M60)", async () => {
+  for (const code of ["not_listed", "admission"]) {
+    const refusal = Object.assign(new MuxProtocolError("protocol_error", code), { code });
+    const f = await fixture({ dispatch: async () => Response.json({ ok: true }) }, { listKey: true });
+    f.attempts.refusal = refusal;
+    await f.drop();
+    f.clock.advance(1000);
+    await expect(f.transport.connect()).rejects.toBe(refusal);
+    expect([f.fatal, f.clock.tasks.size]).toEqual([[refusal], 0]);
+    // a pairing's own session reads the same answer as a carrier that may come back, and tries again
+    const own = await fixture({ dispatch: async () => Response.json({ ok: true }) });
+    own.attempts.refusal = Object.assign(new MuxProtocolError("protocol_error", code), { code });
+    await own.drop();
+    own.clock.advance(1000);
+    await own.transport.connect().catch(() => undefined);
+    expect(own.fatal).toEqual([]);
+  }
 });
 
 it("tells a refusal that cannot change from a carrier that may come back", () => {
@@ -687,14 +747,12 @@ it("reconnects after an authorization change without telling the shell to forget
   expect(f.fatal).toEqual([]);
 });
 
-it("reconnects on online and visible-page events and removes wake listeners on close", async () => {
-  const browser = new EventTarget();
-  const page = Object.assign(new EventTarget(), { visibilityState: "visible" });
+// The relay registers these browser events on globalThis, not on window.
+function installWindowListeners(browser: Page["window"]): void {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
   for (const [key, value] of Object.entries({
     addEventListener: browser.addEventListener.bind(browser),
     removeEventListener: browser.removeEventListener.bind(browser),
-    document: page,
   })) {
     descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, key, { configurable: true, value });
@@ -705,41 +763,34 @@ it("reconnects on online and visible-page events and removes wake listeners on c
       else Reflect.deleteProperty(globalThis, key);
     }
   });
+}
+
+it("reconnects on online and visible-page events and removes wake listeners on close", async () => {
+  const shown = page("visible");
+  const browser = shown.window;
+  installWindowListeners(browser);
   const f = await fixture();
   await f.drop();
-  browser.dispatchEvent(new Event("online"));
+  browser.dispatchEvent(new browser.Event("online"));
   await f.transport.connect();
   expect(f.connections).toHaveLength(2);
   await f.drop();
-  page.visibilityState = "hidden";
-  page.dispatchEvent(new Event("visibilitychange"));
+  shown.hide();
   expect(f.attempts.count).toBe(2);
-  page.visibilityState = "visible";
-  page.dispatchEvent(new Event("visibilitychange"));
+  shown.show();
   await f.transport.connect();
   expect(f.connections).toHaveLength(3);
   expect(f.clock.tasks.size).toBe(0);
   f.transport.close();
-  browser.dispatchEvent(new Event("online"));
-  page.dispatchEvent(new Event("visibilitychange"));
+  browser.dispatchEvent(new browser.Event("online"));
+  shown.show();
   expect(f.attempts.count).toBe(3);
 });
 
 it("takes its carrier as gone when the page comes back from the back/forward cache, though it still reads open, and connects again", async () => {
-  const browser = new EventTarget();
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  for (const [key, value] of Object.entries({ addEventListener: browser.addEventListener.bind(browser), removeEventListener: browser.removeEventListener.bind(browser) })) {
-    descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, key, { configurable: true, value });
-  }
-  cleanups.push(() => {
-    for (const [key, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-  });
-  page("visible");
-  const pageshow = (persisted: boolean): Event => Object.assign(new Event("pageshow"), { persisted });
+  const { window: browser } = page("visible");
+  installWindowListeners(browser);
+  const pageshow = (persisted: boolean) => Object.assign(new browser.Event("pageshow"), { persisted });
   const f = await fixture();
   // a page loaded fresh says nothing of its carrier
   browser.dispatchEvent(pageshow(false));
@@ -758,12 +809,16 @@ it("takes its carrier as gone when the page comes back from the back/forward cac
 });
 
 function page(visibilityState: "visible" | "hidden") {
-  const target = Object.assign(new EventTarget(), { visibilityState });
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
-  Object.defineProperty(globalThis, "document", { configurable: true, value: target });
-  cleanups.push(() => { if (descriptor) Object.defineProperty(globalThis, "document", descriptor); else Reflect.deleteProperty(globalThis, "document"); });
-  const turn = (state: "visible" | "hidden"): void => { target.visibilityState = state; target.dispatchEvent(new Event("visibilitychange")); };
-  return { target, hide: () => turn("hidden"), show: () => turn("visible") };
+  const { window } = openBrowserPage();
+  const setVisibility = (state: "visible" | "hidden"): void => {
+    Object.defineProperty(window.document, "visibilityState", { configurable: true, value: state });
+  };
+  setVisibility(visibilityState);
+  const turn = (state: "visible" | "hidden"): void => {
+    setVisibility(state);
+    window.document.dispatchEvent(new window.Event("visibilitychange"));
+  };
+  return { window, setVisibility, hide: () => turn("hidden"), show: () => turn("visible") };
 }
 
 it("drops an attempt that began while the page was hidden and connects again at once when it is shown", async () => {
@@ -795,7 +850,7 @@ it("does not fall back to the other relay when an attempt that began before the 
   f.clock.advance(1000);
   shown.hide();
   // back on screen, the stale socket's error runs before the page's visibilitychange
-  shown.target.visibilityState = "visible";
+  shown.setVisibility("visible");
   f.attempts.stuck[0]!(new RelayUnreachableError(null, true));
   await expect(f.transport.connect()).rejects.toBeInstanceOf(RelayUnreachableError);
   expect(f.attempts.relays).toEqual([regional, regional]);
@@ -1008,26 +1063,20 @@ it("returns a blob resource fetched over the relay and stops a closed SSE withou
 });
 
 it("exposes resource failures as hook state without an unhandled promise rejection", async () => {
+  const page = openBrowserPage();
   const f = await fixture({ dispatch: async () => new Response(null, { status: 404 }) });
   setTransport(f.transport);
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-  cleanups.push(() => {
-    if (descriptor) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", descriptor);
-    else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-  });
   const result = deferred<ResourceUrlState>();
   function Probe() {
     const state = useResourceUrlState("/api/fs/file?path=missing");
     if (state.error) result.resolve(state);
     return null;
   }
-  let renderer: ReturnType<typeof create> | undefined;
-  await act(async () => { renderer = create(createElement(Probe)); });
+  await page.render(createElement(Probe));
   await act(async () => { await bounded(result.promise); });
   // Then the caller can render the failure; Bun's test runner also fails unhandled rejections.
   expect(await result.promise).toMatchObject({ url: null, error: expect.any(TypeError) });
-  await act(async () => renderer?.unmount());
+  await page.render(null);
 });
 
 it("throws on send while connecting and validates close arguments synchronously", () => {
@@ -1042,31 +1091,25 @@ it("throws on send while connecting and validates close arguments synchronously"
 
 it("keeps a StrictMode resource usable and revokes each owned blob on cleanup", async () => {
   // Given a resource hook whose effects will be replayed by React StrictMode.
+  const page = openBrowserPage();
   const f = await fixture({ dispatch: async () => new Response("image") });
   setTransport(f.transport);
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
   const revoke = URL.revokeObjectURL;
   const revoked: string[] = [];
   URL.revokeObjectURL = (url) => { revoked.push(url); revoke(url); };
-  cleanups.push(() => {
-    URL.revokeObjectURL = revoke;
-    if (descriptor) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", descriptor);
-    else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-  });
+  cleanups.push(() => { URL.revokeObjectURL = revoke; });
   const loaded = deferred<string>();
   function Probe() {
     const state = useResourceUrlState("/api/fs/file?path=image");
     if (state.url) loaded.resolve(state.url);
     return null;
   }
-  let renderer: ReturnType<typeof create> | undefined;
-  await act(async () => { renderer = create(createElement(StrictMode, null, createElement(Probe))); });
+  await page.render(createElement(StrictMode, null, createElement(Probe)));
   await act(async () => { await bounded(loaded.promise); });
   const url = await loaded.promise;
   expect(await (await fetch(url)).text()).toBe("image");
   expect(revoked).not.toContain(url);
-  await act(async () => renderer?.unmount());
+  await page.render(null);
   expect(revoked).toContain(url);
   await expect(fetch(url)).rejects.toBeInstanceOf(TypeError);
 });
@@ -1084,4 +1127,25 @@ it("falls back to the global relay when a regional one cannot be reached, and re
 it("never falls back from a relay that is not one of Ovis's regional relays", async () => {
   await expect(fixture({}, { relay: "wss://relay.example", unreachable: 1 })).rejects.toBeInstanceOf(RelayUnreachableError);
 });
+
+it("uploads a JSON string body larger than the 3 MiB nonterminal queue over the relay (#4476)", async () => {
+  const payload = JSON.stringify({ pane_id: "w1:p1", content_type: "image/jpeg", data_base64: "A".repeat(4 * 1024 * 1024) });
+  expect(Buffer.byteLength(payload)).toBeGreaterThan(3 * 1024 * 1024);
+  const f = await fixture({ dispatch: async (request) => {
+    const received = await request.text();
+    return Response.json({ length: received.length, matches: received === payload });
+  } });
+  const direct = await f.transport.fetch("/api/pane/image", {
+    method: "POST", headers: { "content-type": "application/json" }, body: payload,
+  });
+  expect(direct.status).toBe(200);
+  expect(await direct.json()).toEqual({ length: payload.length, matches: true });
+
+  firefoxRequests();
+  const buffered = await f.transport.fetch("/api/pane/image", {
+    method: "POST", headers: { "content-type": "application/json" }, body: payload,
+  });
+  expect(buffered.status).toBe(200);
+  expect(await buffered.json()).toEqual({ length: payload.length, matches: true });
+}, 30_000);
 

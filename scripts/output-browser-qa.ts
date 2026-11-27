@@ -117,5 +117,5 @@ try {
   server?.stop();
   for (const workspace of workspaces) await herdrRpc("workspace.close", { workspace_id: workspace });
   rmSync(root, { recursive: true, force: true });
-  await until(() => Bun.spawnSync(["pgrep", "-P", String(process.pid), "-f", "pty-host.mjs"]).stdout.length === 0, "sidecars reaped", 5000);
+  await until(() => Bun.spawnSync(["pgrep", "-P", String(process.pid), "-f", "ovis-pty-sidecar"]).stdout.length === 0, "PTY hosts reaped", 5000);
 }

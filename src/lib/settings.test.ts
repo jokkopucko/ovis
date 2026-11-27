@@ -134,6 +134,20 @@ describe("saved theme migration", () => {
     expect(loadSettings().phoneTabs).toBe("row");
   });
 
+  it("keeps Chat Markdown style in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().markdownStyle).toBe("editorial");
+    saveSettings(sanitizeSettings({ markdownStyle: "tinted" }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("markdownStyle");
+    expect(records.get("ovis:markdown-style")).toBe(JSON.stringify("tinted"));
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().markdownStyle).toBe("tinted");
+    expect(loadSettings().terminalFontSize).toBe(18);
+    saveSettings({ ...loadSettings(), markdownStyle: "plain" });
+    expect(loadSettings().markdownStyle).toBe("plain");
+    records.set("ovis:markdown-style", "not json");
+    expect(loadSettings().markdownStyle).toBe("editorial");
+  });
+
   it("keeps Wrap to screen / Original width in its own key, out of an old tab's whole-record save", () => {
     saveSettings(sanitizeSettings({ terminalMirrorWrap: false }));
     expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("terminalMirrorWrap");
@@ -1551,6 +1565,17 @@ describe("shared settings", () => {
     for (const key of ["agentNamedGroups", "agentGroupNames", "agentGroupOf"] as const) expect(SETTING_SCOPE[key]).toBe("shared");
     const kept = sanitizeSettings({ agentNamedGroups: true, agentGroupNames: ["Tasks", "", "Tasks"], agentGroupOf: { "local:p1": "Tasks", "local:p2": 1 } });
     expect([kept.agentNamedGroups, kept.agentGroupNames, kept.agentGroupOf]).toEqual([true, ["Tasks"], { "local:p1": "Tasks" }]);
+  });
+
+  it("defaults Chat Markdown style to editorial, sanitizes unknown values, and shares it across browsers", () => {
+    expect(DEFAULT_SETTINGS.markdownStyle).toBe("editorial");
+    expect(SETTING_SCOPE.markdownStyle).toBe("shared");
+    for (const style of ["editorial", "tinted", "colorful", "plain"] as const) {
+      expect(sanitizeSettings({ markdownStyle: style }).markdownStyle).toBe(style);
+    }
+    for (const bad of [null, "", "Editorial", "classic", 1]) {
+      expect(sanitizeSettings({ markdownStyle: bad }).markdownStyle).toBe("editorial");
+    }
   });
 });
 

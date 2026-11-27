@@ -2,22 +2,23 @@ import { afterEach, beforeEach, expect, it, spyOn } from "bun:test";
 import * as herdr from "../herdr/client.ts";
 import * as prompts from "../prompt.ts";
 import * as conversation from "../conversation.ts";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HARNESS_CONTRACT, HARNESS_TOOL_DEFAULT, type HarnessToolSetting } from "../../shared/harness-tool.ts";
+import { HARNESS_CONTRACT, harnessToolSetting, type HarnessToolSetting } from "../../shared/harness-tool.ts";
 import { AcpChildren } from "../acp/children.ts";
 import { lineCall } from "../line-call.ts";
+import { PreferenceStore } from "../preferences.ts";
 import { AgentToolHub } from "./hub.ts";
 
 let dir: string, hub: AgentToolHub, token: string;
 let setting: HarnessToolSetting;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "ath-"));
-  setting = HARNESS_TOOL_DEFAULT;
+  setting = harnessToolSetting(new PreferenceStore(dir).get().settings.agentHarnessTool);
   hub = new AgentToolHub({ dir, setting: () => setting, acp: new AcpChildren(join(dir, "acp")) });
   const key = hub.runs.reserve();
-  key.bind({ self: "t1", root: key.id, started_by: null, depth: 0, harness: "fixture", ceiling: "fixture/ask-v1" });
+  key.bind({ self: "t1", root: key.id, started_by: null, depth: 0, harness: "fixture" });
   token = readFileSync(key.tokenFile, "utf8");
   hub.listen();
 });
@@ -25,6 +26,11 @@ afterEach(() => { hub.close(); rmSync(dir, { recursive: true, force: true }); })
 const call = (verb: string, args: object = {}, credential = token) =>
   lineCall(hub.address, { id: 1, contract: HARNESS_CONTRACT, token: credential, verb, args }, 2000);
 const start = () => { setting = { level: "start", depth: 1, harnesses: ["gjc"] }; };
+
+it("a pane registry that cannot be written does not stop a token run", async () => {
+  mkdirSync(join(dir, "pane-runs.json"));
+  expect(await call("scope")).toMatchObject({ kind: "scope" });
+});
 
 it("never consults a plain shell's prompt or contents for agent read", async () => {
   const snapshot = spyOn(herdr, "sessionSnapshot").mockResolvedValue({ protocol: 22, version: "fixture", agents: [], workspaces: [], tabs: [], layouts: [],
@@ -51,8 +57,18 @@ it("drops a terminal result when its agent returns to work during the read", asy
   } finally { history.mockRestore(); prompt.mockRestore(); snap.mockRestore(); }
 });
 
-it("at view level start, send, wait, result, ask and stop are refused", async () => {
-  for (const verb of ["start", "send", "wait", "result", "ask", "stop"]) expect(await call(verb)).toMatchObject({ error: { code: "not_granted" } });
+it("defaults to local delegation after an unrelated preference is saved and reloaded", async () => {
+  new PreferenceStore(dir).set({ settings: { theme: "dark" } });
+  setting = harnessToolSetting(new PreferenceStore(dir).get().settings.agentHarnessTool);
+  expect(setting).toEqual({ level: "start", depth: 1, harnesses: ["claude", "codex", "copilot", "opencode", "agy", "gjc", "gemini", "kiro", "kimi"] });
+  expect(await call("scope")).toMatchObject({ verbs: expect.arrayContaining(["start", "send"]) });
+});
+
+it("a saved view policy still refuses start, send, wait, result and ask after restart", async () => {
+  new PreferenceStore(dir).set({ settings: { agentHarnessTool: { level: "view", depth: 1, harnesses: ["gjc"] } } });
+  setting = harnessToolSetting(new PreferenceStore(dir).get().settings.agentHarnessTool);
+  for (const verb of ["start", "send", "wait", "result", "ask"]) expect(await call(verb)).toMatchObject({ error: { code: "not_granted" } });
+  expect(await call("stop", { session: "other" })).toMatchObject({ error: { code: "unknown_session" } });
   expect(await call("scope")).toMatchObject({ verbs: ["machines", "harnesses", "ls", "read"] });
 });
 it("refuses a start on another machine without starting it", async () => {
@@ -76,7 +92,8 @@ it("tool discovery during session opening confers no data access; the depth ceil
   expect(await call("scope", {}, secret)).toMatchObject({ verbs: ["machines","harnesses","ls","read"] });
   expect(await call("machines", {}, secret)).toMatchObject({ error: { code: "not_granted" } });
   child.bind({ self: "child", harness: "gjc", started_by: parent.id, root: parent.id, depth: 1 });
-  for (const verb of ["send","stop"]) expect(await call(verb, { session: "other", ...(verb === "send" ? { task: "hello" } : {}) }, secret)).toMatchObject({ error: { code: "not_granted" } });
+  expect(await call("send", { session: "other", task: "hello" }, secret)).toMatchObject({ error: { code: "not_granted" } });
+  expect(await call("stop", { session: "other" }, secret)).toMatchObject({ error: { code: "unknown_session" } });
 });
 it.each([1,2,3] as const)("a run at depth %d cannot start, even with the local harness granted", async depth => {
   setting = { level: "start", depth, harnesses: ["gjc"] };
@@ -109,6 +126,7 @@ it("the off switch rejects every verb and revokes credentials already issued", a
   setting = { ...setting, level: "off" };
   hub.settingsChanged();
   expect(await call("read")).toMatchObject({ error: { code: "tools_off" } });
+  expect(await call("stop", { session: "other" })).toMatchObject({ error: { code: "tools_off" } });
   start();
   expect(await call("scope")).toMatchObject({ error: { code: "not_granted" } });
 });

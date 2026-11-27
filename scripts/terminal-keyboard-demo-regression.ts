@@ -10,10 +10,11 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright-core";
+import type { Browser, BrowserContext, Locator, Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
+import { appContext, installClock } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
 import { appFaces } from "./app-faces.ts";
 import { shownRow, shownRows } from "./shown-rows.ts";
 import { serveDemo } from "./demo-server.ts";
@@ -61,7 +62,6 @@ interface ControlState {
 const evidence = process.env["UI_EVIDENCE_DIR"];
 const serveIos = process.argv.includes("--serve-ios");
 
-const app = mkdtempSync(join(tmpdir(), "herdr-terminal-keyboard-demo-"));
 let origin = "";
 
 const RECORDER = `<script>(() => {
@@ -83,14 +83,10 @@ const RECORDER = `<script>(() => {
   window.WebSocket = Recorded;
 })();</script>`;
 
-function serve(): ReturnType<typeof Bun.serve> {
-  return serveDemo(app, { prefix: PREFIX });
-}
-
 const settled = (page: Page): Promise<void> => page.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
 
 async function phone(browser: Browser, settings: Settings, viewport = PHONE): Promise<BrowserContext> {
-  const context = await browser.newContext({ viewport, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: "en-US" });
+  const context = await appContext(browser, { viewport, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
   await context.addInitScript(({ key, settings, pane, height }) => {
     if (localStorage.getItem(key) === null) localStorage.setItem(key, JSON.stringify(settings));
     localStorage.setItem(`ovis:view:${pane}`, "terminal");
@@ -111,7 +107,7 @@ async function open(context: BrowserContext, clock = false): Promise<{ page: Pag
   page.setDefaultTimeout(10_000);
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  if (clock) await page.clock.install();
+  if (clock) await installClock(page);
   await page.goto(`${origin}?pane=${encodeURIComponent(panes.shell)}&view=terminal`);
   await page.locator(".conn-live").waitFor({ state: "attached" });
   await page.locator(shownRows(".pane-frame:not(.is-hidden)")).waitFor();
@@ -924,7 +920,7 @@ async function captureSet(browser: Browser, dir: string): Promise<Capture[]> {
     await shot(page, "390-dark-ko-line-up", { theme: "dark", language: "ko", state: "line mode, keyboard measured up: the control is named 키보드 숨기기" });
   } finally { await korean.close(); }
   for (const theme of ["dark", "light"] as const) {
-    const desktop = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: "en-US" });
+    const desktop = await appContext(browser, { viewport: { width: 1440, height: 900 } });
     try {
       await desktop.addInitScript(({ key, settings, pane }) => {
         if (localStorage.getItem(key) === null) localStorage.setItem(key, JSON.stringify(settings));
@@ -944,32 +940,33 @@ async function captureSet(browser: Browser, dir: string): Promise<Capture[]> {
   return captures;
 }
 
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  const html = readFileSync(index, "utf8");
-  assert.match(html, /<script type="module"/);
-  writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${RECORDER}\n    <script type="module"`));
-  const server = serve();
-  origin = `http://127.0.0.1:${server.port}${PREFIX}`;
+if (serveIos) {
+  // serving for an iPhone to open: no browser of this script's, so not withDemoBrowser
+  const app = mkdtempSync(join(tmpdir(), "herdr-terminal-keyboard-demo-"));
   try {
-    if (serveIos) {
-      console.log(`SERVING ${origin}?pane=${encodeURIComponent(panes.shell)}&view=terminal`);
+    await buildDemoApp(app);
+    const index = join(app, "index.html");
+    const html = readFileSync(index, "utf8");
+    assert.match(html, /<script type="module"/);
+    writeFileSync(index, html.replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${RECORDER}\n    <script type="module"`));
+    const server = serveDemo(app, { prefix: PREFIX });
+    try {
+      console.log(`SERVING http://127.0.0.1:${server.port}${PREFIX}?pane=${encodeURIComponent(panes.shell)}&view=terminal`);
       await new Promise<void>((resolve) => { process.once("SIGINT", () => resolve()); process.once("SIGTERM", () => resolve()); });
       console.log("stopping");
-    } else {
-      const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-      try {
-        const reports = [await currentModeKeyboard(browser), await keyboardOnRequest(browser), await foldKeyBar(browser), await composingOrUnavailableTarget(browser), await focusReports(browser)];
-        if (evidence) {
-          mkdirSync(evidence, { recursive: true });
-          for (const report of reports) writeFileSync(join(evidence, `terminal-keyboard-${report["scenario"]}.json`), JSON.stringify({ ...report, synthetic: "Chromium with scripted visualViewport geometry; not a native keyboard" }, null, 2));
-          const captures = await captureSet(browser, evidence);
-          writeFileSync(join(evidence, "manifest.json"), JSON.stringify(captures, null, 2));
-          console.log(`PASS captures: ${captures.length} files under ${evidence}`);
-        }
-      } finally { await browser.close(); }
-      console.log("PASS terminal keyboard control: current-mode focus, measured state, composition refusal, sibling pane, observe/held/offline/ended");
+    } finally { server.stop(true); }
+  } finally { rmSync(app, { recursive: true, force: true }); }
+} else {
+  await withDemoBrowser({ tempPrefix: "herdr-terminal-keyboard-demo-", afterTransport: `\n    ${RECORDER}` }, async ({ browser, baseUrl }) => {
+    origin = baseUrl;
+    const reports = [await currentModeKeyboard(browser), await keyboardOnRequest(browser), await foldKeyBar(browser), await composingOrUnavailableTarget(browser), await focusReports(browser)];
+    if (evidence) {
+      mkdirSync(evidence, { recursive: true });
+      for (const report of reports) writeFileSync(join(evidence, `terminal-keyboard-${report["scenario"]}.json`), JSON.stringify({ ...report, synthetic: "Chromium with scripted visualViewport geometry; not a native keyboard" }, null, 2));
+      const captures = await captureSet(browser, evidence);
+      writeFileSync(join(evidence, "manifest.json"), JSON.stringify(captures, null, 2));
+      console.log(`PASS captures: ${captures.length} files under ${evidence}`);
     }
-  } finally { server.stop(true); }
-} finally { rmSync(app, { recursive: true, force: true }); }
+    console.log("PASS terminal keyboard control: current-mode focus, measured state, composition refusal, sibling pane, observe/held/offline/ended");
+  });
+}

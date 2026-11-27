@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportAccountKey, newRecordId, signAccountRecord, signSafetyRecord } from "../../shared/account-records.ts";
@@ -9,7 +9,7 @@ import { DeviceJournal } from "./device-journal.ts";
 import { PcAccountState } from "./pc-binding.ts";
 import { applyAccountRecords, applyLink, type AddGates } from "./records.ts";
 import { RemovalEvidence } from "./removal-evidence.ts";
-import { pcRecordId, SafetyLog } from "./safety-log.ts";
+import { pcRecordId, SAFETY_LOG_FILE, SafetyLog } from "./safety-log.ts";
 
 const ACCOUNT = "acct_1";
 const SERVER_ID = "0123456789abcdef0123456789abcdef";
@@ -111,6 +111,54 @@ describe("one final admission guard (G3, rule R1)", () => {
     const id = paired.device.id;
     expect(await linkSameKey(devices, id, named)).toHaveProperty("refused");
     expect(devices.isAccountApprover(id)).toBe(false);
+  });
+
+  test("keptOut names what keeps a key out where admits refuses it, and nothing where admits lets it in", async () => {
+    const fixture = relayFixture(false, { accountOpensAll: true });
+    try {
+      const { devices, accountHolds } = fixture.app.context.services;
+      const held = await accountKey();
+      expect([devices.admits(held.spki), devices.keptOut(held.spki)]).toEqual([true, null]);
+      accountHolds.hold([held.spki]);
+      expect([devices.admits(held.spki), devices.keptOut(held.spki)]).toEqual([false, "account_hold"]);
+    } finally {
+      fixture.close();
+    }
+    const { devices, log } = pc();
+    const removed = await accountKey();
+    devices.removeAccountKey(removed.spki, ACCOUNT, { id: newRecordId(), issuedAt: new Date().toISOString() });
+    expect([devices.admits(removed.spki), devices.keptOut(removed.spki)]).toEqual([false, "account_removed"]);
+    const [signer, target, older, newer, revoked] = await Promise.all([accountKey(), accountKey(), accountKey(), accountKey(), accountKey()]);
+    for (const k of [signer, target, older, revoked]) {
+      if (devices.pairRelay(devices.startPairing().code, "Older device", k.spki) === null) throw new Error("Older key did not pair");
+    }
+    devices.revoke(devices.list(null).find(row => devices.relayKeyOf(row.id) === revoked.spki)!.id);
+    // a Revoke here keeps the key out of an approval from afar, never out of a pairing on this PC
+    expect([devices.keptOut(revoked.spki), devices.keptOut(revoked.spki, { pairingHere: true })]).toEqual(["revoked", null]);
+    await block(log, target.spki, signer, 99);
+    expect([older, target, newer].map(k => [devices.admits(k.spki), devices.keptOut(k.spki)])).toEqual([[true, null], [false, "block"], [false, "block"]]);
+  });
+
+  test("keptOut names the account's freeze apart from a block, a PC that cannot trust its account state, and a row whose time it cannot trust", async () => {
+    const { devices, log } = pc();
+    const [target, newer] = await Promise.all([accountKey(), accountKey()]);
+    expect(log.append({ record: { v: 1, id: `f:${"a".repeat(64)}`, kind: "freeze", account: ACCOUNT, target: target.spki, after: 2, signer: "service", signed_at: new Date().toISOString(), signature: "" }, got: "snapshot" }).outcome).toBe("applied");
+    expect([devices.admits(newer.spki), devices.keptOut(newer.spki)]).toEqual([false, "freeze"]);
+
+    const strict = mkdtempSync(join(tmpdir(), "ovis-admission-guard-"));
+    dirs.push(strict);
+    writeFileSync(join(strict, SAFETY_LOG_FILE), "not json", { mode: 0o600 });
+    const closed = new DeviceStore(strict, null, null, { safety: SafetyLog.open(strict) });
+    expect([closed.admits(newer.spki), closed.keptOut(newer.spki)]).toEqual([false, "closed"]);
+
+    const restored = mkdtempSync(join(tmpdir(), "ovis-admission-guard-"));
+    dirs.push(restored);
+    const at = new Date().toISOString();
+    const row = { id: "a".repeat(16), label: "Restored phone", role: "drive", token_hash: "b".repeat(64), relay_public_key: newer.spki, created_at: at, untrusted_created_at: at, last_seen_at: null };
+    writeFileSync(join(restored, "devices.json"), JSON.stringify({ gate_closed_at: at, devices: [row] }), { mode: 0o600 });
+    const restoredLog = SafetyLog.open(restored);
+    const untrusted = new DeviceStore(restored, null, null, { safety: restoredLog, pc: PcAccountState.open(restored), removals: RemovalEvidence.open(restored, restoredLog), journal: DeviceJournal.open(restored, () => restoredLog.ensureFile()) });
+    expect([untrusted.admits(newer.spki), untrusted.keptOut(newer.spki, { pairingHere: true })]).toEqual([false, "untrusted"]);
   });
 
   test("G3: admits and a signed add refuse a key revoked on this PC", async () => {

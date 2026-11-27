@@ -3,7 +3,7 @@ import type { AcpApproval } from "./messages.ts";
 export type AnswerOutcome = "won" | "lost" | "gone";
 
 interface Reservation {
-  readonly optionId: string;
+  readonly optionId: string | null;
   by: string | null;
   finish(outcome: AnswerOutcome): void;
 }
@@ -19,10 +19,18 @@ export class KeeperAnswers {
     send: (asked: AcpApproval, reservation: Reservation) => void,
   ): Promise<AnswerOutcome> {
     const { id, asked, optionId } = request;
+    if (!asked?.options.some((option) => option.optionId === optionId)) return Promise.resolve(this.resolved.has(id) ? "lost" : "gone");
+    return this.reserve({ id, optionId }, subscribe, reservation => send(asked, reservation));
+  }
+
+  reserve(
+    { id, optionId }: { id: string; optionId: string | null },
+    subscribe: (send: () => void) => () => void,
+    send: (reservation: Reservation) => void,
+  ): Promise<AnswerOutcome> {
     if (this.resolved.has(id) || this.reservations.has(id)) return Promise.resolve("lost");
-    if (!asked?.options.some((option) => option.optionId === optionId)) return Promise.resolve("gone");
     const { promise, resolve } = Promise.withResolvers<AnswerOutcome>();
-    const dispatch = () => { if (reservation.by === null) send(asked, reservation); };
+    const dispatch = () => { if (reservation.by === null) send(reservation); };
     const off = subscribe(dispatch);
     const timer = setTimeout(() => this.settle(id, "gone"), 10_000);
     const reservation: Reservation = {

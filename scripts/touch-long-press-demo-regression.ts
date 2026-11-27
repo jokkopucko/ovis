@@ -1,17 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { chromium, type Page } from "playwright-core";
+import type { Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
-import { serveDemo } from "./demo-server.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 
 // A long press on a pane on a touch screen is the phone's own (select text, copy): it does not
 // open the pane menu. A right-click still does. On the unmodified app over the demo's fixture
 // transport: no herdr session is opened.
-const app = mkdtempSync(join(tmpdir(), "herdr-touch-long-press-demo-"));
 
 /**
  * Fires a contextmenu on the chat as `pointerType` would, and says whether the page took it.
@@ -33,44 +27,33 @@ const press = (page: Page, how: "touch" | "mouse" | "legacy-touch" | "keyboard" 
   return event.defaultPrevented;
 }, how);
 
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script>\n    <script type="module"'));
-  const server = serveDemo(app);
-  try {
-    const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-    try {
-      const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" });
-      await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "chat" })));
-      const page = await context.newPage();
-      const errors: string[] = [];
-      page.on("pageerror", (error) => errors.push(error.message));
-      await page.goto(`http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(panes.omp)}&view=chat`);
-      await page.locator(".conn-live").waitFor({ state: "attached" });
-      await page.locator(".pane-frame.is-current").waitFor();
-      const paneMenu = page.getByRole("dialog", { name: /^Pane actions for / });
+await withDemoBrowser({ tempPrefix: "herdr-touch-long-press-demo-" }, async ({ newContext, baseUrl }) => {
+  const context = await newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "chat" })));
+  const page = await context.newPage();
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto(`${baseUrl}?pane=${encodeURIComponent(panes.omp)}&view=chat`);
+  await page.locator(".conn-live").waitFor({ state: "attached" });
+  await page.locator(".pane-frame.is-current").waitFor();
+  const paneMenu = page.getByRole("dialog", { name: /^Pane actions for / });
 
-      assert.equal(await press(page, "touch"), false, "a touch long press keeps the phone's own selection and copy");
-      assert.equal(await press(page, "drag-select"), false, "the contextmenu typed mouse that ends a dragged selection is the touch's");
-      await page.waitForTimeout(300); // fixed wait: a touch long press may open no pane menu
-      assert.equal(await paneMenu.count(), 0, "a touch long press opens no pane menu");
+  assert.equal(await press(page, "touch"), false, "a touch long press keeps the phone's own selection and copy");
+  assert.equal(await press(page, "drag-select"), false, "the contextmenu typed mouse that ends a dragged selection is the touch's");
+  await page.waitForTimeout(300); // fixed wait: a touch long press may open no pane menu
+  assert.equal(await paneMenu.count(), 0, "a touch long press opens no pane menu");
 
-      assert.equal(await press(page, "legacy-touch"), false, "a contextmenu with no pointer type right after a touch is the touch's");
-      await page.waitForTimeout(300); // fixed wait: a legacy touch contextmenu may open no pane menu
-      assert.equal(await paneMenu.count(), 0, "it opens no pane menu either");
+  assert.equal(await press(page, "legacy-touch"), false, "a contextmenu with no pointer type right after a touch is the touch's");
+  await page.waitForTimeout(300); // fixed wait: a legacy touch contextmenu may open no pane menu
+  assert.equal(await paneMenu.count(), 0, "it opens no pane menu either");
 
-      assert.equal(await press(page, "keyboard"), true, "a menu asked for from the keyboard after a touch is the app's");
-      await paneMenu.waitFor();
-      await page.keyboard.press("Escape");
-      await paneMenu.waitFor({ state: "detached" });
+  assert.equal(await press(page, "keyboard"), true, "a menu asked for from the keyboard after a touch is the app's");
+  await paneMenu.waitFor();
+  await page.keyboard.press("Escape");
+  await paneMenu.waitFor({ state: "detached" });
 
-      assert.equal(await press(page, "mouse"), true, "a right-click is still the app's");
-      await paneMenu.waitFor();
-      assert.deepEqual(errors, []);
-      console.log("PASS a touch long press on a pane is the phone's own; the keyboard and a right-click still open the pane menu");
-    } finally { await browser.close(); }
-  } finally { await server.stop(true); }
-} finally {
-  rmSync(app, { recursive: true, force: true });
-}
+  assert.equal(await press(page, "mouse"), true, "a right-click is still the app's");
+  await paneMenu.waitFor();
+  assert.deepEqual(errors, []);
+  console.log("PASS a touch long press on a pane is the phone's own; the keyboard and a right-click still open the pane menu");
+});

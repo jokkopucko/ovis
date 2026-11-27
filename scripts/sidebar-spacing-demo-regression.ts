@@ -1,13 +1,10 @@
 /** Usage: bun scripts/sidebar-spacing-demo-regression.ts */
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { chromium, type Page } from "playwright-core";
-import { buildDemoApp } from "./demo-build.ts";
-import { serveDemo } from "./demo-server.ts";
+import type { Page } from "playwright-core";
+import { withDemoBrowser } from "./demo-browser.ts";
 
-const app = mkdtempSync(join(tmpdir(), "herdr-sidebar-spacing-demo-"));
 const spacing = 16;
 
 // the demo's one PC as two, each with the demo's own roster: only this disposable fixture rewrites it (as
@@ -79,112 +76,98 @@ const layout = (page: Page) => page.evaluate(() => {
   };
 });
 
-let server: ReturnType<typeof Bun.serve> | undefined;
-try {
-  await buildDemoApp(app);
+await withDemoBrowser({ tempPrefix: "herdr-sidebar-spacing-demo-", prefix: "/app/", afterTransport: '\n    <script src="./two-pcs.js"></script>' }, async ({ app, newContext, baseUrl }) => {
   writeFileSync(join(app, "two-pcs.js"), twoPcs);
-  const index = join(app, "index.html");
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, '<script src="./demo-transport.js"></script>\n    <script src="./two-pcs.js"></script>\n    <script type="module"'));
-  server = serveDemo(app, { prefix: "/app/" });
 
   for (const [mobile, empty] of [[false, false], [true, false], [false, true], [true, true]] as const) {
     const label = `${mobile ? "390px" : "desktop"}${empty ? " with no agents" : ""}`;
-    const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
-    try {
-      const context = await browser.newContext({
-        viewport: mobile ? { width: 390, height: 844 } : { width: 1280, height: 900 },
-        isMobile: mobile,
-        hasTouch: mobile,
-        locale: "en-US",
-      });
-      await context.addInitScript(() => { localStorage.removeItem("ovis:pc-collapsed:local"); localStorage.removeItem("ovis:pc-collapsed:work"); });
-      const page = await context.newPage();
-      await page.goto(`http://127.0.0.1:${server.port}/app/`);
-      await page.locator(".conn-live").waitFor({ state: "attached" });
-      if (empty) assert.ok(await closeAgentWorkspaces(page) > 0, `${label} closed the demo's agent workspaces`);
-      if (mobile) await page.locator(".drawer-toggle").tap();
-      const machineToggles = page.locator(".machine-toggle");
-      const machineToggle = machineToggles.first();
-      const agentToggle = page.locator(".agents-sidebar .agent-section-toggle");
-      await machineToggles.nth(1).waitFor();
-      if (empty) await page.locator(".agents-sidebar.is-empty .agent-empty").waitFor({ state: "attached" });
-      if (await agentToggle.getAttribute("aria-expanded") !== "true") await agentToggle.click();
-      if (!empty) {
-        const resting = page.locator(".agents-sidebar .agent-resting-label .agent-background-toggle");
-        await resting.click();
-        assert.equal(await resting.getAttribute("aria-expanded"), "true", `${label} the resting line opens`);
-      }
-      const before = await page.locator(".agents-sidebar .agent-title").allTextContents();
-      assert.equal(before.length > 0, !empty, `${label} ${empty ? "has no agent rows" : "has agent rows"} before folding`);
-      assert.equal(await machineToggle.getAttribute("aria-expanded"), "true");
-
-      const open = await layout(page);
-      if (!empty) assert.ok(open.pcsCut, `${label} the two open PCs are longer than their list`);
-      if (open.agentsCut) assert.ok(Math.abs(open.agentsHeight - open.shellHeight / 2) <= 1, `${label} with both lists long Agents takes half the sidebar (${open.agentsHeight}px of ${open.shellHeight}px)`);
-      else assert.ok(open.agentsHeight <= open.shellHeight / 2 + 1, `${label} Agents with few rows takes no more than half the sidebar`);
-      assert.ok(Math.abs(open.agentsBottom - open.footerTop) <= 1, `${label} Agents sits on the footer while the PCs are long`);
-      assert.ok(!open.pcsCut || open.agentsTop - open.rowsBottom <= open.lineHeight + 1, `${label} the PC rows reach Agents while they are long`);
-
-      await machineToggles.nth(1).click();
-      await page.waitForFunction(() => document.querySelectorAll(".machine-workspaces").length === 1);
-      const short = await layout(page);
-      assert.ok(Math.abs(short.agentsBottom - short.footerTop) <= 1, `${label} Agents sits on the footer under one open PC`);
-      if (!short.pcsCut && short.agentsCut) {
-        assert.ok(short.agentsTop - short.rowsBottom <= spacing + short.lineHeight, `${label} Agents takes the height the PCs leave free (${short.agentsTop - short.rowsBottom}px left between them)`);
-      } else if (!short.pcsCut && !short.agentsCut) {
-        assert.ok(short.agentsTop - short.rowsBottom > spacing, `${label} with both lists short the gap lies above Agents, not under it`);
-      }
-      await machineToggles.nth(1).click();
-      await page.waitForFunction(() => document.querySelectorAll(".machine-workspaces").length === 2);
-
-      for (const toggle of await machineToggles.all()) await toggle.click();
-      await page.waitForFunction(() => !document.querySelector(".machine-workspaces"));
-      const metrics = await page.evaluate(() => {
-        const box = (selector: string) => document.querySelector<HTMLElement>(selector)?.getBoundingClientRect();
-        const shell = box(".sidebar-shell")!;
-        const machine = [...document.querySelectorAll<HTMLElement>(".machine-group")].at(-1)!.getBoundingClientRect();
-        const list = box(".machine-list")!;
-        const agents = box(".agents-sidebar")!;
-        const contents = document.querySelector<HTMLElement>(".agent-list-contents")!;
-        const footer = box(".sidebar-footer")!;
-        return {
-          lineHeight: box(".sidebar-split")?.height ?? 0,
-          shellHeight: shell.height,
-          machineBottom: machine.bottom,
-          listBottom: list.bottom,
-          agentsTop: agents.top,
-          agentsBottom: agents.bottom,
-          footerTop: footer.top,
-          contentsCut: contents.scrollHeight - contents.clientHeight,
-          contentsOverflow: getComputedStyle(contents).overflowY,
-          footerBottom: footer.bottom,
-          shellBottom: shell.bottom,
-        };
-      });
-      if (metrics.contentsCut > 1) assert.ok(metrics.agentsTop - metrics.machineBottom <= spacing + metrics.lineHeight, `${label} folded PC gap is ${metrics.agentsTop - metrics.machineBottom}px`);
-      assert.ok(metrics.listBottom - metrics.machineBottom <= spacing, `${label} folded list padding is ${metrics.listBottom - metrics.machineBottom}px`);
-      assert.ok(metrics.contentsCut <= 1 || Math.abs(metrics.agentsBottom - metrics.footerTop) <= 1, `${label} Agents cuts rows only once it reaches the footer (${metrics.contentsCut}px cut, ${metrics.footerTop - metrics.agentsBottom}px left)`);
-      assert.ok(Math.abs(metrics.agentsBottom - metrics.footerTop) <= 1, `${label} Agents ends above the footer`);
-      assert.equal(metrics.contentsOverflow, "auto", `${label} Agents keeps scroll ownership`);
-      assert.equal(Math.round(metrics.footerBottom), Math.round(metrics.shellBottom), `${label} footer stays at the bottom`);
-      assert.deepEqual(await page.locator(".agents-sidebar .agent-title").allTextContents(), before, `${label} agent order is unchanged`);
-      if (!mobile && !empty) {
-        const agent = page.locator('.agents-sidebar .agent-item[data-machine="local"] .agent-select').first();
-        await agent.click();
-        await page.locator('.agents-sidebar .agent-item[data-machine="local"] .agent-select[aria-current="true"]').waitFor();
-        assert.deepEqual(await machineToggles.evaluateAll((toggles) => toggles.map((toggle) => toggle.getAttribute("aria-expanded"))), ["false", "false"], `${label} picking an agent keeps its PC folded`);
-      }
-
-      await agentToggle.click();
-      assert.equal(await agentToggle.getAttribute("aria-expanded"), "false");
-      assert.equal(await page.locator(".agent-list-contents").getAttribute("hidden"), "");
-      console.log(`PASS ${label} sidebar spacing after folding the PC section`);
-      await context.close();
-    } finally {
-      await browser.close();
+    const context = await newContext({
+      viewport: mobile ? { width: 390, height: 844 } : { width: 1280, height: 900 },
+      isMobile: mobile,
+      hasTouch: mobile,
+    });
+    await context.addInitScript(() => { localStorage.removeItem("ovis:pc-collapsed:local"); localStorage.removeItem("ovis:pc-collapsed:work"); });
+    const page = await context.newPage();
+    await page.goto(baseUrl);
+    await page.locator(".conn-live").waitFor({ state: "attached" });
+    if (empty) assert.ok(await closeAgentWorkspaces(page) > 0, `${label} closed the demo's agent workspaces`);
+    if (mobile) await page.locator(".drawer-toggle").tap();
+    const machineToggles = page.locator(".machine-toggle");
+    const machineToggle = machineToggles.first();
+    const agentToggle = page.locator(".agents-sidebar .agent-section-toggle");
+    await machineToggles.nth(1).waitFor();
+    if (empty) await page.locator(".agents-sidebar.is-empty .agent-empty").waitFor({ state: "attached" });
+    if (await agentToggle.getAttribute("aria-expanded") !== "true") await agentToggle.click();
+    if (!empty) {
+      const resting = page.locator(".agents-sidebar .agent-resting-label .agent-background-toggle");
+      await resting.click();
+      assert.equal(await resting.getAttribute("aria-expanded"), "true", `${label} the resting line opens`);
     }
+    const before = await page.locator(".agents-sidebar .agent-title").allTextContents();
+    assert.equal(before.length > 0, !empty, `${label} ${empty ? "has no agent rows" : "has agent rows"} before folding`);
+    assert.equal(await machineToggle.getAttribute("aria-expanded"), "true");
+
+    const open = await layout(page);
+    if (!empty) assert.ok(open.pcsCut, `${label} the two open PCs are longer than their list`);
+    if (open.agentsCut) assert.ok(Math.abs(open.agentsHeight - open.shellHeight / 2) <= 1, `${label} with both lists long Agents takes half the sidebar (${open.agentsHeight}px of ${open.shellHeight}px)`);
+    else assert.ok(open.agentsHeight <= open.shellHeight / 2 + 1, `${label} Agents with few rows takes no more than half the sidebar`);
+    assert.ok(Math.abs(open.agentsBottom - open.footerTop) <= 1, `${label} Agents sits on the footer while the PCs are long`);
+    assert.ok(!open.pcsCut || open.agentsTop - open.rowsBottom <= open.lineHeight + 1, `${label} the PC rows reach Agents while they are long`);
+
+    await machineToggles.nth(1).click();
+    await page.waitForFunction(() => document.querySelectorAll(".machine-workspaces").length === 1);
+    const short = await layout(page);
+    assert.ok(Math.abs(short.agentsBottom - short.footerTop) <= 1, `${label} Agents sits on the footer under one open PC`);
+    if (!short.pcsCut && short.agentsCut) {
+      assert.ok(short.agentsTop - short.rowsBottom <= spacing + short.lineHeight, `${label} Agents takes the height the PCs leave free (${short.agentsTop - short.rowsBottom}px left between them)`);
+    } else if (!short.pcsCut && !short.agentsCut) {
+      assert.ok(short.agentsTop - short.rowsBottom > spacing, `${label} with both lists short the gap lies above Agents, not under it`);
+    }
+    await machineToggles.nth(1).click();
+    await page.waitForFunction(() => document.querySelectorAll(".machine-workspaces").length === 2);
+
+    for (const toggle of await machineToggles.all()) await toggle.click();
+    await page.waitForFunction(() => !document.querySelector(".machine-workspaces"));
+    const metrics = await page.evaluate(() => {
+      const box = (selector: string) => document.querySelector<HTMLElement>(selector)?.getBoundingClientRect();
+      const shell = box(".sidebar-shell")!;
+      const machine = [...document.querySelectorAll<HTMLElement>(".machine-group")].at(-1)!.getBoundingClientRect();
+      const list = box(".machine-list")!;
+      const agents = box(".agents-sidebar")!;
+      const contents = document.querySelector<HTMLElement>(".agent-list-contents")!;
+      const footer = box(".sidebar-footer")!;
+      return {
+        lineHeight: box(".sidebar-split")?.height ?? 0,
+        shellHeight: shell.height,
+        machineBottom: machine.bottom,
+        listBottom: list.bottom,
+        agentsTop: agents.top,
+        agentsBottom: agents.bottom,
+        footerTop: footer.top,
+        contentsCut: contents.scrollHeight - contents.clientHeight,
+        contentsOverflow: getComputedStyle(contents).overflowY,
+        footerBottom: footer.bottom,
+        shellBottom: shell.bottom,
+      };
+    });
+    if (metrics.contentsCut > 1) assert.ok(metrics.agentsTop - metrics.machineBottom <= spacing + metrics.lineHeight, `${label} folded PC gap is ${metrics.agentsTop - metrics.machineBottom}px`);
+    assert.ok(metrics.listBottom - metrics.machineBottom <= spacing, `${label} folded list padding is ${metrics.listBottom - metrics.machineBottom}px`);
+    assert.ok(metrics.contentsCut <= 1 || Math.abs(metrics.agentsBottom - metrics.footerTop) <= 1, `${label} Agents cuts rows only once it reaches the footer (${metrics.contentsCut}px cut, ${metrics.footerTop - metrics.agentsBottom}px left)`);
+    assert.ok(Math.abs(metrics.agentsBottom - metrics.footerTop) <= 1, `${label} Agents ends above the footer`);
+    assert.equal(metrics.contentsOverflow, "auto", `${label} Agents keeps scroll ownership`);
+    assert.equal(Math.round(metrics.footerBottom), Math.round(metrics.shellBottom), `${label} footer stays at the bottom`);
+    assert.deepEqual(await page.locator(".agents-sidebar .agent-title").allTextContents(), before, `${label} agent order is unchanged`);
+    if (!mobile && !empty) {
+      const agent = page.locator('.agents-sidebar .agent-item[data-machine="local"] .agent-select').first();
+      await agent.click();
+      await page.locator('.agents-sidebar .agent-item[data-machine="local"] .agent-select[aria-current="true"]').waitFor();
+      assert.deepEqual(await machineToggles.evaluateAll((toggles) => toggles.map((toggle) => toggle.getAttribute("aria-expanded"))), ["false", "false"], `${label} picking an agent keeps its PC folded`);
+    }
+
+    await agentToggle.click();
+    assert.equal(await agentToggle.getAttribute("aria-expanded"), "false");
+    assert.equal(await page.locator(".agent-list-contents").getAttribute("hidden"), "");
+    console.log(`PASS ${label} sidebar spacing after folding the PC section`);
+    await context.close();
   }
-} finally {
-  server?.stop(true);
-  rmSync(app, { recursive: true, force: true });
-}
+});

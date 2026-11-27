@@ -6,6 +6,55 @@ import { describe, expect, test } from "bun:test";
 import type { RecoveryAction } from "../shared/account-devices-api.ts";
 import { runLogout, runRecover, type RecoverIo } from "./plugin-recover.ts";
 
+test.each([
+  ["linux", false, "yes", "other", 1, 0, /terminal/i],
+  ["win32", true, "yes", "desktop", 1, 0, /Windows/],
+  ["linux", true, "no", "other", 0, 1, /Not queued/],
+  ["linux", true, "yes", "plugin", 0, 2, /Stop Ovis.*Start Ovis/],
+  ["darwin", true, "yes", "desktop", 0, 2, /Quit and reopen Ovis/],
+  ["linux", true, "yes", "other", 0, 2, /Restart Ovis/],
+] as const)("restamp 9: %s terminal=%p answer=%s install=%s", async (platform, terminal, answer, install, exit, requests, wording) => {
+  const transcript: string[] = [];
+  const sent: RecoveryAction[] = [];
+  const old = "2026-10-17T12:00:00.000Z";
+  const next = "2026-10-15T12:00:00.001Z";
+  const status = await runRecover(["--restamp"], {
+    platform, terminal,
+    out: (text) => { transcript.push(text); },
+    ask: async (prompt) => {
+      expect(transcript.join("")).toContain(`${old} -> ${next}`);
+      expect(prompt).toContain("[y/N]");
+      return answer;
+    },
+    send: async (request) => {
+      sent.push(request);
+      if (sent.length === 1) return { confirm: "test-plan", moves: [{ old, new: next }] };
+      expect(request).toEqual({ act: "restamp", confirm: "test-plan" });
+      return { queued: true, install };
+    },
+  });
+  expect(status).toBe(exit);
+  expect(sent).toHaveLength(requests);
+  expect(transcript.join("")).toMatch(wording);
+});
+
+test("restamp explicitly confirms retaining independently changed times with no timestamp moves", async () => {
+  const sent: RecoveryAction[] = [];
+  const status = await runRecover(["--restamp"], {
+    terminal: true, platform: "linux", out: () => {},
+    ask: async prompt => {
+      expect(prompt).toMatch(/keep.*current.*times/i);
+      return "yes";
+    },
+    send: async request => {
+      sent.push(request);
+      return sent.length === 1 ? { confirm: "reconcile", moves: [], reconcile: true } : { queued: true };
+    },
+  });
+  expect(status).toBe(0);
+  expect(sent).toEqual([{ act: "restamp" }, { act: "restamp", confirm: "reconcile" }]);
+});
+
 const rows = [
   { id: "a1", label: "Phone", origin: { from: "remote", how: "list" }, waiting: "catching_up", last_seen_at: "2026-11-19T10:00:00Z", refusal: null },
   { id: "b2", label: "Old laptop", origin: { from: "legacy", how: "legacy" }, waiting: "catching_up", last_seen_at: null, refusal: "frozen" },

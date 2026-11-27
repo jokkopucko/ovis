@@ -152,6 +152,16 @@
   text-decoration: none;
 }
 
+/* an item that acts here (Copy link, Download saved by the app) is a button: drawn as the links are */
+button.file-viewer-more-item {
+  width: 100%;
+  border: 0;
+  background: none;
+  font-family: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
 .file-viewer-more-item:focus-visible { background: var(--bg-hover); }
 
 @media (hover: hover) {

@@ -370,7 +370,7 @@ describe("lifecycle invalidations", () => {
     const herdr = fakeHerdr([paneOf("w1:p1", "idle")]);
     const { log, handlers } = recorder();
     const moves: string[] = [];
-    handlers.onPaneMoved = (from, to) => moves.push(`${from}->${to} after ${log.structure} structure changes`);
+    handlers.onPaneMoved = (from, to, status) => moves.push(`${from}->${to} ${status} after ${log.structure} structure changes`);
     const changed = Promise.withResolvers<void>();
     handlers.onStructureChange = () => { log.structure += 1; changed.resolve(); };
     const subscribe = herdr.deps.subscribe;
@@ -387,7 +387,7 @@ describe("lifecycle invalidations", () => {
       await collector.ready;
       herdr.lifecycle().emit({ data: { type: "pane_moved", previous_pane_id: "w1:p1", pane: { pane_id: "w1:p1", agent_status: "idle" } } });
       herdr.lifecycle().emit({ data: { type: "pane_moved", previous_pane_id: "w1:p1", pane: { pane_id: "w2:p1", agent_status: "idle" } } });
-      expect(moves).toEqual(["w1:p1->w2:p1 after 0 structure changes"]);
+      expect(moves).toEqual(["w1:p1->w2:p1 idle after 0 structure changes"]);
       await changed.promise;
     } finally { collector.stop(); }
   });

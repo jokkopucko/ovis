@@ -8,6 +8,7 @@ import { createServer } from "../server/index.ts";
 import { HerdrError, herdrRpc, paneSendKeys, paneSendText, sessionSnapshot, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { UsageService } from "../server/usage.ts";
 import { contextMenuKey } from "./context-menu-key.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 type State = {
   readonly selector: string;
@@ -105,6 +106,7 @@ try {
     usage: new UsageService(undefined, []),
   });
   const origin = `http://127.0.0.1:${server.port}`;
+  checkChromeTmpdir();
   browser = await chromium.launch({
     executablePath: process.env.CHROME_PATH ?? (process.platform === "darwin"
       ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"

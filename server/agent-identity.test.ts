@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { paneAgent, paneSession, reportedStatus, titleStatus } from "./agent-identity.ts";
+import { earlierHermesLauncher, hermesLauncherArgv } from "./fixtures/hermes-installed-launcher.ts";
 
 describe("which agent a pane runs", () => {
   it("takes the app the program reported, in herdr's names", () => {
@@ -25,6 +26,23 @@ describe("which agent a pane runs", () => {
     expect(paneAgent({ foreground: ["node", "--enable-source-maps", "--no-warnings", "/home/u/.bin/letta", "--backend", "local"] }, "linux")).toBe("letta");
     expect(paneAgent({ foreground: ["python3", "-u", "/home/u/.local/bin/hermes"] }, "linux")).toBe("hermes");
     expect(paneAgent({ foreground: ["C:\\Program Files\\Claude\\Claude.EXE"] }, "windows")).toBe("claude");
+  });
+
+  it("recognizes the official Hermes Python launcher, not arbitrary inline code (#4572)", () => {
+    const [program, isolate, inline, source] = hermesLauncherArgv;
+    const python = [program, isolate, inline];
+    expect(paneAgent({ foreground: [...hermesLauncherArgv, "chat"] }, "linux")).toBe("hermes");
+    expect(paneAgent({ foreground: [...python, earlierHermesLauncher, "chat"] }, "macos")).toBe("hermes");
+    expect(paneAgent({ foreground: [...hermesLauncherArgv, "--run-module", "other"] }, "linux")).toBeNull();
+    expect(paneAgent({ foreground: [...hermesLauncherArgv, "--print-runtime-command"] }, "linux")).toBeNull();
+    expect(paneAgent({ foreground: [...python, "from hermes_cli.main import main; main()"] }, "linux")).toBeNull();
+    expect(paneAgent({ foreground: ["node", "-I", "-c", source] }, "linux")).toBeNull();
+  });
+
+  it("does not name a Python diagnostic that exits before the Hermes launcher code", () => {
+    const [program, isolate, inline, source] = hermesLauncherArgv;
+    const diagnostic = source.replace("import os, re, sys\n", "import os, re, sys\nif '--check-python' in sys.argv:\n    print(sys.version)\n    sys.exit(0)\n");
+    expect(paneAgent({ foreground: [program, isolate, inline, diagnostic, "--check-python"] }, "linux")).toBeNull();
   });
 
   it("names nothing a platform would decide when it is unknown, and no shim off Windows", () => {

@@ -40,6 +40,7 @@ export interface AgentCommandSource {
   readonly forms?: Record<string, CommandForm[]>;
   readonly terminalBound?: readonly string[];
   readonly agentHidden?: readonly string[];
+  readonly chatPaletteHidden?: readonly string[];
   readonly pin?: string | readonly string[];
   readonly skillsOverrideBuiltins?: boolean;
 }

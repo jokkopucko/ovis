@@ -61,6 +61,11 @@ export const USAGE_ZH: Record<string, string> = {
   "Sign in again to {name}": "重新登录 {name}",
   "{name} asked to slow down. These are the last numbers.": "{name} 要求降低请求频率。显示的是上次读取的数值。",
   "{name} could not be reached.": "无法连接 {name}。",
+  "{name} is busy or down. Try again later.": "{name} 繁忙或已停止服务。请稍后重试。",
+  "{name} took too long to answer.": "{name} 响应超时。",
+  "{name} sent an answer Ovis cannot read.": "{name} 返回了 Ovis 无法读取的响应。",
+  "This PC could not connect to {name}.": "此电脑无法连接到 {name}。",
+  "Hub could not read this account.": "中心无法读取此账户。",
   "The server cannot open the keychain holding this sign-in.": "服务器无法打开保存此登录信息的钥匙串。",
   "Read from Claude's status line instead": "改为从 Claude 状态栏读取",
   "Could not change Claude's status line": "无法更改 Claude 状态栏",
@@ -99,4 +104,5 @@ export const USAGE_ZH: Record<string, string> = {
   "Recorded by {tool}": "{tool} 的记录",
   "Recorded by {tool}, {when}": "{tool} 的记录，{when}",
   "It may have changed since.": "之后可能已有变化。",
+  "Open terminal": "打开终端",
 };

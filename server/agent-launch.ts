@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { freeAgentName } from "./agent-name.ts";
 import { launchedAgents } from "./launched-agents.ts";
 import { isShellAgentKind, startShellAgent, type ShellAgentLocator } from "./shell-agent.ts";
-import { agentStart, HerdrError, sessionSnapshot } from "./herdr/client.ts";
+import { agentStart, HerdrError, paneGet, sessionSnapshot } from "./herdr/client.ts";
 import { requestFault } from "./http.ts";
 import { agentStartArgs } from "./claude-settings-file.ts";
 import type { ApprovalHub } from "./approvals/hub.ts";
@@ -14,7 +14,7 @@ import { browserToolArgs, browserToolChoices, browserToolConfig, isBrowserToolAg
 import { hcMachine } from "./herdr-core/runtime.ts";
 import { capabilities } from "./runtime/capabilities.ts";
 import { userHome } from "./user-home.ts";
-import { forgetLocalRun, launchHarnessTool } from "./agent-tools/launch.ts";
+import { forgetLocalRun, launchHarnessTool, markLocalAgentLaunch } from "./agent-tools/launch.ts";
 
 export type AgentPayload = { kind?: unknown; name?: unknown; args?: unknown };
 
@@ -152,14 +152,19 @@ export async function agentLaunch(paneId: string, agent: AgentPayload, launched?
     // another machine of the core: its path would be this PC's, and its start is never seen there (no pids)
     if (shell && hcMachine() !== null) return { agent_started: false, error: { code: "other_machine", message: `${kind} starts only on the PC that runs Ovis` } };
     // an agent another machine of the core starts could not reach this PC's hub
+    // a Claude's status line is the one its project's settings set, above the user's (server/approvals/claude.ts)
+    const paneCwd = (): Promise<string | null> => kind === "claude" ? paneGet(paneId).then((pane) => pane.cwd ?? null, () => null) : Promise.resolve(null);
     const args = approvals !== null && approvals.hub.handles(kind) && hcMachine() === null
-      ? approvals.hub.launchArgs(kind, paneId, agent.args as string[] | undefined, await approvals.version(kind)) : agent.args as string[] | undefined;
+      ? approvals.hub.launchArgs(kind, paneId, agent.args as string[] | undefined, await approvals.version(kind), await paneCwd()) : agent.args as string[] | undefined;
+    await markLocalAgentLaunch(paneId, options.platform ?? process.platform);
     if (shell) {
       const shellOptions = locator ? { locator } : {};
+      tool = kind === "dsh-tui" ? null : launchHarnessTool(paneId, kind, { args, platform: options.platform ?? process.platform, browsers: null });
       const pid = kind === "dsh-tui" && args !== undefined
         ? await startDshTui(paneId, args, shellOptions, options.home ?? userHome())
-        : await startShellAgent(kind, paneId, args, shellOptions);
+        : await startShellAgent(kind, paneId, tool?.args ?? args, tool ? { ...shellOptions, env: { OVIS_AGENT_SOCKET: tool.socket, OVIS_AGENT_TOKEN_FILE: tool.tokenFile } } : shellOptions);
       if (pid !== null) launched?.(pid);
+      await tool?.confirmed();
     }
     else {
       const given = typeof agent.name === "string" && agent.name.length > 0 ? agent.name : null;

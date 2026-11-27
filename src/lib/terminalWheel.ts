@@ -1,4 +1,4 @@
-import type { Terminal } from "@xterm/xterm";
+import type { GhosttyTerminal } from "./ghostty/terminal.ts";
 import { HERDR_MOUSE_SCROLL_LINES } from "./wheelSteps.ts";
 
 export interface TerminalWheelState {
@@ -15,6 +15,9 @@ interface WheelViewport {
 }
 
 const forwarded = new WeakSet<Event>();
+const gridPans = new WeakSet<WheelEvent>();
+export const wheelPansGrid = (event: WheelEvent): boolean => gridPans.has(event);
+
 export function forwardWheel(target: EventTarget, event: WheelEvent): void {
   const copy = new WheelEvent("wheel", event);
   if (event.isTrusted) forwarded.add(copy);
@@ -27,10 +30,14 @@ export function canPanTerminalGrid(view: Pick<HTMLElement, "scrollTop" | "scroll
   return delta < 0 ? view.scrollTop > 1 : delta > 0 && view.scrollTop < view.scrollHeight - view.clientHeight - 1;
 }
 
-/** herdr owns history; xterm owns encoding mouse reports for applications that use them. */
-export function attachTerminalWheel(term: Terminal, state: { readonly current: TerminalWheelState }, viewport: WheelViewport): void {
+/** herdr owns history; the input layer owns encoding mouse reports for applications that use them. */
+export function attachTerminalWheel(term: Pick<GhosttyTerminal, "hasSelection" | "clearSelection" | "modes" | "attachCustomWheelEventHandler">, state: { readonly current: TerminalWheelState }, viewport: WheelViewport): void {
   term.attachCustomWheelEventHandler((event) => {
-    if (viewport.drag(event) || viewport.pan?.(event)) return false;
+    if (viewport.drag(event)) return false;
+    if (viewport.pan?.(event)) {
+      gridPans.add(event);
+      return false;
+    }
     // Observers pan locally; an interactive mirror can scroll herdr through the API.
     const mirrored = viewport.mirrored();
     if (viewport.adopted() && !mirrored) return false;
@@ -46,7 +53,7 @@ export function attachTerminalWheel(term: Terminal, state: { readonly current: T
       return false;
     }
     const reporting = term.modes.mouseTrackingMode !== "none";
-    // A program that does not report must not receive xterm's fallback arrow keys.
+    // A program that does not report must not receive fallback arrow keys.
     // Trusted wheels replay at the chosen speed; touch/replays already supply their steps.
     // A trackpad pinch (Ctrl) keeps its original single-event path and all replayed modifiers.
     if (reporting && real(event) && event.target && !event.ctrlKey) {

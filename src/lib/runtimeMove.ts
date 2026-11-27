@@ -1,4 +1,4 @@
-import { AGENT_CATALOG } from "../../shared/agent-catalog.ts";
+import { agentDisplayName } from "../../shared/agent-names.ts";
 import type { MoveNode, MovePane, MovePlan, MoveStatus, MoveVerdict } from "../../shared/runtime-move.ts";
 import type { Translate } from "./i18n.ts";
 
@@ -7,7 +7,7 @@ export type MoveTone = "ok" | "plain" | "warn" | "wait" | "you";
 export interface MoveTag { text: string; tone: MoveTone }
 
 export function agentName(kind: string): string {
-  return AGENT_CATALOG.find((entry) => entry.id === kind)?.name ?? kind;
+  return agentDisplayName(kind);
 }
 
 export function verdictTag(t: Translate, verdict: MoveVerdict): MoveTag {

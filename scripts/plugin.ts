@@ -44,27 +44,52 @@ import { activePluginScript } from "./plugin-runtime.ts";
 import { isBareTui, runBareTui, runTui } from "./plugin-tui.ts";
 import { parseCommand, shortAccount, unknownCommand, type CliContext } from "./plugin-cli.ts";
 import { discardTyped } from "./libc.ts";
-import { ENV_FILES, ownDir, readEnvFile } from "./plugin-settings.ts";
+import { desktopCommandRecord, ENV_FILES, LEGACY_PLUGIN_ID, ownDir, PLUGIN_ID, pluginConfigDir, readEnvFile } from "./plugin-settings.ts";
 import { accountServiceOrigin, DEFAULT_ACCOUNT_SERVICE } from "../server/static.ts";
 import { herdrStateDir } from "./plugin-state.ts";
 import { HTTPS_PORT_VARIABLE, HTTPS_PORTS, httpsPorts, parseTailscale, parseTailscaleIp, parseTailscaleOwner, readTailscale, tailscaleBinary } from "../server/tailscale.ts";
 import { descendantProcesses, windowsArgv, windowsProcessTable } from "../server/windows-processes.ts";
 
 // `ovis tui` comes first: the screen needs nothing of this install's state, so it starts before the work below reads the
-// state and config dirs, asks herdr for its config dir, or copies an old install's settings (adoptLegacyConfig). Its
-// --help is no run of it: runPlugin answers that with every other command's.
-const early = parseCommand(process.argv.slice(2), { account: false, tui: true });
+// state dirs or copies an old install's settings (adoptLegacyConfig).
+const words = process.argv.slice(2);
+const early = parseCommand(words, { account: false, tui: true });
+if (early.kind === "help" && (words[0] === "tui" || words[1] === "tui")) {
+  process.stdout.write(early.text);
+  process.exit(0);
+}
 if (early.kind === "run" && early.command === "agent") process.exit(await (await import("./plugin-agent.ts")).runAgent(early.args));
 if (early.kind === "run" && early.command === "tui") process.exit(await runTui(early.args));
 if (import.meta.main || COMPILED) {
-  const opened = await runBareTui(process.argv.slice(2));
+  const opened = await runBareTui(words);
   if (opened !== null) process.exit(opened);
+}
+
+let desktopPort: number | null = null;
+let desktopListenerIsCurrent: (() => Promise<boolean>) | undefined;
+// help and the version are answered here without a server, so they work with the app closed
+if (process.env["OVIS_DESKTOP_COMMAND"] === "1" && early.kind !== "help" && early.kind !== "version") {
+  // The app owns its server; these commands only explain how to start or stop it.
+  if (early.kind === "run" && (early.command === "start" || early.command === "stop")) {
+    process.stderr.write(early.command === "start" ? "The Ovis app starts its own server: open the app.\n" : "The Ovis app stops its own server: quit the app from its menu or tray.\n");
+    process.exit(1);
+  }
+  const record = desktopCommandRecord(process.env);
+  const { desktopCommandListener } = await import("../shared/desktop-command-listener.ts");
+  const listener = record ? await desktopCommandListener(record) : null;
+  if (!record || listener === null || String(listener.port) !== process.env["PORT"]) {
+    process.stderr.write("ovis: open the Ovis app first, then run this again\n");
+    process.exit(1);
+  }
+  desktopPort = listener.port;
+  desktopListenerIsCurrent = async () => {
+    const current = await desktopCommandListener(record);
+    return current?.port === listener.port && current.identity === listener.identity;
+  };
 }
 
 const ROOT = resolve(process.env["HERDR_PLUGIN_ROOT"] ?? SERVER_ROOT);
 const DEFAULT_STATE_DIR = ownDir(join(homedir(), ".local", "state"));
-const PLUGIN_ID = "devswha.ovis";
-const LEGACY_PLUGIN_ID = "devswha.herdr-web-ui";
 const HERDR_PLUGIN_STATE = join(herdrStateDir(process.env, platform(), homedir()), "plugins");
 const MANAGED_STATE_DIR = [PLUGIN_ID, LEGACY_PLUGIN_ID].map((id) => join(HERDR_PLUGIN_STATE, id)).find((dir) => existsSync(dir)) ?? join(HERDR_PLUGIN_STATE, PLUGIN_ID);
 // run by hand, without herdr's HERDR_PLUGIN_STATE_DIR: a server started from a checkout keeps its
@@ -72,7 +97,7 @@ const MANAGED_STATE_DIR = [PLUGIN_ID, LEGACY_PLUGIN_ID].map((id) => join(HERDR_P
 const REQUESTED_STATE_DIR = process.env["HERDR_PLUGIN_STATE_DIR"]
   ?? (pidIn(join(DEFAULT_STATE_DIR, "server.pid")) !== null || !existsSync(MANAGED_STATE_DIR) ? DEFAULT_STATE_DIR : MANAGED_STATE_DIR);
 let STATE_DIR = runningStateDir(REQUESTED_STATE_DIR);
-const CONFIG_DIR = process.env["HERDR_PLUGIN_CONFIG_DIR"] ?? herdrConfigDir() ?? ownDir(join(homedir(), ".config"));
+const CONFIG_DIR = pluginConfigDir(process.env, homedir());
 adoptLegacyConfig(CONFIG_DIR);
 let PID_FILE = join(STATE_DIR, "server.pid");
 let LOG_FILE = join(STATE_DIR, "server.log");
@@ -105,25 +130,6 @@ const PHONE_AGAIN = platform() === "win32"
   : "curl -fsSL https://ovis.sh/install.sh | sh";
 
 /**
- * Run by hand (`pair` on a headless PC), herdr's env is not there to name the config dir:
- * ask herdr for it, so the PORT, HOST and token the plugin runs with are the ones used.
- */
-function herdrConfigDir(): string | null {
-  const herdr = Bun.which("herdr");
-  if (herdr === null) return null;
-  for (const id of [PLUGIN_ID, LEGACY_PLUGIN_ID]) {
-    try {
-      const result = Bun.spawnSync([herdr, "plugin", "config-dir", id], { windowsHide: true, stdout: "pipe", stderr: "ignore", timeout: 3000 });
-      const dir = result.exitCode === 0 ? result.stdout.toString().trim() : "";
-      if (dir !== "" && ENV_FILES.some((name) => existsSync(join(dir, name)))) return dir;
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
-/**
  * herdr keeps a plugin's config dir by its id (`plugins/config/<id>`), so the settings and token
  * an install wrote under the old id are copied to the new id's dir the first time it has none.
  * The old dir stays: the plugin under the old id, still installed until the installer removes
@@ -147,6 +153,10 @@ const CONFIG_FILES = ENV_FILES.map((name) => join(CONFIG_DIR, name)).filter((fil
 const fileVars = CONFIG_FILES.map(readEnvFile);
 const shadowed = fileVars.length === 2 ? Object.keys(fileVars[0]!).filter((key) => key in fileVars[1]! && fileVars[0]![key] !== fileVars[1]![key]) : [];
 const env = mergeEnvLayers([process.env, ...fileVars]);
+if (desktopPort !== null) {
+  env["PORT"] = String(desktopPort);
+  env["HOST"] = "127.0.0.1";
+}
 /**
  * The OVIS_STATE_DIR this command was run with, which a settings file may set over (stateDirWayOut). A command handed on
  * to the release Settings installed (handOn) is told it apart: its own environment is the merged one.
@@ -273,7 +283,10 @@ function profileRelayOnly(): string {
 }
 
 function serverFetch(path: string, init: RequestInit = {}, door = serverDoor()): Promise<Response> {
-  return door === null ? fetch(`${origin}${path}`, init) : ownerFetch(door, `http://localhost${path}`, init);
+  if (door !== null) return ownerFetch(door, `http://localhost${path}`, init);
+  // A desktop command has a verified loopback target; neither a proxy nor a redirect can answer for it.
+  const options = desktopPort === null ? init : { ...init, proxy: false, redirect: "error" as const };
+  return fetch(`${origin}${path}`, options);
 }
 
 /** A request that ran past its `AbortSignal.timeout`: the server answered health, then stopped answering. */
@@ -1006,6 +1019,11 @@ async function pair(args: readonly string[], parts?: Awaited<ReturnType<typeof p
 async function approvePairings(): Promise<number> {
   const { approveJoins, approveWaiting, lockRefusal } = await import("./plugin-link.ts");
   if (!(await health())) return notRunning();
+  const listenerGone = new Error("Desktop listener closed");
+  const approvalFetch = async (path: string, init: RequestInit): Promise<Response> => {
+    if (desktopListenerIsCurrent !== undefined && !(await desktopListenerIsCurrent())) throw listenerGone;
+    return serverFetch(path, init);
+  };
   const headers: Record<string, string> = { "content-type": "application/json", "x-herdr-machine": "1", "x-herdr-update": "1", origin: serverOrigin() };
   if ((env["OVIS_TOKEN"] ?? "") !== "") headers["authorization"] = `Bearer ${env["OVIS_TOKEN"]}`;
   const errorCode = async (response: Response): Promise<unknown> => ((await response.json().catch(() => null)) as { error?: { code?: unknown } } | null)?.error?.code;
@@ -1021,21 +1039,22 @@ async function approvePairings(): Promise<number> {
   let joins: OwnJoin[];
   let account: string | null = null;
   try {
-    const listed = await serverFetch("/api/relay/pairings", { headers, signal: AbortSignal.timeout(15_000) });
+    const listed = await approvalFetch("/api/relay/pairings", { headers, signal: AbortSignal.timeout(15_000) });
     if (!listed.ok) return await refused("the waiting pairings", listed);
     ({ pairings } = (await listed.json()) as { pairings: WaitingDevice[] });
     // an Ovis older than this route lists none (404, 405)
-    const asked = await serverFetch("/api/relay/joins", { headers, signal: AbortSignal.timeout(15_000) });
+    const asked = await approvalFetch("/api/relay/joins", { headers, signal: AbortSignal.timeout(15_000) });
     if (asked.status === 404 || asked.status === 405) joins = [];
     else if (!asked.ok) return await refused("the waiting account joins", asked);
     else joins = ((await asked.json()) as { joins: OwnJoin[] }).joins;
     // a first join's admission came from this PC's account, named beside its device; left out when it cannot be read
     if (joins.some((join) => join.digits !== undefined)) {
-      const status = await serverFetch("/api/account/status", { headers, signal: AbortSignal.timeout(5_000) }).catch(() => null);
+      const status = await approvalFetch("/api/account/status", { headers, signal: AbortSignal.timeout(5_000) }).catch(() => null);
       const named = status?.ok === true ? ((await status.json().catch(() => null)) as { account?: unknown } | null)?.account : null;
       if (typeof named === "string") account = named;
     }
   } catch (error) {
+    if (error === listenerGone) return notRunning();
     if (!timedOut(error)) throw error;
     process.stderr.write(`Ovis at ${origin} did not answer in time; try again\n`);
     return 1;
@@ -1054,8 +1073,11 @@ async function approvePairings(): Promise<number> {
       out, lines, terminal, discard: discardTyped, signal, account, command: `${env["OVIS_CLI_NAME"] || "ovis"} approve`,
       approve: async (id, digits) => {
         try {
-          const typed = await serverFetch("/api/relay/join", { method: "POST", headers, body: JSON.stringify({ id, digits }), signal: AbortSignal.timeout(15_000) });
-          if (typed.ok) return "approved";
+          const typed = await approvalFetch("/api/relay/join", { method: "POST", headers, body: JSON.stringify({ id, digits }), signal: AbortSignal.timeout(15_000) });
+          if (typed.ok) {
+            const answer = await typed.json().catch(() => ({})) as { held_why?: unknown };
+            return typeof answer.held_why === "string" || answer.held_why === null ? { held_why: answer.held_why } : "approved";
+          }
           const code = await errorCode(typed);
           if (code === "wrong_digits" || code === "locked" || code === "strict") return code;
           return code === "relay_pairing_gone" ? "gone" : "away";
@@ -1069,13 +1091,13 @@ async function approvePairings(): Promise<number> {
     out, lines, terminal, discard: discardTyped, signal,
     // read again before three digits approve: a request that came since may end in the same three
     list: async () => {
-      const again = await serverFetch("/api/relay/pairings", { headers, signal: AbortSignal.timeout(15_000) });
+      const again = await approvalFetch("/api/relay/pairings", { headers, signal: AbortSignal.timeout(15_000) });
       if (!again.ok) throw new Error(`could not read the waiting pairings (${again.status})`);
       return ((await again.json()) as { pairings: WaitingDevice[] }).pairings;
     },
     decide: async (id, decision) => {
       try {
-        const decided = await serverFetch("/api/relay/pairing", { method: "POST", headers, body: JSON.stringify({ id, decision }), signal: AbortSignal.timeout(15_000) });
+        const decided = await approvalFetch("/api/relay/pairing", { method: "POST", headers, body: JSON.stringify({ id, decision }), signal: AbortSignal.timeout(15_000) });
         return decided.ok ? "taken" : "gone";
       } catch { return "away"; }
     },
@@ -1369,17 +1391,18 @@ const listSummaryOf = (value: unknown): ListSummary | null => {
  * This PC's account as `GET /api/account/status` tells its owner; null where that does not answer. `problem`: the PC
  * answered that it cannot read its own account state, and said what (a file, a folder): it then tells nothing else.
  */
-async function accountTold(): Promise<{ readonly account: string | null; readonly members: number; readonly waiting: boolean | null; readonly list: ListSummary | null } | { readonly problem: string } | null> {
+async function accountTold(): Promise<{ readonly account: string | null; readonly members: number; readonly waiting: boolean | null; readonly list: ListSummary | null; readonly scale: number | null } | { readonly problem: string } | null> {
   try {
     const response = await serverFetch("/api/account/status", { signal: AbortSignal.timeout(1500) });
     if (!response.ok) {
       const refused = await response.json().catch(() => null) as { error?: { code?: unknown; reason?: unknown } } | null;
       return refused?.error?.code === "strict" && typeof refused.error.reason === "string" ? { problem: refused.error.reason } : null;
     }
-    const body = await response.json() as { account?: unknown; members?: unknown; waiting_for_add?: unknown; list?: unknown };
+    const body = await response.json() as { account?: unknown; members?: unknown; waiting_for_add?: unknown; list?: unknown; migrate_time_scale?: unknown };
     if (!(typeof body.account === "string" || body.account === null) || !Number.isSafeInteger(body.members)) return null;
     // null from a server from before the field
-    return { account: body.account, members: body.members as number, waiting: typeof body.waiting_for_add === "boolean" ? body.waiting_for_add : null, list: listSummaryOf(body.list) };
+    return { account: body.account, members: body.members as number, waiting: typeof body.waiting_for_add === "boolean" ? body.waiting_for_add : null, list: listSummaryOf(body.list),
+      scale: Number.isSafeInteger(body.migrate_time_scale) && (body.migrate_time_scale as number) > 1 ? body.migrate_time_scale as number : null };
   } catch { return null; }
 }
 
@@ -1420,6 +1443,8 @@ async function statusJson(): Promise<number> {
     list: account?.list ?? null,
     // the PC cannot read its own account state, and lets only itself in: what it cannot read
     problem: told !== null && "problem" in told ? told.problem : null,
+    // a staging run that turned the waits of a move onto the account's list down (OVIS_LIST_MIGRATE_TIME_SCALE)
+    ...(account?.scale ? { migrate_time_scale: account.scale } : {}),
   })}\n`);
   return 0;
 }
@@ -1476,7 +1501,16 @@ async function recover(args: readonly string[]): Promise<number> {
 /** `ovis logout` (scripts/plugin-recover.ts runLogout): Revoke all over the same recovery socket, after a typed yes. */
 async function logout(): Promise<number> {
   const { runLogout } = await import("./plugin-recover.ts");
-  return await withRecoveryIo((io) => runLogout({ ...io, label: hostname(), account: async () => (await health()) ? await accountOf() : null, leave: leaveListing }));
+  return await withRecoveryIo((io) => runLogout({ ...io, label: hostname(), account: async () => {
+    const health = await appHealth();
+    if (health === null) return null;
+    if (serverDoor() !== null || !health.tokenRequired) return await accountOf();
+    // Liveness does not prove who holds the TCP port. Ask the same local socket that will revoke the devices.
+    const reply = await io.send({ act: "account_status" }, 2).catch(() => null);
+    if (typeof reply !== "object" || reply === null || !("account" in reply) || !("members" in reply)) return null;
+    const { account, members } = reply;
+    return (typeof account === "string" || account === null) && typeof members === "number" && Number.isSafeInteger(members) ? { account, members } : null;
+  }, leave: leaveListing }));
 }
 
 /**
@@ -1513,7 +1547,7 @@ async function withRecoveryIo(run: (io: import("./plugin-recover.ts").RecoverIo)
       terminal: lines !== null,
       platform: process.platform,
       ask: (question) => lines === null ? Promise.resolve("") : lines.question(question),
-      send: (request) => askRecovery(runningStateDir(APP_STATE_DIR), request),
+      send: (request, timeoutSeconds) => askRecovery(runningStateDir(APP_STATE_DIR), request, timeoutSeconds),
     });
   } finally { lines?.close(); }
 }
@@ -1558,11 +1592,6 @@ export async function runPlugin(): Promise<void> {
     process.exit(2);
   }
   const { command, args } = parsed;
-  // the desktop app's ovis command (app/electron/src/terminalCommand.ts): the app runs its server, with no server.pid here
-  if (process.env["OVIS_DESKTOP_COMMAND"] === "1" && (command === "start" || command === "stop")) {
-    process.stderr.write(command === "start" ? "The Ovis app starts its own server: open the app.\n" : "The Ovis app stops its own server: quit the app from its menu or tray.\n");
-    process.exit(1);
-  }
   switch (command) {
     case "agent": process.exit(await (await import("./plugin-agent.ts")).runAgent(args));
     case "start": process.exit(await start());

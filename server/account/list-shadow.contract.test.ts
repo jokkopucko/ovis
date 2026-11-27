@@ -149,6 +149,9 @@ describe("the list decides nothing yet", () => {
     await pc.pull();
     await account.addPostedPc(pc.endpoint);
     await account.remove(pc.laptop.key);
+    // the account service retires the laptop's registered key with its removal (its member key is that key, D11.4): only a
+    // snapshot that is wrong, or behind, still names it, which a PC from before the list trusts
+    pc.service.tamperAccount(ACCOUNT, { eligibleAgain: [pc.device.publicKey] });
     await pc.pull();
     expect(pc.list.status()).toMatchObject({ standing: "in", devices: 1 });
     expect(pc.rows()).toEqual([{ key: pc.device.publicKey, state: "hold" }]);
@@ -260,10 +263,11 @@ describe("where the list would decide otherwise, the PC says so once", () => {
 });
 
 describe("what the account service shows wrongly changes the copy's verdict and nothing else", () => {
-  async function following() {
+  async function following(other?: ListMember) {
     const pc = await shadowPc();
     const account = await TestList.start(pc.service, ACCOUNT);
     await account.addDevice(pc.laptop);
+    if (other !== undefined) await account.addDevice(other);
     await pc.pull();
     await account.addPostedPc(pc.endpoint);
     await pc.pull();
@@ -287,9 +291,12 @@ describe("what the account service shows wrongly changes the copy's verdict and 
   });
 
   test("a withheld tail leaves the copy where it was", async () => {
-    const { pc, account, before, unchanged, reader } = await following();
+    // a device whose member key no sign-in registered: putting it out signs nobody out of the account service (D11.4), so
+    // the PC's rows are the snapshot's as before
+    const other = await listMember();
+    const { pc, account, before, unchanged, reader } = await following(other);
     pc.service.tamperList(account.id, { reader, withholdAfter: before.status.head!.seq });
-    await account.remove(pc.laptop.key);
+    await account.remove(other.key);
     await pc.pull();
     expect(pc.list.status()).toMatchObject({ head: before.status.head, devices: before.status.devices });
     unchanged();

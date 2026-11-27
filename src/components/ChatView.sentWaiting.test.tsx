@@ -1,60 +1,43 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { act, createElement } from "react";
-import { create, type ReactTestRenderer } from "react-test-renderer";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import type { ConversationResponse } from "../../shared/protocol.ts";
-import { currentWaitingSends, forgetWaitingSends, rememberWaitingSend, waitingKey } from "../lib/sentWaiting.ts";
+import { currentWaitingSends, forgetWaitingSends, WAITING_STUCK_MS, rememberWaitingSend, waitingKey } from "../lib/sentWaiting.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { ChatView } from "./ChatView.tsx";
-import { SentWaitingList } from "./SentWaiting.tsx";
-
-class Node extends EventTarget {
-  readonly clientHeight = 600;
-  readonly clientWidth = 600;
-  readonly scrollHeight = 600;
-  scrollTop = 0;
-  readonly children: never[] = [];
-  readonly offsetHeight = 0;
-  readonly style = { setProperty() {} };
-  readonly firstElementChild = null;
-  scrollTo(): void {}
-  getBoundingClientRect() { return { top: 0, left: 0, bottom: 600, right: 600, width: 600, height: 600 }; }
-  contains(target: unknown): boolean { return target === this; }
-  closest(): null { return null; }
-  querySelector(): null { return null; }
-  querySelectorAll(): never[] { return []; }
-}
 
 const descriptors = new Map<string, PropertyDescriptor | undefined>();
-let renderer: ReactTestRenderer | undefined;
+const listResize = Symbol.for("ovis.test.legendListResize");
+let page: Page;
 let answer: ConversationResponse;
 let fetchSpy: ReturnType<typeof spyOn<typeof globalThis, "fetch">>;
 
 beforeEach(() => {
-  const events = new EventTarget();
-  const storage = { getItem: () => null, setItem() {}, removeItem() {}, key: () => null, length: 0 };
-  const listen = { addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events) };
-  const style = { setProperty() {}, removeProperty() {}, getPropertyValue: () => "" };
-  const values: Record<string, unknown> = {
-    IS_REACT_ACT_ENVIRONMENT: true,
-    Node, Element: Node, HTMLElement: Node, HTMLDivElement: Node,
+  page = openPage();
+  // happy-dom cannot parse CSS.escape() output inside these JSON-key attribute selectors.
+  const select = page.window.HTMLElement.prototype.querySelector;
+  Object.defineProperty(page.window.HTMLElement.prototype, "querySelector", { configurable: true, value(this: HTMLElement, selector: string) {
+    const escaped = /^\[data-chat-row="(.*)"\]$/.exec(selector)?.[1];
+    if (escaped === undefined) return select.call(this, selector);
+    const key = escaped.replace(/\\(.)/g, "$1");
+    return [...this.querySelectorAll("[data-chat-row]")].find((node) => node.getAttribute("data-chat-row") === key) ?? null;
+  } });
+  const values = {
+    Node: page.window.Node, Element: page.window.Element, HTMLElement: page.window.HTMLElement, HTMLDivElement: page.window.HTMLDivElement,
     requestAnimationFrame: () => 1, cancelAnimationFrame() {},
-    navigator: { languages: ["en"], platform: "Linux" },
-    localStorage: storage,
-    window: {
-      ...listen, localStorage: storage, sessionStorage: storage, innerWidth: 1440,
-      matchMedia: () => ({ matches: false, ...listen }), setTimeout, clearTimeout,
-      requestAnimationFrame: () => 1, cancelAnimationFrame() {}, getSelection: () => null,
+    CSS: page.window.CSS,
+    // LegendList keeps its first observer across suites. Leave its callback on the
+    // observed item so scrollInput can deliver a measurement even if we ran first.
+    ResizeObserver: class {
+      constructor(readonly notify: (entries: readonly ResizeObserverEntry[]) => void) {}
+      observe(target: Element, options?: ResizeObserverOptions) {
+        if (options?.box === "border-box") Object.defineProperty(target, listResize, { configurable: true, value: this.notify });
+      }
+      unobserve(target: Element) { Reflect.deleteProperty(target, listResize); }
+      disconnect() {}
     },
-    document: {
-      ...listen, visibilityState: "visible", activeElement: null, querySelector: () => null,
-      getElementById: () => null,
-      documentElement: { lang: "", dataset: {}, style, hasAttribute: () => false },
-    },
-    getComputedStyle: () => style,
-    CSS: { escape: (value: string) => value },
-    ResizeObserver: class { observe() {} unobserve() {} disconnect() {} },
-    MutationObserver: class { observe() {} disconnect() {} },
+    MutationObserver: page.window.MutationObserver,
   };
   for (const [key, value] of Object.entries(values)) {
     descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
@@ -71,8 +54,7 @@ async function within(signal: Promise<void>, ms: number, what: string): Promise<
 }
 
 afterEach(async () => {
-  await act(async () => renderer?.unmount());
-  renderer = undefined;
+  await page.close();
   fetchSpy.mockRestore();
   for (const [key, descriptor] of descriptors) {
     if (descriptor) Object.defineProperty(globalThis, key, descriptor);
@@ -86,18 +68,15 @@ test.each([["working", false], ["idle", true]] as const)(
   async (activity, resting) => {
     const paneId = `waiting-${activity}`;
     answer = { source: "grok-transcript", activity, turns: [{ role: "assistant", ts: new Date(Date.now() - 10_000).toISOString(), parts: [{ kind: "text", text: "earlier" }] }] };
-    rememberWaitingSend(waitingKey("local", paneId), "fix the bug");
+    rememberWaitingSend(waitingKey("local", paneId), "fix the bug", Date.now() - WAITING_STUCK_MS);
     try {
       let applied!: () => void;
       const read = new Promise<void>((resolve) => { applied = resolve; });
-      await act(async () => {
-        renderer = create(createElement(SettingsProvider, null, createElement(ChatView, {
+      await page.render(createElement(SettingsProvider, null, createElement(ChatView, {
           paneId, refreshKey: 0, connected: true, ended: false, agent: "grok", agentStatus: "idle", onMetadata: () => { applied(); },
-        })), { createNodeMock: () => new Node() });
-      });
+      })));
       await act(async () => { await within(read, 5_000, "the conversation read"); });
-      if (renderer === undefined) throw new Error("Chat did not mount");
-      expect(renderer.root.findByType(SentWaitingList).props.resting).toBe(resting);
+      expect(page.container.querySelector(".chat-sent-waiting-list") !== null).toBe(resting);
     } finally { act(() => { forgetWaitingSends(waitingKey("local", paneId)); }); }
   },
 );
@@ -110,14 +89,11 @@ test("a send with pasted tabs leaves no waiting copy once Pi's transcript record
   try {
     let applied!: () => void;
     const read = new Promise<void>((resolve) => { applied = resolve; });
-    await act(async () => {
-      renderer = create(createElement(SettingsProvider, null, createElement(ChatView, {
+    await page.render(createElement(SettingsProvider, null, createElement(ChatView, {
         paneId, refreshKey: 0, connected: true, ended: false, agent: "pi", agentStatus: "idle", onMetadata: () => { applied(); },
-      })), { createNodeMock: () => new Node() });
-    });
+    })));
     await act(async () => { await within(read, 5_000, "the conversation read"); });
-    if (renderer === undefined) throw new Error("Chat did not mount");
     expect(currentWaitingSends(key)).toEqual([]);
-    expect(renderer.root.findAllByType(SentWaitingList)).toHaveLength(0);
+    expect(page.container.querySelectorAll(".chat-sent-waiting-list")).toHaveLength(0);
   } finally { act(() => { forgetWaitingSends(key); }); }
 });

@@ -19,7 +19,9 @@ function fakeWindow() {
 }
 const fake = fakeWindow();
 (globalThis as unknown as { window: unknown }).window = fake.window;
-const { outsideSettings, recordSettings, settingsEntry, settingsLevels, settingsSteppedOff } = await import("./settingsHistory.ts");
+// a copy of its own: the module listens on the window it loads with, and another file may have loaded it first
+const modulePath = "./settingsHistory.ts?settings-history-test";
+const { outsideSettings, recordSettings, settingsEntry, settingsLevels, settingsSteppedOff }: typeof import("./settingsHistory.ts") = await import(modulePath);
 const settled = async () => { for (let i = 0; i < 4; i++) await new Promise((resolve) => queueMicrotask(() => resolve(undefined))); };
 
 describe("settingsLevels", () => {
@@ -68,6 +70,25 @@ const withoutSheet = (state: unknown): unknown => {
 };
 
 describe("recordSettings", () => {
+  it("keeps the confirmation and Devices over a resize, then rebuilds after the confirmation goes", async () => {
+    const narrow = settingsLevels(true, "devices", false);
+    const wide = settingsLevels(false, "devices", false);
+    recordSettings(narrow);
+    await settled();
+    openSheet(fake.window.history, "revoke");
+
+    recordSettings(wide);
+    await settled();
+    expect(fake.window.history.state).toMatchObject({ "ovis:sheet": "revoke", "ovis:settings": { page: "devices" } });
+    fake.window.history.go(-1);
+    await settled();
+    expect(fake.held()).toEqual([null, { page: "devices", keyBar: false, depth: 1 }]);
+
+    recordSettings([]);
+    await settled();
+    expect(fake.held()).toEqual([null]);
+  });
+
   it("rebuilds the earlier steps when the width changes: the list goes under a page a wider dialog opened, and away again", async () => {
     recordSettings([{ page: "terminal", keyBar: false }]);
     await settled();

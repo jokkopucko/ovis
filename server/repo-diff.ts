@@ -24,6 +24,7 @@ import { closeSync, lstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 
 import type { RepoBranchComparison, RepoDiffFile, RepoDiffFileList, RepoDiffFilePatch, RepoDiffRefs, RepoDiffRepository, RepoDiffScope, RepoDiffStatus } from "../shared/protocol.ts";
+import { gitEnvironment as buildGitEnvironment } from "./herdr-core/worktrees.ts";
 import { errorResponse, jsonResponse } from "./http.ts";
 
 export const REPO_DIFF_MAX_FILES = 2_000;
@@ -81,15 +82,7 @@ export function contextOf(options: RepoDiffOptions): Context {
   };
 }
 
-function gitEnvironment(noLazyFetch: boolean): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const [name, value] of Object.entries(process.env)) {
-    // a repository the server itself was started inside (a hook, a test runner) is not the one asked about
-    if (value === undefined || name === "GIT_DIR" || name === "GIT_WORK_TREE" || name === "GIT_INDEX_FILE" || name === "GIT_COMMON_DIR" || name === "GIT_EXTERNAL_DIFF" || name === "GIT_PAGER") continue;
-    env[name] = value;
-  }
-  return { ...env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", ...(noLazyFetch ? { GIT_NO_LAZY_FETCH: "1" } : {}), LC_ALL: "C" };
-}
+const gitEnvironment = (noLazyFetch: boolean): Record<string, string> => buildGitEnvironment({ noLazyFetch });
 
 /** One git process in `cwd`: stdout up to `maxBytes`, killed at the deadline or once it prints more. */
 export async function runGit(context: Context, cwd: string, args: string[], maxBytes: number): Promise<GitRun> {

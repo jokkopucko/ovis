@@ -1,14 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { createElement, StrictMode } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, createElement, StrictMode } from "react";
+import { openPage, type Page } from "./page.fixture.ts";
 import { COMPOSER_ARTIFACTS_STORAGE_KEY, DEFAULT_SETTINGS, ENTER_SENDS_STORAGE_KEY, enterSendsOn, PHONE_TABS_STORAGE_KEY, SettingsProvider, useSettings, VOICE_ENGINE_STORAGE_KEY, type Settings } from "./settings.ts";
 import { SETTINGS_STORAGE_KEY } from "./themeBoot.ts";
 
 describe("settings across tabs", () => {
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let records: Map<string, string>;
-  let events: EventTarget;
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
+  let readRecord: Storage["getItem"];
+  let writeRecord: Storage["setItem"];
   let settings: Settings;
   let update: (patch: Partial<Settings> | ((current: Settings) => Partial<Settings>)) => void;
   let writes: number;
@@ -16,41 +15,24 @@ describe("settings across tabs", () => {
   let unreadable: boolean;
 
   beforeEach(() => {
-    for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) {
-      descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    }
-    records = new Map();
-    events = new EventTarget();
+    page = openPage();
     settings = DEFAULT_SETTINGS;
     writes = 0;
     full = false;
     unreadable = false;
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en-US"] } });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      localStorage: {
-        getItem: (key: string) => { if (unreadable) throw new Error("SecurityError"); return records.get(key) ?? null; },
-        setItem: (key: string, value: string) => { if (full) throw new Error("QuotaExceededError"); writes++; records.set(key, value); },
-      },
-      addEventListener: events.addEventListener.bind(events),
-      removeEventListener: events.removeEventListener.bind(events),
-    } });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: {
-      documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
-      querySelector: () => null,
-    } });
-    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "#12100e" }) });
+    Object.defineProperty(page.window.navigator, "languages", { configurable: true, value: ["en-US"] });
+    page.window.document.documentElement.style.setProperty("--bg", "#12100e");
+    const { getItem, setItem } = page.window.localStorage;
+    // Fixture writes still use the real storage even while the app's access throws.
+    readRecord = getItem;
+    writeRecord = setItem;
+    Object.defineProperties(page.window.localStorage, {
+      getItem: { configurable: true, value: (key: string) => { if (unreadable) throw new Error("SecurityError"); return getItem(key); } },
+      setItem: { configurable: true, value: (key: string, value: string) => { if (full) throw new Error("QuotaExceededError"); writes++; setItem(key, value); } },
+    });
   });
 
-  afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
-    for (const [key, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    descriptors.clear();
-  });
+  afterEach(async () => { await page.close(); });
 
   async function open(strict = false): Promise<void> {
     function Probe() {
@@ -58,22 +40,18 @@ describe("settings across tabs", () => {
       return null;
     }
     const tree = createElement(SettingsProvider, null, createElement(Probe));
-    await act(async () => { renderer = create(strict ? createElement(StrictMode, null, tree) : tree); });
+    await page.render(strict ? createElement(StrictMode, null, tree) : tree);
   }
 
   async function storage(key: string | null): Promise<void> {
-    const event = new Event("storage");
-    Object.defineProperties(event, {
-      key: { value: key },
-      storageArea: { value: window.localStorage },
-    });
-    await act(async () => { events.dispatchEvent(event); });
+    const event = new page.window.StorageEvent("storage", { key: key ?? undefined, storageArea: page.window.localStorage });
+    await act(async () => { page.window.dispatchEvent(event); });
   }
 
   it("updates a mounted consumer when another tab saves an override", async () => {
     await open();
     expect(settings.shortcutOverrides).toEqual({});
-    records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ shortcutOverrides: { palette: "ctrl+k" }, terminalFontSize: 22 }));
+    writeRecord(SETTINGS_STORAGE_KEY, JSON.stringify({ shortcutOverrides: { palette: "ctrl+k" }, terminalFontSize: 22 }));
 
     await storage(SETTINGS_STORAGE_KEY);
 
@@ -83,9 +61,9 @@ describe("settings across tabs", () => {
   });
 
   it.each([SETTINGS_STORAGE_KEY, null])("restores defaults when storage is removed with key %j", async (key) => {
-    records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ shortcutOverrides: { palette: "ctrl+k" } }));
+    writeRecord(SETTINGS_STORAGE_KEY, JSON.stringify({ shortcutOverrides: { palette: "ctrl+k" } }));
     await open();
-    records.clear();
+    page.window.localStorage.clear();
 
     await storage(key);
 
@@ -94,24 +72,24 @@ describe("settings across tabs", () => {
 
   it("keeps another tab's change when this tab saves an unrelated setting", async () => {
     await open();
-    records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ language: "en", chatWidth: "wide" }));
-    records.set(COMPOSER_ARTIFACTS_STORAGE_KEY, "true");
+    writeRecord(SETTINGS_STORAGE_KEY, JSON.stringify({ language: "en", chatWidth: "wide" }));
+    writeRecord(COMPOSER_ARTIFACTS_STORAGE_KEY, "true");
 
     await act(async () => { update({ terminalFontSize: 20 }); });
 
-    const stored = JSON.parse(records.get(SETTINGS_STORAGE_KEY) ?? "{}") as Partial<Settings>;
+    const stored = JSON.parse(readRecord(SETTINGS_STORAGE_KEY) ?? "{}") as Partial<Settings>;
     expect([stored.chatWidth, stored.language, stored.terminalFontSize]).toEqual(["wide", "en", 20]);
-    expect(records.get(COMPOSER_ARTIFACTS_STORAGE_KEY)).toBe("true");
+    expect(readRecord(COMPOSER_ARTIFACTS_STORAGE_KEY)).toBe("true");
     expect(settings.terminalFontSize).toBe(20);
   });
 
   it("leaves another tab's change when this tab is handed a value it already holds", async () => {
     await open();
-    records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ language: "ko" }));
+    writeRecord(SETTINGS_STORAGE_KEY, JSON.stringify({ language: "ko" }));
 
     await act(async () => { update({ language: DEFAULT_SETTINGS.language, terminalFontSize: 20 }); });
 
-    const stored = JSON.parse(records.get(SETTINGS_STORAGE_KEY) ?? "{}") as Partial<Settings>;
+    const stored = JSON.parse(readRecord(SETTINGS_STORAGE_KEY) ?? "{}") as Partial<Settings>;
     expect([stored.language, stored.terminalFontSize]).toEqual(["ko", 20]);
   });
 
@@ -123,7 +101,7 @@ describe("settings across tabs", () => {
 
     await act(async () => { update({ chatWidth: "wide" }); });
 
-    const stored = JSON.parse(records.get(SETTINGS_STORAGE_KEY) ?? "{}") as Partial<Settings>;
+    const stored = JSON.parse(readRecord(SETTINGS_STORAGE_KEY) ?? "{}") as Partial<Settings>;
     expect([stored.terminalFontSize, stored.chatWidth]).toEqual([20, "wide"]);
   });
 
@@ -144,16 +122,16 @@ describe("settings across tabs", () => {
 
   it.each([false, true])("makes a change from what another tab saved since this one heard, keeping the rest of it (#2977), StrictMode %p", async (strict) => {
     await open(strict);
-    records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ lockedAgents: ["pc:w1:p1", "pc:w1:p2"] }));
+    writeRecord(SETTINGS_STORAGE_KEY, JSON.stringify({ lockedAgents: ["pc:w1:p1", "pc:w1:p2"] }));
 
     await act(async () => { update(move); });
 
     expect(settings.lockedAgents).toEqual(["pc:w2:p1", "pc:w1:p2"]);
-    expect((JSON.parse(records.get(SETTINGS_STORAGE_KEY) ?? "{}") as Partial<Settings>).lockedAgents).toEqual(["pc:w2:p1", "pc:w1:p2"]);
+    expect((JSON.parse(readRecord(SETTINGS_STORAGE_KEY) ?? "{}") as Partial<Settings>).lockedAgents).toEqual(["pc:w2:p1", "pc:w1:p2"]);
   });
 
   it("keeps what this tab holds when storage stops reading after it loaded (#2977)", async () => {
-    records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ lockedAgents: ["pc:w1:p1", "pc:w1:p2"] }));
+    writeRecord(SETTINGS_STORAGE_KEY, JSON.stringify({ lockedAgents: ["pc:w1:p1", "pc:w1:p2"] }));
     await open();
     unreadable = true;
     full = true;
@@ -164,9 +142,9 @@ describe("settings across tabs", () => {
   });
 
   it("keeps what this tab holds when the stored record is broken", async () => {
-    records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ lockedAgents: ["pc:w1:p1", "pc:w1:p2"] }));
+    writeRecord(SETTINGS_STORAGE_KEY, JSON.stringify({ lockedAgents: ["pc:w1:p1", "pc:w1:p2"] }));
     await open();
-    records.set(SETTINGS_STORAGE_KEY, "{broken");
+    writeRecord(SETTINGS_STORAGE_KEY, "{broken");
 
     await act(async () => { update(move); });
 
@@ -185,7 +163,7 @@ describe("settings across tabs", () => {
   });
 
   it("breaks the line on Return on a touch screen until this device chooses, and Enter still sends on a desk", async () => {
-    records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ enterSends: true, terminalFontSize: 20 }));
+    writeRecord(SETTINGS_STORAGE_KEY, JSON.stringify({ enterSends: true, terminalFontSize: 20 }));
 
     await open();
 
@@ -193,18 +171,18 @@ describe("settings across tabs", () => {
     expect([enterSendsOn(settings, true), enterSendsOn(settings, false)]).toEqual([false, true]);
 
     await act(async () => { update({ chatWidth: "wide" }); });
-    expect(records.get(ENTER_SENDS_STORAGE_KEY)).toBe("null");
-    expect((JSON.parse(records.get(SETTINGS_STORAGE_KEY) ?? "{}") as Partial<Settings>).enterSends).toBe(true);
+    expect(readRecord(ENTER_SENDS_STORAGE_KEY)).toBe("null");
+    expect((JSON.parse(readRecord(SETTINGS_STORAGE_KEY) ?? "{}") as Partial<Settings>).enterSends).toBe(true);
   });
 
   it("keeps this device's choice when an older tab rewrites the record it loaded before", async () => {
-    records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ enterSends: true }));
-    const stale = records.get(SETTINGS_STORAGE_KEY)!;
+    writeRecord(SETTINGS_STORAGE_KEY, JSON.stringify({ enterSends: true }));
+    const stale = readRecord(SETTINGS_STORAGE_KEY)!;
 
     await open();
     await act(async () => { update({ enterSends: false }); });
-    records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ ...JSON.parse(stale), terminalFontSize: 18 }));
-    await act(async () => { renderer?.unmount(); });
+    writeRecord(SETTINGS_STORAGE_KEY, JSON.stringify({ ...JSON.parse(stale), terminalFontSize: 18 }));
+    await page.render(null);
     await open();
 
     expect(settings.enterSends).toBe(false);
@@ -212,15 +190,15 @@ describe("settings across tabs", () => {
   });
 
   it("keeps a choice made before: the old record's false, and this key's own true or false", async () => {
-    records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ enterSends: false }));
+    writeRecord(SETTINGS_STORAGE_KEY, JSON.stringify({ enterSends: false }));
     await open();
 
     expect([enterSendsOn(settings, true), enterSendsOn(settings, false)]).toEqual([false, false]);
 
     await act(async () => { update({ enterSends: true }); });
 
-    expect(records.get(ENTER_SENDS_STORAGE_KEY)).toBe("true");
-    await act(async () => { renderer?.unmount(); });
+    expect(readRecord(ENTER_SENDS_STORAGE_KEY)).toBe("true");
+    await page.render(null);
     await open();
     expect(settings.enterSends).toBe(true);
     expect(enterSendsOn(settings, true)).toBe(true);
@@ -230,7 +208,7 @@ describe("settings across tabs", () => {
     await open();
     expect(settings.enterSends).toBeNull();
 
-    records.set(ENTER_SENDS_STORAGE_KEY, "false");
+    writeRecord(ENTER_SENDS_STORAGE_KEY, "false");
     await storage(ENTER_SENDS_STORAGE_KEY);
 
     expect(settings.enterSends).toBe(false);
@@ -241,7 +219,7 @@ describe("settings across tabs", () => {
     await open();
     expect(settings.voiceEngine).toBe("auto");
 
-    records.set(VOICE_ENGINE_STORAGE_KEY, JSON.stringify("browser"));
+    writeRecord(VOICE_ENGINE_STORAGE_KEY, JSON.stringify("browser"));
     await storage(VOICE_ENGINE_STORAGE_KEY);
 
     expect(settings.voiceEngine).toBe("browser");
@@ -252,7 +230,7 @@ describe("settings across tabs", () => {
     await open();
     expect(settings.phoneTabs).toBe("row");
 
-    records.set(PHONE_TABS_STORAGE_KEY, JSON.stringify("header"));
+    writeRecord(PHONE_TABS_STORAGE_KEY, JSON.stringify("header"));
     await storage(PHONE_TABS_STORAGE_KEY);
 
     expect(settings.phoneTabs).toBe("header");
@@ -261,7 +239,7 @@ describe("settings across tabs", () => {
 
   it("ignores storage events for unrelated keys", async () => {
     await open();
-    records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ shortcutOverrides: { palette: "ctrl+k" } }));
+    writeRecord(SETTINGS_STORAGE_KEY, JSON.stringify({ shortcutOverrides: { palette: "ctrl+k" } }));
 
     await storage("ovis:unrelated");
 

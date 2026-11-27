@@ -61,8 +61,15 @@ export interface TerminalPort {
   /** installs the hooks; returns their removal */
   hook(hooks: HostHooks): () => void;
   exit(code: number): void;
-  /** stops this process as the default action of SIGTSTP would (a handler for SIGTSTP replaces that action) */
-  suspend(): void;
+  /**
+   * Stops this process as the default action of SIGTSTP would (a handler for SIGTSTP replaces that action), once
+   * `giveBack` has given the terminal back. A continue that comes from the moment it is called cancels the stop, so a
+   * shell's `fg` is never lost however soon it comes. Where the job was continued already, before it was called, it gives
+   * the terminal back and does not stop. Which of the two it is may be settled after it returns: once the process that
+   * started this one is seen stopped at the same signal, or once the continue is heard. Either way the continue is heard
+   * (`cont`).
+   */
+  suspend(giveBack: () => void): void;
   /**
    * Told which modes the screen holds: before it turns them on, and once it has undone them (at a stop from outside,
    * just before it undoes them). Whoever started the screen reads it after the screen died without giving the terminal
@@ -96,6 +103,12 @@ export function guardedHost(port: TerminalPort): Host {
   let ending = false;
   let entering = false;
   let deferred: HostSignal | null = null;
+  /**
+   * The terminal was given back at a stop from outside and is not taken again before the continue: nothing is written
+   * meanwhile, as the process may run on a while before it stops (or not stop at all, continued already). The continue
+   * enters again and asks for a repaint.
+   */
+  let suspended = false;
   let unhook: (() => void) | null = null;
 
   const filter = new ReplyFilter();
@@ -155,7 +168,7 @@ export function guardedHost(port: TerminalPort): Host {
   };
 
   const resized = () => {
-    if (state !== "entered" || ending) return;
+    if (state !== "entered" || ending || suspended) return;
     modesAgain();
     const size = port.size();
     for (const listener of resizes) listener(size);
@@ -236,25 +249,25 @@ export function guardedHost(port: TerminalPort): Host {
    * process stops, so whatever reads the terminal meanwhile gets no mouse reports; on SIGCONT the modes are entered again
    * and the resize listeners told, so the screen is repainted whole.
    */
-  let suspended = false;
   const stopped = () => {
     if (state !== "entered" || ending || suspended) return;
-    port.stopReading();
-    // Said before the leave bytes here, not after as on leave: a shell continues the job as soon as it has the terminal
-    // back, and a continue that comes before this process stops itself is lost, so the stop would last. Nothing new may
-    // stand between those bytes and the stop.
-    const held = modesOn;
-    modesOn = false;
-    holding();
-    if (held) {
-      try { send(encoder.encode(watchingDisplay ? LEAVE_ALL : LEAVE)); } catch { /* the terminal is gone: nothing to restore */ }
-    }
-    if (rawOn) {
-      rawOn = false;
-      try { port.setRaw(false); } catch { /* the terminal is gone */ }
-    }
-    suspended = true;
-    port.suspend();
+    port.suspend(() => {
+      port.stopReading();
+      // Said before the leave bytes here, not after as on leave: a shell continues the job as soon as it has the
+      // terminal back, before this process may have stopped.
+      const held = modesOn;
+      modesOn = false;
+      holding();
+      if (held) {
+        try { send(encoder.encode(watchingDisplay ? LEAVE_ALL : LEAVE)); } catch { /* the terminal is gone: nothing to restore */ }
+      }
+      if (rawOn) {
+        rawOn = false;
+        try { port.setRaw(false); } catch { /* the terminal is gone */ }
+      }
+      // a stop cancelled by a continue still hears that continue next, and enters again then
+      suspended = true;
+    });
   };
   const continued = () => {
     if (!suspended || state !== "entered" || ending) return;
@@ -322,7 +335,7 @@ export function guardedHost(port: TerminalPort): Host {
     onEnd(listener) { ends.add(listener); return () => { ends.delete(listener); }; },
 
     write(data) {
-      if (state !== "entered") return false;
+      if (state !== "entered" || suspended) return false;
       return send(typeof data === "string" ? encoder.encode(data) : data);
     },
 
@@ -349,11 +362,12 @@ export function guardedHost(port: TerminalPort): Host {
       if (state !== "entered" || watchingDisplay) return;
       watchingDisplay = true;
       holding();
-      send(encoder.encode(WATCH_DISPLAY));
+      // while suspended, the continue turns it on with the rest
+      if (!suspended) send(encoder.encode(WATCH_DISPLAY));
     },
 
     refreshDisplay() {
-      if (state === "entered") send(encoder.encode(DISPLAY_QUERY));
+      if (state === "entered" && !suspended) send(encoder.encode(DISPLAY_QUERY));
     },
 
     drain() {

@@ -54,6 +54,8 @@ try {
   $task.Principal.LogonType = 3 # TASK_LOGON_INTERACTIVE_TOKEN: no password or noninteractive fallback
   $task.Principal.RunLevel = 0 # ordinary user privileges
   $task.Settings.ExecutionTimeLimit = 'PT0S'
+  # normal: a task's default, 7, runs the launcher below normal, and herdr with every terminal under it inherits that
+  $task.Settings.Priority = 4
   $task.Settings.DisallowStartIfOnBatteries = $false
   $task.Settings.StopIfGoingOnBatteries = $false
   $action = $task.Actions.Create(0)

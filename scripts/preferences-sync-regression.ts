@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { chromium, type BrowserContext, type Page, type Response } from "playwright-core";
 import { chromePath } from "./chrome-path.ts";
 import { advanceUntil } from "./preferences-regression-clock.ts";
+import { HARNESS_TOOL_DEFAULT } from "../shared/harness-tool.ts";
 process.env["OVIS_MACHINE_EVENTS_WS"] = "0";
 
 await import("./test-herdr.ts");
@@ -176,7 +177,7 @@ try {
     console.log("QA empty server clients opened");
     await windows([a, b]);
     assert.deepEqual([...a.puts, ...b.puts], []);
-    assert.deepEqual(await held(), { revision: 0, settings: {}, muted_panes: [] });
+    assert.deepEqual(await held(), { revision: 0, settings: { agentHarnessTool: HARNESS_TOOL_DEFAULT }, muted_panes: [] });
 
     await a.page.goto(`${origin}/?settings=appearance`);
     const bLight = settingsHold(b.page, { theme: "light" });

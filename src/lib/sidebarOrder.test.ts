@@ -3,6 +3,7 @@ import type { AgentStatus, HerdrPane, SessionSnapshot } from "../../shared/proto
 import machines from "../../site/demo/fixtures/machines.json";
 import { activityOrder, isSeenDone, liveSeqs, newSeqMemory, shownStatus, stateSeqs } from "./sidebarOrder.ts";
 import { DEFAULT_SETTINGS, sanitizeSettings } from "./settings.ts";
+import { applyPaneStatus } from "./snapshot.ts";
 
 const template = machines.machines[0]!.snapshot!;
 const pane = (id: string, agent_status: AgentStatus, finish_id?: number): HerdrPane =>
@@ -14,6 +15,28 @@ const snap = (statuses: Record<string, AgentStatus>, seqs: Record<string, number
 });
 
 describe("activity counters, independent of opened finishes", () => {
+  it("uses a Copilot sample for the badge without replacing an approval, background wait or unread finish", () => {
+    const show = (raw: AgentStatus, busy: boolean, waiting?: true) =>
+      shownStatus({ ...pane("p", raw), copilot_processing: busy, background_wait: waiting }, null);
+    expect(show("idle", true)).toBe("working");
+    expect(show("working", false)).toBe("idle");
+    expect(show("done", false)).toBe("done");
+    expect(show("blocked", true)).toBe("blocked");
+    expect(show("idle", true, true)).toBe("waiting");
+  });
+  it("shows new Copilot work from a status event before the next roster snapshot", () => {
+    const idle = { ...pane("p", "idle"), agent: "copilot", copilot_processing: false };
+    const current = { ...template, panes: [idle] };
+    expect(shownStatus(idle, null)).toBe("idle");
+    const updated = applyPaneStatus(current, "p", "working");
+    expect(shownStatus(updated.panes[0]!, null)).toBe("working");
+  });
+  it("shows verified work after the preceding Copilot finish was read, but preserves an unread finish", () => {
+    const finished = { ...pane("p", "done", 2), copilot_processing: true };
+    expect(shownStatus(finished, { p: 1 })).toBe("done");
+    expect(shownStatus(finished, { p: 2 })).toBe("working");
+    expect(shownStatus({ ...finished, copilot_processing: false }, { p: 2 })).toBe("idle");
+  });
   it("ignores absent, nonnumeric and nonfinite counters", () => {
     const snapshot = snap({}, { valid: 7, text: 1, missing: 1, infinite: Infinity, nan: NaN });
     Object.assign(snapshot.agents[1]!, { state_change_seq: "9" });

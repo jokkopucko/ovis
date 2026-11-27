@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
-import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { act } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 
-import { FakeAccountService } from "../../shared/account-service-fake.ts";
+import { FakeAccountService, WEB_REDIRECT } from "../../shared/account-service-fake.ts";
 import { exportPublicKey, generateKeyPair, importPublicKey } from "../../shared/relay-e2ee.ts";
 import { encodeOffer } from "../../shared/relay-offer.ts";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
 import { handOverReturn } from "../lib/account/ownWindow.ts";
-import { indexedAccountStore } from "../lib/account/store.ts";
+import { beginSignIn, finishOwnSignIn } from "../lib/account/signin.ts";
+import { indexedAccountStore, memoryAccountStore } from "../lib/account/store.ts";
 import { fakeIndexedDB } from "../lib/indexedDB.fake.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { nativeTransport, setTransport } from "../lib/transport.ts";
@@ -22,9 +24,22 @@ const publicKey = exportPublicKey(generateKeyPair().publicKey);
 const SERVER = deriveServerId(importPublicKey(publicKey));
 const OFFER = encodeOffer({ v: 1, server_id: SERVER, server_public_key: publicKey, relay: "wss://relay.ovis.example", name: "desk" }, "https://app.ovis.example");
 
+function openAccountPage(): Page {
+  const page = openPage(`http://127.0.0.1:${PORT}/`);
+  const meta = page.window.document.createElement("meta");
+  meta.name = "ovis-pc-account-service";
+  meta.content = SERVICE;
+  page.window.document.head.append(meta);
+  Object.defineProperty(page.window, "isSecureContext", { configurable: true, value: true });
+  return page;
+}
+
+const buttonNodes = (page: Page) => [...page.container.querySelectorAll("button")];
+const words = (page: Page) => page.container.textContent ?? "";
+
 describe("signing in on the PC's own window", () => {
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
   let fake: FakeAccountService;
   let popupBlocked: boolean;
   let sent: ReturnType<typeof Promise.withResolvers<string>>;
@@ -34,6 +49,7 @@ describe("signing in on the PC's own window", () => {
   let enrolling: boolean;
   /** holds the code's exchange until released, and says when it was asked */
   let exchange: { asked: ReturnType<typeof Promise.withResolvers<void>>; release: ReturnType<typeof Promise.withResolvers<void>> } | null;
+  let revoke: ReturnType<typeof Promise.withResolvers<void>> | null;
 
   beforeEach(() => {
     fake = new FakeAccountService();
@@ -45,31 +61,15 @@ describe("signing in on the PC's own window", () => {
     pcAccount = null;
     enrolling = false;
     exchange = null;
-    for (const key of ["window", "document", "navigator", "indexedDB", "getComputedStyle", "location", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, writable: true, value: true });
-    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
+    revoke = null;
+    page = openAccountPage();
+    for (const key of ["indexedDB", "location", "Event", "CustomEvent", "HTMLElement"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: fakeIndexedDB().factory });
-    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Mozilla/5.0 (X11; Linux x86_64) Chrome/130.0", maxTouchPoints: 0 } });
-    const here = { href: `http://127.0.0.1:${PORT}/`, protocol: "http:", hostname: "127.0.0.1", port: String(PORT), pathname: "/", origin: `http://127.0.0.1:${PORT}` };
-    Object.defineProperty(globalThis, "location", { configurable: true, writable: true, value: here });
-    const tab = new Map<string, string>();
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      isSecureContext: true,
-      location: here,
-      sessionStorage: { getItem: (key: string) => tab.get(key) ?? null, setItem: (key: string, value: string) => { tab.set(key, value); }, removeItem: (key: string) => { tab.delete(key); } },
-      localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {}, key: () => null, length: 0 },
-      open: () => {
-        if (popupBlocked) return null;
-        let href = "about:blank";
-        return { opener: "ovis", closed: false, close() {}, location: { get href() { return href; }, set href(next: string) { href = next; sent.resolve(next); } } };
-      },
-      addEventListener: () => {}, removeEventListener: () => {},
-    } });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: {
-      hidden: false,
-      documentElement: { lang: "", dataset: {}, style: { setProperty() {}, removeProperty() {}, getPropertyValue: () => "" } },
-      querySelector: (selector: string) => selector === 'meta[name="ovis-pc-account-service"]' ? { getAttribute: () => SERVICE } : null,
-      addEventListener: () => {}, removeEventListener: () => {},
+    for (const key of ["location", "Event", "CustomEvent", "HTMLElement"] as const) Object.defineProperty(globalThis, key, { configurable: true, value: page.window[key] });
+    Object.defineProperty(page.window, "open", { configurable: true, value: () => {
+      if (popupBlocked) return null;
+      let href = "about:blank";
+      return { opener: "ovis", closed: false, close() {}, location: { get href() { return href; }, set href(next: string) { href = next; sent.resolve(next); } } };
     } });
     const fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       const url = new URL(String(input instanceof Request ? input.url : input), `http://127.0.0.1:${PORT}`);
@@ -82,6 +82,7 @@ describe("signing in on the PC's own window", () => {
         return Response.json({ error: { code: "not_found", message: "no such route" } }, { status: 404 });
       }
       if (url.pathname === "/v1/token" && exchange !== null) { exchange.asked.resolve(); await exchange.release.promise; }
+      if (url.pathname === "/v1/signout" && revoke !== null) { revoke.resolve(); return new Response(null, { status: 503 }); }
       return fake.fetch(input, init);
     };
     setTransport({ ...nativeTransport, fetch: fetch as typeof nativeTransport.fetch });
@@ -90,8 +91,7 @@ describe("signing in on the PC's own window", () => {
   });
 
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
+    await page.close();
     setTransport(nativeTransport);
     mock.restore();
     for (const [key, descriptor] of descriptors) {
@@ -101,9 +101,8 @@ describe("signing in on the PC's own window", () => {
     descriptors.clear();
   });
 
-  const text = (node: ReactTestInstance): string => node.children.map((child) => typeof child === "string" ? child : text(child)).join("");
-  const buttons = (): string[] => renderer!.root.findAll((node) => node.type === "button").map((node) => text(node).trim());
-  const words = (): string => text(renderer!.root);
+  const buttons = (): string[] => buttonNodes(page).map((node) => (node.textContent ?? "").trim());
+  const signInLinks = () => [...page.container.querySelectorAll("a")].filter((node) => node.textContent === "Open the sign-in page");
   const until = async (shown: () => boolean): Promise<void> => {
     const deadline = Date.now() + 5_000;
     while (!shown()) {
@@ -113,15 +112,70 @@ describe("signing in on the PC's own window", () => {
     }
   };
   const press = async (label: string): Promise<void> => {
-    const found = renderer!.root.findAll((node) => node.type === "button" && text(node).trim() === label);
+    const found = buttonNodes(page).filter((node) => node.textContent?.trim() === label);
     expect(found).toHaveLength(1);
-    await act(async () => { (found[0]!.props as { onClick: () => void }).onClick(); });
+    await act(async () => { found[0]?.click(); });
   };
   const back = async (start: string): Promise<string> => new URL((await fake.fetch(start)).headers.get("location") ?? "").search;
 
+  const showAccountHint = async () => {
+    const store = memoryAccountStore();
+    const url = await beginSignIn("github", { store, service: SERVICE, redirectUri: WEB_REDIRECT });
+    const returned = new URL((await fake.fetch(url)).headers.get("location") ?? "").hash;
+    const existing = await finishOwnSignIn(url, returned, { store, fetch: fake.fetch });
+    fake.offerLinkPage(["github", "google"]);
+    fake.emailMatches = { google: "github" };
+    await page.render(<SettingsProvider><AccountSection /></SettingsProvider>);
+    await until(() => buttons().includes("Continue with Google"));
+    await press("Continue with Google");
+    const started = new URL(await sent.promise);
+    expect(started.searchParams.get("create")).toBe("ask");
+    sent = Promise.withResolvers<string>();
+    const stop = handOverReturn(await back(started.href), () => {});
+    try {
+      await until(() => buttons().includes("Create a new account") || buttons().includes("Continue with Google"));
+      expect(words(page)).toContain("It looks like you already have an account made with GitHub.");
+      expect(await indexedAccountStore.get("session")).toBeUndefined();
+    } finally { stop(); }
+    return existing;
+  };
+
+  it("asks on first sign-in and restarts Google without create when the user chooses a new account", async () => {
+    await showAccountHint();
+    await press("Create a new account");
+    const restarted = new URL(await sent.promise);
+    expect(restarted.pathname).toBe("/v1/signin/google");
+    expect(restarted.searchParams.has("create")).toBe(false);
+  });
+
+  it.each(["added", "merge_open"] as const)("signs in to the existing account and reports the added method or refusal (%s)", async (outcome) => {
+    const existing = await showAccountHint();
+    pcAccount = existing.account;
+    if (outcome === "merge_open") fake.methodLinkRefusal = outcome;
+    await press("Sign in with GitHub to connect");
+    const connect = new URL(await sent.promise);
+    expect(connect.searchParams.get("create")).toBe("never");
+    sent = Promise.withResolvers<string>();
+    const stop = handOverReturn(await back(connect.href), () => {});
+    try {
+      if (outcome === "added") {
+        const link = new URL(await sent.promise);
+        expect(link.pathname).toBe("/v1/signin/google");
+        expect(link.searchParams.has("create")).toBe(false);
+        expect(link.searchParams.has("link_token")).toBe(true);
+        const end = handOverReturn(await back(link.href), () => {});
+        try { await until(() => buttons().includes("Manage account")); } finally { end(); }
+      } else {
+        await until(() => words(page).includes("Finish or cancel the account merge before adding another sign-in method."));
+        expect(buttons()).toContain("Manage account");
+      }
+      expect(await indexedAccountStore.get("session")).toMatchObject({ account: existing.account, provider: outcome === "added" ? "google" : "github" });
+    } finally { stop(); }
+  });
+
   it("offers the providers, says it adds this PC, and lists the PC once the return comes back", async () => {
-    await act(async () => { renderer = create(<SettingsProvider><AccountSection /></SettingsProvider>); });
-    await until(() => words().includes("Signing in adds this PC to your account."));
+    await page.render(<SettingsProvider><AccountSection /></SettingsProvider>);
+    await until(() => words(page).includes("Signing in adds this PC to your account."));
     expect(buttons()).toContain("Continue with Google");
     expect(buttons()).not.toContain("Sign in and add this PC");
     await press("Continue with Google");
@@ -137,12 +191,14 @@ describe("signing in on the PC's own window", () => {
   it("offers the provider's page as a link when the tab was blocked, and keeps no sign-in cancelled while its code was exchanged", async () => {
     popupBlocked = true;
     exchange = { asked: Promise.withResolvers<void>(), release: Promise.withResolvers<void>() };
-    await act(async () => { renderer = create(<SettingsProvider><AccountSection /></SettingsProvider>); });
+    await page.render(<SettingsProvider><AccountSection /></SettingsProvider>);
     await until(() => buttons().includes("Continue with Google"));
     await press("Continue with Google");
-    await until(() => renderer!.root.findAll((node) => node.type === "a" && text(node) === "Open the sign-in page").length === 1);
-    const link = renderer!.root.findAll((node) => node.type === "a" && text(node) === "Open the sign-in page")[0]!;
-    const returned = await back(String(link.props.href));
+    await until(() => signInLinks().length === 1);
+    const link = signInLinks()[0];
+    const href = link?.getAttribute("href");
+    if (!href) throw new Error("No sign-in link");
+    const returned = await back(href);
     const stop = handOverReturn(returned, () => undefined);
     await act(async () => { await exchange!.asked.promise; });
     await press("Cancel");
@@ -152,6 +208,25 @@ describe("signing in on the PC's own window", () => {
     expect(await indexedAccountStore.get("session")).toBeUndefined();
     expect(links).toBe(0);
   });
+
+  it("shows no sign-in failure when revocation fails after Cancel", async () => {
+    const token = { asked: Promise.withResolvers<void>(), release: Promise.withResolvers<void>() };
+    const revoked = Promise.withResolvers<void>();
+    exchange = token;
+    revoke = revoked;
+    await page.render(<SettingsProvider><AccountSection /></SettingsProvider>);
+    await until(() => buttons().includes("Continue with Google"));
+    await press("Continue with Google");
+    const stop = handOverReturn(await back(await sent.promise), () => undefined);
+    try {
+      await act(async () => { await token.asked.promise; });
+      await press("Cancel");
+      await act(async () => { token.release.resolve(); await revoked.promise; });
+
+      expect(words(page)).not.toContain("The sign-in did not finish. Try again.");
+      expect(await indexedAccountStore.get("session")).toBeUndefined();
+    } finally { stop(); }
+  });
 });
 
 describe("the relay tab reopened already signed in", () => {
@@ -159,7 +234,7 @@ describe("the relay tab reopened already signed in", () => {
   const status = (phase: "online" | "off"): RelayStatus => ({ phase, relay: "wss://relay.ovis.example", app: "https://app.ovis.example", sessions: 0, blocked: null, error: null });
   const relayOf = (phase: "online" | "off"): RelayState => ({ status: status(phase), unsupported: false, readFailed: false, pending: false, request: async () => status("online"), reread: () => {} });
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
   let state: { relay: "online" | "off"; pcAccount: string | null; enrolling: boolean };
   let service: FakeAccountService;
   let linkGate: ReturnType<typeof Promise.withResolvers<void>> | null;
@@ -170,25 +245,11 @@ describe("the relay tab reopened already signed in", () => {
     service = new FakeAccountService();
     linkGate = null;
     pressed = [];
-    for (const key of ["window", "document", "navigator", "indexedDB", "getComputedStyle", "location", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, writable: true, value: true });
-    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: () => "" }) });
+    page = openAccountPage();
+    for (const key of ["indexedDB", "location", "Event", "CustomEvent", "HTMLElement"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: fakeIndexedDB().factory });
-    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"], userAgent: "Mozilla/5.0 (X11; Linux x86_64) Chrome/130.0", maxTouchPoints: 0 } });
-    const here = { href: `http://127.0.0.1:${PORT}/`, protocol: "http:", hostname: "127.0.0.1", port: String(PORT), pathname: "/", origin: `http://127.0.0.1:${PORT}` };
-    Object.defineProperty(globalThis, "location", { configurable: true, writable: true, value: here });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      isSecureContext: true, location: here,
-      sessionStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
-      localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {}, key: () => null, length: 0 },
-      open: () => null, addEventListener: () => {}, removeEventListener: () => {},
-    } });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: {
-      hidden: false,
-      documentElement: { lang: "", dataset: {}, style: { setProperty() {}, removeProperty() {}, getPropertyValue: () => "" } },
-      querySelector: (selector: string) => selector === 'meta[name="ovis-pc-account-service"]' ? { getAttribute: () => SERVICE } : null,
-      addEventListener: () => {}, removeEventListener: () => {},
-    } });
+    for (const key of ["location", "Event", "CustomEvent", "HTMLElement"] as const) Object.defineProperty(globalThis, key, { configurable: true, value: page.window[key] });
+    Object.defineProperty(page.window, "open", { configurable: true, value: () => null });
     const fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       const url = new URL(String(input instanceof Request ? input.url : input), `http://127.0.0.1:${PORT}`);
       if (url.pathname === "/api/health") return Response.json({ ok: true, bridge_protocol: 1, own_window: { port: PORT }, auth: { required: false, authenticated: true, via: "local", role: "drive" }, security: { pairing_gate: "closed", token_configured: false } });
@@ -210,8 +271,7 @@ describe("the relay tab reopened already signed in", () => {
   });
 
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
+    await page.close();
     setTransport(nativeTransport);
     mock.restore();
     for (const [key, descriptor] of descriptors) {
@@ -221,7 +281,6 @@ describe("the relay tab reopened already signed in", () => {
     descriptors.clear();
   });
 
-  const text = (node: ReactTestInstance): string => node.children.map((child) => typeof child === "string" ? child : text(child)).join("");
   const until = async (shown: () => boolean, within = 5_000): Promise<void> => {
     const deadline = Date.now() + within;
     while (!shown()) {
@@ -234,12 +293,12 @@ describe("the relay tab reopened already signed in", () => {
   const account = { service: SERVICE, onOpen: () => undefined, onSignedIn: () => undefined, opensAll: () => opensAll };
   const tabAt = (phase: "online" | "off") => <SettingsProvider><RelayTab relay={relayOf(phase)} closesGate={false} signedIn accountId={ACCOUNT} joinBySignIn={false} account={account} phone={false} /></SettingsProvider>;
   const mount = async (phase: "online" | "off"): Promise<void> => {
-    await act(async () => { renderer = create(tabAt(phase), { createNodeMock: () => ({ closest: () => null, querySelector: () => null, focus() {} }) }); });
+    await page.render(tabAt(phase));
   };
-  const button = (label: string) => renderer!.root.findAll((node) => node.type === "button" && text(node) === label);
+  const button = (label: string) => buttonNodes(page).filter((node) => node.textContent === label);
   /** Add this PC reads the same either way: the press that also turns the relay on is marked apart */
-  const relayButton = () => renderer!.root.findAll((node) => node.type === "button" && node.props["data-relay"] === "off");
-  const plainButton = () => button("Add this PC to my account").filter((node) => node.props["data-relay"] === undefined);
+  const relayButton = () => [...page.container.querySelectorAll<HTMLButtonElement>('button[data-relay="off"]')];
+  const plainButton = () => button("Add this PC to my account").filter((node) => !node.hasAttribute("data-relay"));
 
   it("with the relay off, offers the relay's own add button rather than a plain Add that would fail", async () => {
     await mount("off");
@@ -250,7 +309,7 @@ describe("the relay tab reopened already signed in", () => {
   it("says the PC is not finished while its enrollment runs, and stops saying so once it ends", async () => {
     state = { relay: "online", pcAccount: ACCOUNT, enrolling: true };
     await mount("online");
-    const pending = () => text(renderer!.root).includes("Not finished yet");
+    const pending = () => words(page).includes("Not finished yet");
     await until(pending);
     state.enrolling = false;
     await until(() => !pending(), 10_000);
@@ -259,16 +318,16 @@ describe("the relay tab reopened already signed in", () => {
   it("offers the add again when the PC left the account before its enrollment ended", async () => {
     state = { relay: "online", pcAccount: ACCOUNT, enrolling: true };
     await mount("online");
-    await until(() => text(renderer!.root).includes("Not finished yet"));
+    await until(() => words(page).includes("Not finished yet"));
     state = { relay: "online", pcAccount: null, enrolling: false };
-    await until(() => renderer!.root.findAll((node) => node.type === "button" && text(node) === "Add this PC to my account").length === 1, 10_000);
-    expect(text(renderer!.root)).not.toContain("This PC is in your Ovis account");
+    await until(() => button("Add this PC to my account").length === 1, 10_000);
+    expect(words(page)).not.toContain("This PC is in your Ovis account");
   });
 
   it("offers the plain add once the relay's switch turns it on", async () => {
     await mount("off");
     await until(() => relayButton().length === 1);
-    await act(async () => { renderer!.update(tabAt("online")); });
+    await page.render(tabAt("online"));
     await until(() => plainButton().length === 1);
   });
 
@@ -277,9 +336,9 @@ describe("the relay tab reopened already signed in", () => {
     await mount("online");
     await until(() => button("Add this PC to my account").length === 1);
     state.relay = "off";
-    await act(async () => { renderer!.update(tabAt("off")); });
+    await page.render(tabAt("off"));
     await until(() => relayButton().length === 1);
-    await act(async () => { relayButton()[0]!.props.onClick(); });
+    await act(async () => { page.one('button[data-relay="off"]').click(); });
     await until(() => button("Stop waiting").length === 1);
   });
 
@@ -287,8 +346,8 @@ describe("the relay tab reopened already signed in", () => {
     await mount("off");
     await until(() => relayButton().length === 1);
     linkGate = Promise.withResolvers<void>();
-    await act(async () => { relayButton()[0]!.props.onClick(); });
-    await act(async () => { renderer!.update(tabAt("online")); });
+    await act(async () => { page.one('button[data-relay="off"]').click(); });
+    await page.render(tabAt("online"));
     linkGate.resolve();
     await until(() => button("Stop waiting").length === 1);
   });
@@ -299,7 +358,7 @@ describe("the relay tab reopened already signed in", () => {
     try {
       await mount("online");
       await until(() => button("Add this PC to my account").length === 1);
-      await act(async () => { button("Add this PC to my account")[0]!.props.onClick(); });
+      await act(async () => { button("Add this PC to my account")[0]?.click(); });
       await until(() => pressed.includes("/api/account/one-press"));
       expect(pressed).toEqual(["admit", "/api/account/one-press"]);
       expect(button("Stop waiting")).toHaveLength(0);

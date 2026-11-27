@@ -42,6 +42,7 @@ jobs:
       - uses: ./.github/actions/setup-ci
         with:
           node: 'true'
+          pty-host: 'true'
           herdr: 'true'
           # this job installs and runs an unpinned OMP release: never save the shared cache
           cache: restore

@@ -403,7 +403,7 @@
   height: var(--icon-size-sm);
 }
 
-.setup-dialog :is(p, li, .setup-choice-text > span) {
+.setup-dialog :is(p, li) {
   text-wrap: pretty;
 }
 
@@ -483,84 +483,6 @@
   .setup-link {
     min-height: var(--touch-target);
   }
-}
-
-.setup-choices {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.setup-choice {
-  display: flex;
-  align-items: center;
-  gap: var(--space-4);
-  width: 100%;
-  min-height: calc(var(--touch-target) + var(--space-8) + var(--space-1));
-  padding: var(--space-4);
-  border: var(--hairline) solid var(--border);
-  border-radius: var(--radius-xl);
-  background: var(--bg-panel);
-  color: var(--text);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  transition: border-color var(--dur-fast) var(--ease-out);
-}
-
-.setup-choice:hover:not(:disabled) {
-  border-color: var(--accent);
-}
-
-.setup-choice-primary {
-  background: var(--accent-tint);
-}
-
-.setup-choice:disabled {
-  cursor: progress;
-  opacity: 0.6;
-}
-
-.setup-choice > svg {
-  flex: none;
-  width: var(--icon-size);
-  height: var(--icon-size);
-  color: var(--text-dim);
-}
-
-.setup-choice-icon {
-  display: grid;
-  place-items: center;
-  flex: none;
-  width: calc(var(--avatar-size) + var(--space-1));
-  height: calc(var(--avatar-size) + var(--space-1));
-  border-radius: var(--radius-md);
-  background: var(--bg-hover);
-  color: var(--text);
-}
-
-.setup-choice-icon svg {
-  width: var(--space-5);
-  height: var(--space-5);
-}
-
-.setup-choice-text {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: var(--space-half);
-  min-width: 0;
-}
-
-.setup-choice-text strong {
-  color: var(--text-strong);
-  font-size: var(--fs-lg);
-  font-weight: var(--fw-semibold);
-}
-
-.setup-choice-text span {
-  color: var(--text-dim);
-  font-size: var(--fs-sm);
 }
 
 .setup-actions {
@@ -757,8 +679,6 @@
   width: var(--icon-size-sm);
   height: var(--icon-size-sm);
 }
-
-.setup-sign-in .setup-link { margin-inline-start: var(--space-1); }
 
 .setup-side-phone {
   gap: var(--space-3);

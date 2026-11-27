@@ -16,10 +16,10 @@ import { chatFontStack, sanitizeFontFamily } from "./fontFamily.ts";
 import { fontScale, sanitizeUiFontSize, uiFontStack } from "./typography.ts";
 import { sanitizeKeyBarExtras, type KeyBarExtra } from "./keys.ts";
 import { DEFAULT_KEY_BAR_ITEMS, migrateKeyBarItems, sanitizeKeyBarItems, type KeyBarItem } from "./keyBar.ts";
-import { applyThemeEntry, CUSTOM_ROWS_STORAGE_KEY, CUSTOM_THEMES_STORAGE_KEY, DARK_QUERY, defaultThemeSetting, readStoredAppearance, resolveTheme, sanitizeAppearance, SETTINGS_STORAGE_KEY, THEMES_STORAGE_KEY, type ResolvedTheme, type ThemeSetting } from "./themeBoot.ts";
+import { applyThemeEntry, CUSTOM_ROWS_STORAGE_KEY, CUSTOM_THEMES_STORAGE_KEY, DARK_QUERY, DEFAULT_MARKDOWN_STYLE, defaultThemeSetting, MARKDOWN_STYLE_STORAGE_KEY, MARKDOWN_STYLES, readStoredAppearance, resolveTheme, sanitizeAppearance, sanitizeMarkdownStyle, savedMarkdownStyle, SETTINGS_STORAGE_KEY, THEMES_STORAGE_KEY, type MarkdownStyle, type ResolvedTheme, type ThemeSetting } from "./themeBoot.ts";
 
-export { resolveTheme };
-export type { ResolvedTheme, ThemeSetting };
+export { DEFAULT_MARKDOWN_STYLE, MARKDOWN_STYLE_STORAGE_KEY, MARKDOWN_STYLES, resolveTheme };
+export type { MarkdownStyle, ResolvedTheme, ThemeSetting };
 export type Density = "compact" | "comfortable";
 export type PhoneTabs = "row" | "header";
 export type SidebarRows = "one" | "two";
@@ -95,6 +95,7 @@ export interface Settings {
   darkTheme: ThemeId;
   lightTheme: ThemeId;
   customThemes: CustomThemes;
+  markdownStyle: MarkdownStyle;
   terminalFontSize: number;
   /** mouse reports sent to herdr per wheel event in the terminal: 1 is what xterm sends by itself */
   terminalWheelSpeed: number;
@@ -217,7 +218,7 @@ type TelemetrySourceSettings = Omit<Settings,
   | "claudeLaunchModel" | "claudeLaunchEffort" | "codexLaunchModel" | "codexLaunchEffort" | "agentBrowserTools"
   | "agentHarnessTool"
   | "followHerdrFocus" | "sidebarPeek" | "phoneInbox" | "sidebarBackgroundWorkspaces" | "codexDrag" | "composerArtifacts" | "composerPasteSend" | "composerBtw" | "terminalMirrorWrap" | "sidebarFilter" | "sidebarContext" | "sidebarAgentTree" | "foldHelpers" | "pcLoad"
-  | "expandThinking" | "foldWork" | "customThemes" | "autoTabNames" | "voiceEngine" | "agentGroups" | "agentGroupSort" | "terminalImages" | "terminalAttachButton"
+  | "expandThinking" | "foldWork" | "customThemes" | "markdownStyle" | "autoTabNames" | "voiceEngine" | "agentGroups" | "agentGroupSort" | "terminalImages" | "terminalAttachButton"
   | "terminalKeyboardOnRequest" | "terminalFoldKeyBar" | "fileFontSize" | "fileFontBase" | "editTextFiles" | "reopenFileOnReturn" | "phoneTabs">;
 
 function differsFromDefault(value: unknown, defaultValue: unknown): boolean {
@@ -284,7 +285,7 @@ export function telemetrySettingsSnapshot(settings: Settings): TelemetrySettings
 }
 
 export const SETTING_SCOPE = {
-  theme: "shared", palette: "shared", darkTheme: "shared", lightTheme: "shared", language: "shared", sidebarRows: "shared", agentOrder: "shared",
+  theme: "shared", palette: "shared", darkTheme: "shared", lightTheme: "shared", markdownStyle: "shared", language: "shared", sidebarRows: "shared", agentOrder: "shared",
   agentMarks: "shared", agentLocks: "shared", lockedAgents: "shared", opencodeParentEnds: "shared", ompHeldFiles: "shared", restoreReplacedServer: "shared", agentNamedGroups: "shared", agentGroupNames: "shared", agentGroupOf: "shared", autoSendQueued: "shared", autoTabNames: "shared", showThinking: "shared", quickReplies: "shared", builtInBrowser: "shared", browserBlockedSites: "shared",
   showQuickReplies: "shared", showUsage: "shared", usageCount: "shared",
   usageGlance: "shared", usageOrder: "shared", usageHidden: "shared", defaultView: "device", suggestionChip: "device",
@@ -363,6 +364,7 @@ export const DEFAULT_SETTINGS: Settings = {
   darkTheme: DEFAULT_THEME,
   lightTheme: DEFAULT_THEME,
   customThemes: NO_CUSTOM_THEMES,
+  markdownStyle: DEFAULT_MARKDOWN_STYLE,
   terminalFontSize: 13,
   terminalWheelSpeed: 1,
   terminalFontFamily: "",
@@ -571,6 +573,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     darkTheme,
     lightTheme,
     customThemes: sanitizeCustomThemes(record["customThemes"]),
+    markdownStyle: sanitizeMarkdownStyle(record["markdownStyle"]),
     palette: mirrorPalette(theme, darkTheme, lightTheme),
     paletteLight: lightTheme,
     paletteDark: darkTheme,
@@ -661,143 +664,21 @@ export function sanitizeSettings(raw: unknown): Settings {
  * does not know (docs/development.md, Stored-format changes).
  */
 export const UI_FONT_STORAGE_KEY = "ovis:ui-font";
-
-function readUiFontFamily(): string {
-  try {
-    const raw = window.localStorage.getItem(UI_FONT_STORAGE_KEY);
-    return raw === null ? "" : sanitizeFontFamily(JSON.parse(raw));
-  } catch {
-    return "";
-  }
-}
-
 export const MIRROR_WRAP_STORAGE_KEY = "ovis:mirror-wrap";
-
-function readMirrorWrap(): boolean | null {
-  try {
-    const raw = window.localStorage.getItem(MIRROR_WRAP_STORAGE_KEY);
-    const value: unknown = raw === null ? null : JSON.parse(raw);
-    return typeof value === "boolean" ? value : null;
-  } catch {
-    return null;
-  }
-}
-
 /** A new key:
  *  the earlier `ovis:sidebar-filter` held the old default (on) on every device that saved any setting, which no
  *  choice can be told from, so it is not read. */
 export const SIDEBAR_FILTER_STORAGE_KEY = "ovis:sidebar-filter-shown";
-
-function readSidebarFilter(): boolean {
-  try {
-    const raw = window.localStorage.getItem(SIDEBAR_FILTER_STORAGE_KEY);
-    const value: unknown = raw === null ? null : JSON.parse(raw);
-    return typeof value === "boolean" ? value : DEFAULT_SETTINGS.sidebarFilter;
-  } catch {
-    return DEFAULT_SETTINGS.sidebarFilter;
-  }
-}
-
 export const PC_LOAD_STORAGE_KEY = "ovis:pc-load";
-
-function readPcLoad(): boolean | null {
-  try {
-    const raw = window.localStorage.getItem(PC_LOAD_STORAGE_KEY);
-    const value: unknown = raw === null ? null : JSON.parse(raw);
-    return typeof value === "boolean" ? value : null;
-  } catch {
-    return null;
-  }
-}
-
 /** Settings → Appearance → Group agents by state and Within a state, kept in keys of their own for the same reason: an old tab's save drops a field it does not know. */
 export const AGENT_GROUPS_STORAGE_KEY = "ovis:agent-groups";
 export const AGENT_GROUP_SORT_STORAGE_KEY = "ovis:agent-group-sort";
-
-function readAgentGroups(): Pick<Settings, "agentGroups" | "agentGroupSort"> {
-  const read = (key: string): unknown => {
-    try {
-      const raw = window.localStorage.getItem(key);
-      return raw === null ? null : JSON.parse(raw);
-    } catch {
-      return null;
-    }
-  };
-  const { agentGroups, agentGroupSort } = sanitizeSettings({ agentGroups: read(AGENT_GROUPS_STORAGE_KEY), agentGroupSort: read(AGENT_GROUP_SORT_STORAGE_KEY) });
-  return { agentGroups, agentGroupSort };
-}
-
 export const PHONE_TABS_STORAGE_KEY = "ovis:phone-tabs";
-
-function readPhoneTabs(): PhoneTabs {
-  try {
-    const raw = window.localStorage.getItem(PHONE_TABS_STORAGE_KEY);
-    return sanitizeSettings({ phoneTabs: raw === null ? null : JSON.parse(raw) }).phoneTabs;
-  } catch {
-    return DEFAULT_SETTINGS.phoneTabs;
-  }
-}
-
 /** Settings → Voice input → Speech recognition, in a key of its own: an older tab's whole-record save would put it back on Auto. */
 export const VOICE_ENGINE_STORAGE_KEY = "ovis:voice-engine";
-
-function readVoiceEngine(): VoiceEngineChoice {
-  try {
-    const raw = window.localStorage.getItem(VOICE_ENGINE_STORAGE_KEY);
-    return sanitizeSettings({ voiceEngine: raw === null ? null : JSON.parse(raw) }).voiceEngine;
-  } catch {
-    return DEFAULT_SETTINGS.voiceEngine;
-  }
-}
-
 export const FILE_FONT_SIZE_STORAGE_KEY = "ovis:file-font-size";
-
 export const FILE_FONT_BASE_STORAGE_KEY = "ovis:file-font-base";
-
-function sanitizeFileFontBase(value: unknown): FileFontBase | null {
-  if (typeof value !== "object" || value === null) return null;
-  const { size, chat, ui } = value as Record<string, unknown>;
-  const chatSize = (px: unknown): number | null => typeof px === "number" && Number.isFinite(px) ? Math.min(CHAT_FONT_MAX, Math.max(CHAT_FONT_MIN, Math.round(px))) : null;
-  const base = { size: chatSize(size), chat: chatSize(chat), ui: sanitizeUiFontSize(ui) };
-  return base.size === null || base.chat === null || base.ui === null ? null : { size: base.size, chat: base.chat, ui: base.ui };
-}
-
-function readFileFontBase(size: number | null): FileFontBase | null {
-  try {
-    const raw = window.localStorage.getItem(FILE_FONT_BASE_STORAGE_KEY);
-    const base = sanitizeFileFontBase(raw === null ? null : JSON.parse(raw));
-    return base !== null && base.size === size ? base : null;
-  } catch {
-    return DEFAULT_SETTINGS.fileFontBase;
-  }
-}
-
-function readFileFont(): Pick<Settings, "fileFontSize" | "fileFontBase"> {
-  const fileFontSize = readFileFontSize();
-  return { fileFontSize, fileFontBase: readFileFontBase(fileFontSize) };
-}
-
-function readFileFontSize(): number | null {
-  try {
-    const raw = window.localStorage.getItem(FILE_FONT_SIZE_STORAGE_KEY);
-    return sanitizeSettings({ fileFontSize: raw === null ? null : JSON.parse(raw) }).fileFontSize;
-  } catch {
-    return DEFAULT_SETTINGS.fileFontSize;
-  }
-}
-
 export const COMPOSER_ARTIFACTS_STORAGE_KEY = "ovis:composer-artifacts";
-
-function readComposerArtifacts(): boolean {
-  try {
-    const raw = window.localStorage.getItem(COMPOSER_ARTIFACTS_STORAGE_KEY);
-    const value: unknown = raw === null ? null : JSON.parse(raw);
-    return typeof value === "boolean" ? value : DEFAULT_SETTINGS.composerArtifacts;
-  } catch {
-    return DEFAULT_SETTINGS.composerArtifacts;
-  }
-}
-
 export const EXPAND_THINKING_STORAGE_KEY = "ovis:expand-thinking";
 export const FOLD_WORK_STORAGE_KEY = "ovis:fold-work";
 /** Its own key: up to 0.5.0 every save wrote "ovis:terminal-images",
@@ -815,35 +696,6 @@ export const SIDEBAR_CONTEXT_STORAGE_KEY = "ovis:sidebar-context";
 export const FOLD_HELPERS_STORAGE_KEY = "ovis:fold-helpers";
 export const SIDEBAR_AGENT_TREE_STORAGE_KEY = "ovis:sidebar-agent-tree";
 export const PHONE_INBOX_STORAGE_KEY = "ovis:phone-inbox";
-
-function readChosen(key: string): boolean | null {
-  try {
-    const raw = window.localStorage.getItem(key);
-    const value: unknown = raw === null ? null : JSON.parse(raw);
-    return typeof value === "boolean" ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-function readCustomThemes(): CustomThemes {
-  try {
-    return sanitizeCustomThemes(JSON.parse(window.localStorage.getItem(CUSTOM_THEMES_STORAGE_KEY) ?? "null"));
-  } catch {
-    return NO_CUSTOM_THEMES;
-  }
-}
-
-function readChatFold(key: string, fallback: boolean): boolean {
-  try {
-    const raw = window.localStorage.getItem(key);
-    const value: unknown = raw === null ? null : JSON.parse(raw);
-    return typeof value === "boolean" ? value : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
 /**
  * Settings are saved whole, so `enterSends: true` in ovis:settings was written by any change at all,
  * not chosen; only its `false` was a choice (the old default was true), and it counts while this key holds none.
@@ -853,15 +705,70 @@ function readChatFold(key: string, fallback: boolean): boolean {
  */
 export const ENTER_SENDS_STORAGE_KEY = "ovis:enter-sends";
 
-function readEnterSends(record: boolean | null): boolean | null {
+function readStorageJson(key: string): unknown {
   try {
-    const raw = window.localStorage.getItem(ENTER_SENDS_STORAGE_KEY);
-    const value: unknown = raw === null ? null : JSON.parse(raw);
-    if (typeof value === "boolean") return value;
+    const raw = window.localStorage.getItem(key);
+    return raw === null ? null : JSON.parse(raw);
   } catch {
+    return null;
   }
-  return record === false ? false : null;
 }
+
+function readChosen(key: string): boolean | null {
+  const value = readStorageJson(key);
+  return typeof value === "boolean" ? value : null;
+}
+
+function readBool(key: string, fallback: boolean): boolean {
+  return readChosen(key) ?? fallback;
+}
+
+function sanitizeFileFontBase(value: unknown): FileFontBase | null {
+  if (typeof value !== "object" || value === null) return null;
+  const { size, chat, ui } = value as Record<string, unknown>;
+  const chatSize = (px: unknown): number | null => typeof px === "number" && Number.isFinite(px) ? Math.min(CHAT_FONT_MAX, Math.max(CHAT_FONT_MIN, Math.round(px))) : null;
+  const base = { size: chatSize(size), chat: chatSize(chat), ui: sanitizeUiFontSize(ui) };
+  return base.size === null || base.chat === null || base.ui === null ? null : { size: base.size, chat: base.chat, ui: base.ui };
+}
+
+function readFileFont(): Pick<Settings, "fileFontSize" | "fileFontBase"> {
+  const fileFontSize = sanitizeSettings({ fileFontSize: readStorageJson(FILE_FONT_SIZE_STORAGE_KEY) }).fileFontSize;
+  const base = sanitizeFileFontBase(readStorageJson(FILE_FONT_BASE_STORAGE_KEY));
+  return { fileFontSize, fileFontBase: base !== null && base.size === fileFontSize ? base : null };
+}
+
+function readEnterSends(record: boolean | null): boolean | null {
+  return readChosen(ENTER_SENDS_STORAGE_KEY) ?? (record === false ? false : null);
+}
+
+const SEPARATE_STORAGE_KEYS: readonly (readonly [keyof Settings, string])[] = [
+  ["customThemes", CUSTOM_THEMES_STORAGE_KEY],
+  ["markdownStyle", MARKDOWN_STYLE_STORAGE_KEY],
+  ["voiceEngine", VOICE_ENGINE_STORAGE_KEY],
+  ["phoneTabs", PHONE_TABS_STORAGE_KEY],
+  ["uiFontFamily", UI_FONT_STORAGE_KEY],
+  ["terminalMirrorWrap", MIRROR_WRAP_STORAGE_KEY],
+  ["sidebarFilter", SIDEBAR_FILTER_STORAGE_KEY],
+  ["pcLoad", PC_LOAD_STORAGE_KEY],
+  ["agentGroups", AGENT_GROUPS_STORAGE_KEY],
+  ["agentGroupSort", AGENT_GROUP_SORT_STORAGE_KEY],
+  ["fileFontSize", FILE_FONT_SIZE_STORAGE_KEY],
+  ["composerArtifacts", COMPOSER_ARTIFACTS_STORAGE_KEY],
+  ["expandThinking", EXPAND_THINKING_STORAGE_KEY],
+  ["foldWork", FOLD_WORK_STORAGE_KEY],
+  ["reuseExternalLinkTab", REUSE_EXTERNAL_LINK_TAB_STORAGE_KEY],
+  ["filesPanel", FILES_PANEL_STORAGE_KEY],
+  ["composerPasteSend", COMPOSER_PASTE_SEND_STORAGE_KEY],
+  ["composerBtw", COMPOSER_BTW_STORAGE_KEY],
+  ["sidebarContext", SIDEBAR_CONTEXT_STORAGE_KEY],
+  ["foldHelpers", FOLD_HELPERS_STORAGE_KEY],
+  ["sidebarAgentTree", SIDEBAR_AGENT_TREE_STORAGE_KEY],
+  ["phoneInbox", PHONE_INBOX_STORAGE_KEY],
+  ["terminalImages", TERMINAL_IMAGES_STORAGE_KEY],
+  ["terminalAttachButton", TERMINAL_ATTACH_BUTTON_STORAGE_KEY],
+  ["terminalKeyboardOnRequest", TERMINAL_KEYBOARD_ON_REQUEST_STORAGE_KEY],
+  ["terminalFoldKeyBar", TERMINAL_FOLD_KEY_BAR_STORAGE_KEY],
+];
 
 function coarsePointer(): boolean {
   return typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches === true;
@@ -883,21 +790,42 @@ export function loadSettings(): Settings {
   const stored = readStoredAppearance(() => window.localStorage);
   const settings = stored.main === null ? { ...DEFAULT_SETTINGS, theme: defaultThemeSetting() } : sanitizeSettings(stored.main.value);
   const merged = stored.themes === null ? settings : sanitizeSettings({ ...settings, ...stored.themes });
-  return { ...merged, enterSends: readEnterSends(merged.enterSends), uiFontFamily: readUiFontFamily(), terminalMirrorWrap: readMirrorWrap(), sidebarFilter: readSidebarFilter(), pcLoad: readPcLoad(), phoneTabs: readPhoneTabs(), voiceEngine: readVoiceEngine(), ...readAgentGroups(), ...readFileFont(), composerArtifacts: readComposerArtifacts(),
-    expandThinking: readChatFold(EXPAND_THINKING_STORAGE_KEY, DEFAULT_SETTINGS.expandThinking), foldWork: readChatFold(FOLD_WORK_STORAGE_KEY, DEFAULT_SETTINGS.foldWork),
-    reuseExternalLinkTab: readChatFold(REUSE_EXTERNAL_LINK_TAB_STORAGE_KEY, DEFAULT_SETTINGS.reuseExternalLinkTab),
-    filesPanel: readChatFold(FILES_PANEL_STORAGE_KEY, DEFAULT_SETTINGS.filesPanel),
-    composerPasteSend: readChatFold(COMPOSER_PASTE_SEND_STORAGE_KEY, DEFAULT_SETTINGS.composerPasteSend),
-    composerBtw: readChatFold(COMPOSER_BTW_STORAGE_KEY, DEFAULT_SETTINGS.composerBtw),
-    sidebarContext: readChatFold(SIDEBAR_CONTEXT_STORAGE_KEY, DEFAULT_SETTINGS.sidebarContext),
-    foldHelpers: readChatFold(FOLD_HELPERS_STORAGE_KEY, DEFAULT_SETTINGS.foldHelpers),
-    sidebarAgentTree: readChatFold(SIDEBAR_AGENT_TREE_STORAGE_KEY, DEFAULT_SETTINGS.sidebarAgentTree),
+  const { agentGroups, agentGroupSort, phoneTabs, voiceEngine } = sanitizeSettings({
+    agentGroups: readStorageJson(AGENT_GROUPS_STORAGE_KEY),
+    agentGroupSort: readStorageJson(AGENT_GROUP_SORT_STORAGE_KEY),
+    phoneTabs: readStorageJson(PHONE_TABS_STORAGE_KEY),
+    voiceEngine: readStorageJson(VOICE_ENGINE_STORAGE_KEY),
+  });
+  return {
+    ...merged,
+    enterSends: readEnterSends(merged.enterSends),
+    uiFontFamily: sanitizeFontFamily(readStorageJson(UI_FONT_STORAGE_KEY)),
+    terminalMirrorWrap: readChosen(MIRROR_WRAP_STORAGE_KEY),
+    sidebarFilter: readBool(SIDEBAR_FILTER_STORAGE_KEY, DEFAULT_SETTINGS.sidebarFilter),
+    pcLoad: readChosen(PC_LOAD_STORAGE_KEY),
+    phoneTabs,
+    voiceEngine,
+    agentGroups,
+    agentGroupSort,
+    ...readFileFont(),
+    composerArtifacts: readBool(COMPOSER_ARTIFACTS_STORAGE_KEY, DEFAULT_SETTINGS.composerArtifacts),
+    expandThinking: readBool(EXPAND_THINKING_STORAGE_KEY, DEFAULT_SETTINGS.expandThinking),
+    foldWork: readBool(FOLD_WORK_STORAGE_KEY, DEFAULT_SETTINGS.foldWork),
+    reuseExternalLinkTab: readBool(REUSE_EXTERNAL_LINK_TAB_STORAGE_KEY, DEFAULT_SETTINGS.reuseExternalLinkTab),
+    filesPanel: readBool(FILES_PANEL_STORAGE_KEY, DEFAULT_SETTINGS.filesPanel),
+    composerPasteSend: readBool(COMPOSER_PASTE_SEND_STORAGE_KEY, DEFAULT_SETTINGS.composerPasteSend),
+    composerBtw: readBool(COMPOSER_BTW_STORAGE_KEY, DEFAULT_SETTINGS.composerBtw),
+    sidebarContext: readBool(SIDEBAR_CONTEXT_STORAGE_KEY, DEFAULT_SETTINGS.sidebarContext),
+    foldHelpers: readBool(FOLD_HELPERS_STORAGE_KEY, DEFAULT_SETTINGS.foldHelpers),
+    sidebarAgentTree: readBool(SIDEBAR_AGENT_TREE_STORAGE_KEY, DEFAULT_SETTINGS.sidebarAgentTree),
     phoneInbox: readChosen(PHONE_INBOX_STORAGE_KEY),
     terminalImages: readChosen(TERMINAL_IMAGES_STORAGE_KEY) ?? (readChosen(LEGACY_TERMINAL_IMAGES_STORAGE_KEY) === true ? true : null),
-    terminalAttachButton: readChatFold(TERMINAL_ATTACH_BUTTON_STORAGE_KEY, DEFAULT_SETTINGS.terminalAttachButton),
-    terminalKeyboardOnRequest: readChatFold(TERMINAL_KEYBOARD_ON_REQUEST_STORAGE_KEY, DEFAULT_SETTINGS.terminalKeyboardOnRequest),
-    terminalFoldKeyBar: readChatFold(TERMINAL_FOLD_KEY_BAR_STORAGE_KEY, DEFAULT_SETTINGS.terminalFoldKeyBar),
-    customThemes: readCustomThemes() };
+    terminalAttachButton: readBool(TERMINAL_ATTACH_BUTTON_STORAGE_KEY, DEFAULT_SETTINGS.terminalAttachButton),
+    terminalKeyboardOnRequest: readBool(TERMINAL_KEYBOARD_ON_REQUEST_STORAGE_KEY, DEFAULT_SETTINGS.terminalKeyboardOnRequest),
+    terminalFoldKeyBar: readBool(TERMINAL_FOLD_KEY_BAR_STORAGE_KEY, DEFAULT_SETTINGS.terminalFoldKeyBar),
+    customThemes: sanitizeCustomThemes(readStorageJson(CUSTOM_THEMES_STORAGE_KEY)),
+    markdownStyle: savedMarkdownStyle(() => window.localStorage),
+  };
 }
 
 /** false where storage refused the write (private mode, a full quota) */
@@ -908,38 +836,18 @@ export function saveSettings(settings: Settings): boolean {
       darkTheme: mirrored.darkTheme, lightTheme: mirrored.lightTheme,
       mirror: { palette: mirrored.palette, paletteDark: mirrored.paletteDark, paletteLight: mirrored.paletteLight },
     }));
-    const { uiFontFamily, terminalMirrorWrap, sidebarFilter, sidebarContext, sidebarAgentTree, phoneInbox, foldHelpers, pcLoad, voiceEngine, agentGroups, agentGroupSort, fileFontSize, fileFontBase, composerArtifacts, composerPasteSend, composerBtw, expandThinking, foldWork, reuseExternalLinkTab, filesPanel, terminalImages, terminalAttachButton, terminalKeyboardOnRequest, terminalFoldKeyBar, customThemes, phoneTabs, ...main } = mirrored;
-    window.localStorage.setItem(CUSTOM_THEMES_STORAGE_KEY, JSON.stringify(customThemes));
-    window.localStorage.setItem(VOICE_ENGINE_STORAGE_KEY, JSON.stringify(voiceEngine));
-    window.localStorage.setItem(PHONE_TABS_STORAGE_KEY, JSON.stringify(phoneTabs));
-    window.localStorage.setItem(UI_FONT_STORAGE_KEY, JSON.stringify(uiFontFamily));
-    window.localStorage.setItem(MIRROR_WRAP_STORAGE_KEY, JSON.stringify(terminalMirrorWrap));
-    window.localStorage.setItem(SIDEBAR_FILTER_STORAGE_KEY, JSON.stringify(sidebarFilter));
-    window.localStorage.setItem(PC_LOAD_STORAGE_KEY, JSON.stringify(pcLoad));
-    window.localStorage.setItem(AGENT_GROUPS_STORAGE_KEY, JSON.stringify(agentGroups));
-    window.localStorage.setItem(AGENT_GROUP_SORT_STORAGE_KEY, JSON.stringify(agentGroupSort));
-    window.localStorage.setItem(FILE_FONT_SIZE_STORAGE_KEY, JSON.stringify(fileFontSize));
+    const main: Record<string, unknown> = { ...mirrored, enterSends: mirrored.enterSends ?? true };
+    for (const [field, key] of SEPARATE_STORAGE_KEYS) {
+      window.localStorage.setItem(key, JSON.stringify(mirrored[field]));
+      delete main[field];
+    }
+    delete main["fileFontBase"];
     // only beside the size it was recorded for: a Reset over another tab's base must not leave that base behind
-    window.localStorage.setItem(FILE_FONT_BASE_STORAGE_KEY, JSON.stringify(fileFontBase?.size === fileFontSize ? fileFontBase : null));
-    window.localStorage.setItem(COMPOSER_ARTIFACTS_STORAGE_KEY, JSON.stringify(composerArtifacts));
-    window.localStorage.setItem(EXPAND_THINKING_STORAGE_KEY, JSON.stringify(expandThinking));
-    window.localStorage.setItem(FOLD_WORK_STORAGE_KEY, JSON.stringify(foldWork));
-    window.localStorage.setItem(REUSE_EXTERNAL_LINK_TAB_STORAGE_KEY, JSON.stringify(reuseExternalLinkTab));
-    window.localStorage.setItem(FILES_PANEL_STORAGE_KEY, JSON.stringify(filesPanel));
-    window.localStorage.setItem(COMPOSER_PASTE_SEND_STORAGE_KEY, JSON.stringify(composerPasteSend));
-    window.localStorage.setItem(COMPOSER_BTW_STORAGE_KEY, JSON.stringify(composerBtw));
-    window.localStorage.setItem(SIDEBAR_CONTEXT_STORAGE_KEY, JSON.stringify(sidebarContext));
-    window.localStorage.setItem(FOLD_HELPERS_STORAGE_KEY, JSON.stringify(foldHelpers));
-    window.localStorage.setItem(SIDEBAR_AGENT_TREE_STORAGE_KEY, JSON.stringify(sidebarAgentTree));
-    window.localStorage.setItem(PHONE_INBOX_STORAGE_KEY, JSON.stringify(phoneInbox));
-    window.localStorage.setItem(TERMINAL_IMAGES_STORAGE_KEY, JSON.stringify(terminalImages));
+    window.localStorage.setItem(FILE_FONT_BASE_STORAGE_KEY, JSON.stringify(mirrored.fileFontBase?.size === mirrored.fileFontSize ? mirrored.fileFontBase : null));
     // the earlier key's true would come back under a reset to null
     if (window.localStorage.getItem(LEGACY_TERMINAL_IMAGES_STORAGE_KEY) !== null) window.localStorage.removeItem(LEGACY_TERMINAL_IMAGES_STORAGE_KEY);
-    window.localStorage.setItem(TERMINAL_ATTACH_BUTTON_STORAGE_KEY, JSON.stringify(terminalAttachButton));
-    window.localStorage.setItem(TERMINAL_KEYBOARD_ON_REQUEST_STORAGE_KEY, JSON.stringify(terminalKeyboardOnRequest));
-    window.localStorage.setItem(TERMINAL_FOLD_KEY_BAR_STORAGE_KEY, JSON.stringify(terminalFoldKeyBar));
     window.localStorage.setItem(ENTER_SENDS_STORAGE_KEY, JSON.stringify(mirrored.enterSends));
-    window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ ...main, enterSends: main.enterSends ?? true }));
+    window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(main));
     return true;
   } catch {
     /* private mode: preferences last for the session */
@@ -978,6 +886,7 @@ export function applyToDocument(settings: Settings, entry: DrawnTheme, language:
   root.dataset["density"] = settings.density;
   root.dataset["chatWidth"] = settings.chatWidth;
   root.dataset["marks"] = settings.agentMarks;
+  root.dataset["markdownStyle"] = settings.markdownStyle;
   const uiPx = uiFontSize(settings);
   root.style.setProperty("--ui-scale", String(fontScale(uiPx, BODY_FONT[settings.density])));
   root.style.setProperty("--chat-scale", String(fontScale(chatFontSize(settings), uiPx)));

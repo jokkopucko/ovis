@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, truncateSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { AgyUnavailable, agyCatalog, agyDatabasePath, parseAgyTranscript, withAgyHistory } from "./agy.ts";
+import { AGY_CATALOG_BYTES, AgyUnavailable, agyCatalog, agyDatabasePath, parseAgyTranscript, withAgyHistory } from "./agy.ts";
 
 /** Writes a WAL catalog from a process that then dies without closing it, as agy does when killed:
  * nothing checkpoints, and no handle stays open, so a test may delete side files on any platform. */
@@ -79,9 +79,9 @@ it("reads a checkpointed WAL catalog without recreating missing side files", () 
 });
 
 it.each([
-  ["database", 64 * 1024 * 1024 + 1, 0],
-  ["WAL", 8192, 64 * 1024 * 1024 + 1],
-  ["combined", 32 * 1024 * 1024, 32 * 1024 * 1024 + 1],
+  ["database", AGY_CATALOG_BYTES + 1, 0],
+  ["WAL", 8192, AGY_CATALOG_BYTES + 1],
+  ["combined", AGY_CATALOG_BYTES / 2, AGY_CATALOG_BYTES / 2 + 1],
 ] as const)("rejects an oversized %s before copying the catalog", (_name, dbBytes, walBytes) => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "agy-catalog-limit-")));
   try {
@@ -139,6 +139,22 @@ it.each([
     expect(stderr).toBe("");
     expect(exitCode).toBe(0);
     expect(JSON.parse(stdout)).toEqual(missing === null ? [0, 1] : [0]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+it("reads a two-day session's catalog past 64 MiB", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "agy-wal-days-")));
+  try {
+    const transcript = join(dir, "brain", "session", ".system_generated", "logs", "transcript_full.jsonl");
+    const dbPath = agyDatabasePath(transcript);
+    mkdirSync(dirname(dbPath), { recursive: true });
+    // 68 MiB of steps, some still in the WAL: an agy chat went blank at about 81 MiB (48 MiB
+    // database, 33 MiB WAL). SQLite's autocheckpoint moves most of the WAL into the database.
+    const rows = (from: number, to: number) => Array.from({ length: to - from }, (_, at) => `INSERT INTO steps VALUES (${from + at}, randomblob(1048576));`).join("");
+    await abandonedWal(dbPath, `PRAGMA journal_mode=WAL; CREATE TABLE steps(idx INTEGER PRIMARY KEY, payload BLOB); ${rows(0, 48)} PRAGMA wal_checkpoint(TRUNCATE); ${rows(48, 68)}`);
+    expect(fs.statSync(dbPath).size + fs.statSync(`${dbPath}-wal`).size).toBeGreaterThan(64 * 1024 * 1024);
+
+    expect(agyCatalog(transcript).size).toBe(68);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

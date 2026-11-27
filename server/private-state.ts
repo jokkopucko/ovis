@@ -18,7 +18,7 @@
  * here: they are cheap to lose and would pay an fsync each time.
  */
 import { randomBytes } from "node:crypto";
-import { chmodSync, closeSync, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync, renameSync, statSync, unlinkSync, writeSync, type Stats } from "node:fs";
+import { chmodSync, closeSync, fchmodSync, fchownSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync, renameSync, statSync, unlinkSync, writeSync, type Stats } from "node:fs";
 import { dirname } from "node:path";
 import { harmlessGroups } from "./herdr-core/discovery.ts";
 
@@ -32,7 +32,7 @@ import { harmlessGroups } from "./herdr-core/discovery.ts";
  * is refused. A folder further up is not checked: one another account can write could swap the whole
  * folder, as for any of the user's files. Windows has no POSIX owner or mode to read: null there.
  */
-export function privateStateRefusal(path: string, platform: NodeJS.Platform = process.platform, uid: number | undefined = process.getuid?.()): string | null {
+export function privateStateRefusal(path: string, platform: NodeJS.Platform = process.platform, uid: number | undefined = process.getuid?.(), repair = true): string | null {
   if (platform === "win32" || uid === undefined) return null;
   const harmless = harmlessGroups(platform);
   const othersWrite = (stats: Stats, at: string) => (stats.mode & 0o002) !== 0 || ((stats.mode & 0o020) !== 0 && !harmless(stats.gid, at));
@@ -44,7 +44,7 @@ export function privateStateRefusal(path: string, platform: NodeJS.Platform = pr
   const own = (stats: Stats, at: string, rootMay: boolean): string | null => {
     if (stats.uid !== uid && !(rootMay && stats.uid === 0)) return `${at} is owned by uid ${stats.uid}, not you`;
     if (!othersWrite(stats, at)) return null;
-    if (stats.uid !== uid) return `${at} can be written by another account`;
+    if (stats.uid !== uid || !repair) return `${at} can be written by another account`;
     try { chmodSync(at, stats.mode & 0o7755); } catch (error) { return `${at} can be written by another account and could not be made yours alone (${(error as NodeJS.ErrnoException).code ?? String(error)})`; }
     return null;
   };
@@ -81,8 +81,8 @@ export interface PrivateStateWrite {
   directorySynced: boolean;
 }
 
-export function writePrivateState(path: string, value: unknown, platform: NodeJS.Platform = process.platform): PrivateStateWrite {
-  const temporary = preparePrivateState(path, value, platform);
+export function writePrivateState(path: string, value: unknown, platform: NodeJS.Platform = process.platform, preservePermissions = false): PrivateStateWrite {
+  const temporary = preparePrivateState(path, value, platform, preservePermissions);
   try { privateStateFs.renameSync(temporary, path); }
   catch (error) {
     // Cleanup failures must not mask the write failure the caller has to see.
@@ -98,7 +98,7 @@ export function publishPrivateState(temporary: string, path: string, platform: N
 }
 
 /** The new bytes of `path`, flushed, in a private temporary file beside it; returns that file. */
-export function preparePrivateState(path: string, value: unknown, platform: NodeJS.Platform = process.platform): string {
+export function preparePrivateState(path: string, value: unknown, platform: NodeJS.Platform = process.platform, preservePermissions = false): string {
   const fs = privateStateFs;
   const directory = dirname(path);
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -116,6 +116,13 @@ export function preparePrivateState(path: string, value: unknown, platform: Node
       const count = fs.writeSync(fd, bytes, written, bytes.length - written);
       if (count <= 0) throw new Error(`wrote no bytes to ${temporary}`);
       written += count;
+    }
+    // Restamp has already refused an untrusted destination. Match the original's metadata on the temp file,
+    // never by changing the existing file in place.
+    if (preservePermissions && existing) {
+      const created = fstatSync(fd);
+      if (created.uid !== existing.uid || created.gid !== existing.gid) fchownSync(fd, existing.uid, existing.gid);
+      fchmodSync(fd, existing.mode & 0o7777);
     }
     fs.fsyncSync(fd);
     const closing = fd;

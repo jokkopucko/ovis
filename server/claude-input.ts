@@ -296,12 +296,34 @@ export function claudeRestoredDraft(live: string, colors: string | null, sent: s
   return at.has(text.length) ? sent : null;
 }
 
+/**
+ * Whether a colored read shows the live screen. Without scroll from herdr (herdr-core), the two reads must be the same
+ * height and, from `from` rows above the bottom down (the rows the decision reads: Claude's box and what is under it,
+ * claudeBoxRows), the same text: the colored read and the text read may lay out rows above them a row apart after a
+ * redraw (#4321). Without `from`, the whole screen.
+ */
 export function viewportShowsLive(scrollBefore: { offset_from_bottom: number } | null, scrollAfter: { offset_from_bottom: number } | null,
-  colors: string, before: string, live: string): boolean {
+  colors: string, before: string, live: string, from?: number | null): boolean {
   const atBottom = scrollBefore !== null && scrollAfter !== null
     ? scrollBefore.offset_from_bottom === 0 && scrollAfter.offset_from_bottom === 0
-    : scrollBefore === null && scrollAfter === null && screenLines(colors) === screenLines(live);
+    : scrollBefore === null && scrollAfter === null && sameBottom(screenLines(colors).split("\n"), screenLines(live).split("\n"), from);
   return atBottom && live === before;
+}
+
+function sameBottom(colors: string[], live: string[], from?: number | null): boolean {
+  if (from === undefined || from === null) return colors.join("\n") === live.join("\n");
+  return colors.length === live.length && colors.slice(-from).join("\n") === live.slice(-from).join("\n");
+}
+
+/** How many rows from the bottom Claude's input box starts (its top rule), or null without a whole box. */
+export function claudeBoxRows(screen: string): number | null {
+  const plain = screenLines(screen).split("\n");
+  const rule = (line: string): boolean => SOLID_RULE_RE.test(line.trim()) || BOX_LABELED_RULE_RE.test(line.trim());
+  let end = plain.length - 1;
+  while (end >= 0 && !rule(plain[end]!)) end--;
+  let start = end - 1;
+  while (start >= 0 && !rule(plain[start]!)) start--;
+  return end < 0 || start < 0 ? null : plain.length - start;
 }
 
 const screenLines = (text: string): string => text.replace(ANSI_RE, "").replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 
 import { translate, type Translate } from "../lib/i18n.ts";
-import { changePcDescription } from "./SettingsDialog.tsx";
+import { changePcDescription } from "./SettingsDevicesPage.tsx";
 
 const t: Translate = (key, vars) => translate("en", key, vars);
 

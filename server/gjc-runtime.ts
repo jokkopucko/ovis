@@ -5,10 +5,10 @@ import nodePath, { join, type PlatformPath } from "node:path";
 
 import { readGjcNativeBinding, validatedGjcNativeTranscript } from "./gjc-native.ts";
 import { darwinTerminal } from "./darwin-process.ts";
-import { herdrRpc } from "./herdr/client.ts";
+import { paneProcessInfo } from "./herdr/client.ts";
 import { processStartedAt, processStartedAtAsync } from "./process-start.ts";
 import { userHome } from "./user-home.ts";
-import { descendantArgv, windowsProcessTable, type ProcessRow } from "./windows-processes.ts";
+import { descendantArgv, forgetWindowsProcessTable, recentWindowsProcessTable, tryWindowsProcessTable, windowsProcessTable, type ProcessRow } from "./windows-processes.ts";
 
 export interface GjcTerminal { id: string; startedAt: number }
 
@@ -36,6 +36,9 @@ let processTable: { at: number; rows: Promise<ProcessRow[]> } | null = null;
  * few seconds share one; a gjc that left its pane can still count as running for that long.
  */
 export function recentProcessTable(read: () => Promise<ProcessRow[]> = windowsProcessTable, now = Date.now()): Promise<ProcessRow[]> {
+  if (read === windowsProcessTable) {
+    return recentWindowsProcessTable(() => tryWindowsProcessTable(), now, true).rows.then((rows) => rows ?? []);
+  }
   if (processTable && now - processTable.at < PROCESS_TABLE_MS) return processTable.rows;
   const entry = { at: now, rows: read() };
   processTable = entry;
@@ -101,6 +104,7 @@ export function forgetGjcState(): void {
   lookupsInFlight.clear();
   processTable = null;
   freshTable = null;
+  forgetWindowsProcessTable();
 }
 
 export function forgetGjcPane(paneId: string): void {
@@ -426,9 +430,7 @@ async function lookupNativeTranscript(
   try {
     if (!nodePath.isAbsolute(cwd) || !nodePath.isAbsolute(home) || token.cancelled) return null;
     const platform = options.platform ?? process.platform;
-    const readProcessInfo = options.processInfo ?? ((id: string) => herdrRpc<GjcPaneProcessInfo>(
-      "pane.process_info", { pane_id: id },
-    ).catch(() => null));
+    const readProcessInfo = options.processInfo ?? ((id: string) => paneProcessInfo(id).then((process_info) => ({ process_info }), () => null));
     const initialInfo = options.known !== undefined ? (options.known === null ? null : { process_info: options.known }) : await readProcessInfo(paneId);
     if (!initialInfo || token.cancelled) return null;
     const initial = await foregroundProcesses(initialInfo, platform, options, false);

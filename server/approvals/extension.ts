@@ -14,7 +14,8 @@
  * The hub's events and answers are this file's own: `{ tool: "bash", command, description }` and `{ decision }`.
  */
 import { settingsFile } from "../claude-settings-file.ts";
-import type { ApprovalAdapter, ApprovalDecision, ApprovalRequest } from "./hub.ts";
+import type { PaneContext } from "../../shared/protocol.ts";
+import type { ApprovalAdapter, ApprovalDecision, ApprovalRequest, TurnEvent } from "./hub.ts";
 
 /** The options of the dialogs these extensions answer that are a decision; any other goes to the dialog as its keys. */
 export const ALLOW_LABEL = "Allow once";
@@ -75,11 +76,43 @@ async function ask(event, signal) {
 
 /** The hub's decision, or a promise that never settles where it gives none: the dialog's answer is then the only one. */
 const hubDecision = (event, signal) => ask(event, signal).then((decision) => decision ?? new Promise(() => {}));
+
+let telling = Promise.resolve();
+
+/**
+ * Tells the hub what asks nothing (a run of the agent's began or ended): one relay run, its answer not read, each after
+ * the one told before it, so that the hub hears them in their order. One that fails, or takes longer than TELL_MS, is not
+ * told again; nor does one keep the agent from exiting.
+ */
+const TELL_MS = 5000;
+function tell(event) {
+  telling = telling.then(() => new Promise((resolve) => {
+    const child = spawn(HOOK.command, HOOK.args, { stdio: ["pipe", "ignore", "ignore"], windowsHide: true });
+    const timer = setTimeout(() => child.kill(), TELL_MS);
+    timer.unref?.();
+    child.unref();
+    const done = () => { clearTimeout(timer); resolve(); };
+    child.on("error", done);
+    child.on("close", done);
+    child.stdin.on("error", () => {});
+    child.stdin.end(JSON.stringify(event));
+  }));
+}
+
+/**
+ * The live session knows both the used tokens and the current model's window. OmO can know the window but not the
+ * used tokens after compacting: tell that as unknown, not zero, so an earlier exact sample stops taking precedence.
+ */
+function tellContext(_event, ctx) {
+  if (typeof ctx?.getContextUsage !== "function") return;
+  const usage = ctx.getContextUsage();
+  tell({ contextUsage: usage?.tokens == null ? null : { used: usage.tokens, window: usage.contextWindow } });
+}
 `;
 
 /**
  * `args` with `-e` and the extension written for this launch: `glue`, which hooks the agent and answers its dialog
- * with `hubDecision(event, signal)`, after the relay it runs (`HOOK`) and `ask`.
+ * with `hubDecision(event, signal)`, and may `tell(event)` of its runs, after the relay it runs (`HOOK`) and `ask`.
  */
 export function extensionArgs(args: readonly string[] | undefined, hook: { command: string; args: string[] }, dir: string, glue: string): string[] {
   const source = [
@@ -97,6 +130,24 @@ function toCard(event: unknown): ApprovalRequest | null {
   const input = event as { tool?: unknown; command?: unknown; description?: unknown } | null;
   if (typeof input !== "object" || input === null || input.tool !== "bash" || typeof input.command !== "string" || input.command.trim() === "") return null;
   return { command: input.command, description: typeof input.description === "string" && input.description.trim() !== "" ? input.description : null };
+}
+
+/** A run of the agent's an extension told began or ended (`tell({ run })`), or null for any other event. */
+export function runTurn(event: unknown): TurnEvent | null {
+  const run = (event as { run?: unknown } | null)?.run;
+  return run === "began" || run === "ended" ? { turn: run, prompt: null } : null;
+}
+
+/** Undefined is not a context event; null is a report that the agent cannot measure its context yet. */
+export function contextUsage(event: unknown): PaneContext | null | undefined {
+  if (typeof event !== "object" || event === null || !("contextUsage" in event)) return undefined;
+  const usage = event.contextUsage;
+  if (usage === null) return null;
+  if (typeof usage !== "object" || !("used" in usage) || !("window" in usage)) return undefined;
+  const { used, window } = usage;
+  if (typeof used !== "number" || !Number.isFinite(used) || used < 0
+    || typeof window !== "number" || !Number.isFinite(window) || window <= 0) return undefined;
+  return { used, window };
 }
 
 export function permissionDecision(label: string): ApprovalDecision | null {

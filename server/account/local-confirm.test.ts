@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bounded } from "../relay/test-helpers.ts";
 import {
-  CONFIRM_MS, LOCAL_CONFIRM_FILE, LocalConfirms, desktopOwnerChannel, dropDesktopOwnerFd, peerUidInTable, openConfirmListener, openOnDesktop, peerUidOnLinux, takeDesktopOwnerFd,
+  CONFIRM_MS, LOCAL_CONFIRM_FILE, LocalConfirms, desktopOwnerChannel, dropDesktopOwnerFd, peerUidInTable, openConfirmListener, openOnDesktop, peerUidOnLinux, takeDesktopOwnerFd, unknownServeArgument,
   type ScreenAction,
 } from "./local-confirm.ts";
 
@@ -320,6 +320,15 @@ test("N6: a descriptor that is not a pipe or a socket gives no channel", () => {
   }
 });
 
+test("N6: serve takes the desktop owner argument and no other", () => {
+  for (const args of [[], ["--desktop-owner-fd", "5"], ["--desktop-owner-fd=5"], ["--desktop-owner-fd"], ["--desktop-owner-fd=x"]]) {
+    expect(unknownServeArgument(args)).toBeUndefined();
+  }
+  expect(unknownServeArgument(["--port", "8080"])).toBe("--port");
+  expect(unknownServeArgument(["8080"])).toBe("8080");
+  expect(unknownServeArgument(["--desktop-owner-fd", "5", "extra"])).toBe("extra");
+});
+
 test.if(linux)("N6: a process that is not the server drops the argument and closes only a socket it names", async () => {
   const dir = stateDir();
   const fd = openSync(join(dir, "plain"), "w");
@@ -398,6 +407,21 @@ test("Q20: only an established connection names the peer, and two exact rows nam
   expect(peerUidInTable([TCP_HEADER, tcpRow(local, remote, 2000, "06"), tcpRow(local, remote, 1000)].join("\n"), 0x9c40, 0xa000)).toBe(1000);
   expect(peerUidInTable([TCP_HEADER, tcpRow(local, remote, 1000, "06")].join("\n"), 0x9c40, 0xa000)).toBeNull();
   expect(peerUidInTable([TCP_HEADER, tcpRow(local, remote, 1000), tcpRow(local, remote, 2000)].join("\n"), 0x9c40, 0xa000)).toBeNull();
+});
+
+test("Q20: a read of the socket table that missed the live row, or showed it twice, is read again, a bounded number of times; rows naming two users are final", () => {
+  const hex = (port: number) => port.toString(16).toUpperCase();
+  const row = tcpRow(`0100007F:${hex(0xa000)}`, `0100007F:${hex(0x9c40)}`, 1000);
+  const other = tcpRow(`0100007F:${hex(0xa000)}`, `0100007F:${hex(0x9c40)}`, 1001);
+  const reads = (tables: string[][]) => {
+    let count = 0;
+    const uid = peerUidOnLinux(0x9c40, 0xa000, () => [TCP_HEADER, ...(tables[count++] ?? [])].join("\n"));
+    return { uid, count };
+  };
+  expect(reads([[], [row, row], [row]])).toEqual({ uid: 1000, count: 3 });
+  expect(reads([[], [], [], [row]])).toEqual({ uid: null, count: 3 });
+  expect(reads([[other]])).toEqual({ uid: 1001, count: 1 });
+  expect(reads([[row, other], [row]])).toEqual({ uid: null, count: 1 });
 });
 
 test("R8: the confirm page counts as opened only once xdg-open started; a desktop without it is told so", async () => {

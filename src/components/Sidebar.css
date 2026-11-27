@@ -295,12 +295,6 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   transition: opacity var(--dur-fast) var(--ease-out);
 }
 
-.pane-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
 .pane-item {
   position: relative;
   border-radius: var(--radius-md);
@@ -671,8 +665,7 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   }
 }
 
-.workspace-rename-input,
-.pane-rename-input {
+.workspace-rename-input {
   flex: 1 1 auto;
   min-width: 0;
   height: calc(var(--control-h) - var(--space-2));
@@ -680,8 +673,7 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   padding: 0 var(--space-2) 0 calc(var(--space-1) - var(--hairline));
 }
 
-.workspace-rename-input:focus-visible,
-.pane-rename-input:focus-visible {
+.workspace-rename-input:focus-visible {
   outline-offset: var(--ring-inset-offset);
 }
 
@@ -744,6 +736,10 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
     opacity: 1;
     visibility: visible;
   }
+}
+
+.workspace-header:has(.workspace-rename-input) > .workspace-actions {
+  display: none;
 }
 
 @media (pointer: coarse), (max-width: 768px) {
@@ -1058,7 +1054,7 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
 
 .workspace-branch-tail {
   flex: 0 99999 auto;
-  min-width: 2.5em;
+  min-width: 0;
   overflow: hidden;
   color: var(--text-dim);
   font-size: var(--fs-sm);
@@ -1084,6 +1080,10 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
     width: var(--space-6);
   }
 
+  .machine-workspaces:not(.is-two-line) .workspace-header:has(.workspace-rename-input) > .workspace-actions {
+    display: none;
+  }
+
   .machine-workspaces:not(.is-two-line) .workspace-header > .workspace-actions .sidebar-row-action { width: 100%; }
 
   .machine-workspaces:not(.is-two-line) .workspace-header:is(:hover, :focus-within) .workspace-copy,
@@ -1098,7 +1098,7 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
 }
 
 @media (hover: hover) and (pointer: fine) {
-  .machine-workspaces:not(.is-two-line) .workspace-header:not(:hover, :focus-within) .workspace-branch-tail { visibility: hidden; }
+  .machine-workspaces:not(.is-two-line) .workspace-header:not(:hover, :focus-within):not(:has(> .workspace-actions [aria-expanded="true"])) .workspace-branch-tail { visibility: hidden; }
 }
 
 .sidebar-status[data-status="done"] .sidebar-status-dot {

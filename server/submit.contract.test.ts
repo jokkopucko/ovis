@@ -1,11 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { CLAUDE_FOLDED_DRAFT_MESSAGE } from "../shared/submit-outcome.ts";
-import { chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createServer, SUBMIT_DEADLINE_MS, SUBMIT_DELAY_MS } from "./index.ts";
 import { herdrRpc } from "./herdr/client.ts";
 import * as herdr from "./herdr/client.ts";
+import * as claudeStore from "./claude-store.ts";
 import { PtySession } from "./pty/session.ts";
 
 const root = mkdtempSync(join(tmpdir(), "ovis-submit-"));
@@ -45,14 +46,14 @@ async function received(recorder: Recorder, from: number, count: number): Promis
   throw new Error(`no ${count} Enter(s) within 5s: ${JSON.stringify(chunks(recorder).slice(from))}`);
 }
 
-async function recorder(label: string, program: string, screen = ""): Promise<Recorder> {
+async function recorder(label: string, program: string, screen = "", env = ""): Promise<Recorder> {
   const created = await herdrRpc<{ workspace: { workspace_id: string }; root_pane: { pane_id: string } }>(
     "workspace.create", { label: `ovis-test-submit-${label}`, cwd: root, focus: false },
   );
   workspaces.push(created.workspace.workspace_id);
   const log = join(root, `${label}.jsonl`);
   const shown = screen ? ` '${screen.replace(/\n/g, "\r\n")}'` : "";
-  await herdrRpc("pane.send_text", { pane_id: created.root_pane.pane_id, text: `exec '${program}' '${join(root, "record.js")}' '${log}'${shown}\n` });
+  await herdrRpc("pane.send_text", { pane_id: created.root_pane.pane_id, text: `${env ? `${env} ` : ""}exec '${program}' '${join(root, "record.js")}' '${log}'${shown}\n` });
   for (let i = 0; i < 200 && !existsSync(log); i++) await Bun.sleep(50);
   expect(existsSync(log)).toBe(true);
   return { pane: created.root_pane.pane_id, log };
@@ -1305,6 +1306,80 @@ describe("WebSocket submit", () => {
     }
   }, 30_000);
 
+  it.skipIf(process.platform !== "linux")("clears the chat's own long message Claude put back folded after a stop, by Claude's own records, then sends (#3563)", async () => {
+    const socket = await Socket.connect();
+    const message = "long chat message\nits second line\nits third line";
+    const home = mkdtempSync(join(root, "claude-home-"));
+    // a Claude whose own environment names its store, as Claude reads it
+    const claude = await recorder("claude-store", join(root, "claude"), "", `CLAUDE_CONFIG_DIR='${join(home, ".claude")}'`);
+    await herdrRpc("pane.report_agent", { pane_id: claude.pane, source: "manual", agent: "claude", state: "idle" });
+    const pid = (await herdr.paneProcessInfo(claude.pane))!.foreground_processes!.find((entry) => entry.name === "claude")!.pid;
+    mkdirSync(join(home, ".claude", "sessions"), { recursive: true });
+    const session = "0b8e6f0e-8d3f-4c1a-9a53-6c2b7a1d9e42";
+    const procStart = readFileSync(`/proc/${pid}/stat`, "utf8").split(") ").pop()!.split(" ")[19];
+    writeFileSync(join(home, ".claude", "sessions", `${pid}.json`), JSON.stringify({ pid, sessionId: session, procStart, kind: "interactive" }));
+    // what Claude Code 2.1.330 writes when the folded paste is submitted
+    const prompted = (content: string) => `${JSON.stringify({ display: "[Pasted text #1 +2 lines]", pastedContents: { 1: { id: 1, type: "text", content } }, timestamp: Date.now(), project: root, sessionId: session })}\n`;
+    // the turn Claude dropped before answering it: the prompt and no reply
+    const turn = (...entries: Record<string, unknown>[]) => {
+      mkdirSync(join(home, ".claude", "projects", "-p"), { recursive: true });
+      writeFileSync(join(home, ".claude", "projects", "-p", `${session}.jsonl`), entries.map((entry) => `${JSON.stringify(entry)}\n`).join(""));
+    };
+    const human = { type: "user", origin: { kind: "human" }, message: { role: "user", content: message }, sessionId: session };
+    let shown = claudeInputScreen("❯\u00a0");
+    const originalRead = herdr.paneRead;
+    const read = spyOn(herdr, "paneRead").mockImplementation(async (options, socketPath) => {
+      const result = await originalRead(options, socketPath);
+      return options.paneId === claude.pane ? { ...result, text: shown } : result;
+    });
+    const scroll = spyOn(herdr, "paneScrollInfo").mockResolvedValue(null);
+    const prompt = spyOn(herdr, "agentPrompt").mockResolvedValue(undefined);
+    const sendKeys = spyOn(herdr, "paneSendKeys").mockImplementation(async (paneId, keys) => {
+      if (paneId === claude.pane && keys?.[0] === "esc") shown = claudeInputScreen("❯\u00a0");
+    });
+    try {
+      socket.send({ type: "submit", id: 46, pane_id: claude.pane, text: message, payload: `\u001b[200~${message.replace(/\n/g, "\r")}\u001b[201~` });
+      expect(await socket.result(46)).toMatchObject({ ok: true });
+      // stopped before Claude answered: Claude puts the paste back under the next number
+      shown = claudeInputScreen("❯ [Pasted text #2 +2 lines]");
+      // Claude's record of another message is no proof the paste is the chat's
+      writeFileSync(join(home, ".claude", "history.jsonl"), prompted("someone else's\nthree\nlines"));
+      socket.send({ type: "submit", id: 47, pane_id: claude.pane, text: "second message", payload: "second message" });
+      expect(await socket.result(47)).toMatchObject({ ok: false, code: "input_draft", message: CLAUDE_FOLDED_DRAFT_MESSAGE });
+      expect(sendKeys).not.toHaveBeenCalled();
+      writeFileSync(join(home, ".claude", "history.jsonl"), prompted(message));
+      // answered, the turn went on: a paste made after it takes the same number, and is someone's
+      turn(human, { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "done" }] } });
+      socket.send({ type: "submit", id: 49, pane_id: claude.pane, text: "second message", payload: "second message" });
+      expect(await socket.result(49)).toMatchObject({ ok: false, code: "input_draft", message: CLAUDE_FOLDED_DRAFT_MESSAGE });
+      expect(sendKeys).not.toHaveBeenCalled();
+      turn(human, { type: "attachment" });
+      // someone's own paste takes the box while Claude's records are read: what they proved is not what Esc would clear
+      const original = claudeStore.claudeRestoredPaste;
+      const swapped = spyOn(claudeStore, "claudeRestoredPaste").mockImplementation(async (...args) => {
+        const answer = await original(...args);
+        shown = claudeInputScreen("\u276f [Pasted text #3 +2 lines]");
+        return answer;
+      });
+      try {
+        socket.send({ type: "submit", id: 50, pane_id: claude.pane, text: "second message", payload: "second message" });
+        expect(await socket.result(50)).toMatchObject({ ok: false, code: "input_draft", message: CLAUDE_FOLDED_DRAFT_MESSAGE });
+        expect(sendKeys).not.toHaveBeenCalled();
+      } finally { swapped.mockRestore(); }
+      shown = claudeInputScreen("\u276f [Pasted text #2 +2 lines]");
+      socket.send({ type: "submit", id: 48, pane_id: claude.pane, text: "second message", payload: "second message" });
+      expect(await socket.result(48)).toMatchObject({ ok: true });
+      expect(sendKeys.mock.calls).toEqual([[claude.pane, ["esc"], undefined, expect.any(Function)], [claude.pane, ["esc"], undefined, expect.any(Function)]]);
+      expect(prompt).toHaveBeenLastCalledWith(claude.pane, "second message", undefined, expect.any(Function));
+    } finally {
+      sendKeys.mockRestore();
+      prompt.mockRestore();
+      scroll.mockRestore();
+      read.mockRestore();
+      socket.close();
+    }
+  }, 30_000);
+
   it("answers a sender that switched to observe while an Esc for Claude's restored copy was on its way with its own refusal", async () => {
     const socket = await Socket.connect();
     let shown = claudeInputScreen("\u276f\u00a0");
@@ -1630,7 +1705,8 @@ describe("WebSocket submit", () => {
       expect(await socket.result(21)).toMatchObject({ ok: true });
       await received(codex, from, 1);
       expect(typed(codex, from)).toBe(`${paste("follow up")}\r`);
-      expect(read.mock.calls.filter(([options]) => options.paneId === codex.pane).map(([options]) => options.source)).toEqual(["visible", "detection", "detection"]);
+      // the last read checks Codex's own screens again after the paste, before its Enter (composer.ts)
+      expect(read.mock.calls.filter(([options]) => options.paneId === codex.pane).map(([options]) => options.source)).toEqual(["visible", "detection", "detection", "detection"]);
     } finally {
       read.mockRestore();
       socket.close();

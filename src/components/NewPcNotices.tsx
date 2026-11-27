@@ -1,12 +1,14 @@
 import { Monitor, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { pagePcs, readPageList } from "../lib/account/listPcs.ts";
 import { ACCOUNT_PCS_CHANGED_EVENT } from "../lib/account/myPcs.ts";
-import { newPcNoticeClosed, newPcNoticeKey } from "../lib/account/newPcNotice.ts";
+import { pageAccountList } from "../lib/account/pageList.ts";
+import { closePcNotice, newPcNoticeKey, pcNoticeClosed } from "../lib/account/newPcNotice.ts";
 import { ACCOUNT_SIGN_OUT_EVENT, indexedAccountService, sameSignIn, SignedOutError, type DirectoryPc } from "../lib/account/service.ts";
 import type { AccountSession } from "../lib/account/store.ts";
 import { useT } from "../lib/i18n.ts";
 import { deviceOs } from "../lib/phone.ts";
-import { usePcRemoval } from "./usePcRemoval.tsx";
+import { pcRemovalFailure, usePcRemoval, heldRemoval, type HeldRemoval } from "./usePcRemoval.tsx";
 
 import "./DevicePairedNotice.css";
 import "./UpdateControls.css";
@@ -21,7 +23,7 @@ const READ_TIMEOUT_MS = 10_000;
  */
 type NewPc = DirectoryPc;
 
-type Listing = { readonly session: AccountSession; readonly pcs: readonly NewPc[] };
+type Listing = { readonly session: AccountSession; readonly pcs: readonly NewPc[]; /** for each PC told of, the row of this device's list it was drawn from */ readonly held?: ReadonlyMap<string, HeldRemoval | null> };
 
 /** When this device first signed in to `account` (ms), kept in this browser and moved only earlier; null when nothing says. */
 function firstJoin(account: string, signedInAt: number | null): number | null {
@@ -67,7 +69,7 @@ export function NewPcNotices({ enabled = true, ownWindowOf, signIn, onRemoved }:
         setListing((prior) => prior !== null && sameSignIn(prior.session, session) ? prior : null);
         const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(READ_TIMEOUT_MS)]);
         const directory = indexedAccountService.forSignIn(session);
-        const [pcs, signedInAt] = await Promise.all([
+        const [listed, signedInAt] = await Promise.all([
           directory.listPcs(signal),
           joined !== undefined && joined.sign_in_id === session.sign_in_id ? joined.at : directory.signedInAt(signal),
         ]);
@@ -78,12 +80,21 @@ export function NewPcNotices({ enabled = true, ownWindowOf, signIn, onRemoved }:
         const current = await indexedAccountService.session();
         if (mine !== version) return;
         const now = Date.now();
+        // a device that is in its account's signed list tells of the PCs that list holds, new by the list's own word,
+        // and of none that the list does not hold: such a PC has its row, marked, and no notice
+        // (on a page that has not read its copy yet, that read is waited for: until one ends, nothing is told)
+        await readPageList(session.account);
+        if (mine !== version) return;
+        const pcs = pagePcs(session.account, listed, now).filter((pc) => pc.not_in_list !== true);
         // a service that does not say when this device signed in leaves every new PC told, as before
         const addedSinceJoin = (pc: NewPc): boolean => joinedAt === null || pc.admitted_at === null || !(Date.parse(pc.admitted_at) < joinedAt);
         const told = pcs.filter((pc) => pc.admitted_before_you || (pc.new_until !== null && Date.parse(pc.new_until) > now && addedSinceJoin(pc)));
         // a notice this device already closed is nothing left to tell
-        telling = told.some((pc) => pc.server_id !== ownWindowOf && !newPcNoticeClosed(newPcNoticeKey(session.account, pc)));
-        setListing(current !== undefined && sameSignIn(current, session) ? { session, pcs: told } : null);
+        telling = told.some((pc) => pc.server_id !== ownWindowOf && !pcNoticeClosed(newPcNoticeKey(session.account, pc)));
+        // each notice keeps the row of the list it was drawn from (heldRemoval): its "I didn't add this" is for that
+        // row, in that list, and for no other the page may hold by the time it is pressed
+        const held = new Map(told.map((pc) => [pc.server_id, heldRemoval(session.account, pc.server_id)]));
+        setListing(current !== undefined && sameSignIn(current, session) ? { session, pcs: told, held } : null);
       } catch (error) {
         if (mine !== version) return;
         if (error instanceof SignedOutError) setListing(null);
@@ -101,7 +112,10 @@ export function NewPcNotices({ enabled = true, ownWindowOf, signIn, onRemoved }:
     window.addEventListener("focus", focusRead);
     window.addEventListener(ACCOUNT_SIGN_OUT_EVENT, signInChanged);
     window.addEventListener(ACCOUNT_PCS_CHANGED_EVENT, visibleRead);
+    // the list moved: a PC came in, or one went
+    const unfollow = pageAccountList()?.subscribe(visibleRead);
     return () => {
+      unfollow?.();
       version++;
       pending?.abort();
       clearInterval(timer);
@@ -115,21 +129,23 @@ export function NewPcNotices({ enabled = true, ownWindowOf, signIn, onRemoved }:
   if (listing === null) return null;
   return listing.pcs.filter((pc) => pc.server_id !== ownWindowOf).map((pc) => {
     const dismissalKey = newPcNoticeKey(listing.session.account, pc);
-    return <NewPcNotice key={`${listing.session.sign_in_id}:${dismissalKey}`} pc={pc} session={listing.session} dismissalKey={dismissalKey} onRemoved={onRemoved} />;
+    return <NewPcNotice key={`${listing.session.sign_in_id}:${dismissalKey}`} pc={pc} session={listing.session} dismissalKey={dismissalKey} onRemoved={onRemoved} held={listing.held?.get(pc.server_id) ?? null} />;
   });
 }
 
-export function NewPcNotice({ pc, session, dismissalKey, onRemoved }: {
+export function NewPcNotice({ pc, session, dismissalKey, onRemoved, held }: {
   readonly pc: NewPc;
   readonly session: AccountSession;
   readonly dismissalKey: string;
   readonly onRemoved?: (() => void) | undefined;
+  /** the row of this device's list the notice was drawn from; null or absent for a PC that no list of it held then */
+  readonly held?: HeldRemoval | null;
 }) {
   const t = useT();
   const expiresAt = pc.admitted_before_you ? Number.POSITIVE_INFINITY : Date.parse(pc.new_until ?? "");
-  const [hidden, setHidden] = useState(() => newPcNoticeClosed(dismissalKey));
+  const [hidden, setHidden] = useState(() => pcNoticeClosed(dismissalKey));
   const [sending, setSending] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
   const inFlight = useRef(false);
   const removal = usePcRemoval(indexedAccountService, () => {
     setHidden(true);
@@ -148,12 +164,12 @@ export function NewPcNotice({ pc, session, dismissalKey, onRemoved }: {
     if (inFlight.current || !(expiresAt > Date.now())) return;
     inFlight.current = true;
     setSending(true);
-    setFailed(false);
+    setFailed(null);
     try {
-      await removal.remove(session, pc.server_id);
+      await removal.remove(session, pc.server_id, undefined, held ?? undefined);
     } catch (error) {
       if (!(error instanceof Error)) throw error;
-      setFailed(true);
+      setFailed(pcRemovalFailure(error, t, t("The PC could not be removed. Try again.")));
     } finally {
       inFlight.current = false;
       setSending(false);
@@ -162,10 +178,9 @@ export function NewPcNotice({ pc, session, dismissalKey, onRemoved }: {
   /** told once on this device, per PC and admission: closed, or answered Yes */
   const close = () => {
     setHidden(true);
-    try { localStorage.setItem(dismissalKey, "1"); }
-    catch (error) { if (!(error instanceof DOMException)) throw error; }
+    closePcNotice(dismissalKey);
   };
-  const failure = failed && <span className="account-error" role="alert">{t("The PC could not be removed. Try again.")}</span>;
+  const failure = failed !== null && <span className="account-error" role="alert">{failed}</span>;
   if (pc.admitted_before_you) {
     // #29: added before this device joined, asked once in the main area by name; never a row in the sidebar
     const os = deviceOs(navigator.userAgent, navigator.maxTouchPoints ?? 0);
@@ -191,6 +206,7 @@ export function NewPcNotice({ pc, session, dismissalKey, onRemoved }: {
       <Monitor aria-hidden="true" />
       <span className="device-notice-text">
         <span>{t("New PC added to your account: {name}", { name: pc.label })}</span>
+        {pc.added_by !== undefined && <span className="settings-hint">{t("Added from {device}.", { device: pc.added_by })}</span>}
         <span className="settings-hint">{t("If you did not add it, remove it.")}</span>
         {failure}
         {removal.prompt}

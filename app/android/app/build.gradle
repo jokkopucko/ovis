@@ -55,6 +55,16 @@ tasks.configureEach { task ->
     if (task.name ==~ /merge\w*Assets/) task.dependsOn(checkHostedOrigin)
 }
 
+// A preview build (assemblePreview) is for the maintainer's own testing, never the store: an app of its own beside the
+// store one, numbered by OVIS_PREVIEW_NUMBER so each installs over the last, that updates itself from
+// OVIS_PREVIEW_FEED (PreviewUpdater). Only its manifest (src/preview) may hand an APK to the system installer, and
+// every other build has no feed.
+def previewFeed = System.getenv("OVIS_PREVIEW_FEED") ?: ""
+if (previewFeed && !(previewFeed.startsWith("https://") && previewFeed.endsWith("/"))) {
+    throw new GradleException("OVIS_PREVIEW_FEED must be an https folder ending in /: ${previewFeed}")
+}
+def previewNumber = (System.getenv("OVIS_PREVIEW_NUMBER") ?: "0") as int
+
 android {
     namespace = "sh.ovis.app"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -65,8 +75,9 @@ android {
         applicationId "sh.ovis.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 14
-        versionName "1.0.6"
+        versionCode 17
+        versionName "1.0.9"
+        buildConfigField "String", "PREVIEW_FEED", '""'
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField "String", "APP_ORIGIN", "\"${appOrigin}\""
         buildConfigField "boolean", "HOME_HOSTED", "${homeHosted}"
@@ -125,6 +136,19 @@ android {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
+        preview {
+            initWith release
+            applicationIdSuffix ".preview"
+            versionNameSuffix "-preview.${previewNumber}"
+            matchingFallbacks = ['release']
+            buildConfigField "String", "PREVIEW_FEED", "\"${previewFeed}\""
+        }
+    }
+}
+
+androidComponents {
+    onVariants(selector().withBuildType("preview")) { variant ->
+        variant.outputs.each { it.versionCode.set(1000 + previewNumber) }
     }
 }
 

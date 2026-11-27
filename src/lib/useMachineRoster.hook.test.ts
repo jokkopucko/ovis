@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { createElement, useCallback, useRef, useState } from "react";
+import { act, createElement, useCallback, useRef, useState } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { Machine, MachineEvent, PendingKey } from "../../shared/machines.ts";
 import { signPairProof } from "../../shared/pair-fingerprint.ts";
 import { memberRow, pairingPc, phone } from "../../server/account/pairing.test-helpers.ts";
@@ -10,6 +9,7 @@ import { PendingKeys } from "../components/PendingKeys.tsx";
 import { declinePendingKey } from "./api.ts";
 import type { MachineEventSocket } from "./machineEventStream.ts";
 import type { MachineSessionRegistry } from "./machineSession.ts";
+import { openPage, type Page } from "./page.fixture.ts";
 import type { ServerMessage } from "../../shared/protocol.ts";
 import { SettingsProvider } from "./settings.ts";
 import { CarrierDownError, getTransport, setTransport, type EventSourceLike } from "./transport.ts";
@@ -26,13 +26,11 @@ let errorShown: string | null = null;
 let pendingShown: readonly PendingKey[] = [];
 let shown: Machine[] = [];
 describe("roster and health polling beside the event stream", () => {
-  const saved = new Map<string, PropertyDescriptor | undefined>();
   const transport = getTransport();
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
   let source: EventSourceLike & { readyState: number };
   let locked: boolean;
   let visibility: DocumentVisibilityState;
-  let events: EventTarget;
   let now: number;
   let next: number;
   let timers: Map<number, { at: number; every: number; run(): void }>;
@@ -79,24 +77,18 @@ describe("roster and health polling beside the event stream", () => {
     return null;
   }
   beforeEach(async () => {
-    for (const key of ["window", "document", "navigator", "IS_REACT_ACT_ENVIRONMENT"]) saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    locked = false; visibility = "visible"; now = 0; next = 1; timers = new Map(); reads = []; events = new EventTarget();
+    page = openPage();
+    locked = false; visibility = "visible"; now = 0; next = 1; timers = new Map(); reads = [];
     socketEvents = false; socketListeners = new Set(); disconnectListeners = new Set(); healthUp = true; readState = "connected"; carrierUp = true; errorShown = null; saids = [];
     eventSocket = socket; pendingShown = []; pendingChanged = noop;
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en"] } });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: {
-      location: { hash: "" },
-      setInterval(run: () => void, every: number) { const id = next++; timers.set(id, { at: now + every, every, run }); return id; },
-      clearInterval(id: number) { timers.delete(id); },
-      setTimeout(run: () => void, ms: number) { const id = next++; timers.set(id, { at: now + ms, every: 0, run }); return id; },
-      clearTimeout(id: number) { timers.delete(id); },
-    } });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: {
-      get visibilityState() { return visibility; },
-      querySelector: () => null,
-      addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events),
-    } });
+    Object.defineProperty(page.window.navigator, "languages", { configurable: true, value: ["en"] });
+    Object.defineProperties(page.window, {
+      setInterval: { configurable: true, value: (run: () => void, every: number) => { const id = next++; timers.set(id, { at: now + every, every, run }); return id; } },
+      clearInterval: { configurable: true, value: (id: number) => { timers.delete(id); } },
+      setTimeout: { configurable: true, value: (run: () => void, ms: number) => { const id = next++; timers.set(id, { at: now + ms, every: 0, run }); return id; } },
+      clearTimeout: { configurable: true, value: (id: number) => { timers.delete(id); } },
+    });
+    Object.defineProperty(page.window.document, "visibilityState", { configurable: true, get: () => visibility });
     source = { readyState: 0, onopen: null, onmessage: null, onerror: null, addEventListener: noop, close: noop };
     setTransport({ ...transport, openEventSource: () => source, async fetch(input) {
       const path = String(input); reads.push(path);
@@ -104,18 +96,12 @@ describe("roster and health polling beside the event stream", () => {
       if (path === "/api/machines?compact_agents=1" || path === "/api/machines") return Response.json({ machines: [local(readState)] });
       return path === "/api/health" && !healthUp ? Response.json({ error: { code: "down" } }, { status: 500 }) : Response.json({ ok: true });
     } });
-    await act(async () => { renderer = create(createElement(Probe)); });
+    await page.render(createElement(Probe));
     reads.length = 0;
   });
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
+    await page.close();
     setTransport(transport);
-    for (const [key, descriptor] of saved) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    saved.clear();
   });
   async function advance(ms: number) {
     const end = now + ms;
@@ -260,7 +246,7 @@ describe("roster and health polling beside the event stream", () => {
       const key = await pending.prove(challenge, await signPairProof(serverId, challenge, device.spki, device.keys.privateKey));
       if (!key) throw new Error("Could not seed a proved key on the PC");
 
-      await act(async () => { renderer?.unmount(); });
+      await page.render(null);
       pendingShown = [{ ...pending.view()[0]!, id: "stale", label: "Old phone" }];
       pendingChanged = waiting.resolve;
       if (carrier === "WebSocket") eventSocket = ws;
@@ -297,7 +283,7 @@ describe("roster and health polling beside the event stream", () => {
           return stream;
         },
       });
-      await act(async () => { renderer = create(createElement(Probe)); });
+      await page.render(createElement(Probe));
       await act(async () => { await bounded(waiting.promise, 2_000); });
       expect(pendingShown).toEqual(pending.view());
       const markup = renderToStaticMarkup(createElement(SettingsProvider, null, createElement(PendingKeys, { pending: pendingShown, onDecline: noop })));
@@ -312,8 +298,7 @@ describe("roster and health polling beside the event stream", () => {
         expect(await bounded(changed.promise, 2_000)).toEqual([]);
       });
     } finally {
-      await act(async () => { renderer?.unmount(); });
-      renderer = undefined;
+      await page.render(null);
       ws.close();
       abort.abort();
       await made.close();
@@ -572,11 +557,13 @@ describe("roster and health polling beside the event stream", () => {
 
   it("watches health immediately and every five seconds while locked, without reading the roster", async () => {
     await healthyStream();
-    await act(async () => { locked = true; renderer!.update(createElement(Probe)); });
+    locked = true;
+    await page.render(createElement(Probe));
     expect(counts()).toEqual([0, 1, 1]);
     await advance(5_000);
     expect(counts()).toEqual([0, 2, 2]);
-    await act(async () => { locked = false; renderer!.update(createElement(Probe)); });
+    locked = false;
+    await page.render(createElement(Probe));
     await advance(5_000);
     expect(counts()).toEqual([1, 3, 3]);
     await healthyStream();
@@ -588,18 +575,17 @@ describe("roster and health polling beside the event stream", () => {
   it("polls nothing hidden, catches up once on return and removes its timer on unmount", async () => {
     await healthyStream();
     visibility = "hidden";
-    await act(async () => { events.dispatchEvent(new Event("visibilitychange")); });
+    await act(async () => { page.window.document.dispatchEvent(new page.window.Event("visibilitychange")); });
     await advance(60_000);
     await stream("lost");
     await advance(5_000);
     expect(counts()).toEqual([0, 0, 0]);
     visibility = "visible";
-    await act(async () => { events.dispatchEvent(new Event("visibilitychange")); });
+    await act(async () => { page.window.document.dispatchEvent(new page.window.Event("visibilitychange")); });
     expect(counts()).toEqual([1, 1, 1]);
     await advance(5_000);
     expect(counts()).toEqual([2, 2, 2]);
-    await act(async () => { renderer!.unmount(); });
-    renderer = undefined;
+    await page.render(null);
     expect(timers.size).toBe(0);
     reads.length = 0;
     await advance(60_000);

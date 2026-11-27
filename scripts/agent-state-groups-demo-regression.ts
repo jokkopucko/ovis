@@ -5,14 +5,11 @@
  * demo's own session on a first load), which is what lets a later load trust it.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Browser, type Page, type Route } from "playwright-core";
+import type { Browser, Page, Route } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
-import { serveDemo } from "./demo-server.ts";
+import { appContext } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 
 const EVIDENCE = process.env.UI_EVIDENCE_DIR;
 const SERVER = "&demo_finish_epoch=kept";
@@ -46,8 +43,8 @@ async function openWithClock(page: Page, url: string): Promise<void> {
 async function run(browser: Browser, origin: string, width: number, theme: "light" | "dark"): Promise<void> {
   const phone = width === 390;
   const tag = `${width} ${theme}`;
-  const device = { viewport: { width, height: phone ? 844 : 900 }, ...(phone ? { deviceScaleFactor: 3, isMobile: true, hasTouch: true } : {}), locale: "en-US", colorScheme: theme } as const;
-  const context = await browser.newContext(device);
+  const device = { viewport: { width, height: phone ? 844 : 900 }, ...(phone ? { deviceScaleFactor: 3, isMobile: true, hasTouch: true } : {}), colorScheme: theme } as const;
+  const context = await appContext(browser, device);
   await context.addInitScript(({ settings }) => {
     if (localStorage.getItem("ovis:settings") !== null) return;
     localStorage.setItem("ovis:settings", settings);
@@ -190,7 +187,7 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   await heading("idle").click();
   await row(panes.omp).waitFor({ state: "hidden" });
 
-  const other = await browser.newContext(device);
+  const other = await appContext(browser, device);
   await other.addInitScript(({ settings }) => {
     localStorage.setItem("ovis:settings", settings);
     localStorage.setItem("ovis:agent-groups", "true");
@@ -278,23 +275,6 @@ async function run(browser: Browser, origin: string, width: number, theme: "ligh
   console.log(`PASS agent state groups ${tag}`);
 }
 
-async function main(): Promise<void> {
-  const app = mkdtempSync(join(tmpdir(), "ovis-agent-state-groups-demo-"));
-  try {
-    await buildDemoApp(app);
-    const index = join(app, "index.html");
-    writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    <script type="module"`));
-    const server = serveDemo(app, { prefix: "/" });
-    try {
-      if (EVIDENCE) mkdirSync(EVIDENCE, { recursive: true });
-      const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-      try {
-        for (const [width, theme] of [[390, "light"], [390, "dark"], [1280, "light"], [1280, "dark"]] as const) await run(browser, `http://127.0.0.1:${server.port}/`, width, theme);
-      } finally { await browser.close(); }
-    } finally { await server.stop(true); }
-  } finally {
-    rmSync(app, { recursive: true, force: true });
-  }
-}
-
-await main();
+await withDemoBrowser({ tempPrefix: "ovis-agent-state-groups-demo-", prefix: "/" }, async ({ browser, baseUrl }) => {
+  for (const [width, theme] of [[390, "light"], [390, "dark"], [1280, "light"], [1280, "dark"]] as const) await run(browser, baseUrl, width, theme);
+});

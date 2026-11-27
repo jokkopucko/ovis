@@ -3,7 +3,10 @@
  * verified copy of the list, the wraps of the epoch keys it was given, a genesis it signed and has not seen placed,
  * what its copy and the account service's answers differed in, when the account service last said that it
  * keeps no list for the account, the entries 0 it signed and gave up, the place in a list that a member who let
- * this device in handed it, and when it last read its copy in full. In an IndexedDB database of its own,
+ * this device in handed it, when it last read its copy in full, when it first held the entry of each PC that is new
+ * to it, and for an account that was in use (listMigrate.ts) the birth it signed and has not seen placed, the last final
+ * refusal of one, a carried device's hand-over and its check of the list against its PCs, and the one-time notice of
+ * the move. In an IndexedDB database of its own,
  * `ovis-account-list`: `ovis-account` (store.ts) stays at its one version, which a page of an older build still
  * opens, and a copy can grow to megabytes beside records that are read on every request.
  *
@@ -13,7 +16,7 @@
  * Every record is read back as `unknown`: whoever owns it reads it strictly and reports what is not in its form.
  */
 
-export const LIST_RECORDS = ["copy", "wraps", "genesis", "shadow", "asked", "dropped", "offer", "times", "sent"] as const;
+export const LIST_RECORDS = ["copy", "wraps", "genesis", "shadow", "asked", "dropped", "offer", "times", "seen", "sent", "birth", "handover", "notice", "joined"] as const;
 export type ListRecord = (typeof LIST_RECORDS)[number];
 
 /** Each call is one transaction. */
@@ -31,6 +34,8 @@ export interface ListStore {
    * text, so what goes is what the caller read; false, with nothing forgotten, where it is another.
    */
   drop(account: string, copy?: string): Promise<boolean>;
+  /** The accounts this device keeps a copy of a list for. */
+  accounts(): Promise<string[]>;
 }
 
 /** Runs `work` alone among this origin's pages for one account's list (Web Locks), where the browser has them. */
@@ -51,6 +56,7 @@ export function memoryListLock(): ListLock {
 }
 
 const nameOf = (record: ListRecord, account: string): string => `${record}:${account}`;
+const accountsOf = (names: Iterable<unknown>): string[] => [...names].flatMap((name) => (typeof name === "string" && name.startsWith("copy:") ? [name.slice("copy:".length)] : []));
 
 /** What IndexedDB does with a value: a copy that shares nothing with the one handed over. */
 export function memoryListStore(): ListStore {
@@ -71,6 +77,7 @@ export function memoryListStore(): ListStore {
       for (const record of LIST_RECORDS) records.delete(nameOf(record, account));
       return true;
     },
+    async accounts() { return accountsOf(records.keys()); },
   };
 }
 
@@ -134,6 +141,12 @@ export const indexedListStore: ListStore = {
         held.onsuccess = () => { if (held.result === copy) forget(); };
       }
       return () => dropped;
+    });
+  },
+  accounts() {
+    return transact("readonly", (store) => {
+      const request = store.getAllKeys();
+      return () => accountsOf(request.result);
     });
   },
 };

@@ -5,7 +5,6 @@ import { join } from "node:path";
 
 import * as herdr from "./herdr/client.ts";
 import * as ptyHost from "./pty/host.ts";
-import * as ptySidecar from "./pty/sidecar.ts";
 import { readProcessBirth } from "./process-owner.ts";
 import * as usage from "./usage.ts";
 import { UsageLoginService } from "./usage-login.ts";
@@ -137,9 +136,9 @@ describe("a sign-in the browser follows", () => {
     expect((await (await read(service, login)).json() as { ended: boolean }).ended).toBe(true);
   });
 
-  it("offers terminal fallback when neither out of process PTY host exists", async () => {
+  it("offers terminal fallback when there is no PTY host", async () => {
     noHerdr();
-    spies.push(spyOn(ptyHost, "rustSidecar").mockReturnValue(null), spyOn(ptySidecar, "nodeSidecarAvailable").mockReturnValue(false));
+    spies.push(spyOn(ptyHost, "rustSidecar").mockReturnValue(null));
     const service = new UsageLoginService(root, { PATH: `${bin}:/usr/bin:/bin` });
     const response = await start(service, { provider: "codex", name: `no-host-${++names}` });
     expect(response.status).toBe(409);
@@ -302,7 +301,6 @@ describe("a sign-in the browser follows", () => {
 
   it("stops a launcher's children with it, so no second CLI is left writing the home", async () => {
     noHerdr();
-    spies.push(spyOn(ptyHost, "rustSidecar").mockReturnValue(null));
     const launcherBin = join(root, "launcher-bin");
     mkdirSync(launcherBin, { recursive: true });
     const childPid = join(root, "launcher-child.pid");

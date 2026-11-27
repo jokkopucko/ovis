@@ -1,7 +1,7 @@
 /**
  * `ovis tui`: Ovis's own screen of herdr-core's terminals (tui/main.ts, the entry `tui`) in this terminal.
- * scripts/plugin.ts hands the command here before its own work at import, so it reads and writes nothing of Ovis's
- * state or config dirs. Its `--help` is the command line's own (scripts/plugin-cli.ts), like every command's.
+ * scripts/plugin.ts hands the command here before its own work at import, so this launcher only reads the settings
+ * it needs and never migrates config or opens lifecycle state. Its `--help` is the command line's own.
  *
  * The launcher finds the core the screen joins, starts the screen as a child and stays until it ends: it gives the
  * terminal back when the screen died by a signal. When no core answers, it asks before it starts one; no other path
@@ -10,7 +10,7 @@
  */
 import { existsSync, mkdtempSync, readFileSync, readSync, rmSync, writeSync } from "node:fs";
 import { constants, userInfo } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { isatty } from "node:tty";
 import { FFIType } from "bun:ffi";
 import { COMPILED, entryCommand, ROOT } from "../server/entries.ts";
@@ -19,13 +19,13 @@ import { coreLaunchEnv, withoutAskpass } from "../server/herdr-core/core-env.ts"
 import { coreSocket } from "../server/herdr-core/core-socket.ts";
 import { type Held, undoHeld } from "../tui/host/guard.ts";
 import { makeHold, readHold, SCREEN_HOLD } from "../tui/host/hold.ts";
-import { EXIT_FAILED, parseArgs, SCREEN_FOLDER, SCREEN_SERVER, targetEnv } from "../tui/start.ts";
+import { EXIT_FAILED, parseArgs, SCREEN_DESKTOP_IDENTITY, SCREEN_DESKTOP_RECORD, SCREEN_FOLDER, SCREEN_SERVER, targetEnv } from "../tui/start.ts";
 import { openLibc } from "../tui/host/libc.ts";
 import { loopbackOrigin } from "../shared/loopback-origin.ts";
 import { appOrigin } from "./plugin-port.ts";
 import { execWaiter } from "./plugin-tui-waiter.ts";
 import { discardTyped, macExecEnv } from "./libc.ts";
-import { ENV_FILES, ownDir, readEnvFile } from "./plugin-settings.ts";
+import { desktopCommandRecord, readPluginSettings } from "./plugin-settings.ts";
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -268,9 +268,12 @@ async function launch(argv: readonly string[], parts: LaunchParts, mode: "bare" 
     if (parts.caller[TUI_BIN_VARIABLE] || parts.settings[TUI_BIN_VARIABLE]) say("tui_bin_unused", `${TUI_BIN_VARIABLE} is no longer used: the screen is part of Ovis now`);
   };
   if (mode === "explicit") warnOldBinary();
-  const chosen = coreChoice(args.session, parts.caller, parts.settings);
-  const target = coreSocket({ env: chosen });
-  const found = await parts.probe(target.path);
+  const selected = coreChoice(args.session, parts.caller, parts.settings);
+  const target = coreSocket({ env: selected });
+  const socket = isAbsolute(target.path) ? target.path : resolve(parts.folder, target.path);
+  // The screen runs in the install's folder, so a relative path must keep the shell's reference point.
+  const chosen = isAbsolute(target.path) ? selected : { ...selected, HC_SOCKET: socket };
+  const found = await parts.probe(socket);
   if (mode === "bare" && found.kind !== "core") return null;
   if (mode === "bare") warnOldBinary();
   if (found.kind === "failed") {
@@ -279,7 +282,7 @@ async function launch(argv: readonly string[], parts: LaunchParts, mode: "bare" 
   }
   if (found.kind === "none") {
     const refused = () => {
-      say("no_core", `herdr-core session ${target.session} is not running at ${target.path}; start it with:\n  ${startCommand(chosen, parts.caller)}`);
+      say("no_core", `herdr-core session ${target.session} is not running at ${socket}; start it with:\n  ${startCommand(chosen, parts.caller)}`);
       return EXIT_FAILED;
     };
     if (!parts.isTty) return refused();
@@ -300,8 +303,8 @@ async function launch(argv: readonly string[], parts: LaunchParts, mode: "bare" 
       say("start_failed", `${hc} server start exited ${started.code}${started.err.trim() === "" ? "" : `: ${started.err.trim()}`}`);
       return EXIT_FAILED;
     }
-    if (!(await parts.answers(target.path, CORE_WAIT_MS))) {
-      say("no_answer", `herdr-core was started but did not answer at ${target.path} within ${CORE_WAIT_MS / 1000} s`);
+    if (!(await parts.answers(socket, CORE_WAIT_MS))) {
+      say("no_answer", `herdr-core was started but did not answer at ${socket} within ${CORE_WAIT_MS / 1000} s`);
       return EXIT_FAILED;
     }
   }
@@ -310,8 +313,20 @@ async function launch(argv: readonly string[], parts: LaunchParts, mode: "bare" 
     return EXIT_FAILED;
   }
   const home = parts.home ?? (parts.caller["HOME"] || accountHome());
-  const origin = loopbackOrigin(appOrigin(mergeEnvLayers([parts.caller, parts.settings]), home));
-  return runScreen([], { ...tuiEnv(chosen), [SCREEN_FOLDER]: parts.folder, [SCREEN_SERVER]: origin ?? "" }, parts);
+  const screenEnv: Record<string, string> = { ...tuiEnv(chosen), [SCREEN_FOLDER]: parts.folder };
+  let origin: string | null;
+  if (parts.caller["OVIS_DESKTOP_COMMAND"] === "1") {
+    const record = desktopCommandRecord(parts.caller);
+    const listener = record ? await (await import("../shared/desktop-command-listener.ts")).desktopCommandListener(record) : null;
+    screenEnv[SCREEN_DESKTOP_RECORD] = record ?? "";
+    if (listener !== null && String(listener.port) === parts.caller["PORT"]) {
+      screenEnv[SCREEN_DESKTOP_IDENTITY] = listener.identity;
+      origin = `http://127.0.0.1:${listener.port}`;
+    } else origin = null;
+  } else {
+    origin = loopbackOrigin(appOrigin(mergeEnvLayers([parts.caller, parts.settings]), home));
+  }
+  return runScreen([], { ...screenEnv, [SCREEN_SERVER]: origin ?? "" }, parts);
 }
 
 /**
@@ -398,11 +413,6 @@ export function readLine(read: (one: Buffer) => number = (one) => readSync(0, on
   }
 }
 
-/** Ovis's settings files, read where plugin.ts reads them, without asking herdr for its config dir. */
-function readSettings(env: Env, home: string): Env {
-  const dir = env["HERDR_PLUGIN_CONFIG_DIR"] ?? ownDir(join(home, ".config"));
-  return mergeEnvLayers(ENV_FILES.map((name) => join(dir, name)).filter((file) => existsSync(file)).map(readEnvFile));
-}
 
 /**
  * A folder of this run's own with the hold file in it, in the first of `temps` that takes one. Only an absolute
@@ -427,6 +437,7 @@ function systemHoldFile(temps: readonly string[]): HoldFile | null {
  * Bun.spawn, hc. `home` is where Ovis's settings and hc's usual folders are looked for.
  */
 export function systemParts(caller: Env, home: string): LaunchParts {
+  let settings: Env | undefined;
   const probe = async (socket: string): Promise<Probe> => {
     const { connectCoreSocket } = await import("../server/herdr-core/socket-transport.ts");
     try {
@@ -443,7 +454,7 @@ export function systemParts(caller: Env, home: string): LaunchParts {
     isTty: isatty(0) && isatty(1),
     caller,
     home,
-    settings: readSettings(caller, home),
+    get settings() { return settings ??= readPluginSettings(caller, home); },
     screen: screenStart(),
     folder: process.cwd(),
     probe,
@@ -492,11 +503,11 @@ function accountHome(): string {
 export async function runTui(args: readonly string[], kernel: () => string | null = kernelEnv, account: () => string = accountHome): Promise<number> {
   // the screen and a core it starts get what the shell gave, never what Bun took from the working folder
   const caller = callerEnv({ kernel, env: process.env, cwd: process.cwd() });
-  return launchTui(args, { ...systemParts(caller, caller["HOME"] || account()), handOver: execWaiter });
+  return launchTui(args, Object.assign(systemParts(caller, caller["HOME"] || account()), { handOver: execWaiter }));
 }
 
 export function runBareTui(args: readonly string[]): Promise<number | null> {
   if (!isBareTui(args) || process.platform === "win32" || !isatty(0) || !isatty(1)) return Promise.resolve(null);
   const caller = callerEnv({ kernel: kernelEnv, env: process.env, cwd: process.cwd() });
-  return launchBareTui(args, { ...systemParts(caller, caller["HOME"] || accountHome()), handOver: execWaiter });
+  return launchBareTui(args, Object.assign(systemParts(caller, caller["HOME"] || accountHome()), { handOver: execWaiter }));
 }

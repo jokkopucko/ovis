@@ -263,7 +263,7 @@ process.on("SIGTERM", () => { app.stop(); process.exit(0); });
     await browser(browserCli, browserEnvForCleanup, ["screenshot", join(out, "failure.png")]).catch(() => "");
     const snapshot = await browser(browserCli, browserEnvForCleanup, ["snapshot"]).catch((error) => String(error));
     writeFileSync(join(out, "browser-failure.txt"), snapshot);
-    const dom = await browser(browserCli, browserEnvForCleanup, ["eval", "({title:document.title,url:location.href,body:document.body?.innerText?.slice(0,12000),promptCards:document.querySelectorAll('.prompt-card').length,conversationUnavailable:document.body?.innerText?.includes('Conversation unavailable')??false,terminalRows:document.querySelectorAll('.xterm-rows > div').length,terminalHeight:document.querySelector('.xterm-screen')?.getBoundingClientRect().height})"]).catch((error) => String(error));
+    const dom = await browser(browserCli, browserEnvForCleanup, ["eval", "({title:document.title,url:location.href,body:document.body?.innerText?.slice(0,12000),promptCards:document.querySelectorAll('.prompt-card').length,conversationUnavailable:document.body?.innerText?.includes('Conversation unavailable')??false,terminalRows:document.querySelectorAll('.ghostty-row').length,terminalHeight:document.querySelector('.xterm-screen')?.getBoundingClientRect().height})"]).catch((error) => String(error));
     writeFileSync(join(out, "browser-dom.txt"), dom);
     const errors = await browser(browserCli, browserEnvForCleanup, ["errors"]).catch((error) => String(error));
     writeFileSync(join(out, "browser-errors.txt"), errors);

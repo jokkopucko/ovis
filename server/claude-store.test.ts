@@ -3,7 +3,7 @@ import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rename
 import * as fsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
-import { AmbiguousClaudeStore, claudeAttachArgs, claudeAttachedJob, claudeAttachSession, claudeForegroundSession, claudeJobSession, claudeProcessSession, claudeSessionTempDir, claudeStoreKey, claudeStoreOf, claudeProjectDir, claudeTranscriptFile, claudeRecordOnlyIn, configDirInPsLine, darwinProcess, forgetClaudeSessions, herdrLaunchSource, hintedClaudeConfigDir, isClaudeProcess, paneClaudeSource, processClaudeConfigDir, processClaudeSource, processLaunchSource, procArgsEnvironment, windowsShellClaude } from "./claude-store.ts";
+import { AmbiguousClaudeStore, claudeAttachArgs, claudeAttachedJob, claudeAttachSession, claudeForegroundSession, claudeJobSession, claudeProcessSession, claudeRestoredPaste, claudeSessionTempDir, claudeStoreKey, claudeStoreOf, claudeProjectDir, claudeTranscriptFile, claudeRecordOnlyIn, configDirInPsLine, darwinProcess, forgetClaudeSessions, herdrLaunchSource, hintedClaudeConfigDir, isClaudeProcess, paneClaudeSource, processClaudeConfigDir, processClaudeSource, processLaunchSource, procArgsEnvironment, windowsShellClaude } from "./claude-store.ts";
 import { procStartTime } from "./darwin-process.ts";
 import type { ProcessRow } from "./windows-processes.ts";
 
@@ -80,15 +80,24 @@ describe("claudeProcessSession", () => {
 
   it.skipIf(!NATIVE || Boolean(process.env["CLAUDE_CONFIG_DIR"]))("reads the session a pane's one Claude process records, which /clear rewrites (#540)", async () => {
     const home = nativeRecord();
-    const claude = { pid: process.pid, name: "claude", argv0: null, argv: null };
-    expect(await claudeForegroundSession([claude], home)).toBe(SESSION);
-    const cleared = "1c9e7f0e-8d3f-4c1a-9a53-6c2b7a1d9e43";
-    const path = join(home, ".claude", "sessions", `${process.pid}.json`);
-    writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), sessionId: cleared }));
-    expect(await claudeForegroundSession([claude], home)).toBe(cleared);
-    expect(await claudeForegroundSession([], home)).toBeNull();
-    expect(await claudeForegroundSession([claude, { ...claude, pid: process.pid + 1 }], home)).toBeNull();
-    expect(await claudeForegroundSession([{ ...claude, name: "bash" }], home)).toBeNull();
+    const original = fsPromises.readFile;
+    const read = spyOn(fsPromises, "readFile");
+    read.mockImplementation((async (file: Parameters<typeof readFileSync>[0], ...args: unknown[]) =>
+      file === `/proc/${process.pid}/environ`
+        ? `HOME=${home}\0`
+        : Reflect.apply(original, fsPromises, [file, ...args])) as typeof fsPromises.readFile);
+    const darwin = process.platform === "darwin" ? spyOn(darwinProcess, "environment").mockReturnValue(`HOME=${home}\0`) : null;
+    try {
+      const claude = { pid: process.pid, name: "claude", argv0: null, argv: null };
+      expect(await claudeForegroundSession([claude], home)).toBe(SESSION);
+      const cleared = "1c9e7f0e-8d3f-4c1a-9a53-6c2b7a1d9e43";
+      const path = join(home, ".claude", "sessions", `${process.pid}.json`);
+      writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), sessionId: cleared }));
+      expect(await claudeForegroundSession([claude], home)).toBe(cleared);
+      expect(await claudeForegroundSession([], home)).toBeNull();
+      expect(await claudeForegroundSession([claude, { ...claude, pid: process.pid + 1 }], home)).toBeNull();
+      expect(await claudeForegroundSession([{ ...claude, name: "bash" }], home)).toBeNull();
+    } finally { darwin?.mockRestore(); read.mockRestore(); forgetClaudeSessions(); }
   });
 
   it.skipIf(process.platform !== "darwin")("reads it on a Mac whose locale puts the day first", async () => {
@@ -410,11 +419,17 @@ describe("a claude attach pane's job (#1645)", () => {
     roots.push(home);
     const dir = join(home, ".claude");
     job(dir, JOB, { sessionId: `${JOB}-6228-4376-a66c-ad9820b26f37`, resumeSessionId: SESSION });
-    const client = { pid: process.pid, name: "claude", argv0: "claude", argv: ["claude", "attach", JOB] };
-    expect(await claudeForegroundSession([client], home)).toBe(SESSION);
-    job(dir, JOB, { command: "sleep 100", sessionId: undefined });
-    expect(await claudeForegroundSession([client], home)).toBeNull();
-    expect(await claudeForegroundSession([client, { ...client, pid: process.pid + 1 }], home)).toBeNull();
+    const child = Bun.spawn([process.execPath, "-e", "process.stdin.resume(); console.log('ready')"], {
+      env: { PATH: process.env["PATH"] ?? "", HOME: home }, stdin: "pipe", stdout: "pipe",
+    });
+    try {
+      await child.stdout.getReader().read();
+      const client = { pid: child.pid, name: "claude", argv0: "claude", argv: ["claude", "attach", JOB] };
+      expect(await claudeForegroundSession([client], home)).toBe(SESSION);
+      job(dir, JOB, { command: "sleep 100", sessionId: undefined });
+      expect(await claudeForegroundSession([client], home)).toBeNull();
+      expect(await claudeForegroundSession([client, { ...client, pid: process.pid + 1 }], home)).toBeNull();
+    } finally { child.kill(); await child.exited; }
   });
 
   // CLAUDE_CODE_SESSION_KIND=bg makes Claude read no subcommand behind options: it runs an interactive Claude
@@ -961,12 +976,52 @@ describe("CLAUDE_CONFIG_DIR", () => {
       [process.execPath, "-e", "console.log('ready'); await Bun.sleep(5000)"], { env, stdout: "pipe" },
     );
     const child = sleeper({ ...process.env, CLAUDE_CONFIG_DIR: dir });
-    const bare = sleeper({ PATH: process.env["PATH"] ?? "" });
+    const paneHome = join(dir, "pane-home");
+    mkdirSync(join(paneHome, ".claude"), { recursive: true });
+    const bare = sleeper({ PATH: process.env["PATH"] ?? "", HOME: paneHome });
     try {
       for (const process of [child, bare]) await process.stdout.getReader().read();
       expect(await processClaudeConfigDir(child.pid)).toBe(dir);
-      expect(await processClaudeConfigDir(bare.pid)).toBeNull();
+      expect(await processClaudeConfigDir(bare.pid, [], dir)).toBe(join(paneHome, ".claude"));
     } finally { child.kill(); bare.kill(); rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it.skipIf(process.platform === "win32")("rejects foreign ownership in a pane HOME store (#4618)", async () => {
+    const home = mkdtempSync(join(tmpdir(), "ovis-claude-ownership-"));
+    const paneHome = join(home, "pane-home");
+    const store = join(paneHome, ".claude");
+    const cwd = join(home, "project");
+    const folder = join(store, "projects", claudeProjectDir(cwd));
+    const transcript = join(folder, `${SESSION}.jsonl`);
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(transcript, '{"type":"user"}\n');
+    const original = fsPromises.lstat;
+    let foreign = store;
+    const ownership = spyOn(fsPromises, "lstat").mockImplementation((async (path: string, options?: unknown) => {
+      const info = await Reflect.apply(original, fsPromises, [path, options]);
+      if (path === foreign) info.uid = typeof info.uid === "bigint" ? info.uid + 1n : info.uid + 1;
+      return info;
+    }) as typeof original);
+    const child = Bun.spawn([process.execPath, "-e", "process.stdin.resume(); console.log('ready')"], {
+      env: { PATH: process.env["PATH"] ?? "", HOME: paneHome }, stdin: "pipe", stdout: "pipe",
+    });
+    try {
+      await child.stdout.getReader().read();
+      expect(await processClaudeConfigDir(child.pid, [], home)).toBe(join(home, ".claude"));
+      foreign = transcript;
+      expect(await processClaudeConfigDir(child.pid, [], home)).toBe(store);
+      expect(await claudeTranscriptFile(home, SESSION, [cwd], store)).toBeNull();
+      foreign = "";
+      expect(await claudeTranscriptFile(home, SESSION, [cwd], store)).toBe(transcript);
+      const outside = join(home, "outside-project");
+      renameSync(folder, outside);
+      symlinkSync(outside, folder, "dir");
+      expect(await claudeTranscriptFile(home, SESSION, [cwd], store)).toBeNull();
+    } finally {
+      child.kill(); await child.exited;
+      ownership.mockRestore(); forgetClaudeSessions();
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 
@@ -987,6 +1042,42 @@ describe("a Claude process's store source", () => {
     return child.pid;
   };
   const tempDir = () => { const dir = mkdtempSync(join(tmpdir(), "herdr-claude-source-")); roots.push(dir); return dir; };
+
+  it.skipIf(!NATIVE)("rejects an untrusted symlink above the pane HOME", async () => {
+    const home = tempDir();
+    const target = join(home, "target");
+    const ancestor = join(home, "ancestor");
+    const paneHome = join(ancestor, "pane");
+    mkdirSync(join(target, "pane", ".claude"), { recursive: true });
+    symlinkSync(target, ancestor, "dir");
+    const lstat = fsPromises.lstat;
+    let foreign = false;
+    const ownership = spyOn(fsPromises, "lstat").mockImplementation((async (path: string, options?: unknown) => {
+      const info = await Reflect.apply(lstat, fsPromises, [path, options]);
+      if (foreign && path === ancestor) info.uid = typeof info.uid === "bigint" ? info.uid + 1n : info.uid + 1;
+      return info;
+    }) as typeof lstat);
+    try {
+      const pid = await standIn({ HOME: paneHome });
+      expect(await processClaudeConfigDir(pid, [], home)).toBe(join(paneHome, ".claude"));
+      foreign = true;
+      expect(await processClaudeConfigDir(pid, [], home)).not.toBe(join(paneHome, ".claude"));
+    } finally { ownership.mockRestore(); }
+  });
+
+  it.skipIf(!NATIVE)("uses the server's override when the pane HOME store cannot be used", async () => {
+    const home = tempDir();
+    const override = tempDir();
+    const saved = process.env["CLAUDE_CONFIG_DIR"];
+    process.env["CLAUDE_CONFIG_DIR"] = override;
+    try {
+      const pid = await standIn({ HOME: join(home, "missing-pane-home") });
+      expect(await processClaudeConfigDir(pid, [], home)).toBe(override);
+    } finally {
+      if (saved === undefined) delete process.env["CLAUDE_CONFIG_DIR"];
+      else process.env["CLAUDE_CONFIG_DIR"] = saved;
+    }
+  });
 
   it.skipIf(!NATIVE)("reads an exported store, an empty export and none exported as three sources", async () => {
     const store = tempDir();
@@ -1575,5 +1666,105 @@ describe.skipIf(process.platform !== "linux")("hintedClaudeConfigDir", () => {
       await expect(hintedClaudeConfigDir([{ pid: process.pid }], proc)).rejects.toBeInstanceOf(AmbiguousClaudeStore);
       expect(await hintedClaudeConfigDir([{ pid: gone.pid }], proc)).toBeNull();
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("claudeRestoredPaste (#3563)", () => {
+  const SENT = "first line\nsecond line\nthird line";
+  const OTHER = "0b8e6f0e-8d3f-4c1a-9a53-6c2b7a1d9e43";
+  const roots: string[] = [];
+  const children: ReturnType<typeof Bun.spawn>[] = [];
+  afterEach(async () => {
+    for (const child of children.splice(0)) { child.kill(); await child.exited; }
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+  let claude: { pid: number; name: string }[] = [];
+  const prompt = (display: string, pastes: Record<string, unknown>[], sessionId = SESSION) => JSON.stringify({
+    display, pastedContents: Object.fromEntries(pastes.map((paste) => [String(paste["id"]), paste])), timestamp: Date.now(), project: "/p", sessionId,
+  });
+  // as Claude Code 2.1.330 records them, for a process whose own environment names the store: its PID record,
+  // then one history line per prompt
+  function store(...lines: string[]): string {
+    const home = mkdtempSync(join(tmpdir(), "herdr-claude-paste-"));
+    roots.push(home);
+    const dir = join(home, ".claude");
+    mkdirSync(join(dir, "sessions"), { recursive: true });
+    const child = Bun.spawn(["sleep", "60"], { env: { ...process.env, CLAUDE_CONFIG_DIR: dir }, stdin: "ignore" });
+    children.push(child);
+    claude = [{ pid: child.pid, name: "claude" }];
+    const procStart = process.platform === "linux"
+      ? readFileSync(`/proc/${child.pid}/stat`, "utf8").split(") ").pop()?.split(" ")[19]
+      : Bun.spawnSync(["/bin/ps", "-o", "lstart=", "-p", String(child.pid)], { env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }).stdout.toString().trim();
+    writeFileSync(join(dir, "sessions", `${child.pid}.json`), JSON.stringify({ pid: child.pid, sessionId: SESSION, procStart, kind: "interactive" }));
+    writeFileSync(join(dir, "history.jsonl"), lines.map((line) => `${line}\n`).join(""));
+    mkdirSync(join(dir, "projects", "-p"), { recursive: true });
+    writeFileSync(join(dir, "projects", "-p", `${SESSION}.jsonl`), transcript.map((entry) => `${JSON.stringify(entry)}\n`).join(""));
+    return home;
+  }
+  // as Claude Code 2.1.330 leaves a turn it dropped before answering: the prompt, its attachments, no reply
+  const human = { type: "user", origin: { kind: "human" }, message: { role: "user", content: "\n\n<pasted_content id=\"1\">..." }, sessionId: SESSION };
+  let transcript: Record<string, unknown>[] = [];
+  beforeEach(() => { transcript = [{ type: "user", origin: { kind: "human" }, message: { role: "user", content: "older" } }, { type: "assistant", message: { role: "assistant", content: [] } }, human, { type: "attachment" }, { type: "last-prompt", sessionId: SESSION }]; });
+  const sentPrompt = prompt("[Pasted text #1 +2 lines]", [{ id: 1, type: "text", content: SENT }]);
+
+  it.skipIf(!NATIVE)("takes the box for the chat's message when the session's last prompt is that paste and Claude put it back under the next number", async () => {
+    const home = store(prompt("older", []), sentPrompt, prompt("another session's prompt", [], OTHER));
+    expect(await claudeRestoredPaste(claude, "❯ [Pasted text #2 +2 lines]", SENT, home)).toBe(true);
+    // Claude wraps its box at the pane's width, also inside the placeholder
+    expect(await claudeRestoredPaste(claude, "❯ [Pasted te\n  xt #2 +2 lines]", SENT, home)).toBe(true);
+  });
+
+  it.skipIf(!NATIVE)("reads a long paste Claude keeps in its paste cache by hash", async () => {
+    const home = store(prompt("[Pasted text #4 +2 lines]", [{ id: 4, type: "text", contentHash: "d1fbcad1748085e5" }]));
+    mkdirSync(join(home, ".claude", "paste-cache"));
+    writeFileSync(join(home, ".claude", "paste-cache", "d1fbcad1748085e5.txt"), SENT);
+    expect(await claudeRestoredPaste(claude, "❯ [Pasted text #5 +2 lines]", SENT, home)).toBe(true);
+    expect(await claudeRestoredPaste(claude, "❯ [Pasted text #5 +2 lines]", `${SENT}!`, home)).toBe(false);
+  });
+
+  it.skipIf(!NATIVE)("refuses whatever does not tie the box to the chat's own prompt", async () => {
+    const cases: [string, string[], string, string][] = [
+      ["a paste typed after it (a later number)", [sentPrompt], "❯ [Pasted text #3 +2 lines]", SENT],
+      ["the very paste, never submitted back", [sentPrompt], "❯ [Pasted text #1 +2 lines]", SENT],
+      ["other lines", [sentPrompt], "❯ [Pasted text #2 +5 lines]", SENT],
+      ["another message", [sentPrompt], "❯ [Pasted text #2 +2 lines]", "something else\nwith\nlines"],
+      ["words beside the paste", [sentPrompt], "❯ look [Pasted text #2 +2 lines]", SENT],
+      ["a later prompt of the session", [sentPrompt, prompt("[Pasted text #2 +2 lines]", [])], "❯ [Pasted text #3 +2 lines]", SENT],
+      ["a prompt of two pastes", [prompt("[Pasted text #1 +2 lines][Pasted text #2 +2 lines]", [{ id: 1, type: "text", content: SENT }, { id: 2, type: "text", content: SENT }])], "❯ [Pasted text #3 +2 lines]", SENT],
+      ["only another session's prompt", [prompt("[Pasted text #1 +2 lines]", [{ id: 1, type: "text", content: SENT }], OTHER)], "❯ [Pasted text #2 +2 lines]", SENT],
+      ["a paste cache name that is no hash", [prompt("[Pasted text #1 +2 lines]", [{ id: 1, type: "text", contentHash: "../sessions/x" }])], "❯ [Pasted text #2 +2 lines]", SENT],
+    ];
+    for (const [name, lines, box, sent] of cases) {
+      const home = store(...lines);
+      expect({ name, restored: await claudeRestoredPaste(claude, box, sent, home) }).toEqual({ name, restored: false });
+    }
+  });
+
+  it.skipIf(!NATIVE)("refuses a paste made after the chat's turn was answered, which takes the same next number", async () => {
+    transcript = [human, { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "done" }] } }, { type: "last-prompt", sessionId: SESSION }];
+    const answered = store(sentPrompt);
+    expect(await claudeRestoredPaste(claude, "❯ [Pasted text #2 +2 lines]", SENT, answered)).toBe(false);
+    // nor while a record after the prompt is still being written: it may be the reply
+    transcript = [human];
+    const writing = store(sentPrompt);
+    appendFileSync(join(writing, ".claude", "projects", "-p", `${SESSION}.jsonl`), '{"type":"assistant","message":{"role":"assi');
+    expect(await claudeRestoredPaste(claude, "❯ [Pasted text #2 +2 lines]", SENT, writing)).toBe(false);
+    // nor without the session's transcript
+    const home = store(sentPrompt);
+    rmSync(join(home, ".claude", "projects"), { recursive: true });
+    expect(await claudeRestoredPaste(claude, "❯ [Pasted text #2 +2 lines]", SENT, home)).toBe(false);
+  });
+
+  it.skipIf(!NATIVE)("matches a message with tabs, which Claude keeps as four spaces", async () => {
+    const home = store(prompt("[Pasted text #1 +2 lines]", [{ id: 1, type: "text", content: "if x:\n    y\nz" }]));
+    expect(await claudeRestoredPaste(claude, "❯ [Pasted text #2 +2 lines]", "if x:\n\ty\nz", home)).toBe(true);
+  });
+
+  it.skipIf(!NATIVE)("refuses without the one Claude process whose record names the session", async () => {
+    const home = store(sentPrompt);
+    expect(await claudeRestoredPaste([{ ...claude[0]!, name: "bash" }], "❯ [Pasted text #2 +2 lines]", SENT, home)).toBe(false);
+    expect(await claudeRestoredPaste([...claude, ...claude], "❯ [Pasted text #2 +2 lines]", SENT, home)).toBe(false);
+    rmSync(join(home, ".claude", "sessions"), { recursive: true });
+    expect(await claudeRestoredPaste(claude, "❯ [Pasted text #2 +2 lines]", SENT, home)).toBe(false);
   });
 });

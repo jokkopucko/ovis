@@ -9,6 +9,7 @@ import { UsageService } from "../server/usage.ts";
 import { herdrRpc, paneScrollInfo, workspaceCreate, workspaceClose } from "../server/herdr/client.ts";
 import { openSettingsPage } from "./settings-page.ts";
 import { shownRows } from "./shown-rows.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 const state = realpathSync(mkdtempSync(join(tmpdir(), "herdr-application-paging-")));
 let workspace: string | undefined;
@@ -37,6 +38,7 @@ sys.stdout.flush()
   await ready;
   assert.equal((await paneScrollInfo(paneId))?.max_offset_from_bottom, 0, "the application owns its history");
   server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(state, "state"), usage: new UsageService(undefined, []) });
+  checkChromeTmpdir();
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
   const context = await browser.newContext({ viewport: { width: 1024, height: 600 }, locale: "en-US" });
   await context.addInitScript(() => {
@@ -101,7 +103,11 @@ sys.stdout.flush()
   await page.getByRole("combobox", { name: "Scroll pane up", exact: true }).selectOption("u");
   await page.getByRole("combobox", { name: "Scroll pane down", exact: true }).selectOption("d");
   await page.keyboard.press("Escape");
+  // the closing dialog hands focus back to what opened it: the textarea is focused once the dialog is gone, and the
+  // chords wait until it holds the focus
+  await page.getByRole("combobox", { name: "Scroll pane up", exact: true }).waitFor({ state: "detached" });
   await page.locator(".xterm-helper-textarea").first().evaluate((node: HTMLTextAreaElement) => node.focus());
+  await page.waitForFunction(() => document.activeElement?.classList.contains("xterm-helper-textarea") === true);
   await input((text) => text === "\x1b[5~\x1b[6~\x1b[5~\x1b[5~\x1b[6~",
     "remapped paging actions still send plain page sequences to the application", "ControlOrMeta+Shift+U", "ControlOrMeta+Shift+D");
   // The program quits and hands the screen back to the shell, whose history the browser does not know

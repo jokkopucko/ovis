@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Browser } from "playwright-core";
+import { appContext } from "./app-context.ts";
 import { sheetsSettled } from "./sheets-settled.ts";
 import { openLens } from "./header-lens.ts";
 
 type ViewportQA = Window & { viewportQA: { resize: (height: number) => void; pointer: (touch: boolean) => void } };
 
 export async function checkMobileViewport(browser: Browser, origin: string, paneId: string): Promise<void> {
-  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" });
+  const context = await appContext(browser, { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   try {
     await context.addInitScript(() => {
       if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify({ terminalInputMode: "line" }));

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 
 import { ChatRowMemoryContext, chatRowMemory, type ChatRowMemory } from "../lib/chatRowState.tsx";
+import { layoutScroll } from "../lib/layoutScroll.ts";
 import { dropPendingListScroll, listEndPadded } from "../lib/followScroll.ts";
 import { chatSelectionClipboardPayload } from "../lib/markdownClipboard.ts";
 import { usePageVisible } from "../lib/visibility.ts";
@@ -224,7 +225,7 @@ export function ChatTimeline<Row extends ChatTimelineRow>(given: ChatTimelinePro
       const measured = list.getState().contentLength;
       const end = Math.max(0, (listEndPadded(node) ? measured : Math.max(measured, node.scrollHeight)) - node.clientHeight);
       if (Math.abs(node.scrollTop - end) <= 1) return;
-      node.scrollTop = end;
+      layoutScroll(node, () => { node.scrollTop = end; });
       heardTop.current = node.scrollTop;
       onFollowed(node.scrollTop);
     });
@@ -292,7 +293,7 @@ export function ChatTimeline<Row extends ChatTimelineRow>(given: ChatTimelinePro
       room.current ??= content.style.minHeight;
       content.style.minHeight = `${content.offsetHeight + Math.ceil(short)}px`;
     }
-    node.scrollTop = target;
+    layoutScroll(node, () => { node.scrollTop = target; });
     // The view lands on whole pixels: the words' place stays where it was aimed, so what the rounding
     // leaves adds up with the next move instead of being taken as their place. A view that could not
     // go as far (at its top) leaves them where it stopped.
@@ -374,7 +375,7 @@ export function ChatTimeline<Row extends ChatTimelineRow>(given: ChatTimelinePro
       if (selecting.current) { keep(); return; }
       if (!grew || node === null || !following.current || manualLayout.current) return;
       dropPendingListScroll(listRef.current);
-      node.scrollTop = node.scrollHeight;
+      layoutScroll(node, () => { node.scrollTop = node.scrollHeight; });
     });
     observer.observe(box);
     return () => observer.disconnect();
@@ -418,7 +419,7 @@ export function ChatTimeline<Row extends ChatTimelineRow>(given: ChatTimelinePro
     ListHeaderComponent={<div className="chat-virtual-header">{header}</div>}
     ListFooterComponent={<div ref={footerRef} className="chat-virtual-footer">{footer}</div>}
     onScroll={() => heard()}
-    onLoad={() => { if (following.current) listRef.current?.scrollToEnd({ animated: false }); }}
+    onLoad={() => { if (following.current) listRef.current?.scrollToEnd({ animated: false, layoutScroll: true }); }}
     onItemSizeChanged={() => {
       if (selecting.current) keepMeasured();
       else if (following.current && !manualLayout.current) followMeasured("measure");

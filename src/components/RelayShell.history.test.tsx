@@ -1,6 +1,6 @@
-import { afterAll, beforeAll, describe, expect, it, mock } from "bun:test";
-import { createElement } from "react";
-import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
+import { act, createElement } from "react";
+import { openPage, type Page } from "../lib/page.fixture.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import * as sheetHistory from "../lib/sheetHistory.ts";
 import type { RelayShellProps } from "./RelayShell.tsx";
@@ -17,11 +17,10 @@ const front: RelayShellProps = {
   scoped: false, iosTab: false, onPair: none, onRetry: none, onCancel: none, onBack: none, onForget: none, onUpdate: none, onMatch: none, onCodeStart: none, onCodeSubmit: none, onCodeMatch: none, onSignIn: none,
 };
 
-const globals = ["window", "document", "navigator", "localStorage", "sessionStorage", "getComputedStyle", "matchMedia", "HTMLElement", "IntersectionObserver", "IS_REACT_ACT_ENVIRONMENT"];
-const descriptors = new Map<string, PropertyDescriptor | undefined>();
+const browserGlobals = ["HTMLElement", "Element", "Node", "IntersectionObserver", "Event", "CustomEvent", "localStorage", "sessionStorage", "matchMedia"] as const;
+const savedBrowserGlobals = new Map(browserGlobals.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
 const loaded = { ...sheetHistory };
-const events = new EventTarget();
-const entries: unknown[] = [null];
+const entries: (object | null)[] = [null];
 let index = 0;
 let wideNow = false;
 const watchers = new Map<(event: { matches: boolean }) => void, string>();
@@ -38,7 +37,7 @@ const turn = async (): Promise<void> => {
 const traverseBack = (): void => {
   if (index === 0) throw new Error("no entry to go back to");
   index -= 1;
-  queueMicrotask(() => events.dispatchEvent(Object.assign(new Event("popstate"), { state: entries[index] })));
+  queueMicrotask(() => page.window.dispatchEvent(new page.window.PopStateEvent("popstate", { state: entries[index] })));
 };
 /** the tablet's own Back */
 const browserBack = async (): Promise<void> => { traverseBack(); await turn(); };
@@ -49,83 +48,72 @@ const rotate = async (wide: boolean): Promise<void> => {
 };
 
 let RelayShell: typeof import("./RelayShell.tsx").RelayShell;
-let renderer: ReactTestRenderer | undefined;
+let page: Page;
 
-beforeAll(async () => {
-  for (const key of globals) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-  const node = () => ({ isConnected: true, focus() {}, contains: () => false, querySelectorAll: () => [], getClientRects: () => [], closest: () => null, addEventListener() {}, removeEventListener() {}, pauseAnimations() {}, unpauseAnimations() {} });
-  const store = (): Storage => { const kept = new Map<string, string>(); return { getItem: (key: string) => kept.get(key) ?? null, setItem: (key: string, value: string) => { kept.set(key, value); }, removeItem: (key: string) => { kept.delete(key); }, key: () => null, length: 0, clear: () => kept.clear() }; };
-  const storage = store();
-  class HTMLElement { isConnected = true; focus(): void {} }
-  class IntersectionObserver { observe(): void {} disconnect(): void {} }
+beforeEach(async () => {
+  page = openPage(HREF);
+  entries.splice(0, entries.length, null);
+  index = 0;
+  wideNow = false;
+  watchers.clear();
   const history = {
     get state() { return entries[index]; },
-    pushState(state: unknown) { entries.splice(index + 1); entries.push(state); index += 1; },
-    replaceState(state: unknown) { entries[index] = state; },
+    pushState(state: object | null) { entries.splice(index + 1); entries.push(state); index += 1; },
+    replaceState(state: object | null) { entries[index] = state; },
     // a browser's Back on its first entry does nothing
     back() { if (index > 0) traverseBack(); },
     forward() {},
     go() {},
   };
-  const define = (key: string, value: unknown) => Object.defineProperty(globalThis, key, { configurable: true, value });
-  define("IS_REACT_ACT_ENVIRONMENT", true);
-  define("HTMLElement", HTMLElement);
-  define("IntersectionObserver", IntersectionObserver);
-  define("getComputedStyle", () => ({ getPropertyValue: () => "" }));
-  define("navigator", { languages: ["en"], userAgent: "Mozilla/5.0 (Linux; Android 15)", maxTouchPoints: 5 });
-  define("localStorage", storage);
-  define("sessionStorage", store());
-  define("matchMedia", matchMedia);
-  define("window", {
-    get location() { return { href: HREF, search: "", hash: "", origin: "https://app.ovis.sh", pathname: "/", assign() {}, replace() {} }; },
-    history, localStorage: storage, matchMedia, innerWidth: 800,
-    addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events), dispatchEvent: events.dispatchEvent.bind(events),
-    requestAnimationFrame: () => 1, cancelAnimationFrame() {},
-    setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout,
+  Object.defineProperties(page.window, {
+    history: { configurable: true, value: history },
+    matchMedia: { configurable: true, value: matchMedia },
+    innerWidth: { configurable: true, value: 800 },
+    requestAnimationFrame: { configurable: true, value: () => 1 },
+    cancelAnimationFrame: { configurable: true, value: () => {} },
   });
-  define("document", {
-    documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
-    activeElement: new HTMLElement(),
-    body: { nodeType: 1, children: [], createNodeMock: node },
-    querySelector: () => null, querySelectorAll: () => [],
-    addEventListener: events.addEventListener.bind(events), removeEventListener: events.removeEventListener.bind(events),
+  Object.defineProperties(page.window.navigator, {
+    userAgent: { configurable: true, value: "Mozilla/5.0 (Linux; Android 15)" },
+    maxTouchPoints: { configurable: true, value: 5 },
   });
+  for (const key of browserGlobals) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value: page.window[key] });
   const historyPath = "../lib/sheetHistory.ts?relay-shell-history", shellPath = "./RelayShell.tsx?relay-shell-history";
   const fresh = await import(historyPath) as typeof sheetHistory;
   mock.module("../lib/sheetHistory.ts", () => fresh);
   ({ RelayShell } = await import(shellPath) as typeof import("./RelayShell.tsx"));
 });
 
-afterAll(async () => {
-  // the tree goes, then what its unmount left to run on a timer (a sheet leaving its history entry) runs while this
-  // window is still here
-  await act(async () => { renderer?.unmount(); });
+afterEach(async () => {
+  // Let a sheet leave its history entry while the page is still here.
+  await page.render(null);
   await turn();
   mock.module("../lib/sheetHistory.ts", () => loaded);
-  for (const [key, descriptor] of descriptors) {
+  await page.close();
+  for (const [key, descriptor] of savedBrowserGlobals) {
     if (descriptor) Object.defineProperty(globalThis, key, descriptor);
     else Reflect.deleteProperty(globalThis, key);
   }
 });
 
 describe("the hosted front page on a tablet turned across 1024 px", () => {
-  const shown = (node: ReactTestInstance): boolean => { for (let at: ReactTestInstance | null = node; at !== null; at = at.parent) if (at.props?.hidden === true) return false; return true; };
-  const one = (what: string, found: ReactTestInstance[]): ReactTestInstance => { if (found.length !== 1) throw new Error(`${found.length} ${what} on screen`); return found[0]!; };
-  const action = (name: string) => one(`${name} buttons`, renderer!.root.findAll((node) => node.type === "button" && node.props["data-action"] === name && shown(node)));
-  const views = () => renderer!.root.findAll((node) => node.type === "div" && typeof node.props["data-view"] === "string" && shown(node)).map((node) => node.props["data-view"] as string);
-  const dialogs = () => renderer!.root.findAll((node) => node.props.role === "dialog").map((node) => node.props["data-pair-dialog"] as string);
+  const action = (name: string) => {
+    const found = [...page.container.querySelectorAll<HTMLButtonElement>(`button[data-action="${name}"]`)].filter((node) => !node.closest("[hidden]"));
+    if (found.length !== 1 || !found[0]) throw new Error(`Expected one visible ${name} button`);
+    return found[0];
+  };
+  const views = () => [...page.container.querySelectorAll("div[data-view]")].filter((node) => !node.closest("[hidden]")).map((node) => node.getAttribute("data-view"));
+  const dialogs = () => [...page.window.document.querySelectorAll('[role="dialog"]')].map((node) => node.getAttribute("data-pair-dialog"));
 
   /** the sheet that owns the entry the history stands on, if any */
   const top = (): unknown => (entries[index] as Record<string, unknown> | null)?.["ovis:sheet"] ?? null;
-  const nodeMock = () => ({ focus() {}, isConnected: true, contains: () => false, querySelectorAll: () => [], getClientRects: () => [], closest: () => null, addEventListener() {}, removeEventListener() {} });
 
   it("closes the pairing dialog with the tablet's Back after a turn to portrait, then Add a PC with the next, back to the list", async () => {
     const cancelled: string[] = [];
-    const draw = (next: RelayShellProps) => act(async () => { renderer!.update(createElement(SettingsProvider, { children: createElement(RelayShell, next) })); });
+    const draw = (next: RelayShellProps) => page.render(createElement(SettingsProvider, { children: createElement(RelayShell, next) }));
     const atFront: RelayShellProps = { ...front, onCancel: () => { cancelled.push("cancel"); } };
-    await act(async () => { renderer = create(createElement(SettingsProvider, { children: createElement(RelayShell, atFront) }), { createNodeMock: nodeMock }); });
+    await draw(atFront);
     expect(views()).toEqual(["my-pcs"]);
-    await act(async () => { action("add-pc").props.onClick(); });
+    await act(async () => { action("add-pc").click(); });
     await turn();
     expect(views()).toEqual(["add-pc"]);
     expect([index, entries.length]).toEqual([1, 2]);
@@ -135,9 +123,10 @@ describe("the hosted front page on a tablet turned across 1024 px", () => {
     await rotate(true);
     expect(views()).toEqual(["my-pcs", "add-pc"]);
     expect(index).toBe(0);
-    await act(async () => { action("add-code").props.onClick(); });
-    const form = renderer!.root.find((node) => node.type === "form" && node.props["data-code-form"] !== undefined);
-    await act(async () => { form.props.onSubmit({ preventDefault() {}, currentTarget: { elements: { namedItem: () => ({ value: "ABCDE-12345" }) } } }); });
+    await act(async () => { action("add-code").click(); });
+    const form = page.one<HTMLFormElement>("form[data-code-form]");
+    await page.type(page.one<HTMLInputElement>('form[data-code-form] input[name="code"]'), "ABCDE-12345");
+    await act(async () => { form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true })); });
     await draw({ ...atFront, state: { kind: "code-compare", offer: { v: 1, server_id: ids.mini, server_public_key: "k", relay: "wss://relay-ap.ovis.sh", code: "ABCDE-12345", name: "Mac mini" } } });
     await turn();
     expect(dialogs()).toEqual(["compare"]);

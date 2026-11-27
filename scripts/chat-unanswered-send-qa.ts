@@ -8,6 +8,7 @@ import { chromium } from "playwright-core";
 import { createServer } from "../server/index.ts";
 import { herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
 import { WAITING_SEND_MS } from "../src/lib/sentWaiting.ts";
+import { checkChromeTmpdir } from "./chrome-path.ts";
 
 if (process.platform !== "linux") { console.log("SKIP fictional agent processes require Linux"); process.exit(0); }
 const EARLIER = "The fictional earlier answer is long enough for the chat to tie this rollout to the screen that shows it, as a real one is.";
@@ -48,6 +49,7 @@ try {
     { type: "response_item", timestamp: now, payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Earlier question" }] } },
     { type: "response_item", timestamp: now, payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: EARLIER }] } },
   ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+  checkChromeTmpdir();
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
   const page = await context.newPage();

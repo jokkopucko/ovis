@@ -278,3 +278,28 @@ describe("the record of how long this PC has let each key in through its account
     expect(made.file()).toMatchObject({ saved: (T0 + 2 * MINUTE) / 1000, keys: { [PHONE]: { wall: 120, ran: 120 } } });
   });
 });
+
+describe("what the record tells a device of its account (admits)", () => {
+  test("rows that cannot be read are no answer, not an answer that nobody is let in", () => {
+    const made = recording();
+    made.world.rows = [lets(PHONE)];
+    made.witness.step();
+    expect(made.witness.admits()?.admits.map((row) => row.key)).toEqual([PHONE]);
+    made.world.rows = null;
+    expect(made.witness.admits()).toBeNull();
+  });
+
+  test("how long ago a key was last used is read now, from the newest use the rows know", () => {
+    const made = recording();
+    const used = T0 / 1000 - 100;
+    made.world.rows = [lets(PHONE, used)];
+    made.witness.step();
+    expect(made.witness.admits()?.admits[0]?.idle).toBe(100);
+    // two minutes on, with no step between: 220 seconds, and a newer use of the row counts at once
+    made.world.wall += 2 * MINUTE;
+    made.world.mono += 2 * MINUTE;
+    expect(made.witness.admits()?.admits[0]?.idle).toBe(220);
+    made.world.rows = [lets(PHONE, T0 / 1000 + 100)];
+    expect(made.witness.admits()?.admits[0]?.idle).toBe(20);
+  });
+});

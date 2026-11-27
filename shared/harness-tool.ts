@@ -5,17 +5,17 @@ export const HARNESS_CONTRACT = "ovis-harness/0";
 export const harnessStopReason = (value: string): string => schema.$defs.TurnResult.properties.stop_reason.enum.includes(value) ? value : "unknown";
 export type HarnessVerb = keyof typeof TOOL_SCHEMAS;
 export const VIEW_VERBS = ["machines", "harnesses", "ls", "read"] as const;
-export const HARNESS_LIMITS = { children: 4, child_minutes: 60, calls_per_minute: 30, wait_seconds: 45 } as const;
+export const HARNESS_LIMITS = { child_minutes: 60, calls_per_minute: 30, wait_seconds: 45 } as const;
 
 export interface HarnessToolSetting {
   readonly level: "off" | "view" | "start";
   readonly depth: 1 | 2 | 3;
   readonly harnesses: readonly string[];
 }
-/** What a parent that cannot prove its permission ceiling may start, at the one version each has an ask-every-time launch for (server/agent-tools/permission-launch.ts, hub.ts's version check). */
-export const ASK_EVERY_TIME_HARNESSES: Readonly<Record<string, string>> = { opencode: "2.2.2" };
-export const HARNESS_TOOL_DEFAULT: HarnessToolSetting = { level: "view", depth: 1, harnesses: [] };
-export const HARNESS_TOOL_OFF: HarnessToolSetting = { ...HARNESS_TOOL_DEFAULT, level: "off" };
+/** Harness kinds with an ACP launch in server/agent-tools/harnesses.ts (resolveHarness). */
+export const ACP_LAUNCH_HARNESSES = ["claude", "codex", "copilot", "opencode", "agy", "gjc", "gemini", "kiro", "kimi"] as const;
+export const HARNESS_TOOL_DEFAULT: HarnessToolSetting = { level: "start", depth: 1, harnesses: ACP_LAUNCH_HARNESSES };
+export const HARNESS_TOOL_OFF: HarnessToolSetting = { level: "off", depth: 1, harnesses: [] };
 export function parseHarnessSetting(stored: unknown): HarnessToolSetting | null {
   if (!isRecord(stored) || !Object.keys(stored).every(k => ["level","depth","harnesses"].includes(k))) return null;
   const { level, depth, harnesses } = stored;

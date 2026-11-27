@@ -4,7 +4,7 @@
  * instead of the page.
  */
 
-import { SHEET_HISTORY_KEY, SHEET_UNDER_KEY, sheetStep } from "./historyKeys.ts";
+import { SHEET_HISTORY_KEY, SHEET_UNDER_KEY, sheetStep, silentSheetLandings } from "./historyKeys.ts";
 
 const KEY = "ovis:settings";
 const BASE_KEY = "ovis:settings-base";
@@ -65,6 +65,7 @@ let pending: { from: unknown; depth: number; level: SettingsLevel | null; expire
 let observed: unknown = typeof window === "undefined" ? undefined : window.history.state;
 let writing = false;
 let loadedOnSettings = false;
+let deferredForSheet = false;
 let opening: unknown;
 let openedOver: unknown;
 const buried = new Set<unknown>();
@@ -106,6 +107,13 @@ function reconcile(): void {
   if (rewinding > 0) return;
   const current = settingsEntry(state);
   const have = current?.depth ?? 0;
+  // The confirmation owns the entry above the Settings page. Keep the requested
+  // layout, but rebuild its levels only after the confirmation leaves that entry.
+  if (have > 0 && wanted.length > 0 && typeof fieldOf(state, SHEET_HISTORY_KEY) === "string") {
+    deferredForSheet = true;
+    return;
+  }
+  deferredForSheet = false;
   if (have === 0 && held.length > 0 && fieldOf(state, BASE_KEY) !== opening) buried.add(opening);
   if (have > 0) { opening = fieldOf(state, BASE_KEY); openedOver = fieldOf(state, ANCHOR_KEY); }
   // what the history holds up to here: a Back landed under what was recorded; the step shown is
@@ -168,6 +176,15 @@ export function onSettingsHistory(listener: Listener): () => void {
 }
 
 if (typeof window !== "undefined") {
+  const deferredHere = (state: unknown): boolean => {
+    const top = wanted.at(-1);
+    const current: unknown = window.history.state;
+    return deferredForSheet && top !== undefined && same(settingsEntry(state), top)
+      && fieldOf(state, BASE_KEY) === opening && fieldOf(current, SHEET_HISTORY_KEY) === undefined && sameEntry(state, current);
+  };
+  silentSheetLandings.add(() => {
+    if (deferredHere(window.history.state)) reconcile();
+  });
   for (const method of ["pushState", "replaceState"] as const) {
     const history = window.history;
     const write = history[method].bind(history);
@@ -209,8 +226,9 @@ if (typeof window !== "undefined") {
     const ontoUnder = anchor === undefined || fieldOf(event.state, SHEET_UNDER_KEY) === anchor;
     steppedOff = !skipped && entry === null && left !== null && !forwardAbove && (own || ontoBase || (baseLost && ontoUnder));
     if (pending !== null && (matches || event.state !== pending.from)) releasePending();
-    for (const listener of [...listeners]) listener(entry, own);
-    if (own) reconcile();
+    const rebuild = entry !== null && deferredHere(event.state);
+    for (const listener of [...listeners]) listener(entry, own || rebuild);
+    if (own || rebuild) reconcile();
   });
   // a reload keeps the history and not the dialog: step out of the entries it left
   const left = settingsEntry(window.history.state);

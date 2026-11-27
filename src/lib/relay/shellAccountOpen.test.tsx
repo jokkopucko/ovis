@@ -1,3 +1,4 @@
+import { notePcTap } from "./pcTap.ts";
 import { afterEach, beforeEach, expect, it, jest } from "bun:test";
 import { createElement, isValidElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -9,16 +10,18 @@ import { ACCOUNT_OPENS_ALL_FEATURE, encodeFrame, FrameType, MuxProtocolError, RE
 import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { RelayShell, type RelayShellProps } from "../../components/RelayShell.tsx";
 import { beginSignIn } from "../account/signin.ts";
-import { isNewAccountPc } from "../account/myPcs.ts";
+import { isNewAccountPc, type MyPc } from "../account/myPcs.ts";
+import type { AccountList, AccountListView } from "../account/accountList.ts";
+import { SignedOutError } from "../account/service.ts";
 import { memoryAccountStore } from "../account/store.ts";
 import { SettingsProvider } from "../settings.ts";
 import { nativeTransport, setTransport } from "../transport.ts";
 import { accountOpenPeer, accountOpenRefusalFrame } from "./accountOpenPeer.fixture.ts";
 import type { ShellDeviceStore } from "./device.ts";
 import { createShellTestPage } from "./shell.test.tsx";
-import { AccountOpenUnsupportedError } from "../../../shared/relay-channel.ts";
-import { readSeenPcs } from "../account/seenPcs.ts";
-import { mountRelayShell, type RelayShellMount } from "./shell.tsx";
+import { AccountListUnsupportedError, AccountOpenUnsupportedError } from "../../../shared/relay-channel.ts";
+import { noteSession, readSeenPcs } from "../account/seenPcs.ts";
+import { accountLaunchPcs, mountRelayShell, type RelayShellMount } from "./shell.tsx";
 import { markRemovedPc, removedPcs } from "./shellState.ts";
 import { openRelayTransport, RelayTransport } from "./transport.ts";
 
@@ -34,8 +37,31 @@ let browser: ReturnType<typeof createShellTestPage>;
 beforeEach(() => { browser = createShellTestPage(); browser.setVisibility("hidden"); });
 afterEach(() => { jest.useRealTimers(); setTransport(nativeTransport); browser.dispose(); });
 
-async function accountPc({ release = true, loseRegistrationReply = false, newUntil = null, seen = true, label, phoneSheet = false, open }: {
+async function accountPc({ release = true, loseRegistrationReply = false, newUntil = null, seen = true, label, phoneSheet = false, listed, admits = false, open }: {
   release?: boolean; loseRegistrationReply?: boolean; seen?: boolean;
+  /** the account service takes this device's join of the PC (POST /v1/admissions), so the join asks for the account */
+  admits?: boolean;
+  /**
+   * this device follows its account's signed list and is in it (`in: false`: the account service keeps a list for the
+   * account and this device follows none); `holds`: whether that list holds the PC. `read`: what a read of the list then finds.
+   */
+  listed?: {
+    holds: boolean; in?: boolean; read?: () => void;
+    /** not in the list, and its claim of its key for it stands: it waits to be let in */
+    waits?: boolean; adopted?: (offer: { list: string; seq: number; hash: string }, account?: string) => void;
+    /** until when the list holds this device, in seconds; absent: for good */
+    until?: () => number | null;
+    /** the time the device shows by, held against the latest it saved; its clock by default */
+    shown?: () => number;
+    /** the list put this device out */
+    out?: boolean;
+    /** where this device's copy stands, and its entries for a PC (AccountList.gossip, pageAfter, placeAt); none by default */
+    peer?: { readonly list: string; readonly head: { readonly seq: number; readonly hash: string } };
+    /** the account the page's list stands for: another tab may sign this browser in to another; acct_1 by default */
+    account?: string;
+    /** a PC's page reached this device's list (AccountList.takeFromPeer) */
+    took?: () => void;
+  };
   newUntil?: string | null; label?: string;
   /**
    * The page as a phone's browser runs it: the join sheet holds a history entry (sheetHistory.ts), and a link this page
@@ -93,8 +119,30 @@ async function accountPc({ release = true, loseRegistrationReply = false, newUnt
     if (type === "hashchange" && typeof listener === "function") fragmentListeners.push({ load: loads, listener });
     listen(type, listener, options);
   }) as typeof window.addEventListener;
+  const memberKey = (await accountStore.key()).public_spki;
+  const listReads: number[] = [];
+  /** what hears this device's list move (the controller): a test tells them after it changed what the list holds */
+  const listHeard: (() => void)[] = [];
+  const listView = (): AccountListView => listed?.in === false ? { account: "acct_1", reached: true, status: listed.waits === true ? { at: "not_in", list: "5c".repeat(32), why: "not_mine", claim: "claimed" } : { at: "off" }, devices: [], pcs: [] }
+    // another member put this device out, and its own copy read that
+    : listed?.out === true ? { account: "acct_1", reached: true, status: { at: "following", list: "5c".repeat(32), standing: "out", head: 2, read_at: 1, trouble: null }, devices: [], pcs: [] } : ({
+    account: listed?.account ?? "acct_1", reached: true, status: { at: "following", list: "5c".repeat(32), standing: "in", head: 1, read_at: 1, trouble: null },
+    devices: [{ key: memberKey, self: true, power: listed?.until === undefined ? "full" : "bound", role: "drive", until: listed?.until?.() ?? null, carried: false, name: null }],
+    pcs: listed?.holds ? [{ endpoint: entry.public_key, server_id: serverId, how: "added", allows: true, name: { label: "Desk", os: null }, seq: 1, by: memberKey, new_at: null }] : [],
+  });
+  const accountList: AccountList | undefined = listed === undefined ? undefined : {
+    sync: async () => { listReads.push(Date.now()); listed.read?.(); return listView(); }, follows: async () => true,
+    view: listView, subscribe: (listener) => { listHeard.push(() => listener(listView())); return () => {}; }, holdsPc: () => listed.holds, pcOfKey: () => null, due: () => null,
+    shadow: async () => null, dropNames: async () => {}, forget: async () => {}, pinnedElsewhere: async () => null, adopt: async (offer, account) => { listed.adopted?.(offer, account); return listView(); }, writer: () => null,
+    placeAt: (seq) => listed.peer !== undefined && seq === listed.peer.head.seq ? listed.peer.head : null,
+    holdsEntry: () => false, gossip: () => listed.peer === undefined ? null : { list: listed.peer.list, place: listed.peer.head },
+    pageAfter: (after) => listed.peer === undefined ? null : { list: listed.peer.list, after, entries: ["entry"], head: listed.peer.head },
+    compare: () => null, takeFromPeer: async () => { listed.took?.(); return null; }, knowsPc: () => listed.peer !== undefined,
+    kept: async () => null, keep: async () => { throw new Error("nothing is signed in this test"); }, unkeep: async () => {}, waiting: async () => null, cancel: async () => "gone" as const,
+    shown: () => listed.shown?.() ?? Math.floor(Date.now() / 1000),
+  };
   const mountAt = (entryUrl: string) => { loads++; return mountRelayShell({
-    container: Object.create(null), entryUrl, shellVersion: "1.0.0", store, accountStore, ...(label === undefined ? {} : { label }),
+    container: Object.create(null), entryUrl, shellVersion: "1.0.0", store, accountStore, ...(label === undefined ? {} : { label }), ...(accountList === undefined ? {} : { accountList }),
     // these read the account's rows on the front page: a launch that leaves it for the PC (shell.test.tsx) does not run
     ...(new URL(entryUrl).pathname === "/" ? { navigatedSinceEntry: () => true } : {}),
     accountService: SERVICE, accountFetch: async (input, init) => {
@@ -102,6 +150,7 @@ async function accountPc({ release = true, loseRegistrationReply = false, newUnt
       requests.push(path);
       switch (path) {
         case "/v1/pcs": await directoryHeld; return Response.json({ pcs: [entry] });
+        case "/v1/admissions": if (admits && init?.method === "POST") return Response.json({ id: "adm-1" }); return service.fetch(input, init);
         case "/v1/devices/challenge": return release
           ? Response.json({ challenge_id: "12".repeat(16), challenge: "register-this-sign-in" })
           : new Response(null, { status: 404 });
@@ -146,11 +195,42 @@ async function accountPc({ release = true, loseRegistrationReply = false, newUnt
   };
   /** The join sheet on screen once this page read the account's PCs: what a press acts on, as on the page the PC's own load put it up on. */
   const sheetRead = (): Promise<void> => settled(() => props?.state.kind === "confirm" && props.state.account === "listed");
-  return { accountStore, serverId, requests, registrationKeys, registrationLabels, navigations, navigated: navigated.promise, appOpened: appOpened.promise, current, action, apps: () => apps, settled, sheetRead, land, holdDirectory, reload: () => mountAt(`${APP}/`), openPage: () => mountAt(`${APP}/s/${serverId}/`), follow: (path: string) => mountAt(`${APP}${path}`) };
+  return { listMoved: () => { for (const tell of listHeard) tell(); }, accountStore, serverId, endpoint: entry.public_key, memberKey, listReads, requests, registrationKeys, registrationLabels, navigations, navigated: navigated.promise, appOpened: appOpened.promise, current, action, apps: () => apps, settled, sheetRead, land, holdDirectory, reload: () => mountAt(`${APP}/`), openPage: () => mountAt(`${APP}/s/${serverId}/`), follow: (path: string) => mountAt(`${APP}${path}`) };
 }
 
 class Admitted extends RelayTransport {
   override get server() { return { version: "1.0.0", relayProtocol: RELAY_PROTOCOL }; }
+}
+
+/** Waits for `done`, polling to a deadline: what a session is asked wakes no screen. */
+async function polled(done: () => boolean, ms = 5_000): Promise<void> {
+  const end = performance.now() + ms;
+  while (!done()) {
+    if (performance.now() > end) throw new Error("timed out");
+    await new Promise<void>((resolve) => { setImmediate(resolve); });
+  }
+}
+
+const LIST = "5c".repeat(32);
+const LIST_HEAD = { seq: 4, hash: "4d".repeat(32) };
+/**
+ * A session with a PC pinned to the account's list that stands one entry behind this device: it says so to every head
+ * this device tells it, and takes what it is handed. What it is asked, and when it is closed, in order.
+ */
+class Pinned extends Admitted {
+  readonly asked: string[] = [];
+  constructor(offer: ConstructorParameters<typeof RelayTransport>[0], private readonly version = "1.0.0") { super(offer); }
+  override get server() { return { version: this.version, relayProtocol: RELAY_PROTOCOL, features: ["account-list-1"] }; }
+  override get followsList() { return true; }
+  override get route() { return "relay" as const; }
+  override async fetch(input: RequestInfo | URL): Promise<Response> {
+    const path = String(input);
+    this.asked.push(path);
+    if (path === "/api/account/list/head") return Response.json({ list: LIST, place: { seq: 3, hash: "3c".repeat(32) }, asks: { list: LIST, after: 3 } });
+    if (path === "/api/account/list/page") return Response.json({ verdict: "caught_up", list: LIST, place: LIST_HEAD });
+    return new Response(null, { status: 404 });
+  }
+  override close(): void { this.asked.push("close"); super.close(); }
 }
 const inADay = (): string => new Date(Date.now() + 23 * 60 * 60_000).toISOString();
 
@@ -318,13 +398,55 @@ it("a new PC that holds the pressed account sign-in shows its hold, then opens w
   expect({ attempts, apps: run.apps(), navigations: run.navigations.length }).toEqual({ attempts: [true, true], apps: 1, navigations: 1 });
 });
 
-it("a PC past its 24 hours that answers its page's account sign-in with auth_failed says this device was removed, as before: only a press on a new PC's sheet goes on to the join", async () => {
+it("a PC past its 24 hours that answers its page's account sign-in with auth_failed, after it let this device in before, says this device was removed, as before", async () => {
   let attempts = 0;
   const run = await accountPc({ open: async () => { attempts++; throw new MuxProtocolError("auth_failed", ""); } });
+  // this device held a session with that PC under this account (its own record of its PCs)
+  await noteSession("acct_1", run.endpoint, "none");
   await run.openPage();
   expect({ attempts, state: run.current().state, navigations: run.navigations, removed: removedPcs()[run.serverId] }).toEqual({
     attempts: 1, state: expect.objectContaining({ kind: "failed", failure: "revoked", server_id: run.serverId }), navigations: [], removed: "removed",
   });
+});
+
+it("a PC past its 24 hours that answers its page's account sign-in with auth_failed, and never let this device in, leads to the join: nothing says this device was removed", async () => {
+  // a key the PC has no row for: one the account service does not count as the account's yet (a sign-in without two-step)
+  const attempts: boolean[] = [];
+  const run = await accountPc({ open: async (_offer, options) => {
+    attempts.push(options?.accountOpensAll === true);
+    if (options?.accountOpensAll === true) throw new MuxProtocolError("auth_failed", "");
+    throw new RangeError("Stop at the join");
+  } });
+  await run.openPage();
+  expect({ attempts, navigations: run.navigations, removed: removedPcs()[run.serverId], confirmed: browser.sessionStore.has("ovis-confirmed-pc") }).toEqual({
+    attempts: [true], navigations: [expect.stringContaining(`/s/${run.serverId}/#offer=`)], removed: undefined, confirmed: false,
+  });
+  // the join sheet waits for the press, which sends the join alone
+  run.land(run.navigations[0]!);
+  await run.sheetRead();
+  expect(attempts).toEqual([true]);
+  run.current().onPair();
+  await run.settled(() => attempts.length === 2);
+  expect(attempts).toEqual([true, false]);
+});
+
+it("Ask again on the line that says this device was removed asks that PC to let it join, at once: it does not open the PC by the account key again", async () => {
+  const attempts: boolean[] = [];
+  const run = await accountPc({ open: async (_offer, options) => {
+    attempts.push(options?.accountOpensAll === true);
+    if (options?.accountOpensAll === true) throw new MuxProtocolError("auth_failed", "");
+    throw new RangeError("Stop at the join");
+  } });
+  await noteSession("acct_1", run.endpoint, "none");
+  await run.openPage();
+  expect(run.current().state).toEqual(expect.objectContaining({ kind: "failed", failure: "revoked" }));
+  run.current().onAskAgain?.();
+  // the PC's join, on its own page, asked at once as a launch asks it (#16): no second press
+  expect(run.navigations).toEqual([expect.stringContaining(`/s/${run.serverId}/#offer=`)]);
+  expect(browser.sessionStore.get("ovis-launch-join")).toBe(run.serverId);
+  run.land(run.navigations[0]!);
+  await run.settled(() => attempts.length === 2);
+  expect(attempts).toEqual([true, false]);
 });
 
 it("a new PC opened by the press that later ends its session with auth_failed says this device was removed, and asks to join by nothing", async () => {
@@ -715,4 +837,463 @@ it("T34 wire: the shell stays Connecting until the decoded hold deadline, then r
   const key = await run.accountStore.get("signin_key");
   if (key === undefined) throw new TypeError("Missing registered key");
   expect(rows).toEqual(Array(2).fill(accountDeviceId(run.serverId, key.key.public_spki)));
+});
+
+/** How a sign-in came: with the key the account's list holds for this device, with the key its sign-in registered, or neither. */
+const cameBy = async (offer: Parameters<NonNullable<RelayShellMount["open"]>>[0], options: Parameters<NonNullable<RelayShellMount["open"]>>[1]) => {
+  const device = await options?.store?.get(offer.server_id);
+  return { how: options?.accountListKey === true ? "list" : options?.accountOpensAll === true ? "sign-in" : "other", key: device?.public_spki, id: device?.device_id };
+};
+
+it("a PC the account's signed list holds is opened with the key that list holds for this device, the account key", async () => {
+  const came: Awaited<ReturnType<typeof cameBy>>[] = [];
+  const run = await accountPc({ listed: { holds: true }, open: async (offer, options) => { came.push(await cameBy(offer, options)); return new Admitted(offer); } });
+  await run.openPage();
+  await run.appOpened;
+  expect(came).toEqual([{ how: "list", key: run.memberKey, id: accountDeviceId(run.serverId, run.memberKey) }]);
+  // the key its sign-in registered is another key, and opens nothing there
+  expect(run.registrationKeys[0]).not.toBe(run.memberKey);
+});
+
+it("a PC the list holds that follows no list itself is opened the way from before, once", async () => {
+  const came: string[] = [];
+  const run = await accountPc({ listed: { holds: true }, open: async (offer, options) => {
+    const { how } = await cameBy(offer, options);
+    came.push(how);
+    if (how === "list") throw new AccountListUnsupportedError();
+    return new Admitted(offer);
+  } });
+  await run.openPage();
+  await run.appOpened;
+  expect([came, run.apps()]).toEqual([["list", "sign-in"], 1]);
+});
+
+it("a PC that only the account service names stays a row, marked, that nothing opens by itself: a tap opens it the way from before", async () => {
+  const came: string[] = [];
+  const run = await accountPc({ listed: { holds: false }, open: async (offer, options) => { came.push((await cameBy(offer, options)).how); return new Admitted(offer); } });
+  // the launch after the sign-in: the row is there, says that the list does not hold the PC, and nothing was asked of it
+  await run.settled(() => { const { state } = run.current(); return state.kind === "empty" && state.account?.kind === "signed-in" && state.account.pcs !== null; });
+  const { state } = run.current();
+  expect(state.kind === "empty" && state.account?.kind === "signed-in" ? state.account.pcs : null).toMatchObject([{ server_id: run.serverId, notInList: true, paired: false }]);
+  expect([came, run.navigations, run.apps()]).toEqual([[], [], 0]);
+  // its own page, where a tap on the row leads
+  notePcTap(run.serverId);
+  await run.openPage();
+  await run.appOpened;
+  expect([came, run.apps()]).toEqual([["sign-in"], 1]);
+});
+
+it("the page of such a PC that no press led to opens nothing: a reload, a restored tab or the app starting again puts up the sheet, and its press opens the PC", async () => {
+  const came: string[] = [];
+  const run = await accountPc({ listed: { holds: false }, open: async (offer, options) => { came.push((await cameBy(offer, options)).how); return new Admitted(offer); } });
+  // the PC's page, loaded with no press on its row (the app reopened it as it started): its own join sheet, nothing asked
+  await run.openPage();
+  const path = run.navigations[0];
+  if (path === undefined) throw new TypeError("Missing the PC's join screen");
+  expect([came, run.apps()]).toEqual([[], 0]);
+  // a press that led to another PC's page is no word for this one
+  notePcTap("ab".repeat(16));
+  await run.openPage();
+  expect([came, run.apps(), run.navigations.length]).toEqual([[], 0, 2]);
+  await run.follow(path);
+  await run.sheetRead();
+  expect([came, run.apps()]).toEqual([[], 0]);
+  // the press on the sheet is that word: the PC is opened the way from before
+  run.current().onPair();
+  await run.appOpened;
+  expect([came, run.apps()]).toEqual([["sign-in"], 1]);
+});
+
+it("a PC that follows this device's list though the device's copy does not name it is opened with the list key, once it says so", async () => {
+  const came: string[] = [];
+  const run = await accountPc({ listed: { holds: false }, open: async (offer, options) => {
+    const { how } = await cameBy(offer, options);
+    came.push(how);
+    if (how !== "list") throw new MuxProtocolError("account_list_required", "");
+    return new Admitted(offer);
+  } });
+  notePcTap(run.serverId);
+  await run.openPage();
+  await run.appOpened;
+  expect([came, run.apps()]).toEqual([["sign-in", "list"], 1]);
+});
+
+it("a PC that says it lets devices in by the list is read for, and opened with the list key once the list holds it", async () => {
+  const came: string[] = [];
+  // this device's copy is behind: only a read after the PC's answer finds the device in the list, and the PC in it
+  const listed = { holds: false, in: false, read: () => { if (came.length > 0) { listed.in = true; listed.holds = true; } } };
+  const run = await accountPc({ listed, open: async (offer, options) => {
+    const { how } = await cameBy(offer, options);
+    came.push(how);
+    if (how !== "list") throw new MuxProtocolError("account_list_required", "");
+    return new Admitted(offer);
+  } });
+  notePcTap(run.serverId);
+  await run.openPage();
+  await run.appOpened;
+  expect([came, run.apps()]).toEqual([["sign-in", "list"], 1]);
+  expect(run.listReads.length).toBeGreaterThanOrEqual(1);
+});
+
+it("a PC that wants the list key from a device that is in no list leads to the join, and nothing says the device was removed", async () => {
+  const came: string[] = [];
+  const run = await accountPc({ listed: { holds: false, in: false }, open: async (offer, options) => { came.push((await cameBy(offer, options)).how); throw new MuxProtocolError("account_list_required", ""); } });
+  await run.openPage();
+  await run.settled(() => run.current().state.kind === "failed" || run.navigations.length > 0);
+  expect(came).toEqual(["sign-in"]);
+  expect(run.navigations[0]).toStartWith(`/s/${run.serverId}/#offer=`);
+  expect(removedPcs()[run.serverId]).toBeUndefined();
+});
+
+it("a PC that refuses the list key of a device it does not hold leads to the join", async () => {
+  const came: string[] = [];
+  const run = await accountPc({ listed: { holds: true }, open: async (offer, options) => { came.push((await cameBy(offer, options)).how); throw new MuxProtocolError("auth_failed", ""); } });
+  await run.openPage();
+  await run.settled(() => run.navigations.length > 0);
+  expect(came).toEqual(["list"]);
+  expect(run.navigations[0]).toStartWith(`/s/${run.serverId}/#offer=`);
+  expect(removedPcs()[run.serverId]).toBeUndefined();
+});
+
+it("a PC that begins to let devices in by the list under an open session is opened again with the list key, by itself", async () => {
+  const came: string[] = [];
+  const fatal: ((error: Error) => void)[] = [];
+  const again = Promise.withResolvers<void>();
+  // the device was let into the list, and the list took the PC in, while its session there was open
+  const listed = { holds: false, in: false, read: () => { if (fatal.length > 0) { listed.in = true; listed.holds = true; } } };
+  const run = await accountPc({ listed, open: async (offer, options) => {
+    came.push((await cameBy(offer, options)).how);
+    if (options?.onFatal) fatal.push(options.onFatal);
+    if (came.length === 2) again.resolve();
+    return new Admitted(offer);
+  } });
+  await run.openPage();
+  await run.appOpened;
+  expect([came, run.apps()]).toEqual([["sign-in"], 1]);
+  // the PC ended the session as a row that changed, and refused the same key when the transport came back with it
+  fatal[0]!(new MuxProtocolError("account_list_required", ""));
+  await again.promise;
+  await run.settled(() => run.apps() === 2);
+  expect([came, run.apps()]).toEqual([["sign-in", "list"], 2]);
+  expect(removedPcs()[run.serverId]).toBeUndefined();
+});
+
+it("a PC of the list that follows none yet, opened the way from before, is opened with the list key by itself once it pins: the one retry is each sign-in's own", async () => {
+  const came: string[] = [];
+  const fatal: ((error: Error) => void)[] = [];
+  const again = Promise.withResolvers<void>();
+  let pinned = false;
+  const run = await accountPc({ listed: { holds: true }, open: async (offer, options) => {
+    const { how } = await cameBy(offer, options);
+    came.push(how);
+    if (!pinned && how === "list") throw new AccountListUnsupportedError();
+    if (pinned && how !== "list") throw new MuxProtocolError("account_list_required", "");
+    if (options?.onFatal) fatal.push(options.onFatal);
+    if (pinned) again.resolve();
+    return new Admitted(offer);
+  } });
+  await run.openPage();
+  await run.appOpened;
+  expect([came, run.apps()]).toEqual([["list", "sign-in"], 1]);
+  // the PC pins, and ends the session that came with the key of the sign-in
+  pinned = true;
+  fatal[0]!(new MuxProtocolError("account_list_required", ""));
+  await again.promise;
+  await run.settled(() => run.apps() === 2);
+  expect([came, run.apps(), run.navigations]).toEqual([["list", "sign-in", "list"], 2, []]);
+});
+
+it("a session opened with the list key ends when this device's own copy holds that PC no more: it is not opened again by itself, and the screen says what the list says", async () => {
+  const came: string[] = [];
+  const closed: string[] = [];
+  const listed = { holds: true };
+  const run = await accountPc({ listed, open: async (offer, options) => {
+    came.push((await cameBy(offer, options)).how);
+    const opened = new Admitted(offer);
+    const close = opened.close.bind(opened);
+    opened.close = () => { closed.push("closed"); close(); };
+    return opened;
+  } });
+  await run.openPage();
+  await run.appOpened;
+  expect([came, run.apps()]).toEqual([["list"], 1]);
+  // another member puts the PC out, and this device's copy reads it
+  listed.holds = false;
+  run.listMoved();
+  await run.settled(() => run.current().state.kind === "failed");
+  expect(run.current().state).toMatchObject({ kind: "failed", failure: "list-removed" });
+  expect([came, closed]).toEqual([["list"], ["closed"]]);
+  expect(removedPcs()[run.serverId]).toBeUndefined();
+});
+
+it("a session the shell owns tells the PC where the list stands whatever screen shows: a PC that must be updated first is told too", async () => {
+  let opened: Pinned | undefined;
+  const run = await accountPc({ listed: { holds: true, peer: { list: LIST, head: LIST_HEAD } }, open: async (offer) => { opened = new Pinned(offer, "0.1.0"); return opened; } });
+  await run.openPage();
+  await run.settled(() => run.current().state.kind === "outdated");
+  expect(run.apps()).toBe(0);
+  await polled(() => opened?.asked.includes("/api/account/list/page") === true);
+  expect(opened!.asked.filter((path) => path.startsWith("/api/account/list/"))).toEqual(["/api/account/list/head", "/api/account/list/page"]);
+});
+
+it("a device that learns the PC it has open was put out ends its use of it at once, and hands that PC the removal before it closes the session", async () => {
+  let opened: Pinned | undefined;
+  const listed: { holds: boolean; peer: { list: string; head: { seq: number; hash: string } } } = { holds: true, peer: { list: LIST, head: LIST_HEAD } };
+  const run = await accountPc({ listed, open: async (offer) => { opened = new Pinned(offer); return opened; } });
+  await run.openPage();
+  await run.appOpened;
+  await polled(() => opened?.asked.includes("/api/account/list/page") === true);
+  const before = opened!.asked.length;
+  // another member puts this PC out, and this device's copy reads it: one entry further
+  listed.holds = false;
+  listed.peer = { list: LIST, head: { seq: 5, hash: "5e".repeat(32) } };
+  run.listMoved();
+  await run.settled(() => run.current().state.kind === "failed");
+  expect(run.current().state).toMatchObject({ kind: "failed", failure: "list-removed" });
+  await polled(() => opened!.asked.includes("close"));
+  expect(opened!.asked.slice(before)).toEqual(["/api/account/list/head", "/api/account/list/page", "close"]);
+});
+
+/** A pinned PC whose next head answer waits for `release`, and then hands this device a page of its own. */
+class HeldHead extends Pinned {
+  held: { readonly promise: Promise<void> } | null = null;
+  answered = false;
+  override async fetch(input: RequestInfo | URL): Promise<Response> {
+    const gate = this.held;
+    if (String(input) !== "/api/account/list/head" || gate === null) return super.fetch(input);
+    this.held = null;
+    this.asked.push(String(input));
+    await gate.promise;
+    this.answered = true;
+    return Response.json({ list: LIST, place: { seq: 7, hash: "7a".repeat(32) }, page: { list: LIST, after: 6, entries: ["entry"], head: { seq: 7, hash: "7a".repeat(32) } } });
+  }
+}
+
+it("a device that learns the PC it has open was put out ends the exchange it had under way: a late answer of that PC is not taken", async () => {
+  let opened: HeldHead | undefined;
+  let took = 0;
+  const listed: { holds: boolean; peer: { list: string; head: { seq: number; hash: string } }; took: () => void } = { holds: true, peer: { list: LIST, head: LIST_HEAD }, took: () => { took += 1; } };
+  const run = await accountPc({ listed, open: async (offer) => { opened = new HeldHead(offer); return opened; } });
+  await run.openPage();
+  await run.appOpened;
+  await polled(() => opened?.asked.includes("/api/account/list/page") === true);
+  // the copy moves its head: the ordinary exchange asks, and its answer is on its way
+  const gate = Promise.withResolvers<void>();
+  opened!.held = gate;
+  listed.peer = { list: LIST, head: { seq: 5, hash: "5e".repeat(32) } };
+  run.listMoved();
+  await polled(() => opened!.held === null);
+  // then the list puts the PC out
+  listed.holds = false;
+  listed.peer = { list: LIST, head: { seq: 6, hash: "6f".repeat(32) } };
+  run.listMoved();
+  await run.settled(() => run.current().state.kind === "failed");
+  await polled(() => opened!.asked.includes("close"));
+  gate.resolve();
+  await polled(() => opened!.answered);
+  for (let turn = 0; turn < 20; turn += 1) await new Promise<void>((resolve) => { setImmediate(resolve); });
+  expect(took).toBe(0);
+});
+
+it("a session opened with the list key is compared for the account it was opened for: while the page's list stands for another, the PC is told nothing", async () => {
+  let opened: Pinned | undefined;
+  const listed: { holds: boolean; peer: { list: string; head: { seq: number; hash: string } }; account?: string } = { holds: true, peer: { list: LIST, head: LIST_HEAD } };
+  // another tab signs this browser in to another account while the PC lets this device in
+  const run = await accountPc({ listed, open: async (offer) => { listed.account = "acct_2"; opened = new Pinned(offer); return opened; } });
+  await run.openPage();
+  await run.appOpened;
+  expect(opened!.asked.filter((path) => path.startsWith("/api/account/list/"))).toEqual([]);
+  // that account is the page's again, and its list moves: now the PC is told
+  delete listed.account;
+  listed.peer = { list: LIST, head: { seq: 5, hash: "5e".repeat(32) } };
+  run.listMoved();
+  await polled(() => opened!.asked.includes("/api/account/list/head"));
+});
+
+it("a session opened with the list key ends when this device's own copy holds this device no more, and leads to the join: nothing says the PC removed it", async () => {
+  const came: string[] = [];
+  const listed: { holds: boolean; out?: boolean } = { holds: true };
+  const run = await accountPc({ listed, open: async (offer, options) => { came.push((await cameBy(offer, options)).how); return new Admitted(offer); } });
+  await run.openPage();
+  await run.appOpened;
+  listed.out = true;
+  run.listMoved();
+  await run.navigated;
+  expect([came, run.navigations.some((path) => path.includes("#offer="))]).toEqual([["list"], true]);
+  expect(removedPcs()[run.serverId]).toBeUndefined();
+});
+
+it("a launch asks to join no PC that this device's list of the account does not hold: its row waits for a tap", () => {
+  const row = (id: string, more: Partial<MyPc> = {}): MyPc => ({ server_id: id, name: id, state: "needs-approval", last_seen_at: new Date().toISOString(), added_at: null, listed: true, paired: false, linked: false, join: { server_public_key: "k", relay: "wss://relay.ovis.sh" }, ...more });
+  expect(accountLaunchPcs([row("outside", { notInList: true }), row("held", { byList: true }), row("plain")]).map((pc) => pc.server_id).sort()).toEqual(["held", "plain"]);
+});
+
+it("a PC the list put out while this device was on its way to it is not opened the way from before", async () => {
+  const came: string[] = [];
+  const listed = { holds: true };
+  const run = await accountPc({ listed, open: async (offer, options) => {
+    came.push((await cameBy(offer, options)).how);
+    // another device removed the PC, and this page's list took the removal, before the PC answered
+    listed.holds = false;
+    throw new AccountListUnsupportedError();
+  } });
+  await run.openPage();
+  await run.settled(() => run.navigations.length > 0 || run.current().state.kind === "failed");
+  expect([came, run.apps()]).toEqual([["list"], 0]);
+});
+
+it("a list key that the PC refuses after it was let in leads to the join, and nothing says the PC removed the device", async () => {
+  const came: string[] = [];
+  const fatal: ((error: Error) => void)[] = [];
+  const run = await accountPc({ listed: { holds: true }, open: async (offer, options) => {
+    came.push((await cameBy(offer, options)).how);
+    if (options?.onFatal) fatal.push(options.onFatal);
+    return new Admitted(offer);
+  } });
+  await run.openPage();
+  await run.appOpened;
+  expect(came).toEqual(["list"]);
+  // later the PC refuses that key at a reconnect: the device is not in that PC's list any more
+  fatal[0]!(new MuxProtocolError("auth_failed", ""));
+  await run.settled(() => run.navigations.length > 0);
+  expect(run.navigations[0]).toStartWith(`/s/${run.serverId}/#offer=`);
+  expect(removedPcs()[run.serverId]).toBeUndefined();
+});
+
+it("a join through a PC pinned to the list brings this device's card, waits for its person's press of The numbers match, takes the place it is handed, and opens the PC anew with the list key", async () => {
+  const LIST = "5c".repeat(32);
+  const place = { id: LIST, seq: 3, hash: "ab".repeat(32) };
+  const opens: { how: string; intent: unknown; list: unknown }[] = [];
+  const adopted: unknown[] = [];
+  let matched = false;
+  // this device signed in, claimed its key for the account's list and waits; the place it is handed lets it follow
+  const listed: NonNullable<Parameters<typeof accountPc>[0]["listed"]> = { holds: false, in: false, waits: true, adopted: (offer) => { adopted.push(offer); listed.in = true; listed.holds = true; } };
+  class LetIn extends Admitted {
+    override get listPlace() { return place; }
+  }
+  const run = await accountPc({ release: false, newUntil: inADay(), listed, admits: true, open: async (offer, options) => {
+    const { how } = await cameBy(offer, options);
+    opens.push({ how, intent: options?.intent, list: options?.listCard?.list });
+    // the join: the PC took the card, compared the digits and let the device in by an entry
+    if (how !== "list") { await options?.compare?.("123456", "pc", true); matched = true; return new LetIn(offer); }
+    return new Admitted(offer);
+  } });
+  await newPcSheet(run);
+  run.current().onPair();
+  await run.settled(() => run.current().state.kind === "compare");
+  // a member signs this device in on its person's word: even where the PC takes the number on its own screen, the
+  // numbers wait here for the press, and the screen keeps saying where to approve
+  expect(run.current().state).toMatchObject({ kind: "compare", digits: "123456", confirmed: false, alone: true, approveOn: "pc" });
+  await Promise.resolve();
+  expect(matched).toBe(false);
+  run.current().onMatch?.();
+  expect(run.current().state).toMatchObject({ kind: "compare", digits: "123456", confirmed: true, alone: true, approveOn: "pc" });
+  await run.settled(() => opens.length === 2);
+  await run.appOpened;
+  expect(opens).toEqual([{ how: "other", intent: "account", list: LIST }, { how: "list", intent: undefined, list: undefined }]);
+  expect(adopted).toEqual([{ list: LIST, seq: 3, hash: place.hash }]);
+  expect(matched).toBe(true);
+  expect(run.apps()).toBe(1);
+});
+
+it("a join through a PC pinned to the list keeps its place for the account its card was made for, and opens the PC with no key of another account signed in meanwhile", async () => {
+  const LIST = "5c".repeat(32);
+  const place = { id: LIST, seq: 3, hash: "ab".repeat(32) };
+  const opens: string[] = [];
+  const adopted: unknown[] = [];
+  const listed: NonNullable<Parameters<typeof accountPc>[0]["listed"]> = { holds: false, in: false, waits: true, adopted: (offer, account) => { adopted.push([offer, account]); } };
+  class LetIn extends Admitted {
+    override get listPlace() { return place; }
+  }
+  const run: Awaited<ReturnType<typeof accountPc>> = await accountPc({ release: false, newUntil: inADay(), listed, admits: true, open: async (offer, options) => {
+    const { how } = await cameBy(offer, options);
+    opens.push(how);
+    if (how !== "other") return new Admitted(offer);
+    await options?.compare?.("123456", undefined, true);
+    // while the join waited, another tab signed out of this account and in to another one
+    const session = (await run.accountStore.get("session"))!;
+    await run.accountStore.set("session", { ...session, account: "acct_2", sign_in_id: "another-tab" });
+    return new LetIn(offer);
+  } });
+  await newPcSheet(run);
+  run.current().onPair();
+  await run.settled(() => run.current().state.kind === "compare");
+  run.current().onMatch?.();
+  await run.settled(() => adopted.length === 1 && run.current().state.kind !== "compare");
+  // kept for the account the card was made for, never the one signed in now; and the PC is not opened with that one's key
+  expect([adopted, opens, run.apps()]).toEqual([[[{ list: LIST, seq: 3, hash: place.hash }, "acct_1"]], ["other"], 0]);
+});
+
+it("a join through a PC pinned to the list closes its session as soon as it is handed its place, and goes to the front page where the sign-in ended while it took it", async () => {
+  const LIST = "5c".repeat(32);
+  const place = { id: LIST, seq: 3, hash: "ab".repeat(32) };
+  const closedAt: number[] = [];
+  let joined: { closes: number } | undefined;
+  const listed: NonNullable<Parameters<typeof accountPc>[0]["listed"]> = { holds: false, in: false, waits: true, adopted: () => {
+    closedAt.push(joined?.closes ?? -1);
+    throw new SignedOutError();
+  } };
+  class LetIn extends Admitted {
+    closes = 0;
+    override get listPlace() { return place; }
+    override close(): void { this.closes += 1; super.close(); }
+  }
+  const unhandled: unknown[] = [];
+  const note = (reason: unknown): void => { unhandled.push(reason); };
+  process.on("unhandledRejection", note);
+  try {
+    const run = await accountPc({ release: false, newUntil: inADay(), listed, admits: true, open: async (offer, options) => {
+      await options?.compare?.("123456", undefined, true);
+      const opened = new LetIn(offer);
+      joined = opened;
+      return opened;
+    } });
+    await newPcSheet(run);
+    run.current().onPair();
+    await run.settled(() => run.current().state.kind === "compare");
+    run.current().onMatch?.();
+    await run.settled(() => closedAt.length === 1 && run.current().state.kind !== "compare");
+    await new Promise<void>((resolve) => { setImmediate(resolve); });
+    // closed before the place was taken, once, and nothing was left to reject unheard
+    expect([closedAt, joined?.closes, unhandled]).toEqual([[1], 1, []]);
+    expect(run.current().state.kind).not.toBe("failed");
+    expect(run.apps()).toBe(0);
+  } finally {
+    process.off("unhandledRejection", note);
+  }
+});
+
+it("a device whose own time in the list is over is told that, when the PC ends its session: nobody removed it, and nothing is forgotten", async () => {
+  const fatal: ((error: Error) => void)[] = [];
+  let until = Math.floor(Date.now() / 1000) + 3600;
+  const run = await accountPc({ listed: { holds: true, until: () => until }, open: async (offer, options) => {
+    if (options?.onFatal) fatal.push(options.onFatal);
+    return new Admitted(offer);
+  } });
+  await run.openPage();
+  await run.appOpened;
+  // the hour is over by this device's own copy of the list, and the PC closes the session at that second
+  until = Math.floor(Date.now() / 1000) - 1;
+  fatal[0]!(new MuxProtocolError("auth_revoked", ""));
+  await run.settled(() => run.current().state.kind === "failed");
+  expect(run.current().state).toMatchObject({ kind: "failed", failure: "list-time-over" });
+  expect(removedPcs()[run.serverId]).toBeUndefined();
+  expect(run.navigations).toEqual([]);
+});
+
+it("a device whose clock was set back after its time ran out is still told that its time is over, by the time it saw before", async () => {
+  const fatal: ((error: Error) => void)[] = [];
+  const now = Math.floor(Date.now() / 1000);
+  // the list holds this device for another hour by its clock as it reads now; the latest time it saved is two hours on
+  const listed = { holds: true, until: () => now + 3600, shown: () => now + 7200 };
+  const run = await accountPc({ listed, open: async (offer, options) => {
+    if (options?.onFatal) fatal.push(options.onFatal);
+    return new Admitted(offer);
+  } });
+  await run.openPage();
+  await run.appOpened;
+  fatal[0]!(new MuxProtocolError("auth_revoked", ""));
+  await run.settled(() => run.current().state.kind === "failed");
+  expect(run.current().state).toMatchObject({ kind: "failed", failure: "list-time-over" });
+  expect(removedPcs()[run.serverId]).toBeUndefined();
 });

@@ -6,7 +6,7 @@ import type { SeenFinish } from "./seen.ts";
 
 export const LOCAL_MACHINE = "local";
 export const BRIDGE_PROTOCOL = 1;
-export const REMOTE_BUNDLE_VERSION = "53";
+export const REMOTE_BUNDLE_VERSION = "56";
 export interface PaneTarget { machine_id: string; pane_id: string }
 export type MachineState = "connecting" | "connected" | "reconnecting" | "disconnected" | "error";
 export interface SshTarget {
@@ -311,7 +311,11 @@ export interface HerdrCoreFacts {
   bundled_unused?: true;
 }
 export interface FoundHerdrSession { socket_path: string; session?: string; label: string }
-export interface FoundOvis { socket_path: string; runtime: "herdr-core" }
+/**
+ * `port`: the loopback port it answers on, to tell two on one PC apart (absent from a record saved before it was sent).
+ * `newer_than_app`: it runs a newer release than this app, which must be updated before it can connect.
+ */
+export interface FoundOvis { socket_path: string; runtime: "herdr-core"; port?: number; newer_than_app?: true }
 /** `install_ovis`: an account add over SSH found no Ovis of that PC's own there; installing Ovis there (PcInstallJob) is the way on */
 export type MachineAction = "connect" | "update_bridge" | "setup" | "bridge_conflict" | "windows_login" | "windows_start_failed" | "choose_herdr" | "install_ovis";
 /** `ovis`: the PC's own Ovis updates itself (Machine.remote_ovis); absent for a bridge this app installs */
@@ -355,8 +359,9 @@ export interface AccountAddRelay { phase: "off" | "connecting" | "online" | "err
 /**
  * POST /api/account/ssh-add's answer: that PC is in `account`; `relay` is null where its Ovis did not say (one from before
  * this), or where the take's answer was lost and a second inspect found that PC in the account (`unanswered`).
+ * `list_joined`: the account keeps a signed list, and that PC joined it by this add (not one the list held already).
  */
-export interface AccountAddTaken { account: string; server_id: string; relay: AccountAddRelay | null; unanswered?: true }
+export interface AccountAddTaken { account: string; server_id: string; relay: AccountAddRelay | null; unanswered?: true; list_joined?: true }
 
 const RELAY_PHASES: readonly unknown[] = ["off", "connecting", "online", "error"];
 const RELAY_BLOCKS: readonly unknown[] = ["serve_only", "identity_unreadable", null];
@@ -444,6 +449,20 @@ export interface DevicePairedSeenEvent {
 /** What a comparison asks for (docs/account.md, "Negotiation"): pairing this PC only, or joining the account. */
 export type PairingIntent = "pc" | "account";
 /**
+ * Where an add of this PC to an account that keeps a signed list stands (GET /api/account/list/add, this PC's own
+ * window and CLI alone; server/account/list-add.ts `AddState` answers it). `number`: `digits` are on this PC's
+ * screen until `until`, and the person says here whether the device adding the PC shows the same
+ * (POST /api/account/list/add/confirm `{ digits, run }`, or `/cancel` `{ run }`).
+ */
+export type ListAddState =
+  | { readonly state: "none" | "replaced" }
+  | { readonly state: "no_list"; readonly account: string }
+  | { readonly state: "waiting" | "confirmed"; readonly run: string; readonly account: string; readonly list: string; readonly until: string }
+  | { readonly state: "number"; readonly run: string; readonly account: string; readonly list: string; readonly digits: string; readonly until: string }
+  | { readonly state: "added"; readonly run: string; readonly account: string; readonly list: string }
+  | { readonly state: "ended"; readonly run: string; readonly account: string; readonly why: string };
+
+/**
  * An account join taken outside the pairing window, as this PC's own window lists it (GET /api/relay/joins): never its
  * digits, which the owner types from the new device's screen (POST /api/relay/join). `digits`: a first join, asked while
  * the PC had no member to approve it, which the owner compares and allows or declines by a tap there.
@@ -454,6 +473,13 @@ export interface OwnJoinRequest {
   asked_at: string;
   left_ms: number;
   digits?: string;
+  /** The join is let in by the account's signed list: an approval here is received at once, and the device is in only once its entry is in the list. */
+  list?: true;
+  /**
+   * A join into the account on a PC pinned to its list, from an app that knows no join into a list (an Ovis older than
+   * 0.5.10): this PC lets it in by nothing, so nothing is approved for it here; that app is updated, and asks again.
+   */
+  list_unknown?: true;
 }
 /**
  * A phone asking to pair through the relay by comparing digits (docs/relay.md): the six digits its
@@ -500,6 +526,23 @@ export interface RemotePairingRequest {
   vouched?: true;
   /** Derived by the receiving PC only after the joining server answered its channel-bound challenge. */
   proven_server_id?: string;
+  /**
+   * The join brought the new device's card for the account's signed list: the PC lets it in by an entry of the list,
+   * which its approver signs and places, never by the approval alone. Absent from an older server, or when false.
+   */
+  list?: true;
+  /**
+   * The new device's person said the digits match (its PAIR_CONFIRM reached the PC). For a join into the list the
+   * approver signs the device's entry only once this is true, so a device that gives up before it is nobody's
+   * member. Absent from an older server, or while it has not confirmed.
+   */
+  confirmed?: true;
+  /**
+   * A join this PC cannot let in: it lets devices in by its account's signed list, and the app that asks knows no join
+   * into a list (an Ovis older than 0.5.10). No approval decides it (409 `list_unknown`); a decline ends it. Absent from
+   * an older server, or when false.
+   */
+  list_unknown?: true;
 }
 
 export type MachineEvent = { type: "machines"; machines: Machine[] } | { type: "machine-message"; machine_id: string; message: ServerMessage }

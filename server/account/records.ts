@@ -199,7 +199,7 @@ export async function stageMailboxAdds(values: readonly unknown[]) {
 }
 
 /** `list_removed`: this PC's relay identity was removed from that account by its signed list. */
-export type LinkRefusal = RecordRefusal | "key_in_use" | "link_required" | "unverified_device" | "pairing_ended" | "replacement_needs_app" | "list_removed";
+export type LinkRefusal = RecordRefusal | "key_in_use" | "link_required" | "unverified_device" | "pairing_ended" | "replacement_needs_app" | "list_removed" | "list_named";
 
 /** What a link is held to on this PC besides its devices (server/account/routes.ts). */
 export interface LinkRules {
@@ -264,6 +264,10 @@ const SERVICE_UNAVAILABLE = "The Ovis account service did not answer, so this PC
 
 /** What a device that already drives this PC reads when the code it was linking under ended, or another came, meanwhile. */
 const PAIRING_ENDED = "This PC's pairing code ended or changed while this device was linking. Send the link again.";
+/** Said to a row that waits to link and named its account's signed list for this PC, when it then sends a link. */
+export const LIST_NAMED_LINK = "This device named its account's signed list for this PC, so the PC joins that account by its list alone, once the list holds it. To link this device instead, scan the PC's QR code again.";
+/** Said to a row that waits to link and names a second list for this PC. */
+export const LIST_NAMED_OTHER = "This device named another list for this PC already. Scan the PC's QR code again.";
 
 /** What applyLink's look found: the row still waits to link, the account it must name, and whether the account service is asked. */
 interface Look { waits: boolean; expected: string | null; vouching: boolean }
@@ -331,6 +335,78 @@ function look(store: DeviceStore, link: LinkRecord, deviceId: string, arrival: L
 }
 
 /**
+ * A list a row that waits to link named (listNamedBy). `settled` while the account service is still asked about the
+ * row's key: what the naming comes to, which an ask of the same naming meanwhile waits for.
+ */
+interface ListNaming { readonly account: string; readonly list: string; readonly key: string; settled: Promise<{ ok: true } | LinkRefused> | null }
+
+/** The lists rows that wait to link have named, by device store: a row names one list, and is asked about once. */
+const namedLists = new WeakMap<DeviceStore, Map<string, ListNaming>>();
+
+/** The list the row `deviceId` named, or is naming, for this PC (listNamedBy); undefined for none. Its asks from then on are of where that naming stands. */
+export function listNamingOf(store: DeviceStore, deviceId: string): { readonly account: string; readonly list: string; readonly key: string } | undefined {
+  return namedLists.get(store)?.get(deviceId);
+}
+
+/**
+ * A device that paired with this PC by a code made for a PC in no account names its account's signed list, in place of
+ * a link (docs/account.md, "A device that scans the PC's QR code names the list"): the pairing by that code is a
+ * channel the account service is no part of, so what the device says in it is the device's own word. Every rule of a
+ * link holds for it, and the account service's word on the device's key, so it brings the PC nowhere a link would
+ * not. A row names one list. Nothing is written: the PC then joins by that list, or not at all (ListFollow.joinList).
+ */
+export async function listNamedBy(store: DeviceStore, named: { readonly account: string; readonly list: string }, session: { deviceId: string; sessionKey: string }, arrival: LinkArrival, rules: LinkRules = {}): Promise<{ ok: true } | LinkRefused> {
+  const { deviceId, sessionKey } = session;
+  const link = { account: named.account } as LinkRecord;
+  const looked = look(store, link, deviceId, arrival, rules);
+  if ("refused" in looked) return looked;
+  // only a PC in no account, and only a device that waits to link under a code made for that account
+  if (store.account() !== null || !looked.waits || looked.expected === null) return { refused: "link_required" };
+  if (store.isTombstoned(sessionKey)) return { refused: "tombstoned" };
+  const rows = namedLists.get(store) ?? new Map<string, ListNaming>();
+  namedLists.set(store, rows);
+  const before = rows.get(deviceId);
+  if (before !== undefined) {
+    if (before.account !== named.account || before.list !== named.list || before.key !== sessionKey) return { refused: "pairing_ended", message: LIST_NAMED_OTHER };
+    // the same naming, asked again while the account service is asked about it: what that comes to
+    return await (before.settled ?? { ok: true as const });
+  }
+  // The row's naming is taken now, before anything is awaited: a naming of another list meanwhile is refused, and an ask
+  // of this one waits for this one's answer. One the account service does not confirm is no naming
+  let settle!: (outcome: { ok: true } | LinkRefused) => void;
+  const naming: ListNaming = { account: named.account, list: named.list, key: sessionKey, settled: new Promise((resolve) => { settle = resolve; }) };
+  rows.set(deviceId, naming);
+  let outcome: { ok: true } | LinkRefused = { refused: "account_unavailable", message: SERVICE_UNAVAILABLE };
+  try { outcome = await confirmNaming(store, link, { deviceId, sessionKey, expected: looked.expected }, arrival, rules); }
+  finally {
+    if (!("ok" in outcome) && rows.get(deviceId) === naming) rows.delete(deviceId);
+    naming.settled = null;
+    settle(outcome);
+  }
+  return outcome;
+}
+
+/** The account service's word on the key of a row that names its list, and every check of a link read again after it. */
+async function confirmNaming(store: DeviceStore, link: LinkRecord, row: { readonly deviceId: string; readonly sessionKey: string; readonly expected: string }, arrival: LinkArrival, rules: LinkRules): Promise<{ ok: true } | LinkRefused> {
+  const { deviceId, sessionKey, expected } = row;
+  store.noteLink(deviceId, "asked");
+  const word = rules.vouch ? await rules.vouch(expected, sessionKey, true) : { vouched: false };
+  // whatever happened meanwhile (the row's time, the code's end) is read again now
+  const looked = look(store, link, deviceId, arrival, rules);
+  if ("refused" in looked) return looked;
+  if (store.account() !== null || !looked.waits) return { refused: "link_required" };
+  if ("unavailable" in word) {
+    store.noteLink(deviceId, "service_unreachable");
+    return { refused: "account_unavailable", message: SERVICE_UNAVAILABLE, retryAfter: word.retryAfter };
+  }
+  if (!word.vouched) {
+    store.turnAway(deviceId, "unverified");
+    return { refused: "unverified_device", message: UNVERIFIED_DEVICE };
+  }
+  return { ok: true };
+}
+
+/**
  * A `link` from the device `deviceId` over its own session to the PC `serverId`. It needs no
  * member: the session is its authority, which is how a PC gets its first one.
  *
@@ -349,15 +425,19 @@ export async function applyLink(store: DeviceStore, value: unknown, session: { d
   if (link.server_id !== serverId || link.device_id !== deviceId || link.old_key !== sessionKey) return { refused: "link_not_owner" };
   let looked = look(store, link, deviceId, arrival, rules);
   if ("refused" in looked) return looked;
+  // A row that named its account's signed list is added by that list or not at all: the old link path is closed for it
+  // (ending that naming is ending the pairing)
+  if (listNamingOf(store, deviceId) !== undefined) return { refused: "list_named", message: LIST_NAMED_LINK };
   let vouched = false;
   if (looked.vouching) {
     // the key the row holds once linked is the one asked about; a quiet admission counts for the PC's first link only,
     // by a device that paired with this code
     if (looked.waits) store.noteLink(deviceId, "asked");
     const word = rules.vouch ? await rules.vouch(looked.expected!, link.key, looked.waits) : { vouched: false };
-    // whatever happened meanwhile (the row's time, the code's end, another link that passed) is read again now
+    // whatever happened meanwhile (the row's time, the code's end, another link that passed, a naming of the list) is read again now
     looked = look(store, link, deviceId, arrival, rules);
     if ("refused" in looked) return looked;
+    if (listNamingOf(store, deviceId) !== undefined) return { refused: "list_named", message: LIST_NAMED_LINK };
     if ("unavailable" in word) {
       // the row and the code stay: the device sends the same link again once the service may be asked
       if (looked.waits) store.noteLink(deviceId, "service_unreachable");

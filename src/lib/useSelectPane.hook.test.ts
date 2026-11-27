@@ -1,26 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { createElement, useRef, useState } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, createElement, useRef, useState } from "react";
+import { openPage, type Page } from "./page.fixture.ts";
 import { useSelectPane } from "./useSelection.ts";
 
 describe("selectPane", () => {
-  let saved: PropertyDescriptor | undefined;
-  let renderer: ReactTestRenderer | undefined;
+  let page: Page;
   let select: (paneId: string, focusInput?: boolean) => void;
   let picks: number;
   let note: string | null;
 
   beforeEach(() => {
-    saved = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+    page = openPage();
     picks = 0;
   });
 
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
-    renderer = undefined;
-    if (saved) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", saved);
-    else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+    await page.close();
   });
 
   async function mount(first: "pane-closed" | "copied" = "pane-closed"): Promise<void> {
@@ -39,7 +34,7 @@ describe("selectPane", () => {
       select = useSelectPane({ pendingLink, pendingFile, setLinkLanded, selectionHint, selectedPaneId, setSelectedPaneId, setNotificationViewTarget, setTerminalPeek, setAutoSelected, setDrawerOpen, setHeaderNote, onPick: () => { picks += 1; } } as Parameters<typeof useSelectPane>[0]).selectPane;
       return null;
     }
-    await act(async () => { renderer = create(createElement(Probe)); });
+    await page.render(createElement(Probe));
   }
 
   it("tells of a pane the user picked", async () => {

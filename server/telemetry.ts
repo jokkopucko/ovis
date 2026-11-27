@@ -14,10 +14,10 @@
  * Only the real entrypoint (index.ts) makes one of these, so tests and a remote PC's bridge
  * send nothing.
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { accessSync, closeSync, constants, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync, type Stats } from "node:fs";
 import { dirname, join } from "node:path";
-import { ACTIVE_LATE_DAYS, countBucket, COUNTS_LATE_DAYS, emptyUsage, harnessOf, sameUsage, TELEMETRY_COUNT_MAX, TELEMETRY_COUNTERS, TELEMETRY_SHOWN, telemetryCountsChange, telemetryHarnesses, telemetrySettings, telemetrySurface, telemetryUsage, type InstallMethod, type TelemetryActive, type TelemetryBucket, type TelemetryChange, type TelemetryCounter, type TelemetryCounts, type TelemetryCountsChange, type TelemetryEvent, type TelemetryHarness, type TelemetryIngress, type TelemetryRuntime, type TelemetrySettings, type TelemetryShown, type TelemetryStatus, type TelemetrySurface, type TelemetryUsage, type TelemetryUsageCount, type TelemetryWidthCounts } from "../shared/telemetry.ts";
+import { ACTIVE_LATE_DAYS, countBucket, COUNTS_LATE_DAYS, emptyUsage, harnessOf, sameUsage, TELEMETRY_ANSWER_WAYS, telemetryAgentVersion, TELEMETRY_VERSIONS_MAX, type TelemetryAgentDay, type TelemetryAnswerWay, TELEMETRY_COUNT_MAX, TELEMETRY_COUNTERS, TELEMETRY_SHOWN, telemetryCountsChange, telemetryHarnesses, telemetrySettings, telemetrySurface, telemetryUsage, type InstallMethod, type TelemetryActive, type TelemetryBucket, type TelemetryChange, type TelemetryCounter, type TelemetryCounts, type TelemetryCountsChange, type TelemetryEvent, type TelemetryHarness, type TelemetryIngress, type TelemetryRuntime, type TelemetrySettings, type TelemetryShown, type TelemetryStatus, type TelemetrySurface, type TelemetryUsage, type TelemetryUsageCount, type TelemetryWidthCounts } from "../shared/telemetry.ts";
 import { COUNTS_ON, NOTICE_VERSION } from "../shared/telemetry-notice.ts";
 import { badRequest, errorResponse, isJsonObject, jsonResponse } from "./http.ts";
 import { FileBusyError } from "./file-pool.ts";
@@ -116,6 +116,49 @@ interface ActiveDay {
   wire_usage: TelemetryUsage | null;
   sent_at: number | null;
   claim?: SendClaim;
+  /** the day's answers per way, exactly: `usage.answers` sends only their buckets */
+  answer_counts: Partial<Record<TelemetryAnswerWay, number>>;
+}
+
+/** What a visit saw of one pane: its agent, whether an Ovis server started it (launched-agents.ts), and the version its session names. */
+export interface VisitPane {
+  agent: string | null | undefined;
+  ovis?: boolean;
+  version?: string | null;
+}
+
+/** `agents` with what one visit saw added: per kind, the most panes of each origin at one visit, and the versions named. */
+function withPanes(agents: Partial<Record<TelemetryHarness, TelemetryAgentDay>>, panes: readonly VisitPane[]): Partial<Record<TelemetryHarness, TelemetryAgentDay>> {
+  const seen = new Map<TelemetryHarness, { ovis: number; other: number; versions: Set<string> }>();
+  for (const pane of panes) {
+    const kind = harnessOf(pane.agent);
+    if (kind === null) continue;
+    const day = seen.get(kind) ?? { ovis: 0, other: 0, versions: new Set<string>() };
+    if (pane.ovis) day.ovis += 1; else day.other += 1;
+    const version = telemetryAgentVersion(pane.version);
+    if (version !== null) day.versions.add(version);
+    seen.set(kind, day);
+  }
+  const next = { ...agents };
+  for (const [kind, now] of seen) {
+    const before = agents[kind];
+    next[kind] = {
+      ovis: Math.min(Math.max(before?.ovis ?? 0, now.ovis), TELEMETRY_COUNT_MAX),
+      other: Math.min(Math.max(before?.other ?? 0, now.other), TELEMETRY_COUNT_MAX),
+      versions: [...new Set([...(before?.versions ?? []), ...now.versions])].sort().slice(0, TELEMETRY_VERSIONS_MAX),
+    };
+  }
+  return next;
+}
+
+function readAnswerCounts(value: unknown): Partial<Record<TelemetryAnswerWay, number>> {
+  const counts: Partial<Record<TelemetryAnswerWay, number>> = {};
+  if (!isJsonObject(value)) return counts;
+  for (const way of TELEMETRY_ANSWER_WAYS) {
+    const count = value[way];
+    if (typeof count === "number" && Number.isInteger(count) && count > 0) counts[way] = Math.min(count, TELEMETRY_COUNT_MAX);
+  }
+  return counts;
 }
 
 function withKind<T extends string>(list: readonly T[], item: T | null | undefined): T[] {
@@ -123,6 +166,14 @@ function withKind<T extends string>(list: readonly T[], item: T | null | undefin
 }
 
 interface Timer { clear(): void }
+
+/**
+ * a pane's agent waiting for its user: whether an answer from Ovis was delivered to it, whether it is over (and waits only
+ * for the pane's answers under way), and the counting generation it began under (null: begun while nothing was counted)
+ */
+interface PaneWait { answered: boolean; ended: boolean; generation: number | null }
+/** the most waits kept: one per pane, so more are of panes long closed */
+const MAX_WAITS = 256;
 
 function utcDay(ms: number): string { return new Date(ms).toISOString().slice(0, 10); }
 
@@ -141,11 +192,13 @@ function readActive(value: unknown): ActiveDay[] {
     const sent = item["sent"] === null ? null : telemetryHarnesses(item["sent"]);
     if (!harnesses || (item["sent"] !== null && !sent)) continue;
     if (days.some((known) => known.day === item["day"])) continue;
-    const usage = telemetryUsage(item["usage"]) ?? emptyUsage();
-    const sentUsage = item["sent_usage"] === undefined ? (sent === null ? null : usage) : telemetryUsage(item["sent_usage"]);
+    const kept = telemetryUsage(item["usage"]);
+    // a day an older build kept has no agents or answers yet: counted from here on
+    const usage = kept === null ? emptyUsage() : { ...emptyUsage(), ...kept };
+    const sentUsage = item["sent_usage"] === undefined ? (sent === null ? null : kept ?? emptyUsage()) : telemetryUsage(item["sent_usage"]);
     const wireUsage = item["wire_usage"] === undefined ? sentUsage : telemetryUsage(item["wire_usage"]);
     const sentAt = typeof item["sent_at"] === "number" && Number.isFinite(item["sent_at"]) ? item["sent_at"] : null;
-    days.push({ day: item["day"], harnesses, sent, visited: item["visited"] !== false, usage, sent_usage: sentUsage, wire_usage: wireUsage, sent_at: sentAt, claim: readClaim(item["claim"]) });
+    days.push({ day: item["day"], harnesses, sent, visited: item["visited"] !== false, usage, sent_usage: sentUsage, wire_usage: wireUsage, sent_at: sentAt, claim: readClaim(item["claim"]), answer_counts: readAnswerCounts(item["answer_counts"]) });
   }
   return days.sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : 0));
 }
@@ -155,7 +208,7 @@ function readActive(value: unknown): ActiveDay[] {
  * its delivery without the usage, so dropping it sends nothing.
  */
 function withoutUsage(days: ActiveDay[]): ActiveDay[] {
-  return days.filter((entry) => entry.visited).map((entry) => ({ ...entry, usage: emptyUsage(), sent_usage: entry.sent_usage === null ? null : emptyUsage(), wire_usage: entry.wire_usage === null ? null : emptyUsage() }));
+  return days.filter((entry) => entry.visited).map((entry) => ({ ...entry, usage: emptyUsage(), sent_usage: entry.sent_usage === null ? null : emptyUsage(), wire_usage: entry.wire_usage === null ? null : emptyUsage(), answer_counts: {} }));
 }
 
 interface WidthTally {
@@ -333,6 +386,20 @@ function offMark(offFile: string): string | null | undefined {
   } catch { return undefined; }
 }
 
+/** the bits of a page's counting generation below the counter: they name the off mark */
+const MARK_BITS = 24;
+
+/**
+ * The counting generation a page hears (TelemetryStatus.counts_generation) and names with its settings and batches: the
+ * counter of offs, and below it a hash of the off mark. Every off writes a new mark, and a mark never comes back once
+ * replaced, so a generation heard before an off is not the one after it, even when the off's server went before it raised
+ * the counter (#4213). It still grows with every off that does raise it, which a page's counts rely on.
+ */
+function pageGeneration(forgotten: number, mark: string | null | undefined): number {
+  const tag = typeof mark === "string" ? createHash("sha256").update(mark).digest().readUIntBE(0, MARK_BITS / 8) : 0;
+  return Math.min(forgotten, Math.floor(Number.MAX_SAFE_INTEGER / 2 ** MARK_BITS)) * 2 ** MARK_BITS + tag;
+}
+
 /** Whether FILE itself says on, whatever the mark says; false when it cannot be read. */
 function fileSaysOn(file: string): boolean {
   try {
@@ -410,6 +477,10 @@ export class Telemetry {
   private readonly offFile: string;
   /** false when the state file could not be written: then nothing is sent (it could not be remembered) */
   private writable = true;
+  /** each pane whose agent waits for its user (`paneStatus`), in memory only */
+  private readonly waits = new Map<string, PaneWait>();
+  /** each pane's answers from Ovis under way (`answering`) */
+  private readonly inFlight = new Map<string, number>();
 
   constructor(private readonly options: {
     stateDir: string;
@@ -588,6 +659,8 @@ export class Telemetry {
   }
 
   status(): TelemetryStatus {
+    // read before the refresh: the generation never names an off the state told with it did not see
+    const mark = offMark(this.offFile);
     this.refresh();
     return {
       enabled: this.saved.enabled,
@@ -595,7 +668,7 @@ export class Telemetry {
       notice_seen: this.saved.notice_seen_at !== null,
       next: this.pending(),
       active: this.activeMessage(this.saved.active.find((entry) => entry.day === utcDay(this.now()))),
-      ...(this.countsOn() ? { counts: this.countsMessage(utcDay(this.now())), counts_generation: this.saved.forgotten } : {}),
+      ...(this.countsOn() ? { counts: this.countsMessage(utcDay(this.now())), counts_generation: pageGeneration(this.saved.forgotten, mark) } : {}),
     };
   }
 
@@ -621,8 +694,8 @@ export class Telemetry {
         const migrated = offMark(this.offFile);
         if (migrated?.startsWith(MIGRATED_MARK)) markAtStart = migrated;
       }
-      // the counter as the request found it: settings told with the generation the page heard last are from now
-      const heard = this.saved.forgotten;
+      // the generation as the request found it: settings told with the one the page heard last are from now
+      const heard = pageGeneration(this.saved.forgotten, markAtStart);
       // an off another server marked and has not written yet: no page heard it, so settings told now may be from before it
       const offUnwritten = !this.saved.enabled && fileSaysOn(this.file);
       // off is marked before FILE is written, whatever another server writes to FILE meanwhile
@@ -708,20 +781,88 @@ export class Telemetry {
    * Counts one prompt answer, alert delivered or alert tapped in today's usage; never while usage
    * is not counted. It sends nothing by itself: the day's next visit (or a later day's) carries it.
    */
-  tally(kind: TelemetryUsageCount): boolean | undefined { return this.locked(() => {
+  tally(kind: TelemetryUsageCount): boolean | undefined {
+    return this.countToday(`the ${kind} count`, (entry) => {
+      if (entry.usage[kind] >= TELEMETRY_COUNT_MAX) return false;
+      entry.usage = { ...entry.usage, [kind]: entry.usage[kind] + 1 };
+      return true;
+    });
+  }
+
+  /** Changes today's row as `change` says (false: nothing changed) and records it; never while usage is not counted. */
+  private countToday(what: string, change: (entry: ActiveDay) => boolean): boolean | undefined { return this.locked(() => {
       if (!this.countingUsage()) return;
       const day = utcDay(this.now());
       this.prune();
       if (!this.saved.active.some((entry) => entry.day === day)) {
-        this.saved.active = readActive([...this.saved.active, { day, harnesses: [], sent: null, visited: false, usage: emptyUsage(), sent_usage: null, wire_usage: null, sent_at: null }]);
+        this.saved.active = readActive([...this.saved.active, { day, harnesses: [], sent: null, visited: false, usage: emptyUsage(), sent_usage: null, wire_usage: null, sent_at: null, answer_counts: {} }]);
       }
       const entry = this.saved.active.find((known) => known.day === day);
-      if (!entry || entry.usage[kind] >= TELEMETRY_COUNT_MAX) return;
-      entry.usage = { ...entry.usage, [kind]: entry.usage[kind] + 1 };
+      if (!entry || !change(entry)) return;
       try { return this.persist(); } catch (error) {
-        console.error(`telemetry: the ${kind} count could not be recorded (${message(error)})`);
+        console.error(`telemetry: ${what} could not be recorded (${message(error)})`);
       }
-    }, () => { this.skipped(`the ${kind} count`); return false; });
+    }, () => { this.skipped(what); return false; });
+  }
+
+  /** the counting generation now, or null while nothing is counted: what began under another is not counted when it ends */
+  private generation(): number | null { return this.countingUsage() ? this.saved.forgotten : null; }
+
+  /** One answer that went the given way: counted under its way, and as a prompt answer when it went from Ovis. */
+  private tallyAnswer(way: TelemetryAnswerWay, generation: number | null): void {
+    if (generation === null || generation !== this.saved.forgotten) return;
+    this.countToday(`the ${way} answer count`, (entry) => {
+      const count = Math.min((entry.answer_counts[way] ?? 0) + 1, TELEMETRY_COUNT_MAX);
+      entry.answer_counts = { ...entry.answer_counts, [way]: count };
+      const bucket = countBucket(count) as TelemetryBucket;
+      const fromOvis = way !== "terminal" && entry.usage.prompt_answers < TELEMETRY_COUNT_MAX;
+      entry.usage = { ...entry.usage, answers: { ...entry.usage.answers, [way]: bucket }, ...(fromOvis ? { prompt_answers: entry.usage.prompt_answers + 1 } : {}) };
+      return true;
+    });
+  }
+
+  /**
+   * Told as an answer from a card begins on a pane; what it gives back is told once that answer ended, with the way it
+   * went (TelemetryAnswerWay) when it was delivered, else null. An answer delivered while the pane's agent waited
+   * (`paneStatus`) is that wait's: a wait that ends with none counts as answered at the `terminal`.
+   */
+  answering(paneId: string): (way: Exclude<TelemetryAnswerWay, "terminal"> | null) => void {
+    const generation = this.generation();
+    this.inFlight.set(paneId, (this.inFlight.get(paneId) ?? 0) + 1);
+    return (way) => {
+      const left = (this.inFlight.get(paneId) ?? 1) - 1;
+      if (left > 0) this.inFlight.set(paneId, left); else this.inFlight.delete(paneId);
+      if (way !== null) this.tallyAnswer(way, generation);
+      // the pane's wait now, whenever it began: a blocked report can arrive after the answer did
+      const wait = this.waits.get(paneId);
+      if (!wait) return;
+      if (way !== null) wait.answered = true;
+      if (wait.ended && left === 0) this.waitEnded(paneId, wait);
+    };
+  }
+
+  /**
+   * The status a pane's agent reported. `blocked` begins a wait for its user; any other status ends it (once an answer
+   * under way has ended), as answered at the terminal when no answer from Ovis was delivered to it.
+   */
+  paneStatus(paneId: string, status: string): void {
+    const wait = this.waits.get(paneId);
+    if (status === "blocked") {
+      if (wait && !wait.ended) return;
+      // a wait that ended while an answer was under way is that answer's, which is not known to have missed it: no terminal
+      if (wait) this.waits.delete(paneId);
+      if (this.waits.size >= MAX_WAITS) this.waits.delete(this.waits.keys().next().value!);
+      this.waits.set(paneId, { answered: false, ended: false, generation: this.generation() });
+      return;
+    }
+    if (!wait || wait.ended) return;
+    wait.ended = true;
+    if (!this.inFlight.get(paneId)) this.waitEnded(paneId, wait);
+  }
+
+  private waitEnded(paneId: string, wait: PaneWait): void {
+    if (this.waits.get(paneId) === wait) this.waits.delete(paneId);
+    if (!wait.answered) this.tallyAnswer("terminal", wait.generation);
   }
 
   /**
@@ -732,7 +873,7 @@ export class Telemetry {
   tallyCounts(change: TelemetryCountsChange): false | undefined { return this.locked(() => {
       if (!this.countsOn() || !this.countingUsage()) return;
       // counted under another generation (before an off, in a tab that did not hear it), or by a page that names none
-      if (change.generation !== this.saved.forgotten) return;
+      if (change.generation !== pageGeneration(this.saved.forgotten, offMark(this.offFile))) return;
       const today = utcDay(this.now());
       const yesterday = utcDay(this.now() - 86_400_000);
       const day = change.day ?? today;
@@ -902,7 +1043,7 @@ export class Telemetry {
   start(): void { this.schedule(START_DELAY_MS); }
   stop(): void { clearTimeout(this.timer); this.abort?.abort(); this.activeTimer?.clear(); this.activeAbort?.abort(); this.countsTimer?.clear(); this.countsAbort?.abort(); }
 
-  active(agents: readonly (string | null | undefined)[] | Promise<readonly (string | null | undefined)[]>, visit: { surface?: TelemetrySurface | null; ingress?: TelemetryIngress | null } = {}): Promise<void> {
+  active(agents: readonly VisitPane[] | Promise<readonly VisitPane[]>, visit: { surface?: TelemetrySurface | null; ingress?: TelemetryIngress | null } = {}): Promise<void> {
     const day = utcDay(this.now());
     // the counter the visit is recorded under, or null when it is not kept: while off, before the current notice, when its
     // write failed, or when another server held the lock
@@ -913,7 +1054,7 @@ export class Telemetry {
       const pruned = this.prune();
       let changed = false;
       if (!this.saved.active.some((entry) => entry.day === day)) {
-        this.saved.active = readActive([...this.saved.active, { day, harnesses: [], sent: null, visited: true, usage: emptyUsage(), sent_usage: null, wire_usage: null, sent_at: null }]);
+        this.saved.active = readActive([...this.saved.active, { day, harnesses: [], sent: null, visited: true, usage: emptyUsage(), sent_usage: null, wire_usage: null, sent_at: null, answer_counts: {} }]);
         changed = true;
       }
       const today = this.saved.active.find((entry) => entry.day === day);
@@ -940,7 +1081,7 @@ export class Telemetry {
       return Promise.resolve();
     }
     return (async () => {
-      let found: readonly (string | null | undefined)[];
+      let found: readonly VisitPane[];
       try { found = await agents; } catch (error) {
         console.error(`telemetry: the panes could not be read (${message(error)})`);
         found = [];
@@ -951,9 +1092,11 @@ export class Telemetry {
         if (!this.countingUsage() || this.saved.forgotten !== forgotten) return false;
         const entry = this.saved.active.find((known) => known.day === day);
         if (entry) {
-          const merged = [...new Set([...entry.harnesses, ...found.map(harnessOf).filter((harness) => harness !== null)])].sort();
-          if (!sameHarnesses(merged, entry.harnesses)) {
+          const merged = [...new Set([...entry.harnesses, ...found.map((pane) => harnessOf(pane.agent)).filter((harness) => harness !== null)])].sort();
+          const usage = { ...entry.usage, agents: withPanes(entry.usage.agents ?? {}, found) };
+          if (!sameHarnesses(merged, entry.harnesses) || !sameUsage(usage, entry.usage)) {
             entry.harnesses = merged;
+            entry.usage = usage;
             try { if (!this.persist()) return false; } catch (error) {
               console.error(`telemetry: the visit could not be recorded (${message(error)})`);
               return false;

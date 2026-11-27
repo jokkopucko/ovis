@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { readdir, readlink, realpath, open, stat, lstat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ConversationPart, ConversationTurn } from "../shared/protocol.ts";
-import { answerVersion, ConversationNotStarted, ConversationUnavailable, HistoryChanged, TRANSCRIPT_WINDOW_BYTES, type ConversationPage, type RecognizedConversation } from "./conversation-shared.ts";
+import { ConversationNotStarted, ConversationUnavailable, paginateTurns, TRANSCRIPT_WINDOW_BYTES, type ConversationPage, type RecognizedConversation } from "./conversation-shared.ts";
 import { jobProcessesBelow } from "./foreground-job.ts";
 import { ompProcessMemory, processStartTicks } from "./omp-process.ts";
 import { processAlive } from "./process-start.ts";
@@ -231,7 +231,7 @@ async function readDsh(binding: DshTranscript): Promise<{ text: string; identity
     if (path.endsWith(".zstd")) {
       const complete = completeDshFrames(bytes);
       if (!complete) return unavailable();
-      const reader = new Blob([bytes.subarray(0, complete)]).stream().pipeThrough(new DecompressionStream("zstd" as CompressionFormat)).getReader();
+      const reader = new Blob([bytes.subarray(0, complete)]).stream().pipeThrough(new DecompressionStream("zstd" as ConstructorParameters<typeof DecompressionStream>[0])).getReader();
       const chunks: Uint8Array[] = []; let size = 0;
       try {
         for (;;) {
@@ -326,19 +326,7 @@ export function projectDsh(text: string, identity: string, expectedSession?: str
 export async function dshConversation(binding: DshTranscript, page: ConversationPage = {}): Promise<RecognizedConversation> {
   const { text, identity } = await readDsh(binding);
   const projection = projectDsh(text, identity, basename(dirname(binding.path)));
-  const { turns, history } = projection;
-  const cursor = (index: number) => `${history}:${index}:${digest(JSON.stringify(turns.slice(0, index))).slice(0, 16)}`;
-  const parse = (value: string | undefined, fallback: number) => {
-    if (value === undefined) return fallback;
-    const index = Number(value.split(":")[1]);
-    if (!Number.isSafeInteger(index) || index < 0 || index > turns.length || value !== cursor(index)) throw new HistoryChanged();
-    return index;
-  };
-  const end = parse(page.before, turns.length);
-  const since = parse(page.since, 0);
-  const from = parse(page.from, Math.max(since, end - 50));
-  const start = Math.max(since, Math.min(from, end));
-  return { source: "dsh-transcript", turns: turns.slice(start, end), metadata: projection.metadata, cursor: start > 0 ? cursor(start) : null, history_id: history, version: answerVersion(history, `${digest(text)}\0${start}\0${end}`) };
+  return paginateTurns({ source: "dsh-transcript", turns: projection.turns, history: projection.history, metadata: projection.metadata, textDigest: digest(text), page });
 }
 
 export async function dshToolOutput(binding: DshTranscript, ref: string): Promise<string | null> {

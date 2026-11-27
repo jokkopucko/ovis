@@ -821,6 +821,21 @@ floor of `--fs-meta` holds at scale 1 and only grows with it.
 - `palette`: the legacy mirror of the drawn side's theme for older app versions; default `codex`.
   A record with no palette (saved before palettes) or a removed one (`report`, `lilac`, `forest`)
   loads as `amber`.
+- `markdownStyle`: `editorial`, `tinted`, `colorful`, or `plain`; default `editorial`, shared across
+  devices (`SHARED_SETTING_KEYS`) and stored in its own key (`ovis:markdown-style`, applied at cold
+  boot via `data-markdown-style` on `<html>`). Picked from a row of four miniature preview cards
+  under Settings → Appearance → Chat Markdown (following the Theme picker's card strip rather than a
+  binary toggle). Scoped to assistant chat turns only (`.chat-turn-agent .markdown`); user bubbles,
+  file previews, fenced code blocks, and clickable file/link chips (`.markdown-file`,
+  `.markdown-code-link`, `a > code`) keep their own affordances. `editorial` follows Claude and
+  Linear's restrained typography (neutral headings with a hairline rule under `h2`, single-accent
+  tints on bullets while ordered numbers keep the text color, one blockquote rail/wash however deep
+  the quote, and non-file inline code pills in `--text-strong`, never a mix of two text colors, so an
+  imported theme keeps it readable); `tinted` adds soft
+  two-tone theme heading and inline-code tints; `colorful` uses the active theme's `--syntax-*`
+  roles across headings, emphasis, and inline code (following the syntax-colored Markdown direction
+  proposed in #4262); `plain` keeps the original monochrome Markdown. Every preset's foreground and
+  surface mixes meet WCAG AA (4.5:1) across all built-in dark and light themes (`themes.contrast.test.ts`).
 - `density`: `comfortable` or `compact`; default `comfortable`.
 - `sidebarRows`: `one` or `two`; default `one`.
 - Terminal font size is independent: default `13px`, clamped to `10–22px`.
@@ -1174,9 +1189,39 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   dialog, a menu or popover the focus is in or on, or a field in it whose Escape does something (a rename, a filter with
   words), takes it first; hidden with the focus in it, it hands the focus to its toggle; a click on the toggle
   keeps the sidebar open as before. A touch never peeks (lib/sidebarPeek.ts). On touch, a mostly horizontal swipe in
-  from the left `24px` edge opens the drawer and a swipe to the left closes it. While the finger is
+  from the left `24px` edge opens the drawer and a swipe to the left closes it. Away from that
+  edge, opening requires `dx >= 2 * |dy|` so diagonal scrolling stays with the page; strokes
+  starting on a split divider (`role="separator"`) or its children cannot open a closed drawer,
+  but still close an open drawer. Interior strokes remain uncancelled until they reach `56px`
+  horizontally at that angle, letting an initially flat stroke turn into vertical scrolling.
+  [Paseo phone web](https://github.com/getpaseo/paseo/blob/main/packages/app/src/mobile-panels/gesture-intent.ts)
+  keeps opening edge-only to protect interior scrollers. Ovis deliberately allows a flatter interior
+  stroke as agreed in [#2705](https://github.com/devswha/ovis/issues/2705), retaining its existing
+  horizontal-scroll, input, selection and modal exclusions. While the finger is
   down the drawer is under it and the scrim darkens with it; let go, it stays open when more than half
   shows or a flick (`0.35` px/ms, not after a `100ms` rest) went that way, and slides the rest from there.
+  An interior opening released at or beyond `56px` stays open even when less than half shows,
+  so a slow stroke near the right edge works; reversing below that threshold or flicking left
+  can still close it. Edge-started strokes keep their original settling behavior. The opening
+  yields if a scrollable origin or the page has moved, including a compositor scroll delivered
+  while the finger is held, with one final movement check at lift. Once the stroke ends its
+  origin is discarded: a delayed send receipt's smooth follow is no longer touch scrolling and
+  cannot close the settled drawer. Instant automatic chat scrolling announces its actual writes through
+  `layoutScroll` and the LegendList patch, including delayed end follows and row adjustments.
+  Before a write the gesture checks for an unread native scroll; after it the gesture rebases
+  its origin. Nested writes share that interval. Terminal cursor follows and fit corrections use
+  the same layout notifications. A browser clamp to a shorter end also rebases.
+  This keeps opening available while an answer streams, including near-end and two-stage follows,
+  without excusing a reader's scroll. Smooth scrolling and explicit reader navigation still yield.
+  A committed interior opening tells its connected origin to discard pending touch work:
+  terminal remainder pixels and queued wheel reports cannot escape at the lift. If scrolling has
+  not already won, that claim also locks the origin's auto/scroll axes with inline overflow:hidden.
+  A later upward turn keeps the drawer under the finger instead of starting native scrolling.
+  Lift, cancel, a second touch, a wide viewport, backgrounding, exceptions and cleanup restore
+  each original inline value and priority; the original target also hears end/cancel if detached.
+  Settled openings hold neither a lock nor scroll ownership. Programmatic streaming and cursor follows still
+  work while locked. An actual movement despite the lock retains the scroll-yield fallback. Native end/cancel
+  events still reach their consumers to finish pinch, reorder and other gesture cleanup.
 - A phone's open drawer has no X: the drawer toggle's place holds the Ovis mark (`.drawer-toggle.is-mark`, `OvisMark`),
   still the toggle, named **Close workspace list**, as the app's mark at the head of the Codex and Claude apps'
   sidebars. Beside it the header names the PC and the workspace the list is on (`.drawer-head-title`: the PC, then
@@ -2822,7 +2867,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   as the number is not ours, and the age is in the line, as a phone has no tooltip. No code is borrowed.
 - Under the limits, only when the provider reports them: **Usage credits** (Claude's extra usage,
   spent against its monthly cap in the provider's currency, over a bar counted like the limits) or
-  **Credits** (Codex's balance, in whole credits), then **Limit resets** (Codex's: how many are
+  **Credits** (a balance left to spend: Codex's in whole credits, Devin's extra-usage wallet in its
+  currency, which can go negative), then **Limit resets** (Codex's: how many are
   left, and when the soonest expires). Reference: Claude Code's `/usage` (its "Usage credits" row) and
   Codex's `/status` (its "Credits" row), whose own readings these are; no code is borrowed.
 
@@ -2869,8 +2915,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   (`enterKeyHint="done"`) rather than its inferred **Next**; moving focus alone makes nothing.
   Unlike Paseo's separate New directory step, this keeps Ovis's existing inline Enter flow without
   another control or step; no code is borrowed.
-- Recent folders appear as neutral `.btn` chips with `--radius-pill` and `--space-2` gaps: the
-  three most recent, on one row that never wraps. Each shows the folder basename with ellipsis
+- Recent folders appear as neutral `.btn` chips with `--radius-pill` and `--space-2` gaps, on one
+  row that never wraps: the ten most recent at first. A wider screen shows as many as the row holds
+  and a `+N` chip counting every other folder kept; it opens a list of the loaded ones with their
+  paths, which ends with **Show N more** while more are kept. That item adds the next ten, leaves
+  the list open and hands the focus to the first folder it added. A phone swipes the row sideways,
+  and its `+N` chip at the end adds the next ten to the row. Keyboard activation follows the
+  wide-screen list: it focuses and reveals the first folder added, even when `+N` disappears.
+  Zed's Open Recent lists every recent project in a searchable picker; here Directory and Browse
+  already search, so the list stays short and grows ten at a time only when asked. Each shows the folder basename with ellipsis
   and the full path in its tooltip and accessible name. Clicking puts the folder in Directory and
   starts nothing. History is per PC in this browser and retained after panes close. Only a
   successful workspace start puts its folder first; a folder merely seen in a connected PC's panes
@@ -3189,6 +3242,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   A right-click on a pane always opens its menu.
   Native app shortcuts default to Mod+Shift in the browser, so Ctrl+key continues to reach the PTY;
   a plain Ctrl/Alt chord is taken only after the user records it and confirms Save anyway.
+  Like Zed's scoped shortcut opt-out, **Off** disables only the selected action. Chat's **Hold
+  message in chat** and the **Dictate (hold)** key can be turned off independently. These two keep
+  their default chords when enabled; **Off** does not change a terminal's Alt+Enter or the mic button.
 
 ### Worktree dialog (`.worktree-modal`)
 - From a workspace row's menu, as herdr's prefix+shift+g: **New worktree** asks for the branch
@@ -3677,6 +3733,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   look and take a `--pointer-target` hit area through an invisible `::before` expander.
 - A message carries no rewind action: an agent's own `/rewind` (Claude Code, grok, Antigravity) is run in the pane's terminal, and
   Chat follows the native transcript's active branch once the agent records it; it never guesses a restore from a dialog's wording.
+- A stop in Claude Code (Esc) is one quiet line where the turn stopped, **Stopped** and its time
+  (`.chat-stopped`, drawn as a goal's wait is: `--text-dim` `--fs-sm` between hairlines), not a bubble.
+  Claude Code records a stop in the person's seat, `[Request interrupted by user for tool use]` after
+  the call it refused or `[Request interrupted by user]`; nobody typed it, and it starts no turn. It
+  follows Claude Code's own terminal, which draws a stop as a dim **Interrupted** line rather than as
+  the person's message; the word is the chat's own (**Stopped on an error**).
 - A terminal-only command sent from Chat is one quiet right-aligned row, not a bubble:
   `SquareTerminal`, the command in mono `--fs-sm`, **Ran in terminal** in `--text-dim`,
   and one **Open Terminal** text button, which opens a terminal peek over the chat (see the
@@ -3726,6 +3788,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   WKWebView do, and keep theirs: the sheet follows Android Chrome's link menu, cut to those three.
   Only the WebView's own long press (its `contextmenu`, not a mouse's) opens it, so a tap, a swipe
   and a press on other words keep their meaning.
+  In the iPhone and iPad Home Screen web app on iOS or iPadOS 17 and later, an HTTPS link to
+  another site opens in Safari, where the user is signed in, not in the app's own view.
+  `safariLinks.ts` uses Safari's undocumented `x-safari-https:` for `ExternalLink` taps and terminal links alike, a
+  sign-in page's link included; a sign-in its button opens through `reserveTab` stays in the app's
+  view, and both finish, since the app polls for the code. A plain http link and a link to the app's
+  own origin stay in the app; iOS 16, unknown versions, Safari tabs, native apps and other systems
+  are unchanged. A native coding-agent app can open a link in Apple's in-app Safari view
+  (`SFSafariViewController`); a Home Screen web app has no such view, so it hands the link to Safari
+  instead.
   Markdown files use the same renderer in the file viewer. **Open in a new tab** opens an
   app link to the resolved absolute file on its own PC, independent of the originating pane.
   **Open raw file** (Code glyph) opens the original bytes; Download still saves those bytes.
@@ -4128,9 +4199,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   pane of about 40) shows the preview in unreadable pieces, so the card shows none. It follows
   Claude Code's terminal, which shows the preview beside the option it belongs to.
 - Height: at most the larger of 60% of the app's height (`--app-height`, so a phone's keyboard
-  counts) and six touch rows (`240px`), at every width. Only the reference text gives way: six
-  lines at rest, two at the least (one for a one-line command), scrolling in itself with a fade
-  on its fold. The header, step chips, question, hint, options, custom answer and confirm row
+  counts) and six touch rows (`240px`). Questions without preceding terminal words use 80%
+  instead, leaving room for their options and up to ten scrollable lines of their own context.
+  The separate terminal words keep the standard limit and give way as described above, following
+  Claude Code's terminal. Reference text gives way too: six lines at rest, two at the least
+  (one for a one-line command), scrolling in itself with a fade on its fold.
+  The header, step chips, question, hint, options, custom answer and confirm row
   never shrink. A card still taller than its limit scrolls as a whole with a fade at its bottom
   edge, and the confirm row of a typed pick stays pinned on that edge. The card's scroll is
   contained (`overscroll-behavior: contain`), so a drag past its top is never the page's
@@ -4155,6 +4229,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   then reads `Question 1 of 2`; the review after the last question keeps the chips, all checked.
 - Single options submit immediately; multi-select exposes checks plus Submit; supported custom input
   has its own labelled field. The prompt id names what the prompt says and which asking of it this is; an answer to another prompt, or to an earlier asking of the same one, is rejected with `prompt_changed`.
+- When Chat sees a terminal resize during a Claude Code approval, it keeps the card in place and
+  briefly disables its choices while reading the redrawn screen. This follows Claude Code's
+  terminal, where a resize leaves the approval open. The live answer check still binds the
+  selection to the command and permission scope on screen.
 - OpenCode's native multi-step form uses the same question card, not a new wizard. Back and
   answered-step chips save the current step's unsent text and checks before navigating. Returning
   restores them without submitting them to the agent. This keeps the existing T3 Code-inspired
@@ -4711,11 +4789,29 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   text they sit in, so typing while files upload is not disturbed.
 - An upload that failed is one note on the box's top edge (`.composer-note`, `role="alert"`): what
   failed and the cause when it is known (`Couldn't attach · PC disk is full`, from the status or the
-  server's own words, `lib/userError.ts` `userFailure`); with no known cause the line is
-  `Couldn't attach` and Try again beside it uploads the file again (`offersRetry`: no cause, or the
-  PC was only slow). The advice and the server's words fold behind a dim Details toggle under the
-  line, never on it; the size limit's own sentence is the whole note. Removing the tile removes its
-  note.
+  server's own words, `lib/userError.ts` `userFailure`); with no known cause the line names the
+  first line of the error's own words instead, capped so a long diagnostic never pushes the
+  composer controls off screen (`IMG_4242.jpg could not be attached: Relay request failed`,
+  `failureReason`), or the HTTP status of an answer with no body words (`uploadFailure`), and Try
+  again beside it uploads the file again (`offersRetry`: no cause, or the PC was only slow). Unlike
+  the Claude and Codex apps, which show a generic attachment error without surfacing transport
+  details inline, Ovis places the cause or single-line error reason directly on the note so phone
+  users do not need to open a disclosure to see why a relay or bridge upload failed. The advice,
+  and the full server words when a cause already stands on the line or the diagnostic was shortened,
+  fold behind a dim Details toggle under the line, never on it; the size limit's own sentence is the
+  whole note. Removing the tile removes its note.
+- A JPEG or HEIC photo is drawn to a JPEG of at most 2048 pixels a side in the browser before it
+  uploads, about 1 MB, so it uploads fast on mobile data, at the cost of detail an agent's newest
+  models could read.
+  An iPhone's still HEIC or HEIF photo always is, since the agents read PNG, JPEG, GIF and WebP
+  only; a JPEG one always too, since the redraw drops its camera metadata (location, device,
+  date); an animated HEIC sequence and a PNG screenshot never. A JPEG the browser cannot redraw
+  keeps only JFIF, ICC and valid Exif orientation alongside the first image's pixel data, so a
+  portrait stored sideways still stands up. If the JPEG's markers cannot be parsed through the
+  end of the first image, or if a HEIC cannot be redrawn, it uploads as it is, metadata included.
+  A name can suggest an image type when the browser leaves it empty; its bytes must agree before
+  the composer treats it as an image
+  (`uploadableImage`, `lib/composerImageMime.ts`).
 - While a phone's keyboard is up, a tap on the transcript or a drag down it (`32px`) puts the
   keyboard away. Each only blurs the field, so the draft stays. The prompt card, which can stand
   where the transcript was on a short screen, does the same: a tap on its text (never on an
@@ -5088,7 +5184,17 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   a `.modal` sheet (`ManageAccountSheet` in `components/AccountHead.tsx`, rows from
   `AccountManageLists` in `components/AccountManage.tsx`), as the Claude and Codex apps keep
   account settings to compact rows with each destructive action behind one confirm. In order: the
-  ways to sign in; the plan, when known; **Devices**, a status dot, the name and **Disconnect** on
+  ways to sign in (`AccountMethods` in `components/AccountMethods.tsx`, the same row in the desktop
+  app, on app.ovis.sh and in the phone app): one chip for each with the provider's mark, a remove
+  `X` on all but the only one and the one this device signed in with, and a dashed add chip for each
+  provider the account service offers that the account lacks (none on a PC's own page in a browser,
+  which adds none). Under the row, why a change was refused, with **See how** for a provider account
+  that another Ovis account holds, or the sign-in again it waits for; then **Recent changes**, at
+  most the three latest changes to the ways in as dim one-line entries ("Nov 27 · Google added ·
+  Device 3", the device left out where the service numbers none), drawn only when there are any, as
+  Google Account's Security page keeps recent security activity beside how you sign in. Left out on
+  purpose: a box or a rule around the entries, a full history, and a way to join two accounts. Then
+  the plan, when known; **Devices**, a status dot, the name and **Disconnect** on
   each other device of the account (on the hosted app first **This device**, whose Disconnect leaves
   the account); **PCs**, a dot and the name on each PC in the directory, with **Remove** only on one
   not heard from for 15 minutes; **Delete account** last. Each action asks once in a
@@ -5112,7 +5218,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   listener on this PC, and a person who wants the faster path turns it on; the relay never moves a connection off
   itself unasked. Settings search finds it by Wi-Fi, Tailscale, LAN, same Wi-Fi or home network (`keywords`, in each
   language), whichever line it shows.
-- My devices (`MyPcRows` in SettingsDialog.tsx, then `components/DevicesPanel.tsx`): this PC
+- My devices (`MyPcRows` in SettingsDevicesPage.tsx, then `components/DevicesPanel.tsx`): this PC
   first (its name and a **This PC** pill in the accent; no ID line), then
   the PCs this app shows (a neutral **PC** pill and their state; one that is not connected is
   dimmed, and one this app added over SSH or the relay carries a **Remove PC** trash button that asks
@@ -5550,7 +5656,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   resize it to reveal the caret. No terminal pixels or input handling code are copied from Zed.
   Local wheel panning in an oversized mirror survives subsequent output. A tap or a touch movement
   that produces no history step sends no shared scroll request.
-- A mirrored grid wider than its mount (a Windows PC's pane, whose size a phone cannot change) is
+- A Windows terminal whose CLI and daemon support the native control stream fits the active
+  browser's grid, like a locally sized terminal in Zed, but only after herdr grants the
+  exclusive attachment. Other viewers adopt the confirmed grid; an observe or kept-size
+  attach never claims the slot. Neither opening a second view nor reconnecting takes over.
+  Without verified stream support the existing mirror stays fixed.
+- A mirrored grid wider than its mount (for example, a Windows PC without verified stream support) is
   drawn folded (`lib/terminalFold.ts`): its rows are drawn again as SGR runs in a pre-wrap block at
   the mount's width, over the grid, which stays at the pane's size for input, the masked prompt, the
   input row and Find; it moves down under the folded rows until its cursor row lies on theirs, so an
@@ -5579,8 +5690,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   scrolls the mirror's history at the chosen speed. Find's boxes are hidden while folded.
 - In Safari, a Hangul syllable being typed and a dictation hypothesis wait in the terminal's
   editor as a preedit, and the next key, paste or blur sends the corrected text once. Dictation
-  replaces its hypothesis in place (`thi`, `this`, `this is a test`), so sending each one typed
-  every draft. A chord typed or tapped with the key bar's held modifier sends that preedit first,
+  replaces its hypothesis in place (`thi`, `this`, `this is a test`). On iOS, the first hypothesis
+  can be a plain insertion without a typing key. Later keyless edits over the whole hypothesis
+  or just its suffix revise the preedit; typing Space or inserting at the caret still commits it.
+  A chord typed or tapped with the key bar's held modifier sends that preedit first,
   as text, never as the chord. This follows native macOS terminals (Terminal, iTerm2), where
   provisional input stays marked text and only the inserted result reaches the shell. A pane
   switch drops a pending preedit. A view-only terminal starts no dictation preedit, and one still
@@ -5651,21 +5764,20 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   folded rows or an oversized mirror, done in the browser, does not glide. The wheel speed setting
   is for wheels and trackpads only: the finger keeps the text under it.
 - The screen a new attach is handed (`pty-data` with `replay: true`: a second tab, a phone, a
-  reconnect) is presentation history: xterm draws it byte for byte, and an OSC 52 copy request in
-  it is not run again. Output reaches xterm one frame at a time, so the frame being parsed is
-  known; a replayed frame that ends inside an OSC that may still become OSC 52 (xterm's own
-  `oscStringState()`, added by the xterm patch) keeps the next OSC 52 dispatch suppressed until
+  reconnect) is presentation history: Ghostty draws it byte for byte, and an OSC 52 copy request in
+  it is not run again. Output reaches Ghostty one frame at a time, so the frame being parsed is
+  known; a replayed frame that ends inside an OSC that may still become OSC 52 (`oscStringState()` in
+  `src/lib/ghostty/hooks.ts`) keeps the next OSC 52 dispatch suppressed until
   that OSC ends. The edge is fail-closed: when such an OSC is aborted (CAN, SUB) or completes as
   another identifier, a whole live OSC 52 later in that same live frame is not copied either; one
   in the next frame is. An older bridge marks nothing, so its replay still counts as live output.
   A reconnect, a pane switch or a tab letting go of its attach retires the output from before
-  it: frames still waiting are dropped unwritten, the one xterm is still parsing copies nothing,
+  it: frames still waiting are dropped unwritten, the one Ghostty is still parsing copies nothing,
   and an OSC the old output left open is guarded as a replayed one.
   The idea that a new viewer does not act on earlier writes is AoE's (Agent of Empires), whose
   clipboard consumer starts at the current point and never sees the replay; Ovis differs because a
-  joining view needs the replay drawn, so only its side effect goes. Every xterm upgrade ports
-  `oscStringState` (`scripts/xterm-parser-state.test.ts`) and reruns
-  `scripts/replay-clipboard-demo-regression.ts`.
+  joining view needs the replay drawn, so only its side effect goes. The parser state and replay
+  guard are checked by `src/lib/ghostty/hooks.test.ts` and `scripts/replay-clipboard-demo-regression.ts`.
 - Terminal banners stack top-right for ended, reconnecting, view-only and held-input states, and
   say only what the person needs now (section 1). Ended reads **Terminal ended**; input held for
   the pane stays until the person sends or discards it (pty-exit also comes with a herdr restart).
@@ -6126,6 +6238,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   code**, a quiet ghost button; and last a `--fs-xs` dim line, "The account only lists your PCs.
   Sessions stay end-to-end encrypted." Continuing without an account opens Add a PC with this device's own
   pairings.
+  If a first GitHub or Google sign-in may match an existing account, the provider buttons give way
+  to one compact choice in the same column (also in the desktop account and connection sheets).
+  Like the existing account actions, it leads with the account decision: a heading names the
+  existing provider, one line explains linking, then **Sign in with {provider} to connect** is
+  primary and **Create a new account** is neutral. A wrong provider account puts the reason beside
+  the choices. If the provider is unavailable here, only account creation is offered. No email
+  address, provider picker or account merge is shown.
 - Add-a-PC sheet and Ready checkpoint (AddPcSheet.tsx, RelayShell.tsx, EnrollmentStatus.tsx,
   lib/relay/shell.tsx): a modal sheet `--relay-sheet-w` (520 px) wide with four
   segmented bars and a step list, in the mode the row picked, named in `data-add-pc-mode` and its

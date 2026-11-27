@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, jest, setSystemTime, spyOn } from "bun:test";
-import { createElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, createElement } from "react";
 import type { UsageReport } from "../../shared/protocol.ts";
+import { openPage, type Page } from "./page.fixture.ts";
 import { useUsage } from "./usage.ts";
 
 const START = Date.parse("2026-09-29T12:00:00Z");
@@ -9,8 +9,7 @@ const MINUTE = 60_000;
 const PC = START + 40 * MINUTE;
 
 describe("the report the usage hook hands on", () => {
-  const descriptors = new Map<string, PropertyDescriptor | undefined>();
-  let renderer: ReactTestRenderer | null;
+  let page: Page;
   let hook: ReturnType<typeof useUsage> | null;
   let pc: () => Promise<Response>;
   let asks: number;
@@ -18,13 +17,8 @@ describe("the report the usage hook hands on", () => {
   let openedAt: number;
 
   beforeEach(() => {
-    for (const key of ["window", "document", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-    const page = new EventTarget();
-    const listening = { addEventListener: page.addEventListener.bind(page), removeEventListener: page.removeEventListener.bind(page) };
-    Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-    Object.defineProperty(globalThis, "window", { configurable: true, value: listening });
-    Object.defineProperty(globalThis, "document", { configurable: true, value: { visibilityState: "visible", ...listening } });
-    renderer = null;
+    page = openPage();
+    Object.defineProperty(page.window.document, "visibilityState", { configurable: true, value: "visible" });
     hook = null;
     asks = 0;
     answered = new Set();
@@ -40,15 +34,10 @@ describe("the report the usage hook hands on", () => {
   });
 
   afterEach(async () => {
-    await act(async () => { renderer?.unmount(); });
     jest.useRealTimers();
     setSystemTime();
+    await page.close();
     jest.restoreAllMocks();
-    for (const [key, descriptor] of descriptors) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-    descriptors.clear();
   });
 
   const pcNow = (): number => PC + Math.round(performance.now() - openedAt);
@@ -68,7 +57,7 @@ describe("the report the usage hook hands on", () => {
   async function open(): Promise<void> {
     function Probe() { hook = useUsage(true); return null; }
     const first = heard();
-    await act(async () => { renderer = create(createElement(Probe)); });
+    await page.render(createElement(Probe));
     await act(async () => { await first; });
   }
   async function minute(wait: "heard" | "unheard"): Promise<void> {

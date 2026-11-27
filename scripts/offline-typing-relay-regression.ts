@@ -241,6 +241,30 @@ async function width(px: number, pane: string, act: "Send" | "Discard", replaced
     if (!(await frames(page, paneShows(new RegExp(`^한글-${id}\\s*$`, "m")), 20_000))) {
       faults.push(`${px}: Korean typed after the recovery (${ime}) on a half-typed line did not run at once`);
     }
+
+    // a composition begun with the link up and let out after an outage counts as typed when it began: it is held (#4249)
+    const late = `late-${id}`;
+    // on an empty line: nothing of it reaches the pane, so the next run's line starts clean
+    await key229("rawKeyDown");
+    await cdp.send("Input.imeSetComposition", { text: "한", selectionStart: 1, selectionEnd: 1 });
+    await key229("keyUp");
+    const third = { ...sockets };
+    network.down = true;
+    await context.setOffline(true);
+    if (replaced) {
+      if (!(await frames(page, async () => await reconnecting.count() > 0, 30_000))) faults.push(`${px}: the connection was never dropped the third time`);
+    } else await shown.clock.runFor(500);
+    await context.setOffline(false);
+    network.down = false;
+    for (const deliver of network.waiting.splice(0)) deliver();
+    const backThird = async (): Promise<boolean> => (!replaced || (sockets.closed > third.closed && sockets.opened > third.opened)) && await live();
+    if (!(await frames(page, backThird, 20_000))) faults.push(`${px}: the terminal never took input again after the third outage`);
+    await insert("한");
+    for (const char of late) await insert(char);
+    await shown.keyboard.press("Enter");
+    const lateHeld = page.locator(".terminal-banner-draft .draft-text, .composer-notice code", { hasText: `한${late}` });
+    if (!(await frames(page, async () => await lateHeld.count() > 0, 20_000))) faults.push(`${px}: a composition begun before the outage and let out after it was not held`);
+    if ((await paneRead({ paneId: pane })).text.includes(late)) faults.push(`${px}: a composition begun before the outage and let out after it reached the pane`);
     await cdp.detach();
     await shot("after");
     note(`${px}: online "on-${id}" reached the pane; offline "${marker}" ${said ? "held on screen" : "NOT held"}; back on ${replaced ? "a new" : "the same"} connection; ${act} and Korean (${ime}) ${faults.length === 0 ? "did what they say" : `FAILED: ${faults.join("; ")}`}`);

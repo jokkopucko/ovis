@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { createConnection, Socket } from "node:net";
 import { dirname } from "node:path";
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync, watch } from "node:fs";
+import { join } from "node:path";
 import { KeeperClient } from "./client.ts";
 import { keeperBuilt, keeperRoot, startKeeper, until } from "./keeper.fake.ts";
 
@@ -36,6 +37,65 @@ it("reserves an answer while replay is pending, without waiting for the watermar
   }
 });
 
+it("fills in a permission request's tool call from what the agent announced for it, as Kiro names only a title", () => {
+  const socket = new Socket();
+  const client = new KeeperClient("", { connect: () => socket });
+  let seq = 0;
+  const fromAgent = (message: object) => socket.emit("data", `${JSON.stringify({ seq: ++seq, dir: "from-agent", raw: JSON.stringify(message) })}\n`);
+  try {
+    socket.emit("data", `${JSON.stringify({ seq: ++seq, dir: "keeper", raw: JSON.stringify({ method: "_keeper/session", params: { sessionId: "s" } }) })}\n`);
+    const rawInput = { path: "/work/w1.txt", text: "x" };
+    fromAgent({ method: "session/update", params: { sessionId: "s", update: { sessionUpdate: "tool_call", toolCallId: "call-1", title: "Write File", kind: "edit", status: "in_progress", rawInput } } });
+    fromAgent({ method: "session/update", params: { sessionId: "s", update: { sessionUpdate: "tool_call", toolCallId: "call-2", title: "Other", kind: "execute", rawInput: { command: "ls" } } } });
+    fromAgent({ id: "ask-1", method: "session/request_permission", params: { sessionId: "s", toolCall: { toolCallId: "call-1", status: "pending", title: "Write File" },
+      options: [{ optionId: "accept", name: "Allow", kind: "allow_once" }, { optionId: "reject", name: "Deny", kind: "reject_once" }] } });
+    fromAgent({ id: "ask-2", method: "session/request_permission", params: { sessionId: "s", toolCall: { toolCallId: "call-2", title: "Other", kind: "read", rawInput: { command: "pwd" } },
+      options: [{ optionId: "reject", name: "Deny", kind: "reject_once" }] } });
+    expect(client.pending().map((asked) => asked.toolCall)).toEqual([
+      { title: "Write File", kind: "edit", rawInput, content: null },
+      { title: "Other", kind: "read", rawInput: { command: "pwd" }, content: null },
+    ]);
+    // a tool call id names a call in its own session only: the next session's request gets nothing from the last one
+    socket.emit("data", `${JSON.stringify({ seq: ++seq, dir: "keeper", raw: JSON.stringify({ method: "_keeper/session", params: { sessionId: "t" } }) })}\n`);
+    fromAgent({ id: "ask-3", method: "session/request_permission", params: { sessionId: "t", toolCall: { toolCallId: "call-1", title: "Write File" },
+      options: [{ optionId: "reject", name: "Deny", kind: "reject_once" }] } });
+    expect(client.pending().map((asked) => asked.toolCall)).toEqual([{ title: "Write File", kind: null, rawInput: null, content: null }]);
+  } finally { client.close(); }
+});
+
+it("ignores a question arriving after the client closes", () => {
+  const socket = new Socket();
+  const client = new KeeperClient("", { connect: () => socket, questionHarness: "claude" });
+  socket.emit("data", `${JSON.stringify({ seq: 1, dir: "keeper", raw: JSON.stringify({ method: "_keeper/session", params: { sessionId: "s" } }) })}\n`);
+  const raw = JSON.stringify({ id: "late-question", method: "elicitation/create", params: { sessionId: "s", message: "What color?" } });
+
+  client.close();
+  socket.emit("data", `${JSON.stringify({ seq: 2, dir: "from-agent", raw })}\n`);
+
+  expect(client.questions.current).toBeNull();
+});
+
+it("captures the replacement session's opening selection but does not refresh it for the same session", () => {
+  const socket = new Socket();
+  const client = new KeeperClient("", { connect: () => socket });
+  let seq = 0;
+  const note = (method: string, params: object) => {
+    socket.emit("data", `${JSON.stringify({ seq: ++seq, dir: "keeper", raw: JSON.stringify({ method, params }) })}\n`);
+  };
+  try {
+    note("_keeper/selections", { mode: "agent", allowAll: false });
+    note("_keeper/session", { sessionId: "first" });
+    expect(client.initialPermissions).toEqual({ mode: "agent", allowAll: false });
+
+    note("_keeper/selections", { mode: "read-only", allowAll: true });
+    note("_keeper/session", { sessionId: "replacement" });
+    note("_keeper/selections", { mode: "read-only", allowAll: false });
+    note("_keeper/session", { sessionId: "replacement" });
+
+    expect(client.initialPermissions).toEqual({ mode: "read-only", allowAll: true });
+  } finally { client.close(); }
+});
+
 describe.skipIf(!keeperBuilt)("KeeperClient against the real keeper and the scripted agent", () => {
   const cleanups: (() => Promise<void> | void)[] = [];
   afterEach(async () => {
@@ -53,6 +113,21 @@ describe.skipIf(!keeperBuilt)("KeeperClient against the real keeper and the scri
     cleanups.push(() => client.close());
     return client;
   }
+
+  it("names its process before its socket appears, so a client refused by a socket not listening yet waits for it", async () => {
+    const root = keeperRoot();
+    const created: string[] = [];
+    const socket = Promise.withResolvers<unknown>();
+    const watcher = watch(root, (_event, name) => {
+      if (name !== null && !created.includes(name)) created.push(name);
+      if (name === "acp.sock") socket.resolve(JSON.parse(readFileSync(join(root, "process.json"), "utf8")));
+    });
+    cleanups.push(() => watcher.close());
+    const { pid } = await keeper([], root);
+    expect(await socket.promise).toMatchObject({ keeper: pid });
+    expect(created.indexOf("process.json")).toBeGreaterThanOrEqual(0);
+    expect(created.indexOf("process.json")).toBeLessThan(created.indexOf("acp.sock"));
+  });
 
   it("replays what happened before it attached, then follows live, and reports the turn's stop reason and text", async () => {
     const { root } = await keeper();

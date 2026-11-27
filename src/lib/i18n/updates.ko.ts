@@ -71,4 +71,5 @@ export const UPDATES_KO: Record<string, string> = {
   "Downloading Ovis {version}… {percent}%": "Ovis {version} 받는 중… {percent}%",
   "The update did not go through: {error}": "업데이트하지 못했습니다: {error}",
   "Update": "업데이트",
+  "This phone's preview app. A check downloads a newer preview, and Restart to Update installs it.": "이 휴대폰의 미리보기 앱입니다. 확인하면 새 미리보기를 내려받고, '다시 시작해서 업데이트'로 설치합니다.",
 };

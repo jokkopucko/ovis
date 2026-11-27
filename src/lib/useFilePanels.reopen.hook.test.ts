@@ -1,52 +1,38 @@
 import { afterEach, beforeEach, expect, it } from "bun:test";
-import { createElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, createElement } from "react";
+import { openPage, type Page } from "./page.fixture.ts";
 import { DEFAULT_SETTINGS } from "./settings.ts";
 import { FILE_PREVIEW_KEY, sheetStep } from "./historyKeys.ts";
 import { useFilePanels } from "./useFilePanels.ts";
 
-const descriptors = new Map<string, PropertyDescriptor | undefined>();
-let renderer: ReactTestRenderer | undefined;
+let page: Page;
+let savedHTMLElement: PropertyDescriptor | undefined;
 let panels: ReturnType<typeof useFilePanels>;
-let entries: unknown[];
+let entries: (object | null)[];
 let index: number;
-let events: EventTarget;
 
 beforeEach(() => {
-  for (const key of ["window", "document", "HTMLElement", "IS_REACT_ACT_ENVIRONMENT"]) {
-    descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
-  }
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
-  Object.defineProperty(globalThis, "document", { configurable: true, value: { activeElement: null } });
-  Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: class {} });
+  page = openPage("http://localhost:7317/");
+  savedHTMLElement = Object.getOwnPropertyDescriptor(globalThis, "HTMLElement");
+  Object.defineProperty(globalThis, "HTMLElement", { configurable: true, value: page.window.HTMLElement });
   entries = [{ "ovis:nav": true }];
   index = 0;
-  events = new EventTarget();
   const go = (steps: number): void => {
     index += steps;
-    events.dispatchEvent(Object.assign(new Event("popstate"), { state: entries[index] }));
+    page.window.dispatchEvent(new page.window.PopStateEvent("popstate", { state: entries[index] }));
   };
-  Object.defineProperty(globalThis, "window", { configurable: true, value: {
-    location: new URL("http://localhost:7317/"),
-    history: {
-      get state() { return entries[index]; },
-      replaceState: (next: unknown) => { entries[index] = next; },
-      pushState: (next: unknown) => { entries.splice(index + 1); entries.push(next); index += 1; },
-      go,
-    },
-    addEventListener: events.addEventListener.bind(events),
-    removeEventListener: events.removeEventListener.bind(events),
-  } });
+  Object.defineProperties(page.window.history, Object.getOwnPropertyDescriptors({
+    get state() { return entries[index]; },
+    replaceState: (next: object | null) => { entries[index] = next; },
+    pushState: (next: object | null) => { entries.splice(index + 1); entries.push(next); index += 1; },
+    go,
+  }));
 });
 
 afterEach(async () => {
-  await act(async () => { renderer?.unmount(); });
-  renderer = undefined;
-  for (const [key, descriptor] of descriptors) {
-    if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-    else Reflect.deleteProperty(globalThis, key);
-  }
-  descriptors.clear();
+  await page.close();
+  if (savedHTMLElement) Object.defineProperty(globalThis, "HTMLElement", savedHTMLElement);
+  else Reflect.deleteProperty(globalThis, "HTMLElement");
 });
 
 async function mount(reopenFileOnReturn: boolean, filePanelAvailable = true): Promise<void> {
@@ -57,7 +43,7 @@ async function mount(reopenFileOnReturn: boolean, filePanelAvailable = true): Pr
     });
     return null;
   }
-  await act(async () => { renderer = create(createElement(Probe)); });
+  await page.render(createElement(Probe));
 }
 
 const fileOn = (pane: string, path = `/r/${pane}.md`) => ({ path, paneId: pane, machineId: "local" });

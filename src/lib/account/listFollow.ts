@@ -30,8 +30,8 @@ export const browserPage: FollowingPage = {
 export const ROUND_GAP_MS = 5_000;
 
 export interface FollowedList {
-  /** A round now: the list may have moved, or the sign-in changed. */
-  poke(): void;
+  /** A round now: the list may have moved, or the sign-in changed. Settles when that round is over, whatever became of it. */
+  poke(): Promise<void>;
   stop(): void;
 }
 
@@ -47,14 +47,14 @@ export function followAccountList(list: AccountList, page: FollowingPage = brows
     disarm();
     if (stopped) return;
     const due = list.due(page.visible());
-    if (due !== null) timer = page.setTimeout(run, Math.max(0, Math.max(due, began + ROUND_GAP_MS) - page.now()));
+    if (due !== null) timer = page.setTimeout(() => { void run(); }, Math.max(0, Math.max(due, began + ROUND_GAP_MS) - page.now()));
   };
-  const run = (): void => {
+  const run = async (): Promise<void> => {
     // a round begun by a poke is the one a waiting timer would have begun
     disarm();
     if (stopped) return;
     began = page.now();
-    list.sync().catch((error: unknown) => {
+    await list.sync().catch((error: unknown) => {
       if (!(error instanceof SignedOutError)) console.warn("Ovis: the account's list could not be read", error instanceof Error ? error.name : error);
     }).finally(arm);
   };

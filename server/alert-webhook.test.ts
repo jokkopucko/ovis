@@ -269,6 +269,23 @@ describe("web push alerts reach the webhook", () => {
     return { pane_id: paneId, agent_status: status, terminal_title: "codex", focused: false, revision: 0, tab_id: "t1", terminal_id: "term_1", workspace_id: "w1" };
   }
 
+  it("drops a queued question when the pane moves and has resumed work", async () => {
+    const hook = webhook();
+    hook.save({ preset: "json", url: destination.url() }, undefined);
+    const push = createPushService({ stateDir, timing: { short: 0, long: 0, longTurn: 0 }, webhook: hook });
+    push.seed([pane("w1:p1", "working"), pane("w1:p2", "working")]);
+    const release = destination.hold();
+    try {
+      await push.onStatus("w1:p2", "blocked");
+      await destination.posts(1);
+      await push.onStatus("w1:p1", "blocked");
+      await push.settled();
+      push.moved("w1:p1", "w2:p1", "working");
+    } finally { release(); }
+    await hook.settled();
+    expect(destination.received).toHaveLength(1);
+  });
+
   it("tells the destination the alerts it chose, as push tells a device, and nothing while the app is in use", async () => {
     const hook = webhook();
     hook.save({ preset: "json", url: destination.url() }, "https://pc.example");

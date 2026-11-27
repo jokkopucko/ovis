@@ -162,10 +162,10 @@ it.skipIf(!onWindows)("starts a desktop child outside the launcher, preserving q
   const script = join(root, "child with spaces.ts");
   const sentinel = "private-launch-sentinel-\"&%!\n한글";
   const previous = process.env["OVIS_START_TEST_SECRET"];
-  const waiting = watchJson<{ pid: number; secret: string; args: string[]; session: number }>(root, resultPath, 15_000);
+  const waiting = watchJson<{ pid: number; secret: string; args: string[]; session: number; priority: number }>(root, resultPath, 15_000);
   writeFileSync(script, `import { watch, existsSync, renameSync, writeFileSync } from 'node:fs';
 import { dlopen, FFIType } from 'bun:ffi';
-const { symbols } = dlopen('kernel32.dll', { ProcessIdToSessionId: { args: [FFIType.u32, FFIType.ptr], returns: FFIType.i32 } });
+const { symbols } = dlopen('kernel32.dll', { ProcessIdToSessionId: { args: [FFIType.u32, FFIType.ptr], returns: FFIType.i32 }, GetCurrentProcess: { args: [], returns: FFIType.ptr }, GetPriorityClass: { args: [FFIType.ptr], returns: FFIType.u32 } });
 const session = new Uint32Array(1); if (!symbols.ProcessIdToSessionId(process.pid, session)) throw new Error('no session');
 // on its stop file: says so in a file of its own, then exits; looked for again at once, for a stop written before the watch
 const stop = () => { if (!existsSync(${JSON.stringify(stopPath)})) return; writeFileSync(${JSON.stringify(`${stoppedPath}.tmp`)}, '{}'); renameSync(${JSON.stringify(`${stoppedPath}.tmp`)}, ${JSON.stringify(stoppedPath)}); process.exit(0); };
@@ -174,7 +174,7 @@ stop();
 // a stop whose event never comes still cannot keep it past the test's own 60 s
 setTimeout(() => process.exit(0), 55_000);
 // written whole under another name first: the result's name only appears with all of it (#2165)
-writeFileSync(${JSON.stringify(`${resultPath}.tmp`)}, JSON.stringify({pid:process.pid, secret:process.env.OVIS_START_TEST_SECRET, args:process.argv.slice(2), session:session[0]}));
+writeFileSync(${JSON.stringify(`${resultPath}.tmp`)}, JSON.stringify({pid:process.pid, secret:process.env.OVIS_START_TEST_SECRET, args:process.argv.slice(2), session:session[0], priority:symbols.GetPriorityClass(symbols.GetCurrentProcess())}));
 renameSync(${JSON.stringify(`${resultPath}.tmp`)}, ${JSON.stringify(resultPath)});
 `);
   process.env["OVIS_START_TEST_SECRET"] = sentinel;
@@ -190,6 +190,8 @@ renameSync(${JSON.stringify(`${resultPath}.tmp`)}, ${JSON.stringify(resultPath)}
       const result = await waiting.result;
       child = "running";
       expect(result.session).toBeGreaterThan(0);
+      // NORMAL_PRIORITY_CLASS: herdr and all it starts inherit the launcher's class, below normal at a task's default
+      expect(result.priority).toBe(0x20);
       expect(result.secret).toBe(sentinel);
       expect(result.args).toEqual(["argument with spaces & 한글"]);
       expect(() => process.kill(result.pid, 0)).not.toThrow();

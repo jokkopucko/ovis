@@ -37,10 +37,6 @@
   }
 }
 
-.connect-phone-gate {
-  margin: 0;
-}
-
 .connect-phone-reset {
   padding-top: var(--space-2);
   border-top: var(--hairline) solid var(--border);
@@ -84,26 +80,11 @@
   font-weight: var(--fw-semibold);
 }
 
-.connect-link {
-  align-self: flex-start;
-  padding-inline: 0;
-  color: var(--accent);
-}
-
-.connect-signin-nudge,
 .connect-relay-switch {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
-}
-
-.connect-signin-nudge {
-  padding: var(--space-2) var(--space-3);
-  border: var(--hairline) solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--bg-elevated);
-  color: var(--text);
 }
 
 /* the three ways to connect, each tab with its own phone QR code (PhoneScan) */

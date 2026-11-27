@@ -1,13 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
-import { createElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, createElement } from "react";
+import { openPage, type Page } from "./page.fixture.ts";
 import { RECONNECT_GRACE_MS, useReconnectGrace } from "./reconnectGrace.ts";
 
 interface Facts { connected: boolean; connectedBefore: boolean; urgent: boolean; lostAt?: number | null }
 
 let shown: boolean[] = [];
-let renderer: ReactTestRenderer | undefined;
-const acting = Object.getOwnPropertyDescriptor(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+let page: Page;
 
 function Probe(facts: Facts) {
   shown.push(useReconnectGrace(facts.connected, facts.connectedBefore, facts.urgent, facts.lostAt ?? null));
@@ -15,10 +14,7 @@ function Probe(facts: Facts) {
 }
 
 async function render(facts: Facts): Promise<boolean> {
-  await act(async () => {
-    if (renderer) renderer.update(createElement(Probe, facts));
-    else renderer = create(createElement(Probe, facts));
-  });
+  await page.render(createElement(Probe, facts));
   return shown.at(-1)!;
 }
 
@@ -30,17 +26,14 @@ const live: Facts = { connected: true, connectedBefore: true, urgent: false };
 const dropped: Facts = { ...live, connected: false };
 
 beforeEach(() => {
-  Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
+  page = openPage();
   jest.useFakeTimers();
   shown = [];
 });
 
 afterEach(async () => {
-  await act(async () => renderer?.unmount());
-  renderer = undefined;
   jest.useRealTimers();
-  if (acting) Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", acting);
-  else Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+  await page.close();
 });
 
 describe("useReconnectGrace", () => {

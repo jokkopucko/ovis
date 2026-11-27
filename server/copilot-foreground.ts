@@ -1,5 +1,6 @@
 /** Read-only identity for opted-in Linux TUIs. This never enables a listener or configures its authentication. */
-import { closeSync, openSync, readSync, readdirSync, readlinkSync, statSync } from "node:fs";
+import { readdirSync, readlinkSync, statSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { createConnection, type Socket } from "node:net";
 import { randomUUID } from "node:crypto";
 import { readProcessBirth } from "./process-owner.ts";
@@ -9,7 +10,7 @@ type Diagnostic = "unsupported_platform" | "process_unproved" | "not_opted_in" |
   | "unsupported_protocol" | "foreground_changed" | "no_foreground";
 export type CopilotForeground =
   | { state: "unavailable"; diagnostic: Diagnostic }
-  | { state: "selected"; sessionId: string; binding: string };
+  | { state: "selected"; sessionId: string; binding: string; processing?: boolean };
 interface Endpoint { host: string; address: string; port: number; inode: string }
 interface Owner { pid: number; birth: string; endpoint: Endpoint }
 interface TcpEntry { address: string; port: number; remoteAddress: string; remotePort: number; state: string; inode: string }
@@ -19,22 +20,23 @@ const LOOPBACK: Readonly<Record<string, string>> = { "0100007F": "127.0.0.1", "0
 const MAX_MESSAGE = 64 * 1024;
 export const COPILOT_RPC_TIMEOUT_MS = 2000;
 const clients = new Map<number, ForegroundClient>();
+const activityClients = new Map<number, ForegroundClient>();
 class Unavailable extends Error {
   constructor(readonly diagnostic: Diagnostic) { super(diagnostic); }
 }
 
-function boundedFile(path: string, limit: number): string {
-  const fd = openSync(path, "r");
+async function boundedFile(path: string, limit: number): Promise<string> {
+  const fd = await open(path, "r");
   try {
     const bytes = Buffer.alloc(limit + 1);
     let length = 0;
     while (length < bytes.length) {
-      const read = readSync(fd, bytes, length, bytes.length - length, null);
+      const { bytesRead: read } = await fd.read(bytes, length, bytes.length - length, null);
       if (read === 0) return bytes.subarray(0, length).toString("utf8");
       length += read;
     }
     throw new Unavailable("process_unproved");
-  } finally { closeSync(fd); }
+  } finally { await fd.close(); }
 }
 
 function socketInodes(pid: number): Set<string> {
@@ -54,9 +56,10 @@ function socketInodes(pid: number): Set<string> {
   return inodes;
 }
 
-function tcpEntries(pid: number): TcpEntry[] {
-  return ["tcp", "tcp6"].flatMap((table) =>
-    boundedFile(`/proc/${pid}/net/${table}`, 4 * 1024 * 1024).split("\n").slice(1).filter((line) => line.trim()).map((line) => {
+async function tcpEntries(pid: number): Promise<TcpEntry[]> {
+  const tables = await Promise.all(["tcp", "tcp6"].map((table) => boundedFile(`/proc/${pid}/net/${table}`, 4 * 1024 * 1024)));
+  return tables.flatMap((table) =>
+    table.split("\n").slice(1).filter((line) => line.trim()).map((line) => {
       const fields = line.trim().split(/\s+/);
       const local = /^([\dA-F]+):([\dA-F]{4})$/.exec(fields[1] ?? "");
       const remote = /^([\dA-F]+):([\dA-F]{4})$/.exec(fields[2] ?? "");
@@ -66,32 +69,32 @@ function tcpEntries(pid: number): TcpEntry[] {
     }));
 }
 
-function owner(pid: number): Owner {
+async function owner(pid: number): Promise<Owner> {
   if (!Number.isSafeInteger(pid) || pid < 1 || statSync(`/proc/${pid}`).uid !== process.getuid?.()) throw new Unavailable("process_unproved");
   const birth = readProcessBirth(pid);
   if (birth.state !== "identified") throw new Unavailable("process_unproved");
-  const argv = boundedFile(`/proc/${pid}/cmdline`, MAX_MESSAGE).split("\0");
+  const argv = (await boundedFile(`/proc/${pid}/cmdline`, MAX_MESSAGE)).split("\0");
   const delimiter = argv.indexOf("--");
   if (!argv.slice(0, delimiter < 0 ? undefined : delimiter).includes("--ui-server")) throw new Unavailable("not_opted_in");
   const inodes = socketInodes(pid);
-  const listening = tcpEntries(pid).filter((entry) => entry.state === "0A" && inodes.has(entry.inode));
+  const listening = (await tcpEntries(pid)).filter((entry) => entry.state === "0A" && inodes.has(entry.inode));
   const endpoint = listening[0];
   if (listening.length !== 1 || !endpoint || !Object.hasOwn(LOOPBACK, endpoint.address)) throw new Unavailable("endpoint_unproved");
   return { pid, birth: birth.birth.value, endpoint: { ...endpoint, host: LOOPBACK[endpoint.address]! } };
 }
 
-function unchanged(expected: Owner): void {
-  const current = owner(expected.pid);
+async function unchanged(expected: Owner): Promise<void> {
+  const current = await owner(expected.pid);
   if (current.birth !== expected.birth || current.endpoint.inode !== expected.endpoint.inode
     || current.endpoint.address !== expected.endpoint.address || current.endpoint.port !== expected.endpoint.port) {
     throw new Unavailable("process_changed");
   }
 }
 
-function acceptedByOwner(expected: Owner, socket: Socket): boolean {
-  unchanged(expected);
+async function acceptedByOwner(expected: Owner, socket: Socket): Promise<boolean> {
+  await unchanged(expected);
   const inodes = socketInodes(expected.pid);
-  return tcpEntries(expected.pid).some((entry) => entry.state === "01" && inodes.has(entry.inode)
+  return (await tcpEntries(expected.pid)).some((entry) => entry.state === "01" && inodes.has(entry.inode)
     && entry.address === expected.endpoint.address && entry.port === expected.endpoint.port
     && entry.remoteAddress === expected.endpoint.address && entry.remotePort === socket.localPort);
 }
@@ -121,7 +124,7 @@ class ForegroundClient {
   private failure: Unavailable | null = null;
   private idle: ReturnType<typeof setTimeout> | undefined;
 
-  constructor(readonly expected: Owner) {
+  constructor(readonly expected: Owner, private readonly pool: Map<number, ForegroundClient>) {
     const socket = this.socket = createConnection({ host: expected.endpoint.host, port: expected.endpoint.port });
     const connected = new Promise<void>((resolve, reject) => {
       this.socket.once("connect", resolve);
@@ -141,7 +144,7 @@ class ForegroundClient {
       try {
         await connected;
         const deadline = performance.now() + COPILOT_RPC_TIMEOUT_MS;
-        while (!acceptedByOwner(expected, socket)) {
+        while (!await acceptedByOwner(expected, socket)) {
           this.check();
           if (performance.now() > deadline) throw new Unavailable("rpc_timeout");
           await Bun.sleep(5);
@@ -149,6 +152,9 @@ class ForegroundClient {
         const result = await this.request("connect");
         if (!record(result) || (result.protocolVersion !== 3 && result.protocolVersion !== 4)) throw new Unavailable("unsupported_protocol");
         if (result.ok !== true) throw new Unavailable("malformed_rpc");
+      } catch (error) {
+        this.close(error instanceof Unavailable ? error : new Unavailable("rpc_failed"));
+        throw error;
       } finally { clearTimeout(timer); }
     })();
   }
@@ -163,7 +169,7 @@ class ForegroundClient {
       this.pending = null;
     }
     this.socket.destroy();
-    if (clients.get(this.expected.pid) === this) clients.delete(this.expected.pid);
+    if (this.pool.get(this.expected.pid) === this) this.pool.delete(this.expected.pid);
   }
 
   // Ownership reads the whole network-namespace TCP table, which can take hundreds of ms on a busy
@@ -211,13 +217,13 @@ class ForegroundClient {
     }
   }
 
-  private request(method: "connect" | "session.getForeground"): Promise<unknown> {
+  private request(method: "connect" | "session.getForeground" | "session.metadata.isProcessing", params: { sessionId?: string } = {}): Promise<unknown> {
     this.check();
     return new Promise((resolve, reject) => {
       const id = ++this.sequence;
       const timer = setTimeout(() => this.close(new Unavailable("rpc_timeout")), COPILOT_RPC_TIMEOUT_MS);
       this.pending = { id, timer, resolve, reject };
-      const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id, method, params: {} }));
+      const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
       this.socket.write(Buffer.concat([Buffer.from(`Content-Length: ${body.length}\r\n\r\n`), body]));
     });
   }
@@ -235,7 +241,7 @@ class ForegroundClient {
     return selected;
   }
 
-  read(): Promise<CopilotForeground> {
+  read(activity: boolean): Promise<CopilotForeground> {
     if (++this.queued > 32) {
       this.queued--;
       return Promise.reject(new Unavailable("rpc_failed"));
@@ -246,11 +252,18 @@ class ForegroundClient {
       await this.ready;
       const first = await this.selection();
       const revision = this.revision;
+      let processing: boolean | undefined;
+      if (activity) {
+        const reply = await this.request("session.metadata.isProcessing", { sessionId: first });
+        if (!record(reply) || typeof reply.processing !== "boolean") throw new Unavailable("malformed_rpc");
+        processing = reply.processing;
+      }
       const second = await this.selection();
       this.check();
-      if (!acceptedByOwner(this.expected, this.socket)) throw new Unavailable("process_changed");
+      if (!await acceptedByOwner(this.expected, this.socket)) throw new Unavailable("process_changed");
+      this.check();
       if (first !== second || revision !== this.revision || this.bytes.length !== 0) throw new Unavailable("foreground_changed");
-      return { state: "selected", sessionId: second, binding: `${this.generation}:${this.revision}` };
+      return { state: "selected", sessionId: second, binding: `${this.generation}:${this.revision}`, ...(processing === undefined ? {} : { processing }) };
     }).finally(() => {
       if (--this.queued === 0 && this.failure === null) {
         this.socket.unref();
@@ -265,14 +278,17 @@ class ForegroundClient {
 
 export function forgetCopilotForeground(): void {
   for (const client of clients.values()) client.close();
+  for (const client of activityClients.values()) client.close();
 }
 
 /** Attach only to an already-enabled, process-owned endpoint; never launch a server or send control methods. */
-export async function readCopilotForeground(pid: number): Promise<CopilotForeground> {
+export async function readCopilotForeground(pid: number, activity = false): Promise<CopilotForeground> {
   if (process.platform !== "linux") return { state: "unavailable", diagnostic: "unsupported_platform" };
-  let client = clients.get(pid);
+  const pool = activity ? activityClients : clients;
+  let client: ForegroundClient | undefined;
   try {
-    const expected = owner(pid);
+    const expected = await owner(pid);
+    client = pool.get(pid);
     if (client !== undefined && (client.expected.birth !== expected.birth
       || client.expected.endpoint.inode !== expected.endpoint.inode
       || client.expected.endpoint.address !== expected.endpoint.address || client.expected.endpoint.port !== expected.endpoint.port)) {
@@ -280,15 +296,15 @@ export async function readCopilotForeground(pid: number): Promise<CopilotForegro
       client = undefined;
     }
     if (client === undefined) {
-      if (clients.size >= 128) throw new Unavailable("endpoint_unproved");
-      client = new ForegroundClient(expected);
-      clients.set(pid, client);
+      if (pool.size >= 128) throw new Unavailable("endpoint_unproved");
+      client = new ForegroundClient(expected, pool);
+      pool.set(pid, client);
     }
-    return await client.read();
+    return await client.read(activity);
   }
   catch (error) {
     if (error instanceof Unavailable) {
-      if (error.diagnostic !== "foreground_changed" && error.diagnostic !== "no_foreground") client?.close(error);
+      if (error.diagnostic !== "foreground_changed" && error.diagnostic !== "no_foreground" && !(activity && error.diagnostic === "rpc_rejected")) client?.close(error);
       return { state: "unavailable", diagnostic: error.diagnostic };
     }
     const code = (error as NodeJS.ErrnoException).code;

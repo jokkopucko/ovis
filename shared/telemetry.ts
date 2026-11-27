@@ -5,7 +5,8 @@
  * also carries the browser's latest allowlisted settings snapshot; no raw user-entered values or
  * account identifiers are included. Once per UTC day a browser visits, a separate active message
  * (POST /v1/active on the receiver) names the install and the kinds of coding agents running, from
- * TELEMETRY_HARNESSES only, and the day's usage (TelemetryUsage): kinds of screen, ways in, and counts.
+ * TELEMETRY_HARNESSES only, and the day's usage (TelemetryUsage): kinds of screen, ways in, counts, the panes of each kind
+ * of agent by who started them with their versions, and the answers by the way they went.
  * Once a UTC day has ended, a counts message (POST /v1/counts on the receiver, TelemetryCounts) says how
  * often that day's fixed controls were used, from TELEMETRY_COUNTERS only, each as a bucket.
  *
@@ -253,10 +254,44 @@ export type TelemetryIngress = typeof TELEMETRY_INGRESS[number];
 export const TELEMETRY_COUNT_MAX = 9999;
 
 /**
+ * How an answer to an agent's question or approval got to it: through a channel the agent offers
+ * (`native`: its service, extension or bridge, never keys), as keys for a card read from the agent's own
+ * session record (`record`), as keys for a card read off the screen (`screen`), or not from Ovis at all
+ * (`terminal`: the agent stopped waiting with no answer sent from Ovis, so it was answered at the terminal
+ * or another client, or it moved on by itself).
+ */
+export const TELEMETRY_ANSWER_WAYS = ["native", "record", "screen", "terminal"] as const;
+export type TelemetryAnswerWay = typeof TELEMETRY_ANSWER_WAYS[number];
+
+/** The most versions one kind of agent names in a day. */
+export const TELEMETRY_VERSIONS_MAX = 4;
+const AGENT_VERSION = /^\d{1,4}\.\d{1,4}$/;
+
+/** An agent's version as a day names it: major.minor only, or null when it does not start with one. */
+export function telemetryAgentVersion(version: string | null | undefined): string | null {
+  const found = typeof version === "string" ? /^(\d{1,4})\.(\d{1,4})(?!\d)/.exec(version) : null;
+  return found ? `${Number(found[1])}.${Number(found[2])}` : null;
+}
+
+/**
+ * One kind of agent on one day: the most of its panes seen at one visit, those an Ovis server started
+ * (`ovis`) and the rest (`other`, started by hand, by herdr or by a server that has restarted since), and
+ * the major.minor versions its sessions named (sorted, at most TELEMETRY_VERSIONS_MAX; only agents whose
+ * session record says its version: Claude, Codex, OpenCode).
+ */
+export interface TelemetryAgentDay {
+  ovis: number;
+  other: number;
+  versions: string[];
+}
+
+/**
  * One day's use of the app on this install: which kinds of screen opened it and how they reached
  * the server (sorted, no repeats), how many prompt answers went from it to an agent, how many pane
  * alerts reached a device, and how many of those were tapped. Counts only: never which pane, agent,
- * device or time.
+ * device or time. A newer app adds `agents` (each kind of agent seen that day, TelemetryAgentDay) and
+ * `answers` (the bucket of the day's answers per TelemetryAnswerWay, a way with none left out), both or
+ * neither; an older one sends neither.
  */
 export interface TelemetryUsage {
   surfaces: TelemetrySurface[];
@@ -264,12 +299,14 @@ export interface TelemetryUsage {
   prompt_answers: number;
   alerts_delivered: number;
   alerts_opened: number;
+  agents?: Partial<Record<TelemetryHarness, TelemetryAgentDay>>;
+  answers?: Partial<Record<TelemetryAnswerWay, TelemetryBucket>>;
 }
 
 export type TelemetryUsageCount = "prompt_answers" | "alerts_delivered" | "alerts_opened";
 
 export function emptyUsage(): TelemetryUsage {
-  return { surfaces: [], ingress: [], prompt_answers: 0, alerts_delivered: 0, alerts_opened: 0 };
+  return { surfaces: [], ingress: [], prompt_answers: 0, alerts_delivered: 0, alerts_opened: 0, agents: {}, answers: {} };
 }
 
 /** A sorted, duplicate-free array of `choices` values, or null. Empty is valid. */
@@ -289,6 +326,49 @@ export function telemetrySurface(value: unknown): TelemetrySurface | null {
 }
 
 const USAGE_KEYS = ["surfaces", "ingress", "prompt_answers", "alerts_delivered", "alerts_opened"];
+const USAGE_KEY_SETS = [USAGE_KEYS, [...USAGE_KEYS, "agents", "answers"]];
+
+/** A plain object whose own keys are all strings from `choices` (none may be left out), or null. */
+function choiceRecord(choices: readonly string[], value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return null;
+  return Reflect.ownKeys(value).every((key) => typeof key === "string" && choices.includes(key)) ? value as Record<string, unknown> : null;
+}
+
+function agentDay(value: unknown): TelemetryAgentDay | null {
+  const record = choiceRecord(["ovis", "other", "versions"], value);
+  if (!record || Object.keys(record).length !== 3) return null;
+  const count = integerBetween(0, TELEMETRY_COUNT_MAX);
+  const versions = record["versions"];
+  if (!count(record["ovis"]) || !count(record["other"]) || !Array.isArray(versions) || versions.length > TELEMETRY_VERSIONS_MAX) return null;
+  for (const [index, version] of versions.entries()) {
+    if (typeof version !== "string" || !AGENT_VERSION.test(version) || (index > 0 && !(versions[index - 1] < version))) return null;
+  }
+  return { ovis: record["ovis"] as number, other: record["other"] as number, versions: [...versions as string[]] };
+}
+
+/** The agents and answers exactly as TelemetryUsage allows them, each in its list's order, or null. */
+function usageAgents(agentsValue: unknown, answersValue: unknown): Pick<Required<TelemetryUsage>, "agents" | "answers"> | null {
+  const agentsRecord = choiceRecord(TELEMETRY_HARNESSES, agentsValue);
+  const answersRecord = choiceRecord(TELEMETRY_ANSWER_WAYS, answersValue);
+  if (!agentsRecord || !answersRecord) return null;
+  const agents: Partial<Record<TelemetryHarness, TelemetryAgentDay>> = {};
+  for (const kind of TELEMETRY_HARNESSES) {
+    if (!Object.hasOwn(agentsRecord, kind)) continue;
+    const day = agentDay(agentsRecord[kind]);
+    if (!day) return null;
+    agents[kind] = day;
+  }
+  const answers: Partial<Record<TelemetryAnswerWay, TelemetryBucket>> = {};
+  for (const way of TELEMETRY_ANSWER_WAYS) {
+    if (!Object.hasOwn(answersRecord, way)) continue;
+    const bucket = answersRecord[way];
+    if (bucket !== 1 && bucket !== 2 && bucket !== 3 && bucket !== 4) return null;
+    answers[way] = bucket;
+  }
+  return { agents, answers };
+}
 
 /** The usage exactly as TelemetryUsage allows it, as a fresh object, or null. */
 export function telemetryUsage(value: unknown): TelemetryUsage | null {
@@ -296,19 +376,29 @@ export function telemetryUsage(value: unknown): TelemetryUsage | null {
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) return null;
   const keys = Reflect.ownKeys(value);
-  if (keys.length !== USAGE_KEYS.length || keys.some((key) => typeof key !== "string" || !USAGE_KEYS.includes(key))) return null;
+  const expected = USAGE_KEY_SETS.find((set) => set.length === keys.length);
+  if (!expected || keys.some((key) => typeof key !== "string" || !expected.includes(key))) return null;
   const record = value as Record<string, unknown>;
   const surfaces = sortedChoices(TELEMETRY_SURFACES, record["surfaces"]);
   const ingress = sortedChoices(TELEMETRY_INGRESS, record["ingress"]);
   const count = integerBetween(0, TELEMETRY_COUNT_MAX);
   if (!surfaces || !ingress) return null;
   if (!count(record["prompt_answers"]) || !count(record["alerts_delivered"]) || !count(record["alerts_opened"])) return null;
-  return { surfaces, ingress, prompt_answers: record["prompt_answers"] as number, alerts_delivered: record["alerts_delivered"] as number, alerts_opened: record["alerts_opened"] as number };
+  const usage: TelemetryUsage = { surfaces, ingress, prompt_answers: record["prompt_answers"] as number, alerts_delivered: record["alerts_delivered"] as number, alerts_opened: record["alerts_opened"] as number };
+  if (expected.length === USAGE_KEYS.length) return usage;
+  const agents = usageAgents(record["agents"], record["answers"]);
+  return agents && { ...usage, ...agents };
 }
+
+/** the agents and answers as text in one order, missing ones as none */
+const agentsText = (usage: TelemetryUsage): string => JSON.stringify([
+  TELEMETRY_HARNESSES.map((kind) => usage.agents?.[kind] ?? null),
+  TELEMETRY_ANSWER_WAYS.map((way) => usage.answers?.[way] ?? null),
+]);
 
 export function sameUsage(a: TelemetryUsage, b: TelemetryUsage): boolean {
   return a.prompt_answers === b.prompt_answers && a.alerts_delivered === b.alerts_delivered && a.alerts_opened === b.alerts_opened
-    && a.surfaces.join() === b.surfaces.join() && a.ingress.join() === b.ingress.join();
+    && a.surfaces.join() === b.surfaces.join() && a.ingress.join() === b.ingress.join() && agentsText(a) === agentsText(b);
 }
 
 /** One install's activity for one UTC day, exactly as sent to /v1/active. `day` is the UTC date (YYYY-MM-DD) of the browser visit, not of delivery. */

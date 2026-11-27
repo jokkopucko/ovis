@@ -8,6 +8,7 @@ export const WORKSPACE_KO: Record<string, string> = {
   "Open": "열기",
   "Use folder {path}": "{path} 폴더 사용",
   "{n} more recent folders": "최근 폴더 {n}개 더",
+  "Show {n} more": "{n}개 더 보기",
   "New worktree · {name}": "새 워크트리 · {name}",
   "Open worktree · {name}": "워크트리 열기 · {name}",
   "Install an agent · {name}": "에이전트 설치 · {name}",

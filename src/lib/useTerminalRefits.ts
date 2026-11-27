@@ -7,9 +7,9 @@ import { inUse, keepsCoreGrid, takeKeptCoreGrid } from "./paneTerminalShared.ts"
 import { fitLineHeight } from "./terminalLineHeight.ts";
 import type { TerminalPeek } from "./terminalPeek.ts";
 import type { HerdrSocket } from "./ws.ts";
-import type { FitAddon } from "@xterm/addon-fit";
-import type { Terminal } from "@xterm/xterm";
+import type { GhosttyFit, GhosttyTerminal } from "./ghostty/terminal.ts";
 import { typeAheadFocused } from "./typeAhead.ts";
+import { terminalScreen } from "./terminalScreen.ts";
 
 export interface TerminalRefitsDeps {
   activeRef: RefObject<boolean>;
@@ -22,14 +22,12 @@ export interface TerminalRefitsDeps {
   coarseRef: RefObject<boolean>;
   covered: boolean;
   findOpenRef: RefObject<boolean>;
-  fitRef: RefObject<FitAddon | null>;
+  fitRef: RefObject<GhosttyFit | null>;
   fittedRef: RefObject<() => void>;
   fixedGridRef: RefObject<boolean>;
   follow: boolean;
   followCursorRef: RefObject<() => void>;
   keyboardHoldsRef: RefObject<(force: boolean) => boolean>;
-  narrowFont: boolean;
-  narrowFontFitted: RefObject<boolean>;
   observeRef: RefObject<boolean>;
   colors: TerminalColors;
   paneRef: RefObject<string | null>;
@@ -38,13 +36,13 @@ export interface TerminalRefitsDeps {
   shown: boolean;
   sizesPty: () => boolean;
   socketRef: RefObject<HerdrSocket | null>;
-  termRef: RefObject<Terminal | null>;
+  termRef: RefObject<GhosttyTerminal | null>;
   terminalFontFamily: string;
   terminalFontSize: number;
 }
 
 export function useTerminalRefits(deps: TerminalRefitsDeps): void {
-  const { activeRef, autoSelected, baseFontRef, pinchingRef, fontSettledRef, chatView, chatViewRef, coarseRef, findOpenRef, fitRef, fittedRef, fixedGridRef, follow, followCursorRef, keyboardHoldsRef, narrowFont, narrowFontFitted, observeRef, colors, covered, paneRef, peekRef, sharedGridRef, shown, sizesPty, socketRef, termRef, terminalFontFamily, terminalFontSize } = deps;
+  const { activeRef, autoSelected, baseFontRef, pinchingRef, fontSettledRef, chatView, chatViewRef, coarseRef, findOpenRef, fitRef, fittedRef, fixedGridRef, follow, followCursorRef, keyboardHoldsRef, observeRef, colors, covered, paneRef, peekRef, sharedGridRef, shown, sizesPty, socketRef, termRef, terminalFontFamily, terminalFontSize } = deps;
   // a fit that sizes no pty (out of use, or not this page's to size: covered, a following split) leaves a kept herdr-core
   // pty drawn in its grid
   const keptUndriven = (): boolean => keepsCoreGrid(socketRef.current, paneRef.current) && !(inUse() && sizesPty());
@@ -94,22 +92,6 @@ export function useTerminalRefits(deps: TerminalRefitsDeps): void {
     return () => { superseded = true; };
   }, [terminalFontSize, fontFamily]);
 
-  // the setting, a zoom or the last sibling closing need not resize the host: the observer may stay silent
-  useEffect(() => {
-    if (narrowFontFitted.current === narrowFont) return;
-    narrowFontFitted.current = narrowFont;
-    const term = termRef.current;
-    if (!term || observeRef.current || fixedGridRef.current || chatViewRef.current || keyboardHoldsRef.current(false) || keptUndriven()) return;
-    try {
-      fitRef.current?.fit();
-      fittedRef.current();
-    } catch {
-      return;
-    }
-    const pane = paneRef.current;
-    if (pane && sizesPty() && inUse()) socketRef.current?.resize(pane, term.cols, term.rows);
-  }, [narrowFont]);
-
   // the grid must re-fit when the lens switches back: the chat lens covered it, and a
   // resize while covered may have been skipped by a zero-size layout
   useEffect(() => {
@@ -127,9 +109,10 @@ export function useTerminalRefits(deps: TerminalRefitsDeps): void {
     // where it is and the way to the bottom shows over it (components/TerminalViewportTools.tsx)
     const landAtBottom = (): void => {
       const shown = termRef.current;
-      if (shown && !shown.hasSelection()) shown.scrollToBottom();
+      if (shown && !terminalScreen(shown).hasSelection()) shown.scrollToBottom();
     };
-    if (observeRef.current || fixedGridRef.current || keptUndriven()) { landAtBottom(); return; }
+    const reclaim = paneRef.current && socketRef.current?.canRequestWindowsFit(paneRef.current);
+    if (observeRef.current || (fixedGridRef.current && !reclaim) || keptUndriven()) { landAtBottom(); return; }
     if (keyboardHoldsRef.current(true)) { landAtBottom(); return; }
     const term = termRef.current;
     try {

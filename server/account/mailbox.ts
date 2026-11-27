@@ -25,7 +25,8 @@ import { applyAccountRecords, stageMailboxAdds, type AddGates, type RecordOutcom
 
 /** The account service refused a PC route: its status and error code, when it named one. */
 export class AccountServiceRefusal extends Error {
-  constructor(readonly status: number, readonly code: string | null, readonly path: string) {
+  /** `retryAfter`: the seconds the service asks to wait (its `retry-after`), or null when it names none. */
+  constructor(readonly status: number, readonly code: string | null, readonly path: string, readonly retryAfter: number | null = null) {
     super(`The account service answered ${status} to ${path}`);
     this.name = "AccountServiceRefusal";
   }
@@ -55,6 +56,13 @@ export const SIGN_IN_PULL_MS = 60_000;
 /** The same after such a pull could not read the mailbox (the service was down, or did not answer): it found nothing out. */
 export const SIGN_IN_PULL_RETRY_MS = ASKED_PULL_MS;
 export const SIGN_IN_WAIT_MS = 5_000;
+/** How long an id with no row here is remembered as first asking to sign in (AccountMailbox.unreadKey), and how many. */
+const UNREAD_KEY_MS = 10 * 60_000;
+const UNREAD_KEYS = 512;
+/** How long from its first ask such an id is told to wait for a read at most: past it, it is refused as before. */
+const UNREAD_WAIT_MS = 3 * 60_000;
+/** How long the account service's word on whether an account keeps a signed list is kept (AccountMailbox.listNamed). */
+const LIST_NAMED_MS = 30_000;
 /** The least time between two reads of an account's admissions for links (vouch): a 429 may name a longer one. */
 export const VOUCH_READ_GAP_MS = ASKED_PULL_MS;
 /** How long one such read has for its two calls together. */
@@ -201,13 +209,25 @@ function listingChanged(error: unknown): boolean {
   return error instanceof AccountServiceRefusal && error.path === "/v1/pc/complete" && error.status === 409 && error.code === "listing_changed";
 }
 
-function readCompletion(path: string | undefined): CompletionScope | null {
-  if (!path) return null;
+/**
+ * A PC that joined `account` by its list under the binding `list_bind_id` owes the account service its completion,
+ * and has no listing for it yet (AccountMailbox.listJoined): the receipt's file holds this until a pull names one. An
+ * Ovis that reads no such form takes the file for no receipt.
+ */
+type ListOwed = { readonly account: string; readonly list_bind_id: string };
+
+const BIND_ID = /^[0-9a-f]{32}$/;
+
+function readCompletion(path: string | undefined): { receipt: CompletionScope | null; owed: ListOwed | null } {
+  const none = { receipt: null, owed: null };
+  if (!path) return none;
   try {
-    const kept = JSON.parse(readFileSync(path, "utf8")) as Partial<Record<keyof CompletionScope, unknown>> | null;
-    return kept !== null && typeof kept === "object" && typeof kept.account === "string" && typeof kept.listing_id === "string" && LISTING_ID.test(kept.listing_id)
-      ? { account: kept.account, listing_id: kept.listing_id } : null;
-  } catch { return null; }
+    const kept = JSON.parse(readFileSync(path, "utf8")) as Partial<Record<keyof CompletionScope | keyof ListOwed, unknown>> | null;
+    if (kept === null || typeof kept !== "object" || typeof kept.account !== "string") return none;
+    if (typeof kept.listing_id === "string" && LISTING_ID.test(kept.listing_id)) return { receipt: { account: kept.account, listing_id: kept.listing_id }, owed: null };
+    if (typeof kept.list_bind_id === "string" && BIND_ID.test(kept.list_bind_id)) return { receipt: null, owed: { account: kept.account, list_bind_id: kept.list_bind_id } };
+    return none;
+  } catch { return none; }
 }
 
 export interface AccountMailboxOptions {
@@ -243,6 +263,13 @@ export class AccountMailbox {
   private timer: ReturnType<typeof setInterval> | undefined;
   private stopped = false;
   private pulling: Promise<number> | undefined;
+  /**
+   * The last read of the mailbox got no answer from the account service: its calls failed on the way or ran out of time.
+   * Only the last drain sets it (a join that starts no read sees an earlier one's, and a drain that stops early leaves
+   * it); a TypeError can also be a fault of this PC's, and a 503 or 429 counts as answered. It only chooses the words of
+   * a refusal (joinAdmitted), never who is let in.
+   */
+  private unanswered = false;
 
   private pending: unknown[];
   private draining: unknown[] = [];
@@ -258,6 +285,10 @@ export class AccountMailbox {
 
   /** A bind's completion receipt the account service has not taken yet (account#57): sent again after each pull. */
   private completion: CompletionScope | null;
+  /** The completion this PC owes for a join by its list, before a pull named its listing (listJoined); on disk in the receipt's file. */
+  private listOwed: ListOwed | null;
+  /** Whether listOwed is on disk: one the disk did not take at the join is written again at each pull until it is. */
+  private owedOnDisk = true;
 
   private listingConfirmed: { readonly key: string; readonly at: number; readonly wallAt: number; readonly seq: number } | null = null;
   /** What the pull under way read from its mailbox of this PC's listing in its account; undefined when it failed, or no link bound the PC. */
@@ -268,7 +299,7 @@ export class AccountMailbox {
   private listingCheck: { readonly key: string; readonly verdict: Promise<ListingVerdict> } | null = null;
 
   constructor(private readonly options: AccountMailboxOptions) {
-    this.completion = readCompletion(options.completionPath);
+    ({ receipt: this.completion, owed: this.listOwed } = readCompletion(options.completionPath));
     const pending = readPending(options.pendingPath);
     this.pending = pending ?? [];
     this.pendingError = pending === null ? `Cannot read ${options.pendingPath}: account adds wait until it is restored or fixed.` : null;
@@ -331,13 +362,56 @@ export class AccountMailbox {
 
   pull(readmission?: Readmission): Promise<number> {
     this.pulling ??= this.exclusively(async () => {
+      const began = Date.now();
       const applied = await this.drain();
       // the listing this pull's own mailbox named: a read rests on no other
-      const adds = applied + (await this.readSnapshotNow(readmission, this.drainedListing)).adds;
+      const read = await this.readSnapshotNow(readmission, this.drainedListing);
+      const adds = applied + read.adds;
+      // a pull that ended with no error and read the account's rows whole: what the account let in by then has its row
+      // here. A snapshot that did not commit (a page that failed, a stale answer) is no such read, unless the service
+      // reads no rows by its own word (step2_off); nothing to read counts as read. A read only refuses: it lets no key in
+      if (this.error === null && read.whole) this.readBegan = began;
       await this.sendCompletion();
       return adds;
     }).finally(() => { this.pulling = undefined; });
     return this.pulling;
+  }
+
+  /** When the last pull that read the mailbox and the account's rows without an error began (Date.now()); null before one. */
+  private readBegan: number | null = null;
+  /** When each id this PC holds no row for first asked to sign in here (unreadKey): at most UNREAD_KEYS, in the order they asked. */
+  private readonly firstAsked = new Map<string, number>();
+
+  /**
+   * An id this PC holds no row for asks to sign in now (relay/refused-signin.ts, before the read that ask starts): when
+   * it first asked, now unless it asked within UNREAD_KEY_MS. Only ids the memory let go of make room: with UNREAD_KEYS
+   * ids remembered, a new one is not (null), so a flood of new ids never pushes a key's first ask out.
+   */
+  askedFirst(deviceId: string, now = Date.now()): number | null {
+    const live = (at: number): boolean => now - at >= 0 && now - at <= UNREAD_KEY_MS;
+    const first = this.firstAsked.get(deviceId);
+    if (first !== undefined && live(first)) return first;
+    this.firstAsked.delete(deviceId);
+    for (const [id, at] of this.firstAsked) {
+      if (live(at)) break;
+      this.firstAsked.delete(id);
+    }
+    if (this.firstAsked.size >= UNREAD_KEYS) return null;
+    this.firstAsked.set(deviceId, now);
+    return now;
+  }
+
+  /**
+   * A sign-in by an id this PC holds no row for: whether it is to wait for a read, as a key the account may have let in
+   * that this PC has not read yet (relay/session.ts answers it catching_up). Only while a read can come (the service is
+   * on and this PC's waiting records read: as readComing reasons), for UNREAD_WAIT_MS from the id's first ask at most,
+   * and while no pull that began after that ask ended with no error. Otherwise it is refused as any unknown key.
+   */
+  unreadKey(deviceId: string, now = Date.now()): boolean {
+    if (this.options.service instanceof Error || this.pendingError !== null) return false;
+    const first = this.askedFirst(deviceId, now);
+    if (first === null || now - first > UNREAD_WAIT_MS) return false;
+    return this.readBegan === null || this.readBegan < first;
   }
 
   /** One whole snapshot read now, in turn with pulls; null when the server gave no snapshot ports or there is nothing to read for. */
@@ -497,20 +571,76 @@ export class AccountMailbox {
 
   /**
    * A PC route of the account's signed list (`/v2/pc/list…`): `body` beside this PC's relay key and a fresh, single-use
-   * proof of it, as for its mailbox. Throws AccountServiceRefusal for an answer that is not 2xx.
+   * proof of it, as for its mailbox. Throws AccountServiceRefusal for an answer that is not 2xx. `ready` runs once the
+   * proof is made (a request of its own), right before the route's request goes out: what it throws stops that
+   * request, so what the caller checks there holds at the moment its body leaves this PC.
    */
-  async listRoute(path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async listRoute(path: string, body: Record<string, unknown>, ready?: () => void): Promise<Record<string, unknown>> {
     const identity = this.options.identity();
     if (!identity) throw new Error("This PC has no relay identity");
     if (this.options.service instanceof Error) throw this.options.service;
-    const answer = await this.call(path, { server_id: identity.server_id, public_key: bytesToHex(importPublicKey(identity.public_key)), ...await this.prove(identity), ...body });
+    const proof = await this.prove(identity);
+    ready?.();
+    const answer = await this.call(path, { server_id: identity.server_id, public_key: bytesToHex(importPublicKey(identity.public_key)), ...proof, ...body });
     if (answer === null || typeof answer !== "object" || Array.isArray(answer)) throw new Error(`The account service sent a malformed answer to ${path}`);
     return answer;
   }
 
+  /** Drops what this PC remembers of whether `account` keeps a signed list (listNamed): the next ask goes to the account service. */
+  forgetListNamed(account: string): void {
+    for (const scope of [...this.listNames.keys()]) if (scope.endsWith(` ${account}`)) this.listNames.delete(scope);
+  }
+
+  /**
+   * This PC joined `account` by the account's signed list under the binding `bindId`, and its copy holds it: it owes
+   * the account service the word that its add is complete (POST /v1/pc/complete), which the account's page waits
+   * for to show it as more than listed. The listing that receipt names is the one this PC's own mailbox pull names
+   * (`with_listing_id`), never an admission: an account with a list takes none (Part D11.9). So what is owed goes on
+   * disk now, in the receipt's file, and the next pull that names a listing turns it into the receipt, which is sent
+   * once and kept and sent again as any receipt until it is answered. A PC that stops before that pull sends it after
+   * its next start. Nothing waits for it, and it never throws.
+   */
+  listJoined(account: string, bindId: string): void {
+    this.listOwed = { account, list_bind_id: bindId };
+    this.completion = null;
+    this.owedOnDisk = this.writeCompletionFile(this.listOwed);
+  }
+
+  /** A join by the list was answered: the pull that turns what it owes into its receipt starts now. It never throws. */
+  joinedByList(): void {
+    if (!this.stopped) void this.pull().catch(() => undefined);
+  }
+
+  private readonly listNames = new Map<string, { readonly list: string | null; readonly at: number }>();
+
+  /**
+   * The list the account service names for `account` to this PC (POST /v2/pc/list), or null for none: its word, good
+   * for telling a PC in no account that the account keeps a signed list, and for nothing else. Null on a PC that
+   * follows no list, which asks nothing. Kept for half a minute. Throws when the service could not be asked.
+   */
+  async listNamed(account: string, now = Date.now()): Promise<string | null> {
+    if (this.options.list === undefined) return null;
+    const identity = this.options.identity();
+    if (!identity) throw new Error("This PC has no relay identity");
+    const scope = `${identity.server_id} ${account}`;
+    const kept = this.listNames.get(scope);
+    if (kept !== undefined && now - kept.at >= 0 && now - kept.at < LIST_NAMED_MS) return kept.list;
+    let list: string | null = null;
+    try {
+      const said = (await this.listRoute("/v2/pc/list", { account })).list;
+      if (typeof said === "string" && isListHash(said)) list = said;
+    } catch (error) {
+      // the unknown route: an account with no list, one that does not list this PC, a service from before lists
+      if (!(error instanceof AccountServiceRefusal && error.status === 404)) throw error;
+    }
+    this.listNames.set(scope, { list, at: now });
+    return list;
+  }
+
   /** `answer`: what this read's own mailbox call named as the PC's listing (a pull's drain, or askListingNamed). */
-  private async readSnapshotNow(readmission?: Readmission, answer?: NamedListing): Promise<{ outcome: ReadOutcome | null; adds: number }> {
-    const empty = { outcome: null, adds: 0 };
+  /** `whole`: the account's rows were read whole, or there were none to read, or the service reads none (step2_off): what unreadKey may rest on. */
+  private async readSnapshotNow(readmission?: Readmission, answer?: NamedListing): Promise<{ outcome: ReadOutcome | null; adds: number; whole: boolean }> {
+    const empty = { outcome: null, adds: 0, whole: true };
     const snapshot = this.options.snapshot;
     if (!snapshot || this.stopped) return empty;
     const account = snapshot.account();
@@ -579,7 +709,7 @@ export class AccountMailbox {
       // device's link just bound is listed by that device after its link: until then, for a bounded time, it is not yet listed
       if (unlisted && ((binding !== null && devices.serviceBinding() === binding) || (linked !== null && devices.linkBinding() === linked && !devices.awaitsFirstListing()))) devices.clearAccountBinding("unlisted", "account");
       else if (outcome.committed && linked !== null && devices.linkBinding() === linked && typeof named === "string") devices.pinServiceListing(linked, named);
-      return { outcome, adds };
+      return { outcome, adds, whole: outcome.committed || step2Off };
     } catch (error) {
       this.error = error instanceof Error ? error.message : String(error);
       return empty;
@@ -612,10 +742,26 @@ export class AccountMailbox {
    * (409 `listing_changed`) ends it: that add is no longer the one to complete.
    */
   async complete(account: string, listingId: string): Promise<void> {
-    this.completion = { account, listing_id: listingId };
-    try { if (this.options.completionPath) writePrivateState(this.options.completionPath, this.completion); }
-    catch (error) { console.error(`[account] the completion receipt could not be kept: ${error instanceof Error ? error.message : String(error)}`); }
+    this.keepCompletion({ account, listing_id: listingId });
     await this.sendCompletion();
+  }
+
+  /** The receipt goes on disk first: sendCompletion sends it, now or after a pull. It takes the place of what a join by the list owed. */
+  private keepCompletion(scope: CompletionScope): void {
+    this.completion = scope;
+    this.listOwed = null;
+    this.owedOnDisk = true;
+    this.writeCompletionFile(scope);
+  }
+
+  /** False when the disk did not take it. */
+  private writeCompletionFile(value: CompletionScope | ListOwed | null): boolean {
+    try { if (this.options.completionPath) writePrivateState(this.options.completionPath, value); }
+    catch (error) {
+      console.error(`[account] the completion receipt could not be kept: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }
+    return true;
   }
 
   private async confirmCompletion(identity: RelayIdentity, scope: CompletionScope) {
@@ -631,6 +777,15 @@ export class AccountMailbox {
   }
 
   private async sendCompletion(): Promise<void> {
+    const owed = this.listOwed;
+    if (owed !== null && this.options.devices.linkBinding() !== owed.list_bind_id) {
+      // the binding that joined by its list is gone (Revoke all, its removal): nothing of it is owed any more
+      this.listOwed = null;
+      if (this.completion === null) this.writeCompletionFile(null);
+    } else if (owed !== null && !this.owedOnDisk) {
+      // the disk did not take it at the join: offered to it again, so a stop after this pull still sends it
+      this.owedOnDisk = this.writeCompletionFile(owed);
+    }
     const scope = this.completion;
     const identity = this.options.identity();
     if (scope === null || !identity) return;
@@ -646,7 +801,12 @@ export class AccountMailbox {
         return;
       }
     } catch (error) {
-      if (!listingChanged(error)) {
+      // On a PC pinned to its list the list says the PC is in, not the listing: a final refusal of the receipt drops the
+      // receipt, and nothing else (confirmCompletion clears no binding but one on the service's word). A 429, a lapsed
+      // proof (401), a request that timed out and a 5xx are no word on the receipt: it is sent again after the next pull
+      const final = error instanceof AccountServiceRefusal && error.status >= 400 && error.status < 500 && error.status !== 401 && error.status !== 408 && error.status !== 429;
+      const refusedOnList = devices.listFollowed() && final;
+      if (!listingChanged(error) && !refusedOnList) {
         console.warn(`[account] the account service did not take this PC's completed add yet: ${error instanceof Error ? error.message : String(error)}`);
         return;
       }
@@ -694,6 +854,15 @@ export class AccountMailbox {
       await this.pull();
     }
     return this.currentAdmission(key);
+  }
+
+  /**
+   * `admitted`, telling an account service that did not answer apart from one that holds no admission for the key:
+   * "unanswered" when the read it waited for got no answer from the service, false when the service answered.
+   */
+  async joinAdmitted(key: string): Promise<boolean | "unanswered"> {
+    if (await this.admitted(key)) return true;
+    return this.unanswered ? "unanswered" : false;
   }
 
   /** The account service is turned off on purpose: nothing can be asked of it, so nothing waits for its word. */
@@ -951,6 +1120,11 @@ export class AccountMailbox {
         const asked = this.options.list?.scopeToken?.();
         const { entries, waiting, listing, list } = await this.page(identity, account, ack);
         if (page === 0 && linked !== null) this.drainedListing = { binding: linked, account, listing };
+        // a PC that joined by its list completes its add with the listing its own pull names (listJoined)
+        const owed = this.listOwed;
+        if (page === 0 && typeof listing === "string" && owed !== null && owed.account === account && owed.list_bind_id === linked && this.options.devices.listFollowed()) {
+          this.keepCompletion({ account, listing_id: listing });
+        }
         if (page === 0 && list !== undefined) this.tellList(account, list, asked);
         for (const admission of waiting) admissions.set(scope(account, identity.server_id, admission.key), Date.parse(admission.at));
         if (entries.length === 0) { complete = true; break; }
@@ -999,9 +1173,12 @@ export class AccountMailbox {
       this.admissions = admissions;
       this.lastPullAt = new Date().toISOString();
       this.error = null;
+      this.unanswered = false;
       if (complete) { this.drainedAt = Date.now(); this.drainedScope = scope(account, identity.server_id, ""); }
     } catch (error) {
       this.error = error instanceof Error ? error.message : String(error);
+      // fetch fails with a TypeError only when no answer came; a call's own deadline ends it as a TimeoutError
+      this.unanswered = error instanceof TypeError || (error instanceof DOMException && (error.name === "TimeoutError" || error.name === "AbortError"));
       try { save(); } catch {}
       this.pending = [...early, ...this.pending];
       this.draining = [];
@@ -1032,7 +1209,7 @@ export class AccountMailbox {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000),
     }));
     if (gone && response.status === 410) return null;
-    if (!response.ok) throw new AccountServiceRefusal(response.status, await refusalCode(response), path);
+    if (!response.ok) throw new AccountServiceRefusal(response.status, await refusalCode(response), path, retryAfterSeconds(response.headers.get("retry-after")));
     return await response.json() as Record<string, unknown>;
   }
 

@@ -1,12 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Browser } from "playwright-core";
+import type { Browser } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
-import { serveDemo } from "./demo-server.ts";
+import { appContext } from "./app-context.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 
 const EVIDENCE = process.env.UI_EVIDENCE_DIR;
 
@@ -17,7 +14,7 @@ const TOOL_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8"><t
 async function run(browser: Browser, origin: string, port: number, width: number, theme: "light" | "dark"): Promise<void> {
   const phone = width === 390;
   const tag = `${width} ${theme}`;
-  const context = await browser.newContext({ viewport: { width, height: phone ? 844 : 900 }, ...(phone ? { deviceScaleFactor: 3, isMobile: true, hasTouch: true } : {}), locale: "en-US", colorScheme: theme });
+  const context = await appContext(browser, { viewport: { width, height: phone ? 844 : 900 }, ...(phone ? { deviceScaleFactor: 3, isMobile: true, hasTouch: true } : {}), colorScheme: theme });
   await context.addInitScript((settings) => {
     localStorage.setItem("ovis:settings", settings);
   }, JSON.stringify({ language: "en", theme, webLinks: "panel", fileOpen: "panel" }));
@@ -223,7 +220,7 @@ async function run(browser: Browser, origin: string, port: number, width: number
 }
 
 async function runDefault(browser: Browser, origin: string, port: number): Promise<void> {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
+  const context = await appContext(browser, { viewport: { width: 1280, height: 900 } });
   await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
   const page = await context.newPage();
   await page.goto(`${origin}?pane=${encodeURIComponent(panes.api)}`);
@@ -240,29 +237,11 @@ async function runDefault(browser: Browser, origin: string, port: number): Promi
   console.log("PASS local page from the palette: off while Web links open in a new tab");
 }
 
-async function main(): Promise<void> {
-  const app = mkdtempSync(join(tmpdir(), "ovis-local-page-demo-"));
+await withDemoBrowser({ tempPrefix: "ovis-local-page-demo-", prefix: "/" }, async ({ browser, baseUrl: origin }) => {
+  // a page of another origin on this machine, as a local tool serves one
+  const tool = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(TOOL_PAGE, { headers: { "content-type": "text/html; charset=utf-8" } }) });
   try {
-    await buildDemoApp(app);
-    const index = join(app, "index.html");
-    writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    <script type="module"`));
-    const server = serveDemo(app, { prefix: "/" });
-    const tool = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response(TOOL_PAGE, { headers: { "content-type": "text/html; charset=utf-8" } }) });
-    try {
-      if (EVIDENCE) mkdirSync(EVIDENCE, { recursive: true });
-      const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-      try {
-        const origin = `http://127.0.0.1:${server.port}/`;
-        for (const [width, theme] of [[390, "light"], [390, "dark"], [1280, "light"], [1280, "dark"]] as const) await run(browser, origin, tool.port, width, theme);
-        await runDefault(browser, origin, tool.port);
-      } finally { await browser.close(); }
-    } finally {
-      await server.stop(true);
-      await tool.stop(true);
-    }
-  } finally {
-    rmSync(app, { recursive: true, force: true });
-  }
-}
-
-await main();
+    for (const [width, theme] of [[390, "light"], [390, "dark"], [1280, "light"], [1280, "dark"]] as const) await run(browser, origin, tool.port, width, theme);
+    await runDefault(browser, origin, tool.port);
+  } finally { await tool.stop(true); }
+});

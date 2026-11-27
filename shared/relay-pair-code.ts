@@ -18,6 +18,7 @@ import { ristretto255, ristretto255_hasher } from "@noble/curves/ed25519.js";
 import { hkdf } from "@noble/hashes/hkdf.js";
 import { sha256, sha512 } from "@noble/hashes/sha2.js";
 import { concatBytes, utf8ToBytes } from "@noble/hashes/utils.js";
+import { fromBase64Url as decodeBase64UrlBytes, toBase64Url } from "./relay-pair-sas.ts";
 
 type RistrettoPoint = InstanceType<typeof ristretto255.Point>;
 
@@ -78,6 +79,18 @@ export function normalizePairCode(input: string): string | null {
 
 export function formatPairCode(code: string): string {
   return `${code.slice(0, 5)}-${code.slice(5)}`;
+}
+
+/**
+ * The code field as it is typed: upper case, spaces and dashes dropped as `normalizePairCode` drops
+ * them, and the dash shown once the first group is in, so nobody has to guess whether to type it. A
+ * dash just deleted is not put back, or Backspace could not pass it, and one still there after a
+ * Backspace stays.
+ */
+export function typedPairCode(input: string, deleting: boolean): string {
+  const chars = [...input.toUpperCase().replace(/[\s-]/g, "")];
+  if (chars.length > 5 || (chars.length === 5 && (!deleting || input.endsWith("-")))) chars.splice(5, 0, "-");
+  return chars.length === 0 ? input : chars.join("");
 }
 
 export function randomPairCode(random: (bytes: number) => Uint8Array = (n) => crypto.getRandomValues(new Uint8Array(n))): string {
@@ -178,15 +191,9 @@ function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
 export class PairCodeProtocolError extends Error {}
 export class PairCodeExpiredError extends Error {}
 
-function toBase64Url(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
 function fromBase64Url(text: unknown, length?: number): Uint8Array {
   if (typeof text !== "string" || !/^[A-Za-z0-9_-]*$/.test(text) || text.length % 4 === 1) throw new PairCodeProtocolError("bad field");
-  const bytes = Uint8Array.from(atob(text.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+  const bytes = decodeBase64UrlBytes(text);
   if (length !== undefined && bytes.length !== length) throw new PairCodeProtocolError("bad field length");
   return bytes;
 }

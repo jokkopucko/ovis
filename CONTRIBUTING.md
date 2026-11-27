@@ -26,8 +26,10 @@ another project, with its license.
 - Linux (x64, arm64), macOS or Windows x64. Windows uses the screen mirror and needs no terminal addon; Alpine and 32-bit ARM have no addon build.
 - Bun 1.4 or newer, and herdr 0.9.0 or newer for the integration tests. Terminals in a checkout run on
   the Rust PTY host (`cargo build --release --manifest-path crates/pty-sidecar/Cargo.toml`, or
-  `bun scripts/pty-sidecar.ts install` on a release tag); Node 18 or newer is the fallback, and the PTY
-  tests run on both. CI runs Bun 1.4.4, Node 22 and herdr 0.9.3, all pinned in
+  `bun scripts/pty-sidecar.ts install` on a release tag), and the tests need it: `test:unit` and
+  `test:integration` install the release's for an unchanged crate when none runs, else stop and say how
+  to build one. CI builds it and
+  runs Bun 1.4.4, Node 22 (some test fixtures are Node programs) and herdr 0.9.3, all pinned in
   [.github/actions/setup-ci/action.yml](.github/actions/setup-ci/action.yml).
 
 ```bash
@@ -87,11 +89,30 @@ bun run test:integration   # runs the files 4 at a time on `ovis-test-1` to `-4`
                            # stops itself; HERDR_TEST_SHARDS=1 runs them one by one on `-1`
 bun run test:ui            # builds, then browser regression on `ovis-test`; stop it with
                            # herdr --session ovis-test server stop
+bun scripts/browser-checks.ts   # lists the CI browser scripts covering your changed files
+                                # (`--surfaces` lists every feature surface; `--run` runs them)
 ```
 
 `bun test` runs the unit and integration suites together. Remote-PC changes also have
 `bun run test:ssh`. Tests and screenshots use panes and state they create themselves, never your
 running terminals.
+
+### Native Windows pane-fit QA
+
+On the designated Windows QA VM, `scripts/windows-pane-fit-qa.ts` checks the native control
+transport separately from the fixed-mirror fixture. Use a disposable named daemon
+(`HERDR_TEST_SESSION=ovis-fit-<unique name>`) inside a fresh `XDG_CONFIG_HOME`. Configure new
+panes to open PowerShell and set `OVIS_HERDR_BIN` to the matching CLI. In a separate PowerShell
+with the same private environment and no inherited socket overrides, start the daemon with
+`& $env:OVIS_HERDR_BIN --session $env:HERDR_TEST_SESSION server`.
+
+In the QA shell set `HERDR_SOCKET` to `herdr/sessions/<name>/herdr.sock` under that config home
+and `CHROME_PATH` to installed Chromium. Build the client, then run `bun scripts/windows-pane-fit-qa.ts`.
+The helper creates and closes its own workspace, checks PowerShell's console dimensions after
+claims and browser resizes, and checks that **Open here** fits Ghostty before its first owned frame
+and delivers typed input. Set `UI_EVIDENCE_DIR` to retain before/after screenshots. Stop only that
+test daemon with `& $env:OVIS_HERDR_BIN session stop $env:HERDR_TEST_SESSION` and remove its
+private state afterwards.
 
 ## Terminology
 

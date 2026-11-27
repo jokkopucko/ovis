@@ -20,7 +20,7 @@ export class SignedInSessions {
   private readonly entries = new Set<{ readonly deviceId: string; order: number; chosen: boolean; readonly close: () => void; readonly line?: SessionLine }>();
 
   /**
-   * `max` at once, past which only a device at its `perDevice` share gets in, up to `perDeviceCandidates` over;
+   * `max` at once, past which only a device at its `perDevice` share gets in, with up to `perDeviceCandidates` of its own over;
    * `perDevice` chosen for one device key, whose oldest gives way; at most `perDeviceCandidates`
    * not chosen yet for one device key (an app races its carriers: two direct ones and the relay)
    */
@@ -49,10 +49,9 @@ export class SignedInSessions {
       this.entries.delete(oldest);
       oldest.close();
     }
-    // with every place taken, a device at its share still gets in (once used, its own oldest gives way), but never
-    // more than one device's racing carriers past every place
-    const over = this.entries.size - this.max;
-    if (over > 0 && (this.chosenOf(deviceId) < this.perDevice || over > this.perDeviceCandidates)) {
+    // with every place taken, a device at its share still gets in (once used, its own oldest gives way) with its own
+    // racing carriers, capped per device above: another device's carriers never use up its way in (#3243)
+    if (this.entries.size > this.max && this.chosenOf(deviceId) < this.perDevice) {
       release();
       close();
     }

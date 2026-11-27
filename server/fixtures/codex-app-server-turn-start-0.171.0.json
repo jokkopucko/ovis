@@ -1,0 +1,27 @@
+{
+  "recorded": "Codex 0.171.0: a second client's turn/start on the idle thread of a real TUI (codex --remote) whose input box held a draft (`draft x`). The TUI drew the message and its answer, and kept the draft; thread/read then gave the user message with the client's id. Isolated CODEX_HOME, 2026-11-27",
+  "request": {
+    "threadId": "01a2196f-48d2-7353-b50a-04524b6d1886",
+    "clientUserMessageId": "11111111-2222-4333-8444-555555555555",
+    "input": [
+      {
+        "type": "text",
+        "text": "Reply with exactly: TWO",
+        "text_elements": []
+      }
+    ]
+  },
+  "response": {
+    "turn": {
+      "id": "01a2196f-c65c-7162-a54e-769787e02b76",
+      "rootTurnId": "01a2196f-c65c-7162-a54e-769787e02b76",
+      "items": [],
+      "itemsView": "notLoaded",
+      "status": "inProgress",
+      "error": null,
+      "startedAt": null,
+      "completedAt": null,
+      "durationMs": null
+    }
+  }
+}

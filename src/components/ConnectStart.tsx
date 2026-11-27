@@ -2,16 +2,22 @@ import { Fragment, useEffect, useId, useRef, useState, type FormEvent, type Reac
 import { ChevronDown, ChevronLeft, ChevronRight, Plus, QrCode } from "lucide-react";
 
 import { useT, type Translate } from "../lib/i18n.ts";
+import { pageListAdds, type ListAdds, type ListedPost } from "../lib/account/listPcs.ts";
+import { indexedAccountService } from "../lib/account/service.ts";
+import { pageAccountList } from "../lib/account/pageList.ts";
 import { callNative, hasNativeMethod, hasNativePlugin } from "../lib/nativeApp.ts";
 import { isLoopbackHost, tailnetHost } from "../lib/phone.ts";
+import { endPairCodeComposition, typePairCode } from "../lib/pairCodeInput.ts";
 import type { KnownPc } from "../lib/account/knownPcs.ts";
 import type { MyPc } from "../lib/account/myPcs.ts";
 import { serverIdOfPath, serverScopePath } from "../lib/shellMode.ts";
 import { markRemovedPc, removedPcs, type RemovedPcMark } from "../lib/relay/shellState.ts";
 import { StartScreenAccountMenu } from "./AccountHead.tsx";
-import { deviceOffline, useOffline } from "../lib/useOffline.ts";
+import { AddPcByNumber } from "./AddPcByNumber.tsx";
+import { followUnlessOffline, useOffline } from "../lib/useOffline.ts";
 import { AddressForm, atDots, canScanQr, clearOutcome, offlineOpenText, OpenError, OpenStatus, OtherWayButton, scanQr, sshHandoff, TailscaleOff, tailscaleOn, useAddressOpen, Way, type AddressOpen, type SavedPc } from "./RelayAddPc.tsx";
 import { codeFailureText, type TypedCodeFailure } from "./codeFailureText.ts";
+import { InvitePc } from "./InvitePc.tsx";
 import { SheepMascot } from "./SheepMascot.tsx";
 import { StatusDot, type StatusDotState } from "./StatusDot.tsx";
 
@@ -96,7 +102,13 @@ export function savedWayTag(t: Translate, pc: Pick<PhoneSavedPc, "way">): string
 export type CheckedPc = "online" | "off";
 
 /** A relay PC of My PCs: this phone's own pairing (`saved`, by a QR or a code), or one of the account's. */
-export interface RelayTabPc { readonly server_id: string; readonly name?: string | undefined; readonly status?: "online" | "off" | "update" | "removed" | undefined; readonly saved: boolean }
+export interface RelayTabPc {
+  readonly server_id: string; readonly name?: string | undefined; readonly status?: "online" | "off" | "update" | "removed" | undefined; readonly saved: boolean;
+  /** the account has a list of its devices and PCs, and this device does not find the PC in it (myPcs `notInList`): the row says so */
+  readonly outside?: true;
+  /** the account's list holds the PC and the account service names no way to it: the row stays, off, and opens nothing */
+  readonly noWay?: true;
+}
 
 /**
  * The relay PCs this phone is on: its own pairings, then, signed in, the account's PCs it can open (one its own page can
@@ -116,8 +128,11 @@ export function relayTabPcs(devices: readonly SavedPc[], account: readonly MyPc[
     const row = listed.get(device.server_id);
     return { server_id: device.server_id, name: device.name, status: device.status ?? (row?.state === "needs-update" ? "update" : unread ? undefined : row?.state === "offline" ? "off" : row?.listed ? "online" : undefined), saved: true };
   });
-  const more = (account ?? []).filter((pc) => !pc.paired && pc.join !== undefined && !own.some((row) => row.server_id === pc.server_id) && removed[pc.server_id] !== "hidden")
-    .map((pc): RelayTabPc => ({ server_id: pc.server_id, name: pc.name, status: removed[pc.server_id] === "removed" ? "removed" : pc.state === "needs-update" ? "update" : checked.get(pc.server_id) ?? (unread ? undefined : pc.state === "offline" ? "off" : "online"), saved: false }));
+  // a PC the account's list holds stays a row also where the account service names no way to it: it is the account's
+  // by the list's word, and only that it cannot be reached now is the service's
+  const more = (account ?? []).filter((pc) => !pc.paired && (pc.join !== undefined || pc.byList === true) && !own.some((row) => row.server_id === pc.server_id) && removed[pc.server_id] !== "hidden")
+    .map((pc): RelayTabPc => pc.join === undefined ? { server_id: pc.server_id, name: pc.name, status: "off", saved: false, noWay: true }
+      : { server_id: pc.server_id, name: pc.name, status: removed[pc.server_id] === "removed" ? "removed" : pc.state === "needs-update" ? "update" : checked.get(pc.server_id) ?? (unread ? undefined : pc.state === "offline" ? "off" : "online"), saved: false, ...(pc.notInList === true ? { outside: true as const } : {}) });
   const rows = [...own, ...more];
   const kept = known.filter((pc) => !rows.some((row) => row.server_id === pc.server_id) && removed[pc.server_id] !== "hidden")
     .map((pc): RelayTabPc => ({ server_id: pc.server_id, name: pc.name, status: removed[pc.server_id] === "removed" ? "removed" : undefined, saved: false }));
@@ -142,6 +157,8 @@ interface PhonePc {
   readonly others?: readonly OtherLine[];
   readonly word?: PcWord | undefined;
   readonly address?: string | undefined;
+  /** a line under the name that says something of the PC a tap does not change: that it is not in the account's list */
+  readonly note?: string | undefined;
   /** a relay PC's own page, or what opening it does */
   readonly href?: string;
   /** a tap on `href`, which may keep the page from going there */
@@ -198,6 +215,7 @@ function PcRow({ pc, editing = false, asking, onAsk, onKeep }: { readonly pc: Ph
         <span className="phone-pc-meta">
           <span className="phone-pc-tag">{tag}</span>
           {pc.address !== undefined && pc.address !== pc.name && <span className={pc.ways !== undefined ? "my-pc-address my-pc-address-more" : "my-pc-address"}>{atDots(pc.address)}</span>}
+          {pc.note !== undefined && <span className="my-pc-note" data-pc-note="">{pc.note}</span>}
         </span>
       </span>
       {word !== null && <span className="relay-add-saved-note my-pc-state" data-pc-state={pc.word}>{dot && <StatusDot state={dot} size="inline" />}{word}</span>}
@@ -223,7 +241,7 @@ function PcRow({ pc, editing = false, asking, onAsk, onKeep }: { readonly pc: Ph
     <li className="my-pc" data-pc-way={pc.way} {...pc.data}>
       {editing ? <div className="relay-add-saved-pc is-editing">{inside}</div>
         : pc.href !== undefined ? <a className="relay-add-saved-pc" href={pc.href} onClick={pc.onLink}>{inside}</a>
-        : <button type="button" className="relay-add-saved-pc" onClick={pc.open}>{inside}</button>}
+        : <button type="button" className="relay-add-saved-pc" disabled={pc.open === undefined} onClick={pc.open}>{inside}</button>}
       {others.length > 0 && (
         <button type="button" className="icon-button is-outlined my-pc-more" data-action="more-ways" aria-expanded={more} aria-controls={othersId}
           aria-label={t("More ways to open {name}", { name: pc.name })} title={t("More ways to open {name}", { name: pc.name })} onClick={() => setMore(!more)}>
@@ -357,6 +375,9 @@ function isCurrent(saved: string, current: CurrentPc | null): boolean {
   } catch { return false; }
 }
 
+/** The account signed in to here (the stored sign-in), or null: whose list My PCs reads for its account PCs. */
+const signedInHere = (): Promise<string | null> => indexedAccountService.session().then((session) => session?.account ?? null);
+
 /**
  * My PCs: every PC this phone can open in one list, the relay's (this phone's pairings, then the account's) and the ones
  * the phone app saved by a Tailscale address, over SSH or at another address, each with the way it connects and, for a
@@ -368,7 +389,7 @@ function isCurrent(saved: string, current: CurrentPc | null): boolean {
  * chips. `top`: what the screen says above the list (notices, a PC not answering); `empty`: what it says with nothing
  * listed. Add PC (`onAdd`, none beside the panel on a wide screen) stays at the bottom while the list scrolls.
  */
-export function MyPcs({ devices, accountPcs = null, knownPcs, accountUnread = false, checked, phone, onForget, inUse = null, onBack, onAdd, focusAdd = 0, accountMenu = false, top, empty, wide = false, hidden = false }: {
+export function MyPcs({ devices, accountPcs = null, knownPcs, accountUnread = false, checked, phone, onForget, inUse = null, onBack, onAdd, focusAdd = 0, accountMenu = false, top, empty, wide = false, hidden = false, listOf = pageListAdds, signedIn = signedInHere }: {
   readonly devices: readonly SavedPc[];
   /** signed in, the account's PCs, which the list adds to this phone's own pairings (relayTabPcs) */
   readonly accountPcs?: readonly MyPc[] | null;
@@ -393,6 +414,10 @@ export function MyPcs({ devices, accountPcs = null, knownPcs, accountUnread = fa
   readonly wide?: boolean;
   /** kept mounted but not shown (Add a PC stands in its place on a phone): what it holds survives the switch back */
   readonly hidden?: boolean;
+  /** what this device knows of the account's signed list (listPcs.ts ListAdds); a test's own */
+  readonly listOf?: (account: string) => Promise<ListAdds>;
+  /** the account signed in to here, or null (the stored sign-in); a test's own */
+  readonly signedIn?: () => Promise<string | null>;
 }) {
   const t = useT();
   const open = useAddressOpen("list");
@@ -409,6 +434,50 @@ export function MyPcs({ devices, accountPcs = null, knownPcs, accountUnread = fa
   // the PCs that turned this phone away as removed (relayTabPcs), read again once one is forgotten from the list
   const [removed, setRemoved] = useState(removedPcs);
   const current = inUse === null ? phone.current : null;
+  // On an account that keeps a signed list, an account PC this device is not paired with that posted its keys for the
+  // list is added by the number both screens show (AddPcByNumber), never by the join on its own page, which is the
+  // directory's admission alone (docs/account-list.md, "Adding a PC"); one that posted nothing opens as before
+  // "unread" until a read of the signed-in account's list settled (ListAdds, or null where the account keeps none): a read
+  // that is out or failed is never "no list", so until then an account PC's row opens no page of its own, whose join is
+  // the directory's admission alone; a tap on it reads the list first (settleThenOpen). A page that holds no list at all
+  // (pageList.ts: it follows none) keeps no list for sure, from its first draw
+  const [listAdds, setListAdds] = useState<ListAdds | "unread">(() => pageAccountList() === null ? null : "unread");
+  const [adding, setAdding] = useState<{ readonly name: string; readonly post: ListedPost } | null>(null);
+  const readLists = (): Promise<ListAdds> => signedIn().then((account) => account === null ? null : listOf(account));
+  useEffect(() => {
+    if (pageAccountList() === null) { setListAdds(null); return; }
+    if (!(accountPcs ?? []).some((pc) => !pc.paired && pc.join !== undefined)) return;
+    let live = true;
+    readLists().then((next) => { if (live) setListAdds(next); }, (error: unknown) => {
+      console.warn("Ovis: the account's list could not be read for its PCs", error instanceof Error ? error.name : error);
+    });
+    return () => { live = false; };
+  }, [accountPcs, listOf, signedIn]); // eslint-disable-line react-hooks/exhaustive-deps
+  /** the post of an account PC of this row that is added by the number, where it is one */
+  // (keys the list holds for that PC by another device's entry are taken from that device alone: no Add of those here)
+  const postIn = (lists: ListAdds, pc: RelayTabPc): ListedPost | undefined => pc.saved ? undefined : lists?.posts.find((post) => post.server_id === pc.server_id && post.for.kind !== "signer");
+  const postOf = (pc: RelayTabPc): ListedPost | undefined => listAdds === "unread" ? undefined : postIn(listAdds, pc);
+  const addByNumber = (pc: RelayTabPc, post: ListedPost) => (): void => { open.setError(null); setAdding({ name: pc.name ?? t("Unnamed PC"), post }); };
+  /** An account PC's row while the list is unread: the list is read first, and only then does the row open what it opens. */
+  const settleThenOpen = (pc: RelayTabPc) => (): void => {
+    open.setError(null);
+    readLists().then((next) => {
+      setListAdds(next);
+      const post = postIn(next, pc);
+      if (post !== undefined) setAdding({ name: pc.name ?? t("Unnamed PC"), post });
+      else window.location.assign(serverScopePath(pc.server_id));
+    }, (error: unknown) => {
+      console.warn("Ovis: the account's list could not be read for its PCs", error instanceof Error ? error.name : error);
+      open.setError(t("The account service could not be reached. The PCs this device is paired with still work."));
+    });
+  };
+  /** How an account PC's row opens that is not this phone's own pairing: by the number, its page, or the list read first. */
+  const accountWay = (pc: RelayTabPc): Pick<PhonePc, "href" | "onLink" | "open"> => {
+    const post = postOf(pc);
+    if (post !== undefined) return { open: addByNumber(pc, post) };
+    if (!pc.saved && listAdds === "unread") return { open: settleThenOpen(pc) };
+    return { href: serverScopePath(pc.server_id), onLink: offlineLink(serverScopePath(pc.server_id)) };
+  };
   // Forget PCs: the rows this phone can forget have Forget, and the PC in use's asks once more first (`asking`, its key)
   const [editing, setEditing] = useState(false);
   const [asking, setAsking] = useState<string | null>(null);
@@ -423,8 +492,8 @@ export function MyPcs({ devices, accountPcs = null, knownPcs, accountUnread = fa
     ? () => { open.setError(null); callNative(SHELL, "backToCurrent").catch(open.failed); } : undefined;
   // the PC in use is open already: its row goes back to it as Back does, rather than opening it again
   const goBack = onBack ?? backToCurrent;
-  // a relay PC's page opens nothing with no network on this device: the row says so instead of going there
-  const offlineLink = (event: { preventDefault(): void }): void => { if (deviceOffline()) { event.preventDefault(); open.setError(offlineOpenText(t)); } };
+  // a relay PC's row says so when the device has no network (followUnlessOffline), instead of going there
+  const offlineLink = (href: string) => followUnlessOffline(href, () => open.setError(offlineOpenText(t)));
   const forgetSaved = (pc: PhoneSavedPc) => () => { open.setError(null); callNative(SHELL, "forget", { url: pc.origin }).then(phone.reread, open.failed); };
   // a saved Tailscale PC asks the app first whether Tailscale is on: off, Open Tailscale takes over (TailscaleOff)
   // `other`: a saved way the open offers by name when this one fails or is refused (a row of several)
@@ -447,11 +516,13 @@ export function MyPcs({ devices, accountPcs = null, knownPcs, accountUnread = fa
     : pc.saved && onForget ? () => onForget(pc.server_id) : undefined;
   // an account PC this device has no pairing for: nothing here forgets it
   const relayKept = (pc: RelayTabPc): "account" | undefined => pc.saved || pc.status === "removed" ? undefined : "account";
+  const outsideNote = (pc: RelayTabPc): string | undefined => pc.outside === true ? t("Not in your account's list yet") : undefined;
   const fromRelay = (pc: RelayTabPc): PhonePc => {
     const used = relayUsed(pc);
     return {
-      key: pc.server_id, name: pc.name ?? t("Unnamed PC"), way: "relay", ...(used && goBack ? { open: goBack } : { href: serverScopePath(pc.server_id), onLink: offlineLink }),
-      word: used ? "in-use" : pc.status, forget: forgetRelay(pc), kept: relayKept(pc),
+      // a PC with no way to it (noWay) has nothing to open: its row stays, and says that it is off
+      key: pc.server_id, name: pc.name ?? t("Unnamed PC"), way: "relay", ...(used && goBack ? { open: goBack } : pc.noWay === true ? {} : accountWay(pc)),
+      word: used ? "in-use" : pc.status, forget: forgetRelay(pc), kept: relayKept(pc), note: outsideNote(pc),
     };
   };
   const phoneLine = (pc: PhoneSavedPc): WayLine => ({ key: pc.origin, way: pc.way, address: pc.host, forget: pc.way === "ssh" ? undefined : forgetSaved(pc), kept: pc.way === "ssh" ? "ssh" : undefined, inUse: isCurrent(pc.origin, current) });
@@ -471,7 +542,7 @@ export function MyPcs({ devices, accountPcs = null, knownPcs, accountUnread = fa
     const data = { "data-pc-ways": [...new Set(lines.map((line) => line.way))].join(" "), ...(tailnet ? { "data-tailnet-pc": tailnet.origin } : {}) };
     if (relay !== undefined) {
       const used = relayUsed(relay);
-      return { key: relay.server_id, name: relay.name ?? t("Unnamed PC"), way: "relay", ways: lines, others: phones.map(otherLine), word: used ? "in-use" : relay.status, ...(used && goBack ? { open: goBack } : { href: serverScopePath(relay.server_id), onLink: offlineLink }), data };
+      return { key: relay.server_id, name: relay.name ?? t("Unnamed PC"), way: "relay", ways: lines, others: phones.map(otherLine), word: used ? "in-use" : relay.status, note: outsideNote(relay), ...(used && goBack ? { open: goBack } : accountWay(relay)), data };
     }
     // the way the app keeps open, where one is: the row's tap goes back to it, so the row shows it and More ways the rest
     const kept = phones.find((pc) => isCurrent(pc.origin, current));
@@ -516,6 +587,9 @@ export function MyPcs({ devices, accountPcs = null, knownPcs, accountUnread = fa
         : rows.length > 0 ? <p className="relay-shell-copy my-pcs-none" role="status">{t("No PC matches.")}</p> : empty}
       {editing ? <div className="my-pcs-add"><button type="button" className="btn btn-primary" data-action="forget-done" onClick={stopEditing}>{t("Done")}</button></div>
         : onAdd && <div className="my-pcs-add"><button ref={addButton} type="button" className="btn btn-primary" data-action="add-pc" onClick={onAdd}><Plus aria-hidden="true" />{t("Add PC")}</button></div>}
+      {adding !== null && listAdds !== null && listAdds !== "unread" && (
+        <AddPcByNumber list={listAdds.list} account={listAdds.account} post={adding.post} name={adding.name} keys={adding.post.for.kind === "keys"} onClose={() => setAdding(null)} onAdded={() => setAdding(null)} />
+      )}
     </div>
   );
 }
@@ -551,7 +625,7 @@ function CodeLine({ code, disabled }: { readonly code: CodeWays; readonly disabl
       {shown && (
         <form className="relay-shell-code-form" data-code-form="" onSubmit={submit}>
           <label className="relay-shell-field-label" htmlFor={`${id}-code`}>{t("Code from the PC")}</label>
-          <input id={`${id}-code`} name="code" className="input relay-shell-code-input" placeholder="XXXXX-XXXXX" disabled={disabled} readOnly={code.state.looking} autoComplete="off" autoCapitalize="characters" autoCorrect="off" spellCheck={false} maxLength={32} required autoFocus />
+          <input id={`${id}-code`} name="code" className="input relay-shell-code-input" placeholder="XXXXX-XXXXX" disabled={disabled} readOnly={code.state.looking} autoComplete="off" autoCapitalize="characters" autoCorrect="off" spellCheck={false} maxLength={32} required autoFocus onInput={typePairCode} onCompositionEnd={endPairCodeComposition} />
           {code.state.failure !== null && <p className="account-error" role="alert">{codeFailureText(t, code.state.failure)}</p>}
           <div className="relay-shell-actions">
             <button type="submit" className="btn btn-primary" disabled={disabled || code.state.looking} aria-busy={code.state.looking || undefined}>{code.state.looking ? t("Looking for the PC…") : t("Pair")}</button>
@@ -595,13 +669,13 @@ function QrOrCode({ code, disabled = false }: { readonly code: CodeWays; readonl
  * The relay tab signed out: what an account gives, the sign-in (`signIn`, AccountSignIn), then the PC's QR code or its
  * code, for a PC in no account, and that the other tabs need no sign-in.
  */
-export function SignedOutRelayPanel({ signIn, signingIn, code }: { readonly signIn: ReactNode; readonly signingIn: boolean; readonly code: CodeWays }) {
+export function SignedOutRelayPanel({ signIn, signingIn, decidingAccount, code }: { readonly signIn: ReactNode; readonly signingIn: boolean; readonly decidingAccount: boolean; readonly code: CodeWays }) {
   const t = useT();
   return (
     <>
       <p className="relay-shell-copy">{t("Reach your PCs from anywhere with your Ovis account")}</p>
       {signIn}
-      <p className="relay-shell-first-time">{t("First time? Your account is made right away.")}</p>
+      {!decidingAccount && <p className="relay-shell-first-time">{t("First time? Your account is made right away.")}</p>}
       <QrOrCode code={code} disabled={signingIn} />
       <p className="relay-shell-detail">{t("Tailscale and SSH need no sign-in.")}</p>
     </>
@@ -610,14 +684,19 @@ export function SignedOutRelayPanel({ signIn, signingIn, code }: { readonly sign
 
 /**
  * The relay tab signed in: a PC joins the account from its own Ovis, signed in with the same account, so this says so; a
- * PC in no account pairs by its QR code where the phone app can scan, or by its code in a browser.
+ * PC in no account pairs by its QR code where the phone app can scan, or by its code in a browser. Every device that
+ * may write its account's signed list also makes invites here, the way a PC is set up through an agent.
  */
 export function AccountRelayPanel({ code }: { readonly code: CodeWays }) {
   const t = useT();
+  // the page's list, in the phone apps and the hosted app in a browser alike (InvitePc draws nothing for a device that
+  // may not write it); a PC's own page has none, and says where invites are made instead (ConnectPhoneDialog)
+  const list = pageAccountList();
   return (
     <>
       <p className="relay-shell-copy">{t("Turn on Ovis on the PC and sign in with the same account.")}</p>
       <QrOrCode code={code} />
+      {list !== null && <InvitePc list={list} />}
     </>
   );
 }

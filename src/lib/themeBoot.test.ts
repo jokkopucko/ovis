@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { DEFAULT_SETTINGS, loadSettings, resolveTheme, sanitizeSettings } from "./settings.ts";
-import { applyThemeEntry, CUSTOM_ROWS_STORAGE_KEY, CUSTOM_THEMES_STORAGE_KEY, DEFAULT_APPEARANCE, readStoredAppearance, savedThemeEntry, SETTINGS_STORAGE_KEY, storedAppearance, THEME_VARS, THEMES_STORAGE_KEY } from "./themeBoot.ts";
+import { applyThemeEntry, CUSTOM_ROWS_STORAGE_KEY, CUSTOM_THEMES_STORAGE_KEY, DEFAULT_APPEARANCE, MARKDOWN_STYLE_STORAGE_KEY, readStoredAppearance, savedMarkdownStyle, savedThemeEntry, SETTINGS_STORAGE_KEY, storedAppearance, THEME_VARS, THEMES_STORAGE_KEY } from "./themeBoot.ts";
 import { bootRows, customRow, drawnTheme, NO_CUSTOM_THEMES, readThemeFile, withTheme, type CustomTheme } from "./customThemes.ts";
 import { themeFor } from "./themeFor.ts";
 import { rowFor, SUPPORTED_ENTRIES, THEME_IDS, type DrawnTheme } from "./themes.ts";
@@ -327,5 +327,24 @@ describe("an imported theme at the first frame", () => {
       if (origDoc) Object.defineProperty(globalThis, "document", origDoc);
       else Reflect.deleteProperty(globalThis, "document");
     }
+  });
+
+  test("boot and settings resolve the same Chat Markdown style", () => {
+    const read = () => savedMarkdownStyle(() => window.localStorage);
+    expect(read()).toBe("editorial");
+    expect(loadSettings().markdownStyle).toBe("editorial");
+    for (const style of ["editorial", "tinted", "colorful", "plain"] as const) {
+      records.clear();
+      records.set(MARKDOWN_STYLE_STORAGE_KEY, JSON.stringify(style));
+      expect(read()).toBe(style);
+      expect(loadSettings().markdownStyle).toBe(style);
+    }
+    records.clear();
+    records.set(SETTINGS_STORAGE_KEY, JSON.stringify({ markdownStyle: "colorful" }));
+    expect(read()).toBe("colorful");
+    expect(loadSettings().markdownStyle).toBe("colorful");
+    records.set(MARKDOWN_STYLE_STORAGE_KEY, JSON.stringify("invalid"));
+    expect(read()).toBe("editorial");
+    expect(loadSettings().markdownStyle).toBe("editorial");
   });
 });

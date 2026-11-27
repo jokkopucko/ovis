@@ -34,7 +34,7 @@ export type {
   WorkspaceInfo,
 } from "./herdr-api.generated.ts";
 
-import type { AgentStatus, PaneInfo, SessionSnapshot as HerdrSnapshot, TabInfo, WorkspaceInfo } from "./herdr-api.generated.ts";
+import type { AgentStatus, PaneInfo, SessionSnapshot as HerdrSnapshot, TabInfo, WorkspaceInfo, WorkspaceWorktreeInfo } from "./herdr-api.generated.ts";
 
 /** GET /api/herdr-ui: the herdr client preferences of the PC serving the web UI, never the rest of its config. */
 export interface HerdrUiConfig {
@@ -43,7 +43,13 @@ export interface HerdrUiConfig {
   keys?: HerdrKeys;
 }
 
-export type HerdrWorkspace = WorkspaceInfo;
+/**
+ * A workspace's checkout as herdr reports it. herdr-core adds `git_id`, the identity of the checkout's
+ * git folder this row was drawn with: Delete worktree checkout… sends it back, so a checkout added
+ * again at the same path since is refused rather than deleted. Absent on herdr and older servers.
+ */
+export type HerdrWorkspaceWorktree = WorkspaceWorktreeInfo & { git_id?: string };
+export type HerdrWorkspace = Omit<WorkspaceInfo, "worktree"> & { worktree?: HerdrWorkspaceWorktree | null };
 export type HerdrTab = TabInfo;
 /** What a request filled of the model's context, in tokens; `window` is null when nothing says it. */
 export type PaneContext = { used: number; window: number | null };
@@ -64,6 +70,8 @@ export type PaneContext = { used: number; window: number | null };
  * translated), and how far it is, 0 to 100.
  */
 export type HerdrPane = PaneInfo & {
+  /** Latest verified Copilot UI activity sample, for badges only. */
+  copilot_processing?: boolean;
   background_tasks?: number; background_wait?: true; plan?: PlanSummary; context?: PaneContext;
   parent_pane_id?: string;
   /** Stop on this pane cancels a keeper session rather than interrupting a TUI. */
@@ -90,8 +98,9 @@ export type HerdrPane = PaneInfo & {
   changed_at?: number;
 };
 /** Missing finish fields on an older bridge mean no finish can be acknowledged here. */
-export type SessionSnapshot = Omit<HerdrSnapshot, "panes"> & {
+export type SessionSnapshot = Omit<HerdrSnapshot, "panes" | "workspaces"> & {
   panes: HerdrPane[];
+  workspaces: HerdrWorkspace[];
   /** Random per bridge start and observed herdr socket/marker replacement, independently per PC. */
   finish_epoch?: string;
   /**
@@ -258,7 +267,8 @@ export type { DevicePairedEvent, DevicePairedSeenEvent, DeviceRemovedEvent, Pair
  *         0 (5 s limit, longer where the entry sets detect.version_timeout_ms; kept until the
  *         executable file changes; a flag that fails, version_error "failed", or hangs, "timeout", is
  *         asked again after a minute, and such an agent does not run: agentRuns). Read only,
- *         no-store; a watch device may read it. A remote PC
+ *         no-store; a watch device may read it. `providers` (below) controls `sign_in.provider`,
+ *         which is null for providers the client does not know. A remote PC
  *         from before the endpoint answers 404 through /api/machines/<id>/agent-catalog)
  *  POST   /api/agent-catalog/install { agent, alternative? } -> { pane_id, workspace_id, command,
  *         shell } (opens a tab and types that agent's official command for this PC's platform into its
@@ -342,7 +352,8 @@ export type { DevicePairedEvent, DevicePairedSeenEvent, DeviceRemovedEvent, Pair
  *         readable store answers no matches, one that loses it after a page was read 409 history_changed.)
  *  GET    /api/pane/summary?pane_id=&pane_id=... -> PaneSummaries (each pane's last words for a
  *         list row, read pane after pane within PANE_SUMMARY_DEADLINE_MS: a pane not read by then
- *         is left out, one with nothing said or no readable conversation is null. 400
+ *         is left out, one not reached is also listed in skipped, and one with nothing said
+ *         or no readable conversation is null. 400
  *         missing_pane_id, 400 too_many_panes past PANE_SUMMARY_MAX_IDS distinct ids)
  *  POST   /api/pane/close { pane_id }         -> { ok: true } (pane.close RPC; the collector's
  *         session-changed broadcast removes it from every client's sidebar)
@@ -509,9 +520,11 @@ export type { DevicePairedEvent, DevicePairedSeenEvent, DeviceRemovedEvent, Pair
  *         400 missing_workspace_id, too_many_workspaces; a bridge from before it answers 404 not_found)
  *  POST   /api/worktree/open   { workspace_id, path | branch, label? } -> WorktreeOpened
  *         (worktree.open: an existing checkout as a workspace; already_open names the one it has)
- *  POST   /api/worktree/remove { workspace_id, force? } -> WorktreeRemoved (worktree.remove: deletes the
- *         checkout and closes its workspace, keeps the branch; a dirty checkout is refused without force:
- *         dirty_worktree_requires_force)
+ *  POST   /api/worktree/remove { workspace_id, force?, expected_checkout?, expected_git_id? } -> WorktreeRemoved
+ *         (worktree.remove: deletes the checkout and closes its workspace, keeps the branch; a dirty checkout is
+ *         refused without force: dirty_worktree_requires_force; a herdr-core server refuses a checkout other
+ *         than the confirmed path and git identity: worktree_target_changed; 400 invalid_expected_checkout,
+ *         invalid_expected_git_id when they are not an absolute path and a non-empty string)
  *  POST   /api/auth        { token }     -> 204 + Set-Cookie ovis_token (401 invalid_token on mismatch)
  *  DELETE /api/auth                      -> 204, clears the token and the device cookies
  *  GET    /api/devices                   -> { devices: PairedDevice[] } (the paired devices, then the account-joined ones
@@ -541,6 +554,9 @@ export type { DevicePairedEvent, DevicePairedSeenEvent, DeviceRemovedEvent, Pair
  *         and one whose keys do not match, so nothing is enumerated; 403 status_unavailable to the open LAN, which
  *         signs in as no device and so owns no record (asked before any subscription is looked at)
  *  GET    /api/usage[?refresh=1]         -> UsageReport (plan limits of the AI subscriptions signed in on this PC)
+ *  GET    /api/usage/login              -> usage provider discovery
+ *         `providers` is a comma-separated list of usage provider IDs the client knows. These routes
+ *         only report IDs in that list that the server knows. Absent means the set from before Devin.
  *  DELETE /api/usage/accounts { account } -> 204 (removed from Ovis, CLI sign-in untouched) | 404 account_not_found
  *  POST   /api/usage/accounts { account } -> 204 (a removed account listed again)
  *  Errors: non-2xx with { error: { code, message } }
@@ -567,7 +583,7 @@ export interface ApiError {
 
 export type { PaneFindMatch, PaneFindRequest, PaneFindResponse } from "./find.ts";
 
-export type { UsageProviderId, UsageWindow, UsageResets, UsageCredits, UsageProblem, UsageRecorder, UsageRecorded, ProviderUsage, UsageReport, MissingCommand, StatuslineState } from "./usage.ts";
+export type { UsageProviderId, UsageWindow, UsageResets, UsageCredits, UsageProblem, UsageFailure, UsageRecorder, UsageRecorded, ProviderUsage, UsageReport, MissingCommand, StatuslineState } from "./usage.ts";
 
 export type { CLIProxyStatus, CLIProxyProvider, CLIProxyLogin, CLIProxyLoginStatus } from "./cliproxy.ts";
 
@@ -742,7 +758,7 @@ export type ConversationPart =
     output_ref?: string; output_size?: number;
     /** images the call returned (pi reads a picture into the result); same fetch as a user image */
     images?: { media_type: string; ref: string }[];
-    /** the agent's own id for the call (Claude `tool_use.id`, Codex `call_id`, gjc `toolCall.id`); absent from other agents and older servers */
+    /** the agent's own id for the call, when available (Claude `tool_use.id`, Codex `call_id`, gjc `toolCall.id`, OpenCode `id`) */
     call_id?: string;
     /**
      * What the transcript itself records of the call's outcome, never guessed from its output text.
@@ -814,6 +830,12 @@ export interface ConversationMetadata {
    * `openai-codex`): set by a model change and by each answer, absent when none is named.
    */
   provider?: string;
+  /**
+   * Claude Code's permission mode (`default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`, `dontAsk`), as its
+   * transcript last recorded it or, for a Claude Ovis started, its hooks last told: absent when neither said it. For a
+   * Codex Ovis started, `plan` while its own server says the thread is in Plan mode, else absent.
+   */
+  permission_mode?: string;
 }
 
 export type { OmoTask, OmoRunNode, OmoRun, OmoActivity, PaneBackgroundAgentDetail } from "./tasks.ts";
@@ -981,6 +1003,8 @@ export interface SlashCommand {
   forms?: CommandForm[];
   /** `terminal`: only works in the terminal; `agent-hidden`: the agent's own menu hides it, it still sends when typed */
   visibility?: "offered" | "terminal" | "agent-hidden";
+  /** Omit this ordinary live control from Chat suggestions without changing how typed commands run. */
+  readonly chatPaletteHidden?: true;
   /** where this row came from, and whether it was checked against the running agent version */
   provenance?: {
     /** how the row was found: `scan` read from disk, `static` shipped with the bridge, `native` asked of the agent */
@@ -1166,6 +1190,8 @@ export interface InteractivePromptAnswer {
 export interface InteractivePromptOption {
   label: string;
   description: string | null;
+  /** true when the agent explicitly marked this option as its recommended pick. */
+  recommended?: true;
 }
 
 /** POST /api/pane/prompt/answer body. One answer or navigation action; native OpenCode multiselect may combine option_indices and custom_text. */
@@ -1204,6 +1230,11 @@ export interface PromptAnswer {
  *  shared pty - the observer instead receives `pane-geometry` and adopts the pty's grid, so
  *  a phone watching a pane can never change the size the operator's PC sees. The client
  *  re-sends its role before the attach replay on reconnect.
+ *  On a supported Windows mirror, `attach {windows_fit:true}` opts into native fitting.
+ *  Only an interact attach without keep_size may claim control. A held slot is never taken
+ *  without `take-over`. `pane-geometry {windows_fit:true, fixed:false}` confirms a controller
+ *  stream frame; every other viewer adopts the fixed grid. Resize alone never takes a slot.
+ *  After release-size, a fresh attach is required to drive again. No HTTP resize RPC is used.
  *  secret requires the "secret-input" feature, an interact attachment, a matching fresh
  *  prompt and an idle input queue. Its result contains only ok/code, never the value.
  *  watch requires the "watch" feature: a read-only view of the pane drawn for the client's grid
@@ -1247,7 +1278,7 @@ export type ClientMessage =
   /** Subscribe to this connection server's authorized machine document; requires machine-events. */
   | { type: "machine-events"; enabled: boolean; compact_agents?: boolean }
   /** keep_size: the grid is covered (the chat lens), so the attach leaves the shared pty's size as it is */
-  | { type: "attach"; pane_id: string; cols: number; rows: number; flow_control?: "ack"; keep_size?: boolean; /** Opaque browser UUID for device-bound Pi presentation receipts only; never input authority. */ receipt_resume_id?: string }
+  | { type: "attach"; pane_id: string; cols: number; rows: number; flow_control?: "ack"; keep_size?: boolean; /** Understands an explicit fixed:false geometry grant on a Windows mirror. Never grants authority by itself. */ windows_fit?: boolean; /** Opaque browser UUID for device-bound Pi presentation receipts only; never input authority. */ receipt_resume_id?: string }
   | { type: "detach"; pane_id: string }
   /** Native invalidations require "conversation-watch" and an attachment; observers may subscribe.
    * Detaching clears interest, so reconnect/reattach must enable it again. REST remains authoritative.
@@ -1312,8 +1343,12 @@ export type ClientMessage =
    * `agent_only` (feature "agent-only"): the message is for an agent alone (a chat message carrying comments on
    * a reply, #511, whose `> quote` lines a shell would read as redirects). The server refuses it with
    * agent_not_ready, typing nothing, when no agent is in front of the pane as it would type it; a queued or held
-   * one keeps the rule until it is typed. Not with `typed`; anything but true is invalid_delivery. */
-  | { type: "submit"; id: number; pane_id: string; text: string; payload: string; typed?: boolean; delivery?: "immediate" | "queue" | "hold"; clear_draft?: string; send_anyway?: true; resend_id?: string; resend_generation?: number; agent_only?: true }
+   * one keeps the rule until it is typed. Not with `typed`; anything but true is invalid_delivery.
+   * `command_key`: UUID of a draft send, kept across manual retries until edited or acknowledged.
+   * The WebSocket upgrade's optional `receipt_resume_id` identifies the browser even before attach.
+   * A recent acceptance for this pane, device and browser answers `replayed`; an uncertain result
+   * repeats its refusal. Neither writes again. A replayed pending item is a copy, not a lease. */
+  | { type: "submit"; id: number; pane_id: string; text: string; payload: string; typed?: boolean; delivery?: "immediate" | "queue" | "hold"; clear_draft?: string; send_anyway?: true; resend_id?: string; resend_generation?: number; agent_only?: true; command_key?: string }
   /** `withdrawal_only`: Edit's discard may withdraw only queued/held input; uncertain text stays
    * with its owner and returns pending_uncertain, rather than being dismissed. Older servers ignore
    * this optional field and retain their existing discard behaviour, without this protection.
@@ -1441,7 +1476,7 @@ export type ServerMessage =
   /** sent to a client joining an attachment whose stream ended after it was ready, before the replay: the replay is the screen from before, so only output after the next `input-ready` shows the pane as it is. Presentation only; input readiness is unchanged */
   | { type: "output-recovering"; pane_id: string }
   /** the shared pty's grid changed: observe clients adopt it, interact clients drive it. `fixed`: the grid is the pane's own in herdr (a mirrored pane), so every client adopts it and none resizes */
-  | { type: "pane-geometry"; pane_id: string; cols: number; rows: number; fixed?: boolean }
+  | { type: "pane-geometry"; pane_id: string; cols: number; rows: number; fixed?: boolean; /** A fit-aware viewer can ask for control with a fresh interact attach after it released size. */ windows_fit?: true }
   | { type: "role-ack"; mode: ClientRole }
   /** ok after Enter delivery, or bridge acceptance (`pending`); never an agent execution acknowledgement.
    * `draft`: on an immediate send's input_draft, the one-row draft in Claude's input box that a send
@@ -1458,7 +1493,7 @@ export type ServerMessage =
    * `sending_at`: on an ok for a message this request typed (an immediate send, or one with
    * `typed_now`), the PC's clock (ISO 8601) before it typed anything, as a queued row's `sending_at`:
    * the message's turn is written after it on that clock. An older server never sends it. */
-  | { type: "submit-result"; id: number; pane_id: string; ok: boolean; pending?: PendingMessage; typed_now?: true; sending_at?: string; code?: string; message?: string; draft?: string; box?: string }
+  | { type: "submit-result"; id: number; pane_id: string; ok: boolean; pending?: PendingMessage; replayed?: true; typed_now?: true; sending_at?: string; code?: string; message?: string; draft?: string; box?: string }
   | { type: "pending-result"; id: number; pane_id: string; pending_id: string; ok: boolean; code?: string; message?: string }
   /** ok once herdr accepted the inserted bytes (`pane.send_text` answered), never that the program
    * took or ran them; a refusal names why and nothing was typed, except `insert_failed`, whose bytes

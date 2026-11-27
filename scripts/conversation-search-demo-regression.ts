@@ -1,18 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium, type Page } from "playwright-core";
+import type { Page } from "playwright-core";
 import panes from "../site/demo/fixtures/panes.json";
-import { buildDemoApp } from "./demo-build.ts";
-import { chromePath } from "./chrome-path.ts";
+import { withDemoBrowser } from "./demo-browser.ts";
 import { openMoreGroup } from "./header-more.ts";
-import { serveDemo } from "./demo-server.ts";
 
 // All files and HTTP traffic stay in this disposable, loopback-only app; no herdr session is opened.
-const app = mkdtempSync(join(tmpdir(), "ovis-search-demo-"));
 const evidence = process.env.UI_EVIDENCE_DIR;
-if (evidence) mkdirSync(evidence, { recursive: true });
 
 const paneMenu = async (page: Page, width: number): Promise<void> => {
   if (width >= 640) {
@@ -44,96 +38,85 @@ const pickOpensAnswer = async (page: Page): Promise<void> => {
   }, undefined, { timeout: 5_000 });
 };
 
-try {
-  await buildDemoApp(app);
-  const index = join(app, "index.html");
-  const older = `<script>(() => {
-    if (!location.search.includes("older=1")) return;
-    const Demo = window.WebSocket;
-    const Older = function (url, protocols) {
-      const socket = new Demo(url, protocols);
-      const push = socket.push?.bind(socket);
-      if (push) socket.push = (message) => push(Array.isArray(message?.features) ? { ...message, features: message.features.filter((feature) => feature !== "conversation-search") } : message);
-      return socket;
-    };
-    for (const name of ["CONNECTING", "OPEN", "CLOSING", "CLOSED"]) Object.defineProperty(Older, name, { value: Demo[name] });
-    window.WebSocket = Older;
-  })();</script>`;
-  const changed = `<script>(() => {
-    if (!location.search.includes("changed=1")) return;
-    const demo = window.fetch;
-    window.fetch = async (input, init) => {
-      const answer = await demo(input, init);
-      if (!new URL(input instanceof Request ? input.url : String(input), location.href).pathname.endsWith("/api/pane/conversation/search")) return answer;
-      const body = await answer.json();
-      return new Response(JSON.stringify({ ...body, matches: body.matches.map((match) => ({ ...match, turn: match.turn.slice(0, -1) })) }), { status: answer.status, headers: answer.headers });
-    };
-  })();</script>`;
-  writeFileSync(index, readFileSync(index, "utf8").replace(/<script type="module"/, () => `<script src="./demo-transport.js"></script>\n    ${older}\n    ${changed}\n    <script type="module"`));
-  const server = serveDemo(app);
-  const url = (query = "") => `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(panes.api)}${query}`;
-  const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
-  try {
-    for (const [width, height] of [[1280, 800], [390, 844]] as const) {
-      const context = await browser.newContext({ viewport: { width, height }, locale: "en-US", hasTouch: width < 640, isMobile: width < 640 });
-      await context.addInitScript(() => { localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })); localStorage.setItem("ovis:phone-tabs", JSON.stringify("header")); });
-      const page = await context.newPage();
-      const errors: string[] = [];
-      page.on("pageerror", (error) => errors.push(error.message));
-      await page.goto(url());
-      await page.locator(".conn-live").waitFor({ state: "attached" });
-      await page.locator(".pane-frame.is-current .chat-turn").first().waitFor();
-      // the demo ends this turn 4.5 s after load (site/demo/transport.ts) and adds its final answer to it: search the
-      // conversation as it is after that, never across it
-      await page.locator(".pane-frame.is-current .chat-turn").getByText("6 tests pass.", { exact: false }).first().waitFor();
+const older = `<script>(() => {
+  if (!location.search.includes("older=1")) return;
+  const Demo = window.WebSocket;
+  const Older = function (url, protocols) {
+    const socket = new Demo(url, protocols);
+    const push = socket.push?.bind(socket);
+    if (push) socket.push = (message) => push(Array.isArray(message?.features) ? { ...message, features: message.features.filter((feature) => feature !== "conversation-search") } : message);
+    return socket;
+  };
+  for (const name of ["CONNECTING", "OPEN", "CLOSING", "CLOSED"]) Object.defineProperty(Older, name, { value: Demo[name] });
+  window.WebSocket = Older;
+})();</script>`;
+const changed = `<script>(() => {
+  if (!location.search.includes("changed=1")) return;
+  const demo = window.fetch;
+  window.fetch = async (input, init) => {
+    const answer = await demo(input, init);
+    if (!new URL(input instanceof Request ? input.url : String(input), location.href).pathname.endsWith("/api/pane/conversation/search")) return answer;
+    const body = await answer.json();
+    return new Response(JSON.stringify({ ...body, matches: body.matches.map((match) => ({ ...match, turn: match.turn.slice(0, -1) })) }), { status: answer.status, headers: answer.headers });
+  };
+})();</script>`;
 
-      await paneMenu(page, width);
-      if (evidence) await page.screenshot({ path: join(evidence, `conversation-search-menu-${width}.png`) });
-      await page.getByText("Search conversation", { exact: true }).click();
-      const dialog = page.getByRole("dialog", { name: "Search conversation" });
-      await dialog.getByRole("searchbox").fill("replay");
-      await dialog.getByText("Searched the whole conversation.").waitFor();
-      assert.deepEqual(await dialog.locator(".conversation-search-snippet").allTextContents(), [
-        "Adding a payments_idempotent_replays_total counter next to the existing request metrics. Added payments_idempotent_replays_total, incremented where a stored response is replayed, and exposed…",
-        "Nice. Now add a metric for replayed requests.",
-        "…colliding. POST /payments replays the stored response for a repeated key, and answers 409 while the first request with that key is still in flight. A repeated key with a different body is…",
-      ]);
-      if (evidence) await page.screenshot({ path: join(evidence, `conversation-search-dialog-${width}.png`) });
-      await pickOpensAnswer(page);
-      console.log(`PASS ${width}: the pane's menu opens the search, and a pick opens the chat at its message`);
+await withDemoBrowser({ tempPrefix: "ovis-search-demo-", afterTransport: `\n    ${older}\n    ${changed}` }, async ({ newContext, baseUrl }) => {
+  const url = (query = "") => `${baseUrl}?pane=${encodeURIComponent(panes.api)}${query}`;
+  for (const [width, height] of [[1280, 800], [390, 844]] as const) {
+    const context = await newContext({ viewport: { width, height }, hasTouch: width < 640, isMobile: width < 640 });
+    await context.addInitScript(() => { localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })); localStorage.setItem("ovis:phone-tabs", JSON.stringify("header")); });
+    const page = await context.newPage();
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(url());
+    await page.locator(".conn-live").waitFor({ state: "attached" });
+    await page.locator(".pane-frame.is-current .chat-turn").first().waitFor();
+    // the demo ends this turn 4.5 s after load (site/demo/transport.ts) and adds its final answer to it: search the
+    // conversation as it is after that, never across it
+    await page.locator(".pane-frame.is-current .chat-turn").getByText("6 tests pass.", { exact: false }).first().waitFor();
 
-      await page.goto(url("&changed=1"));
-      await page.locator(".pane-frame.is-current .chat-turn").first().waitFor();
-      await paneMenu(page, width);
-      await page.getByText("Search conversation", { exact: true }).click();
-      await dialog.getByRole("searchbox").fill("replay");
-      await dialog.getByText("Searched the whole conversation.").waitFor();
-      await pickOpensAnswer(page);
-      console.log(`PASS ${width}: a pick opens a message that changed since it was searched`);
+    await paneMenu(page, width);
+    if (evidence) await page.screenshot({ path: join(evidence, `conversation-search-menu-${width}.png`) });
+    await page.getByText("Search conversation", { exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Search conversation" });
+    await dialog.getByRole("searchbox").fill("replay");
+    await dialog.getByText("Searched the whole conversation.").waitFor();
+    assert.deepEqual(await dialog.locator(".conversation-search-snippet").allTextContents(), [
+      "Adding a payments_idempotent_replays_total counter next to the existing request metrics. Added payments_idempotent_replays_total, incremented where a stored response is replayed, and exposed…",
+      "Nice. Now add a metric for replayed requests.",
+      "…colliding. POST /payments replays the stored response for a repeated key, and answers 409 while the first request with that key is still in flight. A repeated key with a different body is…",
+    ]);
+    if (evidence) await page.screenshot({ path: join(evidence, `conversation-search-dialog-${width}.png`) });
+    await pickOpensAnswer(page);
+    console.log(`PASS ${width}: the pane's menu opens the search, and a pick opens the chat at its message`);
 
-      if (width >= 640) {
-        assert.ok((await paletteActions(page)).includes("Search conversation"), "the palette offers the search for the selected chat");
-        await page.keyboard.press("Enter");
-        await dialog.waitFor();
-        await page.keyboard.press("Escape");
-        await dialog.waitFor({ state: "detached" });
-        console.log(`PASS ${width}: the palette opens it too`);
-      }
+    await page.goto(url("&changed=1"));
+    await page.locator(".pane-frame.is-current .chat-turn").first().waitFor();
+    await paneMenu(page, width);
+    await page.getByText("Search conversation", { exact: true }).click();
+    await dialog.getByRole("searchbox").fill("replay");
+    await dialog.getByText("Searched the whole conversation.").waitFor();
+    await pickOpensAnswer(page);
+    console.log(`PASS ${width}: a pick opens a message that changed since it was searched`);
 
-      await page.goto(url("&older=1"));
-      await page.locator(".pane-frame.is-current .chat-turn").first().waitFor();
-      await paneMenu(page, width);
-      assert.equal(await page.getByText("Search conversation", { exact: true }).count(), 0, "no search where the PC's bridge has none");
+    if (width >= 640) {
+      assert.ok((await paletteActions(page)).includes("Search conversation"), "the palette offers the search for the selected chat");
+      await page.keyboard.press("Enter");
+      await dialog.waitFor();
       await page.keyboard.press("Escape");
-      if (width >= 640) assert.ok(!(await paletteActions(page)).includes("Search conversation"));
-      console.log(`PASS ${width}: a PC whose bridge does not search offers none`);
-      assert.deepEqual(errors, []);
-      await context.close();
+      await dialog.waitFor({ state: "detached" });
+      console.log(`PASS ${width}: the palette opens it too`);
     }
-  } finally {
-    await browser.close();
-    server.stop(true);
+
+    await page.goto(url("&older=1"));
+    await page.locator(".pane-frame.is-current .chat-turn").first().waitFor();
+    await paneMenu(page, width);
+    assert.equal(await page.getByText("Search conversation", { exact: true }).count(), 0, "no search where the PC's bridge has none");
+    await page.keyboard.press("Escape");
+    if (width >= 640) assert.ok(!(await paletteActions(page)).includes("Search conversation"));
+    console.log(`PASS ${width}: a PC whose bridge does not search offers none`);
+    assert.deepEqual(errors, []);
+    await context.close();
   }
-} finally {
-  rmSync(app, { recursive: true, force: true });
-}
+});

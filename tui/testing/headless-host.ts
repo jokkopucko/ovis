@@ -65,7 +65,7 @@ export class HeadlessHost implements Host {
       now: () => this.now,
       hook: (hooks) => { this.hooks = hooks; return () => { this.hooks = null; }; },
       exit: (code) => { this.exitCode ??= code; },
-      suspend: () => { this.suspends += 1; },
+      suspend: (giveBack) => { giveBack(); this.suspends += 1; },
       hold: (held) => { this.held.push(`${held} after ${this.entries.at(-1) ?? "nothing"}`); },
     });
   }
