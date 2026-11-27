@@ -308,6 +308,12 @@ async function freePort(): Promise<number> {
 function newerBundle(version: unknown): boolean {
   return typeof version === "string" && /^\d+$/.test(version) && Number(version) > Number(REMOTE_BUNDLE_VERSION);
 }
+/** A PC's own Ovis offered as a choice: its loopback port and whether it is newer than this app tell apart two on one PC. */
+const foundOvis = (descriptor: BridgeDescriptor, bundleVersion: unknown): FoundOvis => ({
+  socket_path: descriptor.socket_path, runtime: "herdr-core",
+  ...(Number.isInteger(descriptor.port) && descriptor.port >= 1 && descriptor.port <= 65535 ? { port: descriptor.port } : {}),
+  ...(newerBundle(bundleVersion) ? { newer_than_app: true as const } : {}),
+});
 /**
  * ssh's refusals: the PC answered, and only a password or a new host key gets past them. The
  * remote denial reads "user@host: Permission denied (publickey,…)."; a local key file ssh cannot
@@ -1564,7 +1570,7 @@ export class MachineManager {
           const proved = await this.verify(ssh, candidate, candidate.socket_path, true, true);
           if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
           if (proved.identity.pid !== candidate.pid || proved.identity.managed_remote !== false || proved.identity.herdr.runtime !== "herdr-core") continue;
-          found.push({ socket_path: candidate.socket_path, runtime: "herdr-core" });
+          found.push(foundOvis(candidate, proved.identity.bundle_version));
           answered = true;
           const listed = proved.identity.found_herdr_sessions;
           if (listed === undefined) unlisted = true;
@@ -1576,7 +1582,7 @@ export class MachineManager {
           // is neither dropped nor replaced by a new herdr. Only one proven not owned or not live is dropped (above).
           // Unasked, its runtime is told by its socket: a TUI herdr's ends in /herdr.sock, the core adapter's never does.
           // Only the core adapter's own name (isCoreAdapterSocket) is one: any other could never be connected to
-          if (owned && !validHerdrSocket(candidate.socket_path) && isCoreAdapterSocket(candidate.socket_path)) { found.push({ socket_path: candidate.socket_path, runtime: "herdr-core" }); unlisted = true; }
+          if (owned && !validHerdrSocket(candidate.socket_path) && isCoreAdapterSocket(candidate.socket_path)) { found.push(foundOvis(candidate, candidate.bundle_version)); unlisted = true; }
         }
       }
       if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");

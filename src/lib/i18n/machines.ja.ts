@@ -21,6 +21,8 @@ export const MACHINES_JA: Record<string, string> = {
   "From SSH config": "SSH 設定に従う",
   "Start a new herdr here": "ここで新しい herdr を起動",
   "Use Ovis on this PC (herdr-core)": "この PC の Ovis (herdr-core) を使用",
+  "Use Ovis on this PC (herdr-core) on port {port}": "この PC の Ovis (herdr-core) を使用 · ポート {port}",
+  "(update this app first)": "(先にこのアプリを更新)",
   "Choose what to connect to": "接続先を選んでください",
   "Runtime: {runtime}": "ランタイム: {runtime}",
   "Keep this dialog open until the PC connects.": "PC が接続されるまで、このダイアログを開いたままにしてください。",

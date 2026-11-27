@@ -311,7 +311,11 @@ export interface HerdrCoreFacts {
   bundled_unused?: true;
 }
 export interface FoundHerdrSession { socket_path: string; session?: string; label: string }
-export interface FoundOvis { socket_path: string; runtime: "herdr-core" }
+/**
+ * `port`: the loopback port it answers on, to tell two on one PC apart (absent from a record saved before it was sent).
+ * `newer_than_app`: it runs a newer release than this app, which must be updated before it can connect.
+ */
+export interface FoundOvis { socket_path: string; runtime: "herdr-core"; port?: number; newer_than_app?: true }
 /** `install_ovis`: an account add over SSH found no Ovis of that PC's own there; installing Ovis there (PcInstallJob) is the way on */
 export type MachineAction = "connect" | "update_bridge" | "setup" | "bridge_conflict" | "windows_login" | "windows_start_failed" | "choose_herdr" | "install_ovis";
 /** `ovis`: the PC's own Ovis updates itself (Machine.remote_ovis); absent for a bridge this app installs */

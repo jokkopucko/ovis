@@ -539,6 +539,16 @@ button.machine-title:focus-visible { outline-offset: calc(var(--ring-offset) * -
   overflow-wrap: anywhere;
 }
 
+/* a choice that names its port and an update note wraps on a phone instead of running off the card */
+.machine-action-choice {
+  height: auto;
+  min-height: var(--control-h);
+  max-width: 100%;
+  padding-block: var(--space-1);
+  white-space: normal;
+  text-align: start;
+}
+
 .machine-action-more { align-self: stretch; }
 .machine-action-more summary { cursor: pointer; color: var(--text-dim); }
 .machine-action-more[open] summary { margin-bottom: var(--space-2); }

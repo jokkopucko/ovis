@@ -39,6 +39,12 @@ it("offers each running session and a separate explicit new-start choice", async
   ]} ownOvis={[{ socket_path: "/a/hc.sock", runtime: "herdr-core" }, { socket_path: "/b/hc.sock", runtime: "herdr-core" }]} error={null} busy={false} onChoose={() => {}} /></SettingsProvider>);
   expect([...page.container.querySelectorAll("button")].map((button) => button.textContent)).toEqual(["Use Ovis on this PC (herdr-core)", "Use Ovis on this PC (herdr-core) (2)", "Use work", "Use work (2)", "Use solo", "Start a new herdr here"]);
   expect(page.container.innerHTML).not.toContain(".sock");
+  // two Ovis servers on one PC are told apart by their ports, and one newer than this app says to update this app first
+  await page.render(<SettingsProvider><FoundHerdrChoices sessions={[]} ownOvis={[{ socket_path: "/a/hc.sock", runtime: "herdr-core", port: 7317 }, { socket_path: "/b/hc.sock", runtime: "herdr-core", port: 7421, newer_than_app: true }]} error={null} busy={false} onChoose={() => {}} /></SettingsProvider>);
+  expect([...page.container.querySelectorAll("button")].map((button) => button.textContent)).toEqual(["Use Ovis on this PC (herdr-core) on port 7317", "Use Ovis on this PC (herdr-core) on port 7421 (update this app first)", "Start a new herdr here"]);
+  // a single one needs no port
+  await page.render(<SettingsProvider><FoundHerdrChoices sessions={[]} ownOvis={[{ socket_path: "/a/hc.sock", runtime: "herdr-core", port: 7317 }]} error={null} busy={false} onChoose={() => {}} /></SettingsProvider>);
+  expect(page.container.querySelector("button")?.textContent).toBe("Use Ovis on this PC (herdr-core)");
   for (const reason of ["Start Ovis on that PC, or start a new herdr here", "The Ovis chosen on this PC serves herdr-core from a socket that is not this SSH account's own, so it was not used. Choose again, or start a new herdr here."]) {
     await page.render(<SettingsProvider><FoundHerdrChoices sessions={[]} error={reason} busy onChoose={(choice) => choices.push(choice)} /></SettingsProvider>);
     expect(page.one("strong").textContent).toBe(reason);

@@ -21,6 +21,8 @@ export const MACHINES_KO: Record<string, string> = {
   "From SSH config": "SSH 설정을 따름",
   "Start a new herdr here": "여기에서 새 herdr 시작",
   "Use Ovis on this PC (herdr-core)": "이 PC의 Ovis (herdr-core) 사용",
+  "Use Ovis on this PC (herdr-core) on port {port}": "이 PC의 Ovis (herdr-core) 사용 · 포트 {port}",
+  "(update this app first)": "(이 앱부터 업데이트)",
   "Choose what to connect to": "연결할 대상을 선택하세요",
   "Runtime: {runtime}": "런타임: {runtime}",
   "Keep this dialog open until the PC connects.": "PC가 연결될 때까지 이 대화 상자를 열어 두세요.",

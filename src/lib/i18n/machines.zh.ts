@@ -21,6 +21,8 @@ export const MACHINES_ZH: Record<string, string> = {
   "From SSH config": "遵循 SSH 配置",
   "Start a new herdr here": "在此启动新的 herdr",
   "Use Ovis on this PC (herdr-core)": "使用此 PC 上的 Ovis (herdr-core)",
+  "Use Ovis on this PC (herdr-core) on port {port}": "使用此 PC 上的 Ovis (herdr-core) · 端口 {port}",
+  "(update this app first)": "(请先更新此应用)",
   "Choose what to connect to": "请选择要连接的对象",
   "Runtime: {runtime}": "运行时：{runtime}",
   "Keep this dialog open until the PC connects.": "请保持此对话框打开，直到 PC 连接成功。",
