@@ -56,7 +56,6 @@ export interface FakeRing { account: string; endpoint: string; payload: typeof A
 export const SIGNIN_CODE_TTL_MS = 60_000;
 
 export type SignInProvider = "github" | "google" | "apple";
-const SIGN_IN_PROVIDERS: readonly string[] = ["github", "google", "apple"];
 const DEVICE_PAGES: Readonly<Record<string, string>> = { github: "https://github.com/login/device", google: "https://www.google.com/device" };
 export const LINK_TOKEN_TTL_S = 600;
 /** How recent a sign-in must be to add or remove a sign-in method. */
@@ -327,6 +326,10 @@ export class FakeAccountService {
   private readonly revokedFamilies = new Set<string>();
   private readonly appleTokens = new Map<string, { account: string; nonce: string }>();
   private readonly signIns = new Map<SignInProvider, string>();
+  /** The other provider with the same verified email, for each selected identity. */
+  emailMatches: Readonly<Partial<Record<"github" | "google", "github" | "google">>> = {};
+  honorsCreate = true;
+  methodLinkRefusal: "two_step_required" | "two_step_unknown" | "identity_in_use" | "merge_open" | "reauth_required" | null = null;
   private readonly deviceSignIns = new Map<string, { provider: SignInProvider; userCode: string; account: string | null; denied: boolean; interval: number; nextPoll: number; expires: number; challenge: string | null; page?: boolean; requester?: { label: string | null; os: AccountOs | null } }>();
   private readonly identityList = new Map<string, Map<SignInProvider, { added_at: string }>>();
   private readonly identityHistory = new Map<string, readonly { kind: "add" | "remove"; provider: SignInProvider; at: string; device_no: null }[]>();
@@ -530,7 +533,7 @@ export class FakeAccountService {
   }
 
   private signIn(url: URL, provider: string): Response {
-    if (!SIGN_IN_PROVIDERS.includes(provider)) return problem(404, "not_found", "Unknown provider");
+    if (provider !== "github" && provider !== "google" && provider !== "apple") return problem(404, "not_found", "Unknown provider");
     const redirect = url.searchParams.get("redirect_uri") ?? "";
     const state = url.searchParams.get("state") ?? "";
     const challenge = url.searchParams.get("code_challenge") ?? "";
@@ -549,10 +552,24 @@ export class FakeAccountService {
     const linking = link === null ? undefined : this.linkTokens.get(link);
     if (link !== null) this.linkTokens.delete(link);
     const valid = link === null || (linking !== undefined && linking.provider === provider && this.now() < linking.expires);
-    const code = randomHex(32);
-    if (valid) this.codes.set(code, { account: this.signIns.get(provider as SignInProvider) ?? `acct_${provider}`, provider: provider as SignInProvider, challenge, redirect, expires: this.now() + SIGNIN_CODE_TTL_MS, link: linking ? { account: linking.account, family: linking.family } : null });
+    const account = this.signIns.get(provider) ?? `acct_${provider}`;
+    const create = this.honorsCreate && link === null && provider !== "apple" ? url.searchParams.get("create") : null;
+    const match = provider === "apple" ? undefined : this.emailMatches[provider];
+    const otherAccount = match === undefined ? undefined : this.signIns.get(match) ?? `acct_${match}`;
+    const known = this.identityList.get(account)?.has(provider) === true;
     const back = new URL(redirect);
-    const answer = new URLSearchParams(valid ? { code, state } : { error: "invalid_link", state });
+    const answer = new URLSearchParams({ state });
+    if (!valid) answer.set("error", "invalid_link");
+    else if (!known && create === "never") answer.set("error", "no_account");
+    else if (!known && create === "ask" && match !== undefined && match !== provider && otherAccount !== undefined
+      && this.identityList.get(otherAccount)?.has(match) && !this.identityList.get(otherAccount)?.has(provider)) {
+      answer.set("error", "existing_account");
+      answer.set("existing_provider", match);
+    } else {
+      const code = randomHex(32);
+      this.codes.set(code, { account, provider, challenge, redirect, expires: this.now() + SIGNIN_CODE_TTL_MS, link: linking ? { account: linking.account, family: linking.family } : null });
+      answer.set("code", code);
+    }
     if (mode === "fragment") back.hash = answer.toString();
     else back.search = answer.toString();
     return new Response(null, { status: 302, headers: { location: back.href } });
@@ -895,6 +912,7 @@ export class FakeAccountService {
       return new Response(null, { status: 204 });
     }
     if (path === "/v1/identities/link" && request.method === "POST") {
+      if (this.methodLinkRefusal !== null) return problem(403, this.methodLinkRefusal, "The sign-in method was refused");
       const body = await request.json() as { provider?: unknown };
       if (typeof body.provider !== "string" || !this.offered.providers.includes(body.provider as SignInProvider)) return problem(400, "invalid_provider", "Name a provider this service offers");
       if (this.identityList.get(account)?.has(body.provider as SignInProvider)) return problem(409, "identity_exists", "The account already signs in with it");

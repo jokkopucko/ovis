@@ -3,6 +3,11 @@
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const RELAY_KO: Record<string, string> = {
+  "It looks like you already have an account made with {provider}.": "이미 {provider}로 만든 계정이 있는 것 같아요.",
+  "Sign in with {provider} and it will be connected to the same account.": "{provider}로 로그인하면 같은 계정에 연결돼요.",
+  "Sign in with {provider} to connect": "{provider}로 로그인해서 연결",
+  "Create a new account": "새 계정 만들기",
+  "This {provider} account has no Ovis account.": "이 {provider} 계정에는 Ovis 계정이 없어요.",
   "Ovis cannot use the camera. Allow it in the phone's Settings, under Apps, Ovis, Permissions.": "Ovis가 카메라를 쓸 수 없어요. 휴대폰 설정의 앱 → Ovis → 권한에서 허용하세요.",
   "Removed|pc state": "빠짐",
   "On|pc state": "켜짐",

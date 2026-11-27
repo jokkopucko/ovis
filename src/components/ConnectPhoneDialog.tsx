@@ -28,6 +28,8 @@ import { announcePairingCode, announceQrCodeEnded, DEVICES_CHANGED_EVENT, inRela
 import type { PairedDevice, PairingCode, PortalStatus, RemoteAccess } from "../../shared/protocol.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { PROVIDER_NAMES } from "./AccountPcs.tsx";
+import { methodRefusalText } from "./AccountMethods.tsx";
+import type { LinkRefusal } from "../lib/account/useLinkPageSignIn.ts";
 import { AddThisPc, useSignInAgainHere, type SignedInHere } from "./AccountSection.tsx";
 import { PhonePanel, QrReveal, ShareLink } from "./PhonePanel.tsx";
 import { QrCode } from "./QrCode.tsx";
@@ -858,6 +860,7 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, provid
   ) : null;
   const [switchError, setSwitchError] = useState<string | null>(null);
   const [signedInProvider, setSignedInProvider] = useState<AccountSession["provider"] | null>(null);
+  const [linkRefusal, setLinkRefusal] = useState<{ readonly account: string; readonly refusal: LinkRefusal } | null>(null);
   const [pcAccount, setPcAccount] = useState<string | null | undefined>(undefined);
   // signed in to another account than the one this PC is in: the PC's last status read says how its owner signed in to that one
   const elsewhere = signedIn && accountId !== null && typeof pcAccount === "string" && pcAccount !== accountId ? pcAccount : null;
@@ -889,6 +892,9 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, provid
     next?.focus();
   }, [signedIn, signedInProvider, joinBySignIn]);
   const signInStatus = <p key="sign-in-status" className="visually-hidden" role="status" aria-live="polite">{signedInProvider === null ? null : t("Signed in with {provider}", { provider: PROVIDER_NAMES[signedInProvider] })}</p>;
+  const linkProblem = linkRefusal !== null && accountId === linkRefusal.account && (
+    <p className="account-error" role="alert">{methodRefusalText(t, { action: "add", ...linkRefusal.refusal })}</p>
+  );
   const on = relayOn(relay);
   useEffect(() => { if (on) setSwitchError(null); }, [on]);
   const switchable = relay.status?.blocked === null;
@@ -938,8 +944,14 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, provid
     <>
       <div ref={signInView} className="connect-signin" data-testid="connect-signin">
         {signInStatus}
+        {linkProblem}
         {otherAccountLine}
-        <RelaySignIn key={accountId ?? ""} service={account.service} onSignedIn={(session) => { signedInHere.current = { account: session.account, adds: false }; setSignedInProvider(session.provider); account.onSignedIn(on && pcIn !== null && session.account === pcIn); }} />
+        <RelaySignIn key={accountId ?? ""} service={account.service} onSignedIn={(session, refusal) => {
+          signedInHere.current = { account: session.account, adds: false };
+          setSignedInProvider(session.provider);
+          setLinkRefusal(refusal === undefined ? null : { account: session.account, refusal });
+          account.onSignedIn(refusal === undefined && on && pcIn !== null && session.account === pcIn);
+        }} />
       </div>
       {qr(false)}
     </>
@@ -948,6 +960,7 @@ export function RelayTab({ relay, closesGate, signedIn, accountId = null, provid
     <>
       <div ref={signInView} className="connect-signin" data-testid="connect-signin" data-bare={bare || undefined}>
         {signInStatus}
+        {linkProblem}
         {accountAdd}
         {pcIn !== null ? (
           !bare && <>{relaySwitch}{switchFailure}{startFailure}</>

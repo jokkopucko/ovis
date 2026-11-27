@@ -1,10 +1,11 @@
 import "./RelayShell.css";
 import "./AccountPcs.css";
 
-import { useEffect, useEffectEvent, useState } from "react";
+import { useEffect, useEffectEvent, useId, useRef, useState } from "react";
 import { ChevronRight } from "lucide-react";
 
 import { ACCOUNT_PCS_CHANGED_EVENT, isNewAccountPc, type MyPc, type MyPcState } from "../lib/account/myPcs.ts";
+import { isEmailHintProvider, type AccountHint, type AccountHintChoice } from "../lib/account/accountHint.ts";
 import { SignedOutError, type AccountService } from "../lib/account/service.ts";
 import type { AccountProvider, AccountSession } from "../lib/account/store.ts";
 import { useT } from "../lib/i18n.ts";
@@ -50,6 +51,25 @@ export function ProviderMark({ provider }: { readonly provider: AccountProvider 
 
 const PROVIDERS: readonly AccountProvider[] = ["github", "google", "apple"];
 
+function AccountHintCard({ hint, canConnect, onChoice }: { readonly hint: AccountHint; readonly canConnect: boolean; readonly onChoice: (choice: AccountHintChoice) => void }) {
+  const t = useT();
+  const titleId = useId();
+  const title = useRef<HTMLHeadingElement>(null);
+  useEffect(() => { title.current?.focus(); }, []);
+  const provider = PROVIDER_NAMES[hint.existingProvider];
+  return (
+    <section className="account-device" aria-labelledby={titleId}>
+      <h2 className="relay-shell-title" id={titleId} ref={title} tabIndex={-1}>{t("It looks like you already have an account made with {provider}.", { provider })}</h2>
+      {canConnect && <p className="settings-description">{t("Sign in with {provider} and it will be connected to the same account.", { provider })}</p>}
+      {hint.noAccount && <p className="account-error" role="alert">{t("This {provider} account has no Ovis account.", { provider })}</p>}
+      <div className="account-device-actions">
+        {canConnect && <button type="button" className="btn btn-primary" onClick={() => onChoice("connect")}>{t("Sign in with {provider} to connect", { provider })}</button>}
+        <button type="button" className="btn" onClick={() => onChoice("create")}>{t("Create a new account")}</button>
+      </div>
+    </section>
+  );
+}
+
 function providerLabel(provider: AccountProvider, t: ReturnType<typeof useT>): string {
   switch (provider) {
     case "github": return t("Continue with GitHub");
@@ -67,6 +87,8 @@ export function AccountSignIn({
   busyProvider = null,
   failedProvider = null,
   nameOnly = false,
+  hint,
+  onHintChoice,
 }: {
   readonly onSignIn: (provider: AccountProvider) => void;
   readonly error: string | null;
@@ -77,9 +99,14 @@ export function AccountSignIn({
   readonly failedProvider?: AccountProvider | null;
   /** each button names only its provider ("GitHub"), for a screen whose title already says what it is for */
   readonly nameOnly?: boolean;
+  readonly hint?: AccountHint | undefined;
+  readonly onHintChoice?: ((choice: AccountHintChoice) => void) | undefined;
 }) {
   const t = useT();
   const [lastProvider, setLastProvider] = useState<AccountProvider | null>(null);
+  if (hint !== undefined && onHintChoice !== undefined) {
+    return <AccountHintCard hint={hint} canConnect={isEmailHintProvider(hint.existingProvider) && providers.includes(hint.existingProvider)} onChoice={onHintChoice} />;
+  }
   const groupBusy = busy && (busyProvider === null || !providers.includes(busyProvider));
   const preferredRetry = busyProvider ?? failedProvider ?? lastProvider;
   const retryProvider = preferredRetry && providers.includes(preferredRetry) ? preferredRetry : providers[0] ?? "github";

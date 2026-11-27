@@ -3,6 +3,11 @@
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const RELAY_ZH: Record<string, string> = {
+  "It looks like you already have an account made with {provider}.": "你似乎已经用 {provider} 创建过账户。",
+  "Sign in with {provider} and it will be connected to the same account.": "用 {provider} 登录即可关联到同一个账户。",
+  "Sign in with {provider} to connect": "用 {provider} 登录并关联",
+  "Create a new account": "创建新账户",
+  "This {provider} account has no Ovis account.": "这个 {provider} 账户没有对应的 Ovis 账户。",
   "Ovis cannot use the camera. Allow it in the phone's Settings, under Apps, Ovis, Permissions.": "Ovis 无法使用相机。请在手机的设置 → 应用 → Ovis → 权限中允许。",
   "Removed|pc state": "已移除",
   "On|pc state": "已开启",

@@ -3,6 +3,11 @@
  * Register and fixed terms follow ../i18n.ja.ts; a key another feature also uses goes there.
  */
 export const RELAY_JA: Record<string, string> = {
+  "It looks like you already have an account made with {provider}.": "すでに {provider} で作成したアカウントがあるようです。",
+  "Sign in with {provider} and it will be connected to the same account.": "{provider} でサインインすると、同じアカウントに接続できます。",
+  "Sign in with {provider} to connect": "{provider} でサインインして接続",
+  "Create a new account": "新しいアカウントを作成",
+  "This {provider} account has no Ovis account.": "この {provider} アカウントに対応する Ovis アカウントはありません。",
   "Ovis cannot use the camera. Allow it in the phone's Settings, under Apps, Ovis, Permissions.": "Ovis はカメラを使えません。スマホの設定の アプリ → Ovis → 権限 で許可してください。",
   "Removed|pc state": "削除済み",
   "On|pc state": "オン",

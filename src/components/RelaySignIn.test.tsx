@@ -2,15 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:te
 import { act } from "react";
 import { openPage, type Page } from "../lib/page.fixture.ts";
 
-import { FakeAccountService } from "../../shared/account-service-fake.ts";
+import { FakeAccountService, WEB_REDIRECT } from "../../shared/account-service-fake.ts";
 import type { RelayStatus } from "../../shared/protocol.ts";
-import { indexedAccountStore } from "../lib/account/store.ts";
+import { indexedAccountStore, memoryAccountStore } from "../lib/account/store.ts";
+import { beginSignIn, finishOwnSignIn } from "../lib/account/signin.ts";
 import { useLinkPageSignIn } from "../lib/account/useLinkPageSignIn.ts";
 import { handOverReturn } from "../lib/account/ownWindow.ts";
 import { fakeIndexedDB } from "../lib/indexedDB.fake.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import type { RelayState } from "../lib/useRelay.ts";
-import { RelayTab } from "./ConnectPhoneDialog.tsx";
+import { closedBySignIn, RelayTab } from "./ConnectPhoneDialog.tsx";
 
 const SERVICE = "https://account.ovis.example";
 const ONLINE: RelayStatus = { phase: "online", relay: "wss://relay.ovis.example", app: "https://app.ovis.example", sessions: 0, blocked: null, error: null };
@@ -468,6 +469,55 @@ describe("the relay tab's Sign in in the desktop app", () => {
     await page.render(<SettingsProvider><RelayTab relay={relay} closesGate={false} signedIn={false} joinBySignIn={false} account={account} phone={false} /></SettingsProvider>);
   };
   const returned = async (url: string): Promise<string> => new URL((await fake.fetch(url)).headers.get("location") ?? "").search;
+  const seedGitHub = async (store = memoryAccountStore()) => {
+    const url = await beginSignIn("github", { store, service: SERVICE, redirectUri: WEB_REDIRECT });
+    const back = new URL((await fake.fetch(url)).headers.get("location") ?? "").hash;
+    return finishOwnSignIn(url, back, { store, fetch: fake.fetch });
+  };
+
+  it("does not ask to create an account while switching from a stored sign-in", async () => {
+    const session = await seedGitHub(indexedAccountStore);
+    pcAccountId = "acct_pc";
+    await page.render(<SettingsProvider><RelayTab relay={relay} closesGate={false} signedIn accountId={session.account}
+      joinBySignIn={false} account={{ service: SERVICE, onOpen() {}, onSignedIn() {} }} phone={false} /></SettingsProvider>);
+    await press("Continue with Google");
+    expect(new URL(await opened.promise).searchParams.has("create")).toBe(false);
+  });
+
+  it.each(["merge_open", "cancel"] as const)("keeps the existing sign-in and only displays real link refusals (%s)", async (outcome) => {
+    const existing = await seedGitHub();
+    pcAccountId = existing.account;
+    fake.emailMatches = { google: "github" };
+    if (outcome === "merge_open") fake.methodLinkRefusal = outcome;
+    const finished = Promise.withResolvers<ReturnType<typeof closedBySignIn>>();
+    const account = { service: SERVICE, onOpen() {}, onSignedIn: (home: boolean) => finished.resolve(closedBySignIn(home, "relay")) };
+    const tab = (signedIn: boolean) => <SettingsProvider><RelayTab relay={relay} closesGate={false} signedIn={signedIn} accountId={signedIn ? existing.account : null}
+      joinBySignIn={false} account={account} phone={false} /></SettingsProvider>;
+    await page.render(tab(false));
+    await press("Continue with Google");
+    const first = await opened.promise;
+    const firstAnswer = answer;
+    opened = Promise.withResolvers<string>();
+    answer = Promise.withResolvers<string>();
+    await act(async () => { firstAnswer.resolve(await returned(first)); });
+    await press("Sign in with GitHub to connect");
+    await act(async () => {
+      const connectAnswer = answer;
+      const connectUrl = await opened.promise;
+      opened = Promise.withResolvers<string>();
+      answer = Promise.withResolvers<string>();
+      connectAnswer.resolve(await returned(connectUrl));
+      if (outcome === "cancel") {
+        expect(new URL(await opened.promise).searchParams.has("link_token")).toBe(true);
+        answer.reject(new DOMException("Cancelled by the user", "AbortError"));
+      }
+      await finished.promise;
+    });
+    expect(await finished.promise).toBe(outcome === "cancel" ? "settings" : "nothing");
+    await page.render(tab(true));
+    expect([...alerts()].map(text)).toEqual(outcome === "cancel" ? [] : ["Finish or cancel the account merge before adding another sign-in method."]);
+    expect(await indexedAccountStore.get("session")).toMatchObject({ account: existing.account, provider: "github" });
+  });
 
   it("offers the providers and signs in through the app's own loopback", async () => {
     const signedIn = Promise.withResolvers<void>();

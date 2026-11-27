@@ -221,6 +221,17 @@ describe("dictionary parts", () => {
 });
 
 describe("translate", () => {
+  it("uses 로 after each provider in the Korean account hint", () => {
+    const keys = [
+      "It looks like you already have an account made with {provider}.",
+      "Sign in with {provider} and it will be connected to the same account.",
+      "Sign in with {provider} to connect",
+    ];
+    for (const provider of ["GitHub", "Google", "Apple"]) {
+      for (const key of keys) expect(translate("ko", key, { provider })).toContain(`${provider}로`);
+      expect(translate("ko", "It looks like you already have an account made with {provider}.", { provider })).toEndWith(".");
+    }
+  });
   it.each(["ko", "ja", "zh"] as const)("uses the same %s agent state in groups, rows and alert filters", (language) => {
     for (const [group, row] of [["Idle", "READY"], ["Working", "RUN"], ["Needs input", "INPUT"], ["Finished", "DONE"]] as const) {
       if (language === "ko" && group === "Idle") continue;

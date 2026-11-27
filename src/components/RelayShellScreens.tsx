@@ -325,6 +325,7 @@ export function RelayShellCardContent({ props, other = null }: RelayShellCardCon
           <h1 className="relay-shell-hero"><span>{t("Your PCs, anywhere.")}</span>{" "}<span className="relay-shell-hero-quiet">{t("Sign in to your Ovis account")}</span></h1>
           <AccountSignIn nameOnly onSignIn={onSignIn} error={pairSignIn?.kind === "signed-out" ? pairSignIn.error : null} busy={pairSignIn?.kind === "signing-in"}
             busyProvider={pairSignIn?.kind === "signing-in" ? (pairSignIn.provider ?? null) : null} failedProvider={pairSignIn?.kind === "signed-out" ? (pairSignIn.provider ?? null) : null}
+            hint={pairSignIn?.kind === "signed-out" ? pairSignIn.hint : undefined} onHintChoice={props.onHintChoice}
             {...(accountProviders ? { providers: accountProviders } : {})} />
           <AgreementLine />
           {failure.detail !== null && <p className="relay-shell-detail"><code>{failure.detail}</code></p>}

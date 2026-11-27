@@ -2,12 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:te
 import { act } from "react";
 import { openPage, type Page } from "../lib/page.fixture.ts";
 
-import { FakeAccountService } from "../../shared/account-service-fake.ts";
+import { FakeAccountService, WEB_REDIRECT } from "../../shared/account-service-fake.ts";
 import { exportPublicKey, generateKeyPair, importPublicKey } from "../../shared/relay-e2ee.ts";
 import { encodeOffer } from "../../shared/relay-offer.ts";
 import { deriveServerId } from "../../shared/relay-server-proof.ts";
 import { handOverReturn } from "../lib/account/ownWindow.ts";
-import { indexedAccountStore } from "../lib/account/store.ts";
+import { beginSignIn, finishOwnSignIn } from "../lib/account/signin.ts";
+import { indexedAccountStore, memoryAccountStore } from "../lib/account/store.ts";
 import { fakeIndexedDB } from "../lib/indexedDB.fake.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import { nativeTransport, setTransport } from "../lib/transport.ts";
@@ -116,6 +117,61 @@ describe("signing in on the PC's own window", () => {
     await act(async () => { found[0]?.click(); });
   };
   const back = async (start: string): Promise<string> => new URL((await fake.fetch(start)).headers.get("location") ?? "").search;
+
+  const showAccountHint = async () => {
+    const store = memoryAccountStore();
+    const url = await beginSignIn("github", { store, service: SERVICE, redirectUri: WEB_REDIRECT });
+    const returned = new URL((await fake.fetch(url)).headers.get("location") ?? "").hash;
+    const existing = await finishOwnSignIn(url, returned, { store, fetch: fake.fetch });
+    fake.offerLinkPage(["github", "google"]);
+    fake.emailMatches = { google: "github" };
+    await page.render(<SettingsProvider><AccountSection /></SettingsProvider>);
+    await until(() => buttons().includes("Continue with Google"));
+    await press("Continue with Google");
+    const started = new URL(await sent.promise);
+    expect(started.searchParams.get("create")).toBe("ask");
+    sent = Promise.withResolvers<string>();
+    const stop = handOverReturn(await back(started.href), () => {});
+    try {
+      await until(() => buttons().includes("Create a new account") || buttons().includes("Continue with Google"));
+      expect(words(page)).toContain("It looks like you already have an account made with GitHub.");
+      expect(await indexedAccountStore.get("session")).toBeUndefined();
+    } finally { stop(); }
+    return existing;
+  };
+
+  it("asks on first sign-in and restarts Google without create when the user chooses a new account", async () => {
+    await showAccountHint();
+    await press("Create a new account");
+    const restarted = new URL(await sent.promise);
+    expect(restarted.pathname).toBe("/v1/signin/google");
+    expect(restarted.searchParams.has("create")).toBe(false);
+  });
+
+  it.each(["added", "merge_open"] as const)("signs in to the existing account and reports the added method or refusal (%s)", async (outcome) => {
+    const existing = await showAccountHint();
+    pcAccount = existing.account;
+    if (outcome === "merge_open") fake.methodLinkRefusal = outcome;
+    await press("Sign in with GitHub to connect");
+    const connect = new URL(await sent.promise);
+    expect(connect.searchParams.get("create")).toBe("never");
+    sent = Promise.withResolvers<string>();
+    const stop = handOverReturn(await back(connect.href), () => {});
+    try {
+      if (outcome === "added") {
+        const link = new URL(await sent.promise);
+        expect(link.pathname).toBe("/v1/signin/google");
+        expect(link.searchParams.has("create")).toBe(false);
+        expect(link.searchParams.has("link_token")).toBe(true);
+        const end = handOverReturn(await back(link.href), () => {});
+        try { await until(() => buttons().includes("Manage account")); } finally { end(); }
+      } else {
+        await until(() => words(page).includes("Finish or cancel the account merge before adding another sign-in method."));
+        expect(buttons()).toContain("Manage account");
+      }
+      expect(await indexedAccountStore.get("session")).toMatchObject({ account: existing.account, provider: outcome === "added" ? "google" : "github" });
+    } finally { stop(); }
+  });
 
   it("offers the providers, says it adds this PC, and lists the PC once the return comes back", async () => {
     await page.render(<SettingsProvider><AccountSection /></SettingsProvider>);

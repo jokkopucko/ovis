@@ -167,7 +167,7 @@ export async function startDeviceSignIn(options: DeviceSignInOptions, generation
           const session = { ...sessionOf(await answer.json(), options.service, now()), sign_in_generation: startedUnder };
           // under the lock sign-out and refresh take, and never once this sign-in was cancelled
           const kept = await lock(async () => {
-            if (!await AccountService.storeSignIn(options.store, session, () => !signal.aborted)) return false;
+            if (!await AccountService.storeSignIn(options.store, session, { wanted: () => !signal.aborted })) return false;
             if (!signal.aborted) return true;
             // cancelled while it was being written: take back exactly this session, never a newer one
             await options.store.update("session", (current) => current?.refresh_token === session.refresh_token ? undefined : current);

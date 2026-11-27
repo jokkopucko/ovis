@@ -348,6 +348,13 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
     const read = account.state?.kind !== "signing-in";
     if (read) accountRead = true;
     if (read && (account.state?.kind !== "signed-in" || account.state.pcs !== null)) unanswered = false;
+    const hintMethod = account.hintMethodsChange;
+    if (hintMethod?.fromHint === true && hintMethod.error !== null && account.state?.kind === "signed-in" && (unpaired !== null || signInFor !== null)) {
+      unpaired = signInFor = null;
+      keepFrontChosen(true);
+      await showFront();
+      return;
+    }
     // the sign-in a PC's own page asks for stays its screen; signed in on this page (the phone app's sheet, another tab),
     // the page goes on to join that PC as its load would have, once the account's PCs are read (the join is one of them)
     if (unpaired !== null && unpaired === entries && app === null && (shown?.kind === "empty" || shown?.kind === "connecting")) {
@@ -363,6 +370,14 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       else show({ ...shown, account: withRefusal(account.state) });
       return;
     }
+    if (shown?.kind === "failed" && shown.failure === "sign-in-first") {
+      const view = account.state;
+      if ((view?.kind === "signed-out" && view.hint !== undefined)
+        || (view?.kind === "signing-in" && shown.account?.kind === "signed-out" && shown.account.hint !== undefined)) {
+        show({ ...shown, account: view });
+        return;
+      }
+    }
     if (app !== null && last !== null) setPcNewness(heldOf(last));
     if (app === null && shown?.kind === "confirm") show(confirmOf(shown.offer));
     // a launch waiting on its card for the account's PCs goes on once they are read
@@ -373,7 +388,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
    * The account as the sign-in screen draws it: a refusal a web return brought along shows, with its provider, until the
    * next try, whatever sign-in another tab stored meanwhile.
    */
-  const withRefusal = (view: AccountView | null): AccountView | null => refusal !== null && signInFor === null && view?.kind !== "signing-in"
+  const withRefusal = (view: AccountView | null): AccountView | null => refusal !== null && signInFor === null && view?.kind !== "signing-in" && !(view?.kind === "signed-out" && view.hint !== undefined)
     ? { kind: "signed-out", error: refusal, ...(refusalProvider === null ? {} : { provider: refusalProvider }) } : view;
   /**
    * A marked code scanned longer ago than it is good for: the one check every start of its sign-in or pairing goes
@@ -417,7 +432,7 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
   // the PC page this shell opens acts on the account through these: Settings → Devices and PCs → Manage account
   keepShellAccount(account.enabled ? {
     signOut: account.signOut, leave: account.leave,
-    signInAgain: (provider) => account.signIn(provider, undefined, undefined, entry.serverId ?? undefined),
+    signInAgain: (provider) => account.signInAgain(provider, entry.serverId ?? undefined),
     signInAgainForMethod: (shown, add) => account.signInAgainForMethod(shown, add, entry.serverId ?? undefined),
     signOutEverywhere: (confirmed) => account.signOutEverywhere(entry.serverId ?? undefined, confirmed),
     freshSignIn: account.freshSignIn,
@@ -504,7 +519,10 @@ export async function mountRelayShell(mount: RelayShellMount): Promise<void> {
       onUpdate: updates.update, onMatch: match, onJoinInstead: joinInstead, onCodeStart: codeStart, onCodeSubmit: codeSubmit, onCodeMatch: codeMatch, onOpenPc: openPc,
       sheetJoin, launchJoin: entry.serverId !== null && launchJoinFor(entry.serverId), onWaitAgain: () => void waitAgain(),
       signedIn: account.state?.kind === "signed-in", onAskAgain: askAgain,
-      ...(account.enabled ? { onSignIn: signInFirst ? signInToPair : unpaired !== null ? signInForPc : account.signIn, accountProviders: offered ?? account.providers, onRefreshAccount: () => account.refreshNow() } : {}),
+      ...(account.enabled ? { onSignIn: signInFirst ? signInToPair : unpaired !== null ? signInForPc : account.signIn,
+        onSignInAgain: (provider: AccountProvider) => account.signInAgain(provider, entry.serverId ?? undefined),
+        onHintChoice: account.chooseAccountHint, methodsChange: account.hintMethodsChange,
+        accountProviders: offered ?? account.providers, onRefreshAccount: () => account.refreshNow() } : {}),
     })))); account.armRefresh();
   };
   const showFront = async (): Promise<void> => {

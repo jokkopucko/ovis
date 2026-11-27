@@ -20,6 +20,7 @@ import { AccountService, AccountServiceError, AccountServiceUnreachableError, ac
 import type { DirectoryPc } from "../account/service.ts";
 import { indexedAccountStore } from "../account/store.ts";
 import { beginSignIn, redeemSignIn, SignInError, takePendingSignIn } from "../account/signin.ts";
+import { AccountHintError, isEmailHintProvider, type AccountHintChoice, type SignInCreation } from "../account/accountHint.ts";
 import type { SignInReturn } from "../account/signin.ts";
 import type { AccountKey, AccountProvider, AccountSession, PendingPairing, SignInKey } from "../account/store.ts";
 import { AccountPcError, enrollOnPc, handListToPc, keepRemovals, PEER_STATUS_MS, linkThisDevice, needsLink, pcAccountStatus, planEnroll, sendQueuedAdds, takeIntroduction } from "../account/join.ts";
@@ -996,32 +997,62 @@ export function createAccountController(mount: RelayShellMount, view: {
   /** `wanted`: asked again right before the page leaves for the provider (after its pending record is written); false leaves the sign-in unstarted */
   /** `pc`: the PC whose own page this is: a web sign-in's return goes back to it (load's `toPc`) */
   /** `everywhere`: the account whose sign-out of every device waits on this web sign-in (signOutEverywhere) */
-  const signIn = (provider: AccountProvider, pairing?: PendingPairing, wanted?: () => boolean | Promise<boolean>, pc?: string, everywhere?: string): void => {
+  type SignInContext = { readonly pairing?: PendingPairing | undefined; readonly wanted?: (() => boolean | Promise<boolean>) | undefined; readonly pc?: string | undefined };
+  let hintContext: SignInContext = {};
+  const showHint = async (error: AccountHintError, context: SignInContext): Promise<void> => {
+    hintContext = context;
+    accountView = { kind: "signed-out", error: null, hint: error.hint };
+    await changed();
+  };
+  const startSignIn = (provider: AccountProvider, context: SignInContext, intent?: SignInCreation | { readonly everywhere: string }): void => {
     if (accountService === null) return;
     if (accountView?.kind === "signing-in") return;
+    const { pairing, wanted, pc } = context;
+    const everywhere = intent !== undefined && "everywhere" in intent ? intent.everywhere : undefined;
+    const creation = intent !== undefined && "create" in intent ? intent : undefined;
     deletion = undefined;
     const epoch = ++generation;
     accountView = { kind: "signing-in", provider };
     void changed();
     // in the phone app the system's sign-in sheet brings the return back to the page; elsewhere the page goes to the provider
     const unwanted = async (): Promise<void> => { accountView = { kind: "signed-out", error: null }; await changed(); };
-    const native = (): Promise<void> => nativeSignIn(provider, { store: accountStore, service: accountService, ...(wanted ? { wanted } : {}) })
-      .then(async (session) => { if (pairing === undefined) await registerSignIn(session); await refresh(true, false, pairing === undefined ? session : undefined); }, (error: unknown) => error instanceof SignInNotWanted ? unwanted() : Promise.reject(error));
+    const native = (): Promise<void> => nativeSignIn(provider, { store: accountStore, service: accountService, ...(wanted ? { wanted } : {}),
+      ...(creation === undefined ? {} : { creation }), ...(mount.accountFetch ? { fetch: mount.accountFetch } : {}) })
+      .then(async (session) => {
+        if (pairing === undefined) await registerSignIn(session);
+        if (creation?.create === "never") await methods.addMethod(creation.thenAdd, session, { fromHint: true });
+        await refresh(true, false, pairing === undefined ? session : undefined);
+      }, (error: unknown) => error instanceof SignInNotWanted ? unwanted() : Promise.reject(error));
     // a press starts as before; a start that asks `wanted` waits on it before it starts, and again before the page (or
     // the app's sheet) leaves for the provider (the link entry, shell.tsx)
     const start = (): Promise<void> => nativeSignInAvailable()
       ? (wanted === undefined ? native() : Promise.resolve(wanted()).then((go) => go ? native() : unwanted()))
-      : beginSignIn(provider, { store: accountStore, service: accountService, redirectUri: `${window.location.origin}/`, ...(pairing ? { pairing } : {}), ...(pc ? { pc } : {}), ...(everywhere ? { signOutEverywhere: everywhere } : {}) })
+      : beginSignIn(provider, { store: accountStore, service: accountService, redirectUri: `${window.location.origin}/`, ...creation,
+        ...(pairing ? { pairing } : {}), ...(pc ? { pc } : {}), ...(everywhere ? { signOutEverywhere: everywhere } : {}) })
         .then(async (url) => wanted === undefined || await wanted() ? openSignIn(url) : unwanted());
     // The shell shows signed-out immediately, even when it must first remove its list member.
     // A new sign-in waits for the local generation change, not for remote token revocation.
     const started = signingOutLocally === undefined ? start() : signingOutLocally.then(() => epoch === generation ? start() : undefined);
     started.catch(async (error: unknown) => {
       if (epoch !== generation) return;
+      if (error instanceof AccountHintError) { await showHint(error, context); return; }
       console.warn("Ovis: the sign-in did not start", error);
       accountView = { kind: "signed-out", error: signInFailure(error), provider };
       await changed();
     });
+  };
+  const signIn = (provider: AccountProvider, pairing?: PendingPairing, wanted?: () => boolean | Promise<boolean>, pc?: string, everywhere?: string): void => {
+    startSignIn(provider, { pairing, wanted, pc }, everywhere !== undefined ? { everywhere }
+      : accountView?.kind === "signed-out" ? { create: "ask" } : undefined);
+  };
+  const signInAgain = (provider: AccountProvider, pc?: string): void => startSignIn(provider, { pc });
+  const chooseAccountHint = (choice: AccountHintChoice): void => {
+    const hint = accountView?.kind === "signed-out" ? accountView.hint : undefined;
+    if (hint === undefined) return;
+    if (choice === "create") startSignIn(hint.provider, hintContext);
+    else if (isEmailHintProvider(hint.existingProvider)) {
+      startSignIn(hint.existingProvider, hintContext, { create: "never", thenAdd: hint.provider });
+    }
   };
   /**
    * `carried`: told of the pairing the returned sign-in was started for, once it is taken, before the code is traded.
@@ -1037,20 +1068,37 @@ export function createAccountController(mount: RelayShellMount, view: {
     if (returned !== null && accountService !== null) {
       const pending = await takePendingSignIn(accountStore, returned.state);
       if (pending?.link !== undefined) {
-        if (pending.pc !== undefined) toPc?.(pending.pc);
+        if (pending.link.fromHint !== true && pending.pc !== undefined) toPc?.(pending.pc);
         const result = await methods.finish({ ...pending, link: pending.link }, returned);
-        ended?.(pending.pc === undefined ? undefined : {
-          provider: pending.provider, refused: result.error === null ? null : signInFailure(result.error),
+        if (pending.link.fromHint === true && result.error !== null && pending.pairing === undefined) {
+          await refresh(true, false);
+          return;
+        }
+        if (pending.link.fromHint === true && pending.pc !== undefined && pending.pairing === undefined) toPc?.(pending.pc);
+        else if (pending.pairing !== undefined) carried?.(pending.pairing);
+        ended?.(pending.pc === undefined && pending.pairing === undefined ? undefined : {
+          provider: pending.provider, refused: result.error === null || pending.pairing !== undefined ? null : signInFailure(result.error),
         });
         await refresh(true, false, "skip");
         return;
       }
       accountView = { kind: "signing-in", ...(pending ? { provider: pending.provider } : {}) };
-      if (pending?.pairing) carried?.(pending.pairing);
-      else if (pending?.pc !== undefined && pending.resume_add === undefined) toPc?.(pending.pc);
+      if (pending?.pairing && pending.then_add === undefined) carried?.(pending.pairing);
+      else if (pending?.pc !== undefined && pending.resume_add === undefined && pending.then_add === undefined && pending.create === undefined) toPc?.(pending.pc);
       await changed();
       try {
         const session = await redeemSignIn(pending, returned, { store: accountStore, ...(mount.accountFetch ? { fetch: mount.accountFetch } : {}) });
+        if (pending?.then_add !== undefined) {
+          registrationJustTried = session;
+          await registerSignIn(session);
+          const { pc, pairing } = pending;
+          if (await methods.addMethod(pending.then_add, session, { fromHint: true, ...(pc === undefined ? {} : { pc }), ...(pairing === undefined ? {} : { pairing }) })) return true;
+          if (methods.last?.error != null) {
+            await refresh(true, false, session);
+            return;
+          }
+          if (pairing !== undefined) carried?.(pairing);
+        }
         if (pending?.pairing) outcome = { refused: null, provider: pending.provider };
         // back from a sign-in again for Sign out every device: the list is read again first, and a device that came in while
         // the browser was away (the question named none still in) keeps everybody signed in, to be asked about
@@ -1062,19 +1110,25 @@ export function createAccountController(mount: RelayShellMount, view: {
           if (pending.pc !== undefined) outcome = { refused: null, provider: pending.provider };
         } else {
           registrationJustTried = session;
-          await registerSignIn(session);
-          if (pending?.resume_add?.account === session.account && await methods.addMethod(pending.resume_add.provider, session, pending.pc)) {
+          if (pending?.then_add === undefined) await registerSignIn(session);
+          if (pending?.resume_add?.account === session.account && await methods.addMethod(pending.resume_add.provider, session, pending.pc === undefined ? undefined : { pc: pending.pc })) {
             await refresh(true, false, session);
             return true;
           }
           if (pending?.pc !== undefined) outcome = { refused: null, provider: pending.provider };
         }
       } catch (error) {
+        if (error instanceof AccountHintError && pending !== undefined) {
+          if (pending.then_add !== undefined && pending.pairing !== undefined) carried?.(pending.pairing);
+          await showHint(error, { pairing: pending.pairing, pc: pending.pc });
+          await refresh(true, false);
+          return;
+        }
         accountView = { kind: "signed-out", error: signInFailure(error), ...(pending ? { provider: pending.provider } : {}) };
         if (pending?.pairing || pending?.pc !== undefined) outcome = { refused: signInFailure(error), provider: pending!.provider };
         await changed();
       }
-      if (pending?.resume_add !== undefined && pending.pc !== undefined) toPc?.(pending.pc);
+      if (pending?.pc !== undefined && pending.pairing === undefined && (pending.resume_add !== undefined || pending.then_add !== undefined || pending.create !== undefined)) toPc?.(pending.pc);
       ended?.(outcome);
     }
     await refresh(true, false, registrationJustTried);
@@ -1631,6 +1685,7 @@ export function createAccountController(mount: RelayShellMount, view: {
   };
   return { dispose, get state() { return accountView; }, /** this page's copy of its account's list, or null */ get list() { return lists; }, get directory() { return directory; }, get listKey() { return listKey(); }, /** the account, list and key in it that listKey is this device's for: read with it */ get listScope() { return listKey() === null || lists === null ? null : scopeOf(lists.view()); }, listHolds, listSays, listTimeOver, readList, sessionOpened, takePlace, get knowsList() { return knowsList(); },
     get openKey() { return accountView?.kind === "signed-in" && listedFor?.epoch === generation ? listedFor.openKey : null; },
-    get signedInAs() { return accountView?.kind === "signed-in" ? shownFor : undefined; }, enabled: accountService !== null, providers, offered: offeredNow, listed: listedNow, load, refresh, refreshNow, reread, stored, storedAccount, signIn, signOut, leave, deleteAccount, signOutEverywhere, freshSignIn, prepare, enroll, cancelEnrollment, armRefresh,
-    methods: methods.methods, addMethod: methods.addMethod, removeMethod: methods.removeMethod, signInAgainForMethod: methods.signInAgain, get methodsChange() { return methods.last; } };
+     get signedInAs() { return accountView?.kind === "signed-in" ? shownFor : undefined; }, enabled: accountService !== null, providers, offered: offeredNow, listed: listedNow, load, refresh, refreshNow, reread, stored, storedAccount, signIn, signInAgain, chooseAccountHint, signOut, leave, deleteAccount, signOutEverywhere, freshSignIn, prepare, enroll, cancelEnrollment, armRefresh,
+    methods: methods.methods, addMethod: (provider: AccountProvider, shown: AccountSession, pc?: string) => methods.addMethod(provider, shown, pc === undefined ? undefined : { pc }), removeMethod: methods.removeMethod, signInAgainForMethod: methods.signInAgain,
+    get methodsChange() { return methods.last; }, get hintMethodsChange() { return methods.last?.account === shownFor?.account ? methods.last : undefined; } };
 }

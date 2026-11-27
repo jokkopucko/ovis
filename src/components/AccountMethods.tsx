@@ -119,10 +119,15 @@ function untaken(shell: MethodsShell) {
   return outcome;
 }
 
-function refusalText(t: Translate, { action, provider, code }: Refusal): string {
+export function methodRefusalText(t: Translate, { action, provider, code }: Refusal): string {
   const name = PROVIDER_NAMES[provider];
   switch (code) {
+    case "identity_in_use":
     case "in_use": return t("This {provider} account is linked to another Ovis account. Take {provider} off that account first, then you can add it here.", { provider: name });
+    case "two_step_required": return t("Turn on two-step sign-in before adding another method.");
+    case "two_step_unknown": return t("Ovis could not confirm two-step sign-in. Check it with your sign-in provider.");
+    case "merge_open": return t("Finish or cancel the account merge before adding another sign-in method.");
+    case "reauth_required": return t("Sign in again before adding another method.");
     case "identity_exists": return t("Your account already signs in with {provider}.", { provider: name });
     case "last_identity": return t("Add another way to sign in before removing this one.");
     case "denied": return t("{provider} refused the sign-in.", { provider: name });
@@ -206,7 +211,7 @@ export function HostedAccountMethods({ signIn }: { readonly signIn: MethodsShell
           {(signIn.freshSignIn !== undefined || signIn.signInAgainForMethod !== undefined) && <button type="button" className="btn btn-primary" onClick={() => signInAgain(refusal)}>{t("Sign in again")}</button>}
         </div>
       ) : refusal !== null && (
-        <p className="settings-condition" role="alert">{refusalText(t, refusal)}{refusal.code === "in_use" && <> <InUseSteps /></>}</p>
+        <p className="settings-condition" role="alert">{methodRefusalText(t, refusal)}{(refusal.code === "in_use" || refusal.code === "identity_in_use") && <> <InUseSteps /></>}</p>
       )}
     </AccountMethods>
   );

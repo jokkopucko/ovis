@@ -92,7 +92,7 @@ export type PcUpdate =
   | { phase: "failed"; detail: string | null };
 
 export type AccountView =
-  | { kind: "signed-out"; error: string | null; provider?: AccountProvider; notice?: string }
+  | { kind: "signed-out"; error: string | null; provider?: AccountProvider; notice?: string; hint?: import("../account/accountHint.ts").AccountHint }
   | { kind: "signing-in"; provider?: AccountProvider }
   /** `known`: the read failed, and these are the account's PCs this device listed at its last read that answered (knownPcs) */
   | {

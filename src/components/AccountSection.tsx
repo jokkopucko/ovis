@@ -11,6 +11,7 @@ import type { ListAddState } from "../../shared/machines.ts";
 import type { AccountLimits } from "../../shared/protocol.ts";
 import { AddPcWaitOver, addByList, addInOnePress, closeAddWindow, holdListNumber, keepAddPcWaiting, listedInAccount, listThisPc, onAddPcWaiting, pagePc, pcAnswers, readAddPcWaiting, reopenAddWindow, thisPcInNoAccount, thisPcMembership, type AddPcWaiting, type OnePress, type ListedPc } from "../lib/account/addThisPc.ts";
 import { deleteAccount, holdingSessionStore, installSignInAgain } from "../lib/account/deleteAccount.ts";
+import { AccountHintError, isEmailHintProvider, type AccountHint, type AccountHintChoice, type SignInCreation } from "../lib/account/accountHint.ts";
 import { desktopAccount, desktopProviders, desktopSignIn, type DesktopAccountBridge } from "../lib/account/desktop.ts";
 import { ApiError, cancelListAdd, confirmListAdd, fetchBridgeHealth, fetchListAdd, fetchRelay, requestRelay } from "../lib/api.ts";
 import { startDeviceSignIn, startLinkPageSignIn, type DeviceSignInProvider } from "../lib/account/deviceSignIn.ts";
@@ -18,7 +19,7 @@ import { AccountPcError, within } from "../lib/account/join.ts";
 import { pagePcs } from "../lib/account/listPcs.ts";
 import { pageAccountList } from "../lib/account/pageList.ts";
 import { myPcs, type MyPc } from "../lib/account/myPcs.ts";
-import { ownSignIn, ownWindowSignIn, pcServiceHere, useOwnWindowRedirect } from "../lib/account/ownWindow.ts";
+import { addOwnSignInMethod, ownSignIn, ownWindowSignIn, pcServiceHere, useOwnWindowRedirect } from "../lib/account/ownWindow.ts";
 import { AccountService, AccountServiceError, DEVICE_PROVIDERS, indexedAccountService, offeredProviders, sameSignIn, SignedOutError, type AccountIdentityList, type DeviceProvider, type OfferedProviders } from "../lib/account/service.ts";
 import { SignInError } from "../lib/account/signin.ts";
 import { indexedAccountStore, type AccountProvider, type AccountSession, type AccountStore } from "../lib/account/store.ts";
@@ -30,7 +31,7 @@ import { ExternalLink } from "../lib/externalLink.ts";
 import { AccountPcList, AccountSignIn, PROVIDER_NAMES, providerChoice } from "./AccountPcs.tsx";
 import { AccountHead, ManageAccountSheet } from "./AccountHead.tsx";
 import { AccountManageLists } from "./AccountManage.tsx";
-import { AccountMethods, InUseSteps } from "./AccountMethods.tsx";
+import { AccountMethods, InUseSteps, methodRefusalText } from "./AccountMethods.tsx";
 import { QrCode } from "./QrCode.tsx";
 import { aroundDigits } from "./RelayPairingPrompt.tsx";
 import { statusText } from "./RelayPanel.tsx";
@@ -41,7 +42,7 @@ interface Deletion { readonly session: AccountSession }
 
 type View =
   | { kind: "loading" }
-  | { kind: "signed-out"; error: string | null; notice?: string }
+  | { kind: "signed-out"; error: string | null; notice?: string; hint?: AccountHint; addsPc?: boolean }
   /** `link`: the sign-in page the browser would not open in a tab of its own, offered to open by hand */
   | { kind: "signing-in"; link?: string }
   | { kind: "device-code"; provider: DeviceSignInProvider; userCode: string | null; verificationUri: string; verificationUriComplete: string | null }
@@ -1445,8 +1446,9 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
    * false, so it stays with the provider the account signed in with.
    */
   /** `store`: where the sign-in is kept; a sign-in again to delete holds it back (deleteAccount.ts, holdingSessionStore) */
-  const runSignIn = (provider: AccountProvider, viaLinkPage = linkPage, store: AccountStore = indexedAccountStore): Promise<AccountSession> | null => {
-    if (bridge !== null) return desktopSignIn(provider, bridge, store);
+  const runSignIn = (provider: AccountProvider, options: { readonly viaLinkPage?: boolean; readonly store?: AccountStore; readonly creation?: SignInCreation | undefined } = {}): Promise<AccountSession> | null => {
+    const { viaLinkPage = linkPage, store = indexedAccountStore, creation } = options;
+    if (bridge !== null) return desktopSignIn(provider, bridge, store, creation);
     if (pcService === null) return null;
     if (ownRedirect) {
       cancelDeviceSignIn();
@@ -1454,9 +1456,11 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
       deviceSignIn.current = controller;
       setView({ kind: "signing-in" });
       // held back until it is known not to be cancelled: a sign-in finished after Cancel is never kept
-      return ownWindowSignIn(provider, { service: pcService, redirect: ownRedirect, store: holdingSessionStore(store), signal: controller.signal, blocked: (link) => setView({ kind: "signing-in", link }) })
+      const connecting = creation?.create === "never";
+      return ownWindowSignIn(provider, { service: pcService, redirect: ownRedirect, store: connecting ? store : holdingSessionStore(store), signal: controller.signal,
+        blocked: (link) => setView({ kind: "signing-in", link }), intent: connecting ? { ...creation, wanted: () => !controller.signal.aborted } : creation })
         .then(async (session) => {
-          if (!await AccountService.storeSignIn(store, session, () => !controller.signal.aborted)) {
+          if (!connecting && !await AccountService.storeSignIn(store, session, { wanted: () => !controller.signal.aborted })) {
             try {
               await AccountService.revokeSession(session);
             } catch (error) {
@@ -1479,23 +1483,33 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
    * sign-in; a provider's own button, and the desktop app's, say nothing of it, so their sign-in adds nothing
    * and Add this PC offers its button.
    */
-  const signIn = (provider: AccountProvider, addsPc = false): void => {
+  const signIn = (provider: AccountProvider, addsPc = false, creation: SignInCreation | null = { create: "ask" }): void => {
     deletion.current = null;
     setDeleteAsked(null);
     setReauth(null);
     if (bridge !== null) setView({ kind: "signing-in" });
-    runSignIn(provider)?.then((session) => {
+    runSignIn(provider, { creation: creation ?? undefined })?.then(async (session) => {
       // this sign-in, and no other, is the one that just finished here (AddThisPc): it adds the PC without a
       // second press only when its button said it would
       signedInHere.current = { account: session.account, adds: addsPc, at: Date.now() };
-      return load();
+      if (creation?.create === "never") await addMethod(creation.thenAdd, session, true);
+      else await load();
     }, (error: unknown) => {
       if (error instanceof DOMException && error.name === "AbortError") return;
+      if (error instanceof AccountHintError) { setView({ kind: "signed-out", error: null, hint: error.hint, addsPc }); return; }
       console.warn("Ovis: the sign-in did not finish", error instanceof SignInError ? error.code : error instanceof Error ? error.name : error);
       const started = startedProvider.current;
       const named = bridge === null && pcService !== null && linkPage ? (started === null || started === "ovis" ? null : started) : provider;
       setView({ kind: "signed-out", error: failureText(error, named) });
     });
+  };
+  const chooseAccountHint = (choice: AccountHintChoice): void => {
+    if (view.kind !== "signed-out" || view.hint === undefined) return;
+    const { hint, addsPc: addPcAfter } = view;
+    if (choice === "create") signIn(hint.provider, addPcAfter, null);
+    else if (isEmailHintProvider(hint.existingProvider) && providers.includes(hint.existingProvider)) {
+      signIn(hint.existingProvider, addPcAfter, { create: "never", thenAdd: hint.provider });
+    }
   };
 
   const needsReauth = (error: unknown): boolean => error instanceof AccountServiceError && error.code === "reauth_required";
@@ -1504,20 +1518,24 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
    * Adds `provider` to the signed-in account on purpose, from the desktop app only: a link goes
    * through a redirect sign-in, never a device code someone else could have typed.
    */
-  const addMethod = (provider: AccountProvider, session = view.kind === "signed-in" ? view.session : undefined): void => {
-    if (bridge === null || session === undefined) return;
+  const addMethod = async (provider: AccountProvider, session = view.kind === "signed-in" ? view.session : undefined, fromHint = false): Promise<void> => {
+    if (session === undefined || (bridge === null && (!fromHint || !ownRedirect))) return;
+    cancelDeviceSignIn();
+    const controller = new AbortController();
+    deviceSignIn.current = controller;
     setView({ kind: "signing-in" });
-    indexedAccountService.forSignIn(session).addMethod(provider, (linkToken, bearer, generation) => desktopSignIn(provider, bridge, indexedAccountStore, { linkToken, bearer, generation }))
+    await addOwnSignInMethod(provider, session, { bridge, service: session.service, redirect: ownRedirect ?? null, store: indexedAccountStore,
+      signal: controller.signal, blocked: (link) => setView({ kind: "signing-in", link }) })
       .then(() => load(), async (error: unknown) => {
         if (error instanceof DOMException && error.name === "AbortError") return;
         console.warn("Ovis: the sign-in method was not added", error instanceof SignInError || error instanceof AccountServiceError ? error.code : error instanceof Error ? error.name : error);
         await load();
-        if (needsReauth(error)) { setReauth({ action: "add", provider, session }); return; }
+        if (needsReauth(error) && bridge !== null && !fromHint) { setReauth({ action: "add", provider, session }); return; }
         if (error instanceof SignedOutError) return;
-        const message = failureText(error, provider);
+        const message = error instanceof AccountServiceError ? methodRefusalText(t, { action: "add", provider, code: error.code }) : failureText(error, provider);
         setInUseShown(error instanceof SignInError && error.code === "in_use" ? message : null);
         setView((current) => current.kind === "signed-in" && sameSignIn(current.session, session) ? { ...current, error: message } : current);
-      });
+      }).finally(() => { if (deviceSignIn.current === controller) deviceSignIn.current = null; });
   };
 
   const removeMethod = (provider: AccountProvider, session = view.kind === "signed-in" ? view.session : undefined): void => {
@@ -1545,7 +1563,7 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
     setReauth(null);
     // a sign-in again for the same account is none that adds the PC: one left untaken does not outlive it either
     signedInHere.current = null;
-    runSignIn(current, false, holdingSessionStore(indexedAccountStore))?.then(async (session) => {
+    runSignIn(current, { viaLinkPage: false, store: holdingSessionStore(indexedAccountStore) })?.then(async (session) => {
       const goesOn = session.account === from.account && await installSignInAgain(indexedAccountStore, from, session, () => deletion.current === resumed);
       if (!goesOn) {
         if (deletion.current === resumed) deletion.current = null;
@@ -1729,7 +1747,8 @@ export function AccountSection({ onAccount, recheck = 0, opensAll, withdrawn, si
             : (
               <>
                 {ownRedirect && addsPc && <p className="settings-description">{t("Signing in adds this PC to your account.")}</p>}
-                <AccountSignIn onSignIn={(provider) => signIn(provider, Boolean(ownRedirect) && addsPc)} error={view.error} notice={view.notice ?? null} providers={providers} />
+                <AccountSignIn onSignIn={(provider) => signIn(provider, Boolean(ownRedirect) && addsPc, view.kind === "signed-out" ? { create: "ask" } : null)}
+                  error={view.error} notice={view.notice ?? null} providers={providers} hint={view.hint} onHintChoice={chooseAccountHint} />
               </>
             )}
         </div>

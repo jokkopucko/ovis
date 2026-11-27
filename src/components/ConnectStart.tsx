@@ -669,13 +669,13 @@ function QrOrCode({ code, disabled = false }: { readonly code: CodeWays; readonl
  * The relay tab signed out: what an account gives, the sign-in (`signIn`, AccountSignIn), then the PC's QR code or its
  * code, for a PC in no account, and that the other tabs need no sign-in.
  */
-export function SignedOutRelayPanel({ signIn, signingIn, code }: { readonly signIn: ReactNode; readonly signingIn: boolean; readonly code: CodeWays }) {
+export function SignedOutRelayPanel({ signIn, signingIn, decidingAccount, code }: { readonly signIn: ReactNode; readonly signingIn: boolean; readonly decidingAccount: boolean; readonly code: CodeWays }) {
   const t = useT();
   return (
     <>
       <p className="relay-shell-copy">{t("Reach your PCs from anywhere with your Ovis account")}</p>
       {signIn}
-      <p className="relay-shell-first-time">{t("First time? Your account is made right away.")}</p>
+      {!decidingAccount && <p className="relay-shell-first-time">{t("First time? Your account is made right away.")}</p>}
       <QrOrCode code={code} disabled={signingIn} />
       <p className="relay-shell-detail">{t("Tailscale and SSH need no sign-in.")}</p>
     </>

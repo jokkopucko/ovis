@@ -1,11 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, setSystemTime } from "bun:test";
+import { renderToStaticMarkup } from "react-dom/server";
 import { LINK_TOKEN_TTL_S, WEB_REDIRECT } from "../../../shared/account-service-fake.ts";
+import { exportPublicKey, generateKeyPair } from "../../../shared/relay-e2ee.ts";
+import { deriveServerId } from "../../../shared/relay-server-proof.ts";
 import { keepShellAccount, shellAccountActions } from "../account/hostedSignIn.ts";
 import { AccountService } from "../account/service.ts";
 import { beginSignIn, signInReturn } from "../account/signin.ts";
 import { noDevices, SERVICE, setup as signInSetup } from "./accountController.methods.test-helpers.ts";
 import { createShellTestPage } from "./shell.test.tsx";
 import { mountRelayShell } from "./shell.tsx";
+import { takePairingReturn } from "./shellState.ts";
 
 const PC = "a".repeat(32);
 async function setup(now: () => number = Date.now) {
@@ -34,6 +38,51 @@ describe("linking sign-in methods in the hosted shell", () => {
   let browser: ReturnType<typeof createShellTestPage>;
   beforeEach(() => { browser = createShellTestPage(); });
   afterEach(() => { setSystemTime(); browser.dispose(); });
+
+  it.each([
+    { scope: "PC page", phase: "start" }, { scope: "QR pairing", phase: "start" },
+    { scope: "PC page", phase: "return" }, { scope: "QR pairing", phase: "return" },
+  ] as const)("keeps the existing sign-in and handles a method refusal ($scope, $phase)", async ({ scope, phase }) => {
+    const { fake, store, before, callback } = await signInSetup();
+    const { publicKey } = generateKeyPair();
+    const serverId = deriveServerId(publicKey);
+    const context = scope === "PC page" ? { pc: serverId } : {
+      pairing: { at: Date.now(), offer: { v: 1 as const, server_id: serverId, server_public_key: exportPublicKey(publicKey), relay: "wss://relay.example", name: "Desk", code: "123456", admission: 1 as const } },
+    };
+    let params: string;
+    if (phase === "start") {
+      await store.set("session", undefined);
+      fake.methodLinkRefusal = "merge_open";
+      params = await callback(await beginSignIn("github", { store, service: SERVICE, redirectUri: WEB_REDIRECT, create: "never", thenAdd: "google", ...context }));
+    } else {
+      const link = await new AccountService({ store, fetch: fake.fetch }).forSignIn(before).startMethodLink("google");
+      const url = await beginSignIn("google", {
+        store, service: SERVICE, redirectUri: WEB_REDIRECT, generation: link.generation,
+        linkToken: link.linkToken, link: { ...link.link, fromHint: true }, ...context,
+      });
+      params = `#error=identity_in_use&state=${new URL(url).searchParams.get("state")}`;
+    }
+    const navigations: string[] = [];
+    let screen = "";
+    try {
+      await mountRelayShell({
+        container: Object.create(null), entryUrl: `${WEB_REDIRECT}${params}`, shellVersion: "0.0.0-test", label: "Test phone", store: noDevices,
+        renderApp: () => { throw new Error("the PC must not open"); },
+        createRoot: () => ({ render(element) { screen = renderToStaticMarkup(element); }, unmount() {} }),
+        navigate: (path) => { navigations.push(path); }, navigatedSinceEntry: () => false,
+        open: () => Promise.reject(new Error("the PC must not connect")), checkPc: async () => ({ kind: "offline", reason: "relay" }), reload: async () => {},
+        accountService: SERVICE, accountStore: store, accountFetch: fake.fetch,
+      });
+      if (phase === "return" && "pairing" in context && context.pairing !== undefined) {
+        expect(navigations).toHaveLength(1);
+        expect(takePairingReturn(context.pairing.offer)).toMatchObject({ at: context.pairing.at, refused: null });
+      } else {
+        expect(screen).toContain(phase === "start" ? "Finish or cancel the account merge" : "This Google account is linked to another Ovis account.");
+        expect(navigations).toEqual([]);
+      }
+      expect(await store.get("session")).toMatchObject({ account: before.account, provider: "github" });
+    } finally { keepShellAccount(null); }
+  });
 
   it("finishes a web link after the access token expires, then opens PCs with the new sign-in's key", async () => {
     setSystemTime(new Date());

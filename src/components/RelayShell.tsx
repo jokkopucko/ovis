@@ -20,6 +20,9 @@ import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { checkNetwork, useOffline } from "../lib/useOffline.ts";
 import { AccountJoinRequests } from "./AccountJoinRequests.tsx";
 import { AccountSignIn } from "./AccountPcs.tsx";
+import { methodRefusalText } from "./AccountMethods.tsx";
+import type { AccountHintChoice } from "../lib/account/accountHint.ts";
+import type { MethodsChange } from "../lib/relay/accountMethods.ts";
 import { AddPcSheet } from "./AddPcSheet.tsx";
 import { AccountlessRelayPanel, AccountRelayPanel, AddPcTabs, type CheckedPc, type CodeWays, type ConnectWay, MyPcs, OfflineLine, savedWayTag, SHELL, SignedOutRelayPanel, usePhoneSaved } from "./ConnectStart.tsx";
 import { codeFailureText, type TypedCodeFailure } from "./codeFailureText.ts";
@@ -59,6 +62,9 @@ export interface RelayShellProps {
   /** pairing without a code: the digits on this screen are the ones the PC shows (`typed`: typed from the PC's screen) */
   onMatch: (typed?: string) => void;
   onSignIn?: (provider: AccountProvider) => void;
+  onSignInAgain?: (provider: AccountProvider) => void;
+  onHintChoice?: (choice: AccountHintChoice) => void;
+  methodsChange?: MethodsChange | undefined;
   sheetJoin?: { mode: "new" | "join"; server_id: string } | null;
   /** that sheet's typed comparison, for a PC that shows no number: the same request goes on as a join, with this device's digits */
   onJoinInstead?: () => void;
@@ -201,6 +207,12 @@ export function RelayShell(props: RelayShellProps) {
     setAccountKind(account?.kind);
     if (account?.kind === "signed-in" && (accountKind === "signed-out" || accountKind === "signing-in")) { setAddView(false); setAddTab("relay"); }
   }
+  const hint = account?.kind === "signed-out" ? account.hint : undefined;
+  const [lastHint, setLastHint] = useState(hint);
+  if (hint !== lastHint) {
+    setLastHint(hint);
+    if (hint !== undefined) { setAddView(true); setAddTab("relay"); }
+  }
   // My PCs opened by a PC's More (`/#add`) gives way to a screen of its own (a pairing, a failure); a code typed from its
   // Add PC comes back to it
   if (addOpen && !front && !addingPcOpen(state)) setAddOpen(false);
@@ -287,6 +299,7 @@ export function RelayShell(props: RelayShellProps) {
   const signIn = signedOut && onSignIn ? (
     <AccountSignIn onSignIn={(provider) => { endCode(); onSignIn(provider); }} error={account.kind === "signed-out" ? account.error : null} notice={account.kind === "signed-out" ? (account.notice ?? null) : null}
       busy={account.kind === "signing-in"} busyProvider={account.kind === "signing-in" ? (account.provider ?? null) : null} failedProvider={account.kind === "signed-out" ? (account.provider ?? null) : null}
+      hint={hint} onHintChoice={props.onHintChoice}
       {...(accountProviders ? { providers: accountProviders } : {})} />
   ) : null;
   // signed in, a PC a code found is compared in the pairing dialog over the page; otherwise on a screen of its own, whose
@@ -300,7 +313,7 @@ export function RelayShell(props: RelayShellProps) {
     state: { active: lookingHere, looking: lookingHere && state.kind === "code-looking", failure: lookingHere && state.kind === "code-entry" ? state.failure : null },
   };
   const relayPanel = account?.kind === "signed-in" ? <AccountRelayPanel code={code} />
-    : account !== null ? <SignedOutRelayPanel signIn={signIn} signingIn={account.kind === "signing-in"} code={code} />
+    : account !== null ? <SignedOutRelayPanel signIn={signIn} signingIn={account.kind === "signing-in"} decidingAccount={hint !== undefined} code={code} />
     : <AccountlessRelayPanel code={code} />;
   const chooseTab = (way: ConnectWay): void => { if (way !== "relay") endCode(); setAddTab(way); };
   // a sign-in that ended, said by the relay tab's sign-in: over My PCs on a phone, and on Add a PC's other tabs
@@ -330,6 +343,10 @@ export function RelayShell(props: RelayShellProps) {
   // yet, the same page, the rows saying Off or the list saying to sign in on a PC); a code typed from Add PC's relay tab
   // goes on in the pairing dialog over it
   if (account?.kind === "signed-in") {
+    const method = props.methodsChange;
+    const methodError = method?.fromHint === true && method.error !== null && (
+      <p className="account-error relay-add-directory-error" role="alert">{methodRefusalText(t, { action: "add", provider: method.provider, code: method.error })}</p>
+    );
     // this device cannot read its account's list: the PCs below are then the account service's word, each marked, and none opens by itself
     const listUnread = account.list !== undefined && (
       <p className="account-error relay-add-directory-error" role="status" data-list-unread={account.list}>
@@ -345,13 +362,14 @@ export function RelayShell(props: RelayShellProps) {
       <main className={frontClass(myPcsShown)} data-relay-state={stateName} data-account-state={account.kind}>
         {/* one wrapper whether the dialog is open or not: swapping it in would remount the page, losing the control that opened it before its focus trap records it */}
         <div className="relay-shell account-centered relay-shell-signin" inert={addingPc || undefined}>
-          {frontView(<>{noneOnline}<NewPcNotices /><AccountJoinRequests /><UnconfirmedPcNotices tellConfirmed={false} onSignInAgain={onSignIn} /><ListAlarmLine />{listUnread}{directoryError}</>, true)}
+          {frontView(<>{noneOnline}<NewPcNotices /><AccountJoinRequests /><UnconfirmedPcNotices tellConfirmed={false} onSignInAgain={props.onSignInAgain ?? onSignIn} /><ListAlarmLine />{methodError}{listUnread}{directoryError}</>, true)}
           {/* a change here (a Remove) that was refused because an earlier one still waits: that one's card, to try it again or cancel it */}
           <ListWaitingNotice />
           {/* the one-time notice of the move of an account that was in use onto its list, or why this device did not join it */}
           <ListMoveNotices />
           {!myPcsShown && listUnread}
           {!myPcsShown && directoryError}
+          {!myPcsShown && methodError}
         </div>
         {addingPc && (
           <PairQrDialog state={state} onCodeStart={onCodeStart} onCodeSubmit={onCodeSubmit} onCodeMatch={onCodeMatch} onCancel={onCancel} onClose={() => {

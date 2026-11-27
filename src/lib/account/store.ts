@@ -19,6 +19,7 @@ export interface AccountKey {
 
 export const ACCOUNT_PROVIDERS = ["github", "google", "apple"] as const;
 export type AccountProvider = (typeof ACCOUNT_PROVIDERS)[number];
+export type EmailHintProvider = Exclude<AccountProvider, "apple">;
 
 export interface AccountSession {
   readonly service: string;
@@ -40,6 +41,7 @@ export interface AccountSession {
 export interface LinkSignIn {
   readonly account: string;
   readonly sign_in_id: string;
+  readonly fromHint?: true;
 }
 
 export interface ResumeAdd {
@@ -59,6 +61,10 @@ export interface PendingSignIn {
   readonly link?: LinkSignIn;
   /** The Add which asked for a new sign-in; only a return for this account may continue it. */
   readonly resume_add?: ResumeAdd;
+  readonly create?: "ask";
+  /** Add this method only after this connect sign-in succeeds. */
+  readonly then_add?: EmailHintProvider;
+  readonly connect_epoch?: string;
   /** the marked pairing this sign-in was started for (relay/shell.tsx): it goes with the sign-in, whatever its end */
   readonly pairing?: PendingPairing;
   /**
@@ -86,6 +92,8 @@ interface Records {
   enc_key: MemberEncryptionKey;
   session: AccountSession;
   generation: string;
+  /** An empty sign-in slot reserved by Connect. Every actual change to `session` drops it. */
+  connect_epoch: string;
   /** by `state`, so a return consumes only its own sign-in and two tabs can each have one */
   pending: Readonly<Record<string, PendingSignIn>>;
   /** by record id: an `add` this device signed that some PCs' mailboxes have not taken yet (account/join.ts) */
@@ -183,16 +191,23 @@ export function memoryAccountStore(): AccountStore {
       return making;
     },
     async get(name) { return records.get(name) as never; },
-    async set(name, value) { if (value === undefined) records.delete(name); else records.set(name, value); },
+    async set(name, value) {
+      if (name === "session") records.delete("connect_epoch");
+      if (value === undefined) records.delete(name); else records.set(name, value);
+    },
     async update(name, change) {
-      const next = change(records.get(name) as never);
+      const current = records.get(name);
+      const next = change(current as never);
+      if (name === "session" && next !== current) records.delete("connect_epoch");
       if (next === undefined) records.delete(name); else records.set(name, next);
     },
     async updateMany(names, change) {
       const next = change(Object.fromEntries(names.map((name) => [name, records.get(name)])) as never) as Record<string, Records[Name] | undefined>;
+      const sessionChanged = names.some((name) => name === "session" && next.session !== records.get(name));
       for (const name of names) {
         if (next[name] === undefined) records.delete(name); else records.set(name, next[name]);
       }
+      if (sessionChanged) records.delete("connect_epoch");
     },
     async clear(keep, options) {
       const session = records.get("session") as AccountSession | undefined;
@@ -280,6 +295,7 @@ export const indexedAccountStore: AccountStore = {
   },
   set(name, value) {
     const written = transact("readwrite", (store) => {
+      if (name === "session") store.delete("connect_epoch");
       if (value === undefined) store.delete(name);
       else store.put(value, name);
       return () => undefined;
@@ -291,6 +307,7 @@ export const indexedAccountStore: AccountStore = {
       const request = store.get(name);
       request.onsuccess = () => {
         const next = change(request.result as never);
+        if (name === "session" && next !== request.result) store.delete("connect_epoch");
         if (next === undefined) store.delete(name);
         else store.put(next, name);
       };
@@ -315,6 +332,7 @@ export const indexedAccountStore: AccountStore = {
             if (next[each] === undefined) store.delete(each);
             else store.put(next[each], each);
           }
+          if (sessionChanged) store.delete("connect_epoch");
         };
       }
       return () => undefined;

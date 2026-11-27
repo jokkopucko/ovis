@@ -6230,6 +6230,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   code**, a quiet ghost button; and last a `--fs-xs` dim line, "The account only lists your PCs.
   Sessions stay end-to-end encrypted." Continuing without an account opens Add a PC with this device's own
   pairings.
+  If a first GitHub or Google sign-in may match an existing account, the provider buttons give way
+  to one compact choice in the same column (also in the desktop account and connection sheets).
+  Like the existing account actions, it leads with the account decision: a heading names the
+  existing provider, one line explains linking, then **Sign in with {provider} to connect** is
+  primary and **Create a new account** is neutral. A wrong provider account puts the reason beside
+  the choices. If the provider is unavailable here, only account creation is offered. No email
+  address, provider picker or account merge is shown.
 - Add-a-PC sheet and Ready checkpoint (AddPcSheet.tsx, RelayShell.tsx, EnrollmentStatus.tsx,
   lib/relay/shell.tsx): a modal sheet `--relay-sheet-w` (520 px) wide with four
   segmented bars and a step list, in the mode the row picked, named in `data-add-pc-mode` and its

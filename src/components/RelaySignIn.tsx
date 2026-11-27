@@ -3,7 +3,7 @@ import { useLayoutEffect, useRef } from "react";
 import { useLocale, useT } from "../lib/i18n.ts";
 import { SignInError } from "../lib/account/signin.ts";
 import type { AccountSession } from "../lib/account/store.ts";
-import { useLinkPageSignIn } from "../lib/account/useLinkPageSignIn.ts";
+import { useLinkPageSignIn, type LinkRefusal } from "../lib/account/useLinkPageSignIn.ts";
 import { ExternalLink } from "../lib/externalLink.ts";
 import { AccountSignIn, PROVIDER_NAMES, providerChoice } from "./AccountPcs.tsx";
 import { linkAddress } from "./AccountSection.tsx";
@@ -19,10 +19,10 @@ function failureText(t: ReturnType<typeof useT>, error: unknown): string {
   }
 }
 
-export function RelaySignIn({ service, onSignedIn }: { service: string; onSignedIn: (session: AccountSession) => void }) {
+export function RelaySignIn({ service, onSignedIn }: { service: string; onSignedIn: (session: AccountSession, refusal?: LinkRefusal) => void }) {
   const t = useT();
   const locale = useLocale();
-  const { state, ready, own, unavailable, linkPage, start, cancel } = useLinkPageSignIn(service, onSignedIn);
+  const { state, ready, own, unavailable, linkPage, start, chooseAccountHint, cancel } = useLinkPageSignIn(service, onSignedIn);
   const providers = providerChoice(locale, linkPage);
   const signInButton = useRef<HTMLButtonElement>(null);
   const providerButtons = useRef<HTMLDivElement>(null);
@@ -37,6 +37,7 @@ export function RelaySignIn({ service, onSignedIn }: { service: string; onSigned
       case "idle": if (before !== "idle") focusSignIn(); break;
       case "failed": focusSignIn(); break;
       case "redirecting":
+      case "hint":
       case "starting":
       case "signed-in": break;
       default: state satisfies never;
@@ -81,7 +82,8 @@ export function RelaySignIn({ service, onSignedIn }: { service: string; onSigned
   return (
     <>
       {unavailable ? <p className="settings-hint">{t("Sign in on this PC's own screen, or in the Ovis app.")}</p>
-        : own !== null ? <div ref={providerButtons}><AccountSignIn providers={own} onSignIn={start} error={failure} busy={state.kind === "starting"} /></div> : <>
+        : own !== null ? <div ref={providerButtons}><AccountSignIn providers={own} onSignIn={start} error={failure} busy={state.kind === "starting"}
+          hint={state.kind === "hint" ? state.hint : undefined} onHintChoice={chooseAccountHint} /></div> : <>
       <button ref={signInButton} type="button" className="btn btn-primary connect-signin-button" aria-disabled={!ready || state.kind === "starting"} onClick={() => { if (ready && state.kind !== "starting") start(); }}>{state.kind === "starting" ? t("Signing in…") : t("Sign in to Ovis")}</button>
       {failure !== null && <p className="account-error" role="alert">{failure}</p>}
       </>}

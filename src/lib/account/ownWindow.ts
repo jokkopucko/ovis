@@ -15,8 +15,9 @@ import type { BridgeHealth } from "../../../shared/machines.ts";
 import { fetchBridgeHealth } from "../api.ts";
 import { reserveTab } from "../externalLink.ts";
 import { inMacApp, inNativeApp } from "../nativeApp.ts";
-import { desktopAccount, desktopSignIn, type DesktopAccountBridge } from "./desktop.ts";
-import { pcAccountServiceOf } from "./service.ts";
+import type { SignInCreation } from "./accountHint.ts";
+import { desktopAccount, desktopSignIn, type DesktopAccountBridge, type DesktopMethodLink } from "./desktop.ts";
+import { indexedAccountService, pcAccountServiceOf } from "./service.ts";
 import type { AccountProvider, AccountSession, AccountStore } from "./store.ts";
 
 export const CALLBACK_PATH = "/callback";
@@ -97,19 +98,34 @@ export function useOwnWindowRedirect(wanted: boolean): string | null | undefined
  * Signs in with `provider` from this PC's own window. Call it in the press itself: the provider's tab is opened
  * before anything is awaited, so no popup blocker takes it; a blocked one is offered through `blocked` as a link.
  */
-export function ownWindowSignIn(provider: AccountProvider, options: { readonly service: string; readonly redirect: string; readonly store: AccountStore; readonly signal: AbortSignal; readonly blocked: (url: string) => void }): Promise<AccountSession> {
+type OwnWindowOptions = {
+  readonly service: string;
+  readonly store: AccountStore;
+  readonly signal: AbortSignal;
+  readonly blocked: (url: string) => void;
+  readonly intent?: SignInCreation | DesktopMethodLink | undefined;
+};
+
+export function ownWindowSignIn(provider: AccountProvider, options: OwnWindowOptions & { readonly redirect: string }): Promise<AccountSession> {
   const tab = reserveTab();
-  return desktopSignIn(provider, ownWindowBridge(options.service, options.redirect, tab, options.signal, options.blocked), options.store);
+  return desktopSignIn(provider, ownWindowBridge(options.service, options.redirect, tab, options.signal, options.blocked), options.store, options.intent);
 }
 
 /**
  * A provider's own sign-in on this page, in the press itself: through the desktop app's bridge, else from this PC's own
  * window (`redirect`); a page with neither has none. The desktop app's ends in the system browser, not by `signal`.
  */
-export function ownSignIn(provider: AccountProvider, options: { readonly bridge: DesktopAccountBridge | null; readonly service: string; readonly redirect: string | null; readonly store: AccountStore; readonly signal: AbortSignal; readonly blocked: (url: string) => void }): Promise<AccountSession> {
-  if (options.bridge !== null) return desktopSignIn(provider, options.bridge, options.store);
+type OwnSignInOptions = OwnWindowOptions & { readonly bridge: DesktopAccountBridge | null; readonly redirect: string | null };
+
+export function ownSignIn(provider: AccountProvider, options: OwnSignInOptions): Promise<AccountSession> {
+  if (options.bridge !== null) return desktopSignIn(provider, options.bridge, options.store, options.intent);
   if (options.redirect === null) return Promise.reject(new Error("no own sign-in here"));
   return ownWindowSignIn(provider, { ...options, redirect: options.redirect });
+}
+
+export function addOwnSignInMethod(provider: AccountProvider, session: AccountSession, options: Omit<OwnSignInOptions, "intent">): Promise<AccountSession> {
+  return indexedAccountService.forSignIn(session).addMethod(provider, (linkToken, bearer, generation) =>
+    ownSignIn(provider, { ...options, intent: { linkToken, bearer, generation } }));
 }
 
 /** Whether a callback page's address carried a sign-in's return at all (a reloaded one no longer does). */

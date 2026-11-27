@@ -8,6 +8,7 @@
  */
 import { toBase64Url } from "../../../shared/relay-pair-sas.ts";
 import { callNative, hasNativePlugin, inAndroidApp } from "../nativeApp.ts";
+import type { SignInCreation } from "./accountHint.ts";
 import { AccountService, requestToken } from "./service.ts";
 import { beginSignIn, finishIssuedSignIn, finishOwnSignIn, takePendingSignIn, type FinishOptions } from "./signin.ts";
 import type { AccountProvider, AccountSession, AccountStore, LinkSignIn } from "./store.ts";
@@ -35,6 +36,7 @@ export async function nativeSignIn(provider: AccountProvider, options: {
   readonly service: string;
   readonly wanted?: () => boolean | Promise<boolean>;
   readonly fetch?: FinishOptions["fetch"];
+  readonly creation?: SignInCreation;
   readonly link?: { readonly linkToken: string; readonly link: LinkSignIn; readonly generation: string };
 }): Promise<AccountSession> {
   const { link } = options;
@@ -47,6 +49,7 @@ export async function nativeSignIn(provider: AccountProvider, options: {
     return finishIssuedSignIn(session, generation, options);
   }
   const url = await beginSignIn(provider, { store: options.store, service: options.service, redirectUri: NATIVE_REDIRECT,
+    ...options.creation,
     ...(link === undefined ? {} : { linkToken: link.linkToken, generation: link.generation, link: link.link }) });
   let back: URL;
   try {

@@ -414,12 +414,17 @@ export class AccountService {
     if (await store.get("generation") !== generation) throw new SignedOutError();
   }
 
-  /** Only the generation that started a sign-in may install it, including a held re-authentication session. */
-  static async storeSignIn(store: AccountStore, session: AccountSession, wanted: (current: AccountSession | undefined) => boolean = () => true): Promise<boolean> {
+  /** A Connect also needs the same empty slot, even if the sign-in that took it has since been cleared. */
+  static async storeSignIn(store: AccountStore, session: AccountSession, options: {
+    readonly wanted?: (current: AccountSession | undefined) => boolean;
+    readonly connectEpoch?: string | null;
+  } = {}): Promise<boolean> {
     if (session.sign_in_generation === undefined) return false;
     let kept = false;
-    await store.updateMany(["session", "generation"], (current) => {
-      kept = current.generation === session.sign_in_generation && wanted(current.session);
+    await store.updateMany(["session", "generation", "connect_epoch"], (current) => {
+      kept = current.generation === session.sign_in_generation
+        && (options.connectEpoch === undefined || (current.session === undefined && current.connect_epoch === options.connectEpoch))
+        && (options.wanted?.(current.session) ?? true);
       return kept ? { ...current, session } : current;
     });
     return kept;

@@ -70,5 +70,5 @@ export function holdingSessionStore(store: AccountStore): AccountStore {
  * delete it is for has not been called off), both asked inside that update; whether it did.
  */
 export async function installSignInAgain(store: AccountStore, from: AccountSession, again: AccountSession, stillOn: () => boolean): Promise<boolean> {
-  return AccountService.storeSignIn(store, again, (current) => stillOn() && current !== undefined && sameSignIn(current, from));
+  return AccountService.storeSignIn(store, again, { wanted: (current) => stillOn() && current !== undefined && sameSignIn(current, from) });
 }
