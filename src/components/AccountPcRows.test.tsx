@@ -66,7 +66,7 @@ describe("signInOfAccount", () => {
 
 describe("Settings → Devices and PCs", () => {
   it("draws the Account group above the device list, outside More settings", () => {
-    const source = readFileSync(new URL("./SettingsDialog.tsx", import.meta.url), "utf8");
+    const source = readFileSync(new URL("./SettingsDevicesPage.tsx", import.meta.url), "utf8");
     const page = source.slice(source.indexOf("function DevicesPage("), source.indexOf("function UseRelayHere("));
     const account = page.indexOf("<AccountSection ");
     const fold = page.indexOf('<SettingsFold kind="more"');
@@ -78,7 +78,7 @@ describe("Settings → Devices and PCs", () => {
   });
 
   it("closes Settings after a sign-in on Add a connection only where closedBySignIn says so", () => {
-    const source = readFileSync(new URL("./SettingsDialog.tsx", import.meta.url), "utf8");
+    const source = readFileSync(new URL("./SettingsDevicesPage.tsx", import.meta.url), "utf8");
     const page = source.slice(source.indexOf("function DevicesPage("), source.indexOf("function UseRelayHere("));
     const start = page.indexOf("onSignedIn:");
     const signedIn = page.slice(start, page.indexOf("...(opensAll", start));

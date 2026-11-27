@@ -262,7 +262,7 @@ Copyright (c) 2026 T3 Tools Inc.
 - `src/lib/changeTree.ts`, `src/components/RepoChanges.tsx` <-
   `apps/web/src/components/diffs/diffFileTree.logic.ts`,
   `apps/web/src/components/diffs/DiffFileTree.tsx`
-- `src/lib/installedFonts.ts`, `src/components/SettingsDialog.tsx` <-
+- `src/lib/installedFonts.ts`, `src/components/SettingsAppearancePage.tsx` <-
   `apps/web/src/components/settings/FontFamilyPicker.tsx`, `apps/web/src/appearanceFonts.ts`
 - `src/lib/idleLease.ts`, `src/components/DiffWorkerPool.tsx` <-
   `apps/web/src/components/DiffWorkerPoolProvider.tsx`
@@ -277,7 +277,7 @@ Copyright (c) 2026 T3 Tools Inc.
   `apps/web/src/components/media/MediaActions.tsx`
 - `src/lib/markdownClipboard.ts`, `src/components/ChatTimeline.tsx` <-
   `apps/web/src/markdown-clipboard.ts`, `apps/web/src/components/chat/MessagesTimeline.tsx`
-- `src/lib/typography.ts`, `src/lib/settings.ts`, `src/components/SettingsDialog.tsx` <-
+- `src/lib/typography.ts`, `src/lib/settings.ts`, `src/components/SettingsAppearancePage.tsx` <-
   `apps/web/src/appearanceFonts.ts`,
   `apps/web/src/components/settings/SettingsPanels.tsx`
 - `src/components/Composer.tsx`, `src/components/Composer.css`, `src/lib/composerStrip.ts` <-

@@ -5199,7 +5199,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   listener on this PC, and a person who wants the faster path turns it on; the relay never moves a connection off
   itself unasked. Settings search finds it by Wi-Fi, Tailscale, LAN, same Wi-Fi or home network (`keywords`, in each
   language), whichever line it shows.
-- My devices (`MyPcRows` in SettingsDialog.tsx, then `components/DevicesPanel.tsx`): this PC
+- My devices (`MyPcRows` in SettingsDevicesPage.tsx, then `components/DevicesPanel.tsx`): this PC
   first (its name and a **This PC** pill in the accent; no ID line), then
   the PCs this app shows (a neutral **PC** pill and their state; one that is not connected is
   dimmed, and one this app added over SSH or the relay carries a **Remove PC** trash button that asks
