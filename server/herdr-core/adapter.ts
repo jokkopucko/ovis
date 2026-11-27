@@ -305,7 +305,7 @@ const cwdOf = (params: Record<string, unknown>): string | undefined => typeof pa
 const envOf = (params: Record<string, unknown>): Record<string, string> | undefined => isRecord(params["env"]) ? Object.fromEntries(Object.entries(params["env"]).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : undefined;
 
 /** An agent whose command is not its kind, as the Herdr app runs it (herdr-app defaults/programs.json): the Cursor IDE is `cursor`. */
-const AGENT_COMMANDS: Readonly<Record<string, string>> = { cursor: "cursor-agent" };
+const AGENT_COMMANDS: Readonly<Record<string, string>> = { cursor: "cursor-agent", kiro: "kiro-cli" };
 
 /**
  * A shell the start line is typed into, as hc reports a terminal started with no program

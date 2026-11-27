@@ -25,8 +25,10 @@ The run reports are under `~/.dori-sa/reports/acp-children-open/`.
 | OpenCode | `build` on a clean setup | OpenCode 2 allows most tools by default, including edits and shell. Reads of `.env` and similar files ask by default, except `.env.example`. | Isolated 2.2.2 ACP handshake and [OpenCode 2 permissions](https://opencode.ai/v2/docs/permissions) |
 | agy | `default` | Built-in web search; configured hooks also approved writes, commands and an MCP call. | `agy/RESULT.md`, focused and planted runs |
 | GJC | `default`, with its ordinary `prompt` permission handling | Writes, URL reads and MCP calls ran unasked even with its default prompt policy; Bash requested approval. | `gjc/RESULT.md`, baseline runs |
+| Gemini CLI (`gemini --acp`) | `default` | A file write and a shell `mkdir` each requested approval on a clean setup (0.71.1). | `server/agent-tools/fixtures/gemini-0.71.1-*` |
+| Kiro CLI (`kiro-cli acp --agent-engine=v3`) | `vibe` | A file write and a shell `mkdir` each requested approval on a clean setup (3.6.2), though its `autopilot` option reads `on` by default; consent rules the person saved still apply. Ovis points `KIRO_AGENT_CONFIG_DIR` at a folder that does not exist: started on V3, Kiro 3.6 otherwise rewrites the person's V2 agent files (`~/.kiro/agents`, the folder's `.kiro/agents`), so the child offers Kiro's own modes only. | `server/agent-tools/fixtures/kiro-3.6.2-*` |
 
-Claude and agy must report `default`. Ovis still refuses known full-access modes such as Codex's
+Claude, agy and Gemini CLI must report `default`, and Kiro `vibe`. Ovis still refuses known full-access modes such as Codex's
 `agent-full-access` and Copilot's `autopilot` / `allow-all`, and stops any start that reports no
 mode. Claude's adapter is asked not to offer bypass. Ovis disables Copilot's `COPILOT_ALLOW_ALL`
 and refuses its separate Allow All selector even when the ACP mode still reads `#agent`.
@@ -44,7 +46,7 @@ commands, and Copilot's `/allow-all` turns every card off without changing its r
 
 Settings → Agents → **Let agents call other agents** defaults to `start` on this PC's herdr-core
 (not on Windows). The default policy includes every harness with an ACP launch: Claude Code, Codex,
-Copilot, OpenCode, agy and GJC. This does not install adapters or bypass launch checks.
+Copilot, OpenCode, agy, GJC, Gemini CLI and Kiro. This does not install adapters or bypass launch checks.
 **Agents they may call** shows installed agents with an ACP launch; deselect any you do not want
 called. Appearing in the list does not guarantee a start. Existing saved policies, including
 `view` and `off`, do not change. A driving device can set the policy with `PUT /api/preferences`,

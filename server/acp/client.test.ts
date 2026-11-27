@@ -37,6 +37,32 @@ it("reserves an answer while replay is pending, without waiting for the watermar
   }
 });
 
+it("fills in a permission request's tool call from what the agent announced for it, as Kiro names only a title", () => {
+  const socket = new Socket();
+  const client = new KeeperClient("", { connect: () => socket });
+  let seq = 0;
+  const fromAgent = (message: object) => socket.emit("data", `${JSON.stringify({ seq: ++seq, dir: "from-agent", raw: JSON.stringify(message) })}\n`);
+  try {
+    socket.emit("data", `${JSON.stringify({ seq: ++seq, dir: "keeper", raw: JSON.stringify({ method: "_keeper/session", params: { sessionId: "s" } }) })}\n`);
+    const rawInput = { path: "/work/w1.txt", text: "x" };
+    fromAgent({ method: "session/update", params: { sessionId: "s", update: { sessionUpdate: "tool_call", toolCallId: "call-1", title: "Write File", kind: "edit", status: "in_progress", rawInput } } });
+    fromAgent({ method: "session/update", params: { sessionId: "s", update: { sessionUpdate: "tool_call", toolCallId: "call-2", title: "Other", kind: "execute", rawInput: { command: "ls" } } } });
+    fromAgent({ id: "ask-1", method: "session/request_permission", params: { sessionId: "s", toolCall: { toolCallId: "call-1", status: "pending", title: "Write File" },
+      options: [{ optionId: "accept", name: "Allow", kind: "allow_once" }, { optionId: "reject", name: "Deny", kind: "reject_once" }] } });
+    fromAgent({ id: "ask-2", method: "session/request_permission", params: { sessionId: "s", toolCall: { toolCallId: "call-2", title: "Other", kind: "read", rawInput: { command: "pwd" } },
+      options: [{ optionId: "reject", name: "Deny", kind: "reject_once" }] } });
+    expect(client.pending().map((asked) => asked.toolCall)).toEqual([
+      { title: "Write File", kind: "edit", rawInput, content: null },
+      { title: "Other", kind: "read", rawInput: { command: "pwd" }, content: null },
+    ]);
+    // a tool call id names a call in its own session only: the next session's request gets nothing from the last one
+    socket.emit("data", `${JSON.stringify({ seq: ++seq, dir: "keeper", raw: JSON.stringify({ method: "_keeper/session", params: { sessionId: "t" } }) })}\n`);
+    fromAgent({ id: "ask-3", method: "session/request_permission", params: { sessionId: "t", toolCall: { toolCallId: "call-1", title: "Write File" },
+      options: [{ optionId: "reject", name: "Deny", kind: "reject_once" }] } });
+    expect(client.pending().map((asked) => asked.toolCall)).toEqual([{ title: "Write File", kind: null, rawInput: null, content: null }]);
+  } finally { client.close(); }
+});
+
 it("ignores a question arriving after the client closes", () => {
   const socket = new Socket();
   const client = new KeeperClient("", { connect: () => socket, questionHarness: "claude" });

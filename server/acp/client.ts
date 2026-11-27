@@ -14,7 +14,10 @@ import { KeeperRequests } from "./requests.ts";
 import { KeeperAnswers, type AnswerOutcome } from "./answers.ts";
 import { KeeperQuestions } from "./questions.ts";
 
-import { KeeperDisconnected, approval, parseLine, record, text, type AcpApproval, type AcpTurn, type Message, type Row } from "./messages.ts";
+import { KeeperDisconnected, approval, parseLine, record, text, type AcpApproval, type AcpTurn, type AnnouncedToolCall, type Message, type Row } from "./messages.ts";
+
+/** the latest tool calls a permission request may refer to; older ones are forgotten */
+const TOOL_CALLS_KEPT = 256;
 
 export { KeeperDisconnected, KeeperRequestError } from "./messages.ts";
 export type { AcpApproval, AcpOption, AcpTurn } from "./messages.ts";
@@ -65,6 +68,7 @@ export class KeeperClient {
   private attempt = 0;
   private retry: ReturnType<typeof setTimeout> | null = null;
   private readonly approvals = new Map<string, AcpApproval>();
+  private readonly toolCalls = new Map<string, AnnouncedToolCall>();
   private readonly answers = new KeeperAnswers();
   readonly questions = new KeeperQuestions(() => this.changed(), (id, result, expectedMode) => {
     if (this.client === null || this.status === "unknown") return Promise.resolve("gone");
@@ -205,6 +209,7 @@ export class KeeperClient {
     if (!wasConnected && !keeperRunning(this.root)) {
       this.keeperGone = true;
       this.approvals.clear();
+      this.toolCalls.clear();
       this.questions.clear();
       this.answers.close();
       this.changed();
@@ -252,6 +257,7 @@ export class KeeperClient {
     this.history.observe(entry, Buffer.byteLength(line) + 1);
     if (previousSession !== this.history.session) {
       this.approvals.clear();
+      this.toolCalls.clear();
       this.questions.clear();
       this.answers.close();
       this.prompts.clear();
@@ -296,6 +302,13 @@ export class KeeperClient {
   }
 
 
+  private announce(id: string, update: Record<string, unknown>): void {
+    const known = this.toolCalls.get(id);
+    this.toolCalls.delete(id);
+    this.toolCalls.set(id, { kind: update["kind"] ?? known?.kind ?? null, rawInput: update["rawInput"] ?? known?.rawInput ?? null, content: update["content"] ?? known?.content ?? null });
+    if (this.toolCalls.size > TOOL_CALLS_KEPT) this.toolCalls.delete(this.toolCalls.keys().next().value!);
+  }
+
   private fromAgent(row: Row, message: Message, method: string | null, params: Record<string, unknown>): boolean {
     if (method === null && typeof message.id === "string" && message.id === this.opening) {
       this.opening = undefined;
@@ -305,7 +318,8 @@ export class KeeperClient {
       return true;
     }
     if (method === "session/request_permission" && typeof message.id === "string") {
-      this.approvals.set(message.id, approval(row, message.id, params));
+      const id = text(record(params["toolCall"])?.["toolCallId"]);
+      this.approvals.set(message.id, approval(row, message.id, params, id === null ? undefined : this.toolCalls.get(id)));
       return true;
     }
     if (method === "elicitation/create" && typeof message.id === "string" && this.options.questionHarness) {
@@ -314,6 +328,7 @@ export class KeeperClient {
     }
     if (method === "session/update") {
       const update = record(params["update"]);
+      if ((update?.sessionUpdate === "tool_call" || update?.sessionUpdate === "tool_call_update") && typeof update.toolCallId === "string") this.announce(update.toolCallId, update);
       if (update?.sessionUpdate === "usage_update" && this.turn?.running) {
         const tokens = update.used;
         const cost = record(update.cost);

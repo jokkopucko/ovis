@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AGENT_CATALOG } from "../../shared/agent-catalog.ts";
 import { ACP_LAUNCH_HARNESSES } from "../../shared/harness-tool.ts";
-import { resolveHarness } from "./harnesses.ts";
+import { allowsDelegatedMode, resolveHarness } from "./harnesses.ts";
 
 let dir: string;
 let oldPath: string | undefined;
@@ -12,7 +12,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "ha-"));
   oldPath = process.env.PATH;
   process.env.PATH = dir;
-  const installed = [...AGENT_CATALOG.map(entry => entry.id), "claude-agent-acp", "codex-acp"];
+  const installed = [...AGENT_CATALOG.flatMap(entry => [entry.id, ...entry.detect.binaries]), "claude-agent-acp", "codex-acp"];
   for (const binary of installed) writeFileSync(join(dir, binary), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
 });
 afterEach(() => {
@@ -53,4 +53,11 @@ it("keeps native ACP launch hygiene and selects ordinary startup permissions", (
     argv: [join(dir, "agy"), "--mode=default", "acp", "--disable-telemetry", "--log-file", "/dev/null"],
     env: { AGY_CLI_DISABLE_AUTO_UPDATE: "1" },
   });
+  expect(resolveHarness("gemini")).toEqual({ argv: [join(dir, "gemini"), "--acp"] });
+  expect(resolveHarness("kiro")).toEqual({ argv: [join(dir, "kiro-cli"), "acp", "--agent-engine=v3"], env: { KIRO_AGENT_CONFIG_DIR: "/nonexistent/ovis-kiro-agents" } });
+});
+
+it("lets a child start only in Gemini CLI's and Kiro's ordinary modes", () => {
+  expect(["default", "autoEdit", "yolo", "plan"].filter(mode => allowsDelegatedMode("gemini", mode))).toEqual(["default"]);
+  expect(["vibe", "autonomous", "spec", "plan"].filter(mode => allowsDelegatedMode("kiro", mode))).toEqual(["vibe"]);
 });

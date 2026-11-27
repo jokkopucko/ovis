@@ -1742,6 +1742,16 @@ describe("herdr-core adapter, agents", () => {
     expect(ready.cores[0]!.typed.map((write) => write.text).join("")).toBe("\u0015'cursor-agent'\r");
   });
 
+  it("types Kiro's command, kiro-cli, for the kind kiro", async () => {
+    const shell = { pid: 10, name: "bash" };
+    const record = terminal("t1", { pid: 10, argv: ["/bin/bash"], foreground: shell });
+    const holder: { cores: FakeCore[] } = { cores: [] };
+    const ready = await posix([record], { "terminal.get": () => ({ ...record, foreground: holder.cores[0]?.typed.length ? { pid: 11, name: "kiro-cli" } : shell }) });
+    holder.cores = ready.cores;
+    await agentStart({ name: "kiro-1", kind: "kiro", paneId: "t1" }, ready.socket);
+    expect(ready.cores[0]!.typed.map((write) => write.text).join("")).toBe("\u0015'kiro-cli'\r");
+  });
+
   it("refuses a pane with a program in front, a kind that is no command, and an argument with a control character", async () => {
     const { socket, cores } = await posix([terminal("t1", { pid: 10, argv: ["/bin/bash"], foreground: { pid: 12, name: "vim" } })]);
     await expect(agentStart({ name: "x", kind: "claude", paneId: "t1" }, socket)).rejects.toMatchObject({ code: "agent_pane_busy" });

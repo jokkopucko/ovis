@@ -3,6 +3,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HARNESS_CONTRACT, isRecord } from "../../shared/harness-tool.ts";
+import { AGENT_CATALOG } from "../../shared/agent-catalog.ts";
 import { FakeHcCore } from "../herdr-core/core.fake.ts";
 import { HcConnection } from "../herdr-core/connection.ts";
 import { HERDR_CORE, serveRuntime } from "../runtime/capabilities.ts";
@@ -13,7 +14,7 @@ import { AgentToolHub } from "./hub.ts";
 import { resolveHarness } from "./harnesses.ts";
 
 const REPLAY = join(import.meta.dir, "replay-agent.fake.ts");
-interface Recorded { readonly harness: string; readonly fixture: string; readonly version: string; readonly mode: string; readonly kinds: readonly string[] }
+interface Recorded { readonly harness: string; readonly fixture: string; readonly version: string; readonly mode: string; readonly kinds: readonly (string | null)[] }
 /** Historical permission traces: verify the keeper shows what the adapter asks, regardless of its mode or settings.
  * These capture the earlier launch recipes, not what a default-mode launch will ask today. */
 const RECORDED: readonly Recorded[] = [
@@ -28,6 +29,10 @@ const RECORDED: readonly Recorded[] = [
   // here. With the workspace hook allowing the write, the same prompt's mkdir and MCP call still came as cards
   ...([["ask-write", "edit"], ["ask-mkdir", "execute"], ["ask-mcp", "other"], ["own-rule-mkdir", "execute"], ["own-rule-mcp", "other"]] as const)
     .map(([run, kind]) => ({ harness: "agy", fixture: `agy-1.5.16-${run}`, version: "1.5.16", mode: "default", kinds: [kind] })),
+  ...([["ask-write", "edit"], ["ask-mkdir", "execute"]] as const)
+    .map(([run, kind]) => ({ harness: "gemini", fixture: `gemini-0.71.1-${run}`, version: "0.71.1", mode: "default", kinds: [kind] })),
+  // Kiro's V3 engine names no kind on the request itself, only on the tool call it announced before it
+  ...["ask-write", "ask-mkdir"].map(run => ({ harness: "kiro", fixture: `kiro-3.6.2-${run}`, version: "kiro-cli 3.6.2", mode: "vibe", kinds: [null] })),
 ];
 
 describe.skipIf(!keeperBuilt).each([...RECORDED])("a $harness child replaying $fixture", ({ harness, fixture, version, mode, kinds }) => {
@@ -36,7 +41,7 @@ describe.skipIf(!keeperBuilt).each([...RECORDED])("a $harness child replaying $f
     .filter(message => message.method === "session/request_permission");
   const asked = requests.map(message => String(message.params.toolCall.toolCallId));
   it("was recorded with a card for each action its run had to ask about", () => {
-    expect(requests.map(message => message.params.toolCall.kind)).toEqual([...kinds]);
+    expect(requests.map(message => message.params.toolCall.kind ?? null)).toEqual([...kinds]);
   });
   let dir: string, hub: AgentToolHub, acp: AcpChildren, token: string, connection: HcConnection;
   const programs = new Map<string, ReturnType<typeof Bun.spawn>>();
@@ -46,7 +51,7 @@ describe.skipIf(!keeperBuilt).each([...RECORDED])("a $harness child replaying $f
     writeFileSync(join(dir, "version"), `${version}\n`);
     writeFileSync(join(dir, "scenario.json"), "{}");
     // the harness's own program: it answers `--version` and otherwise plays the recorded adapter
-    const program = join(dir, harness);
+    const program = join(dir, AGENT_CATALOG.find(entry => entry.id === harness)!.detect.binaries[0]!);
     writeFileSync(program, `#!/bin/sh
 if [ "$1" = --version ]; then
   if [ -f "${join(dir, "require-version-context")}" ]; then
@@ -175,6 +180,8 @@ exec "${process.execPath}" "${REPLAY}" "${FIXTURE}" "${join(dir, "replay.jsonl")
     ["agy-1.5.16-ask-write", ["auto", "accept-edits"]],
     ["codex-acp-2.10.0-ask", ["agent-full-access"]],
     ["copilot-1.0.109-ask", ["https://agentclientprotocol.com/protocol/session-modes#autopilot"]],
+    ["gemini-0.71.1-ask-write", ["autoEdit", "yolo"]],
+    ["kiro-3.6.2-ask-write", ["autonomous"]],
   ]).get(fixture);
   if (elevatedModes) {
     it.each([...elevatedModes])("stops a child in wider mode %s before sending its initial task", async (startMode) => {

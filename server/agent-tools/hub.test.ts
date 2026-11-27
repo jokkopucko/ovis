@@ -60,7 +60,7 @@ it("drops a terminal result when its agent returns to work during the read", asy
 it("defaults to local delegation after an unrelated preference is saved and reloaded", async () => {
   new PreferenceStore(dir).set({ settings: { theme: "dark" } });
   setting = harnessToolSetting(new PreferenceStore(dir).get().settings.agentHarnessTool);
-  expect(setting).toEqual({ level: "start", depth: 1, harnesses: ["claude", "codex", "copilot", "opencode", "agy", "gjc"] });
+  expect(setting).toEqual({ level: "start", depth: 1, harnesses: ["claude", "codex", "copilot", "opencode", "agy", "gjc", "gemini", "kiro"] });
   expect(await call("scope")).toMatchObject({ verbs: expect.arrayContaining(["start", "send"]) });
 });
 

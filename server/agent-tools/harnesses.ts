@@ -12,20 +12,26 @@ export interface HarnessCommand {
   readonly sessionMeta?: unknown;
   readonly configOptions?: readonly unknown[];
 }
+const KIRO_NO_AGENTS = "/nonexistent/ovis-kiro-agents";
 /** The file a link on PATH names, or null once it is gone. */
 const resolved = (path: string | null): string | null => {
   try { return path && realpathSync(path); } catch { return null; }
 };
 export function resolveHarness(kind: string): HarnessCommand | null {
   switch (kind) {
-    case "gjc": case "opencode": case "agy": case "copilot": {
-      const path = resolved(Bun.which(kind, { PATH: process.env["PATH"] }));
+    case "gjc": case "opencode": case "agy": case "copilot": case "gemini": case "kiro": {
+      const path = resolved(Bun.which(kind === "kiro" ? "kiro-cli" : kind, { PATH: process.env["PATH"] }));
       if (!path) return null;
       switch (kind) {
         case "gjc": return { argv: [path, "--mode", "acp"], env: { GJC_ACP_PERMISSION_MODE: "prompt" } };
         case "opencode": return { argv: [path, "acp"] };
         case "agy": return { argv: [path, "--mode=default", "acp", "--disable-telemetry", "--log-file", "/dev/null"], env: { AGY_CLI_DISABLE_AUTO_UPDATE: "1" } };
         case "copilot": return { argv: [path, "--acp", "--stdio", "--no-auto-update"], env: { COPILOT_ALLOW_ALL: "false" } };
+        case "gemini": return { argv: [path, "--acp"] };
+        // the V3 engine, as Kiro's own chat runs by default; it refuses V2's launch flags. Started on V3, Kiro 3.6
+        // rewrites the person's V2 agent files (~/.kiro/agents, the folder's .kiro/agents) unless its agent folder is
+        // elsewhere: a folder that does not exist leaves them as they are, and the child keeps Kiro's own modes
+        case "kiro": return { argv: [path, "acp", "--agent-engine=v3"], env: { KIRO_AGENT_CONFIG_DIR: KIRO_NO_AGENTS } };
       }
     }
     case "claude": case "codex": {
@@ -55,8 +61,11 @@ const FULL_ACCESS_MODES: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ["codex", new Set(["agent-full-access"])],
   ["copilot", new Set(["autopilot", "allow-all", "https://agentclientprotocol.com/protocol/session-modes#autopilot", "https://agentclientprotocol.com/protocol/session-modes#allow-all"])],
 ]);
+/** Harnesses whose child must start in their ordinary mode, not merely outside a known full-access one. */
+const ORDINARY_MODES: ReadonlyMap<string, string> = new Map([["claude", "default"], ["agy", "default"], ["gemini", "default"], ["kiro", "vibe"]]);
 export function allowsDelegatedMode(kind: string, mode: string): boolean {
-  if (kind === "claude" || kind === "agy") return mode === "default";
+  const ordinary = ORDINARY_MODES.get(kind);
+  if (ordinary !== undefined) return mode === ordinary;
   return FULL_ACCESS_MODES.get(kind)?.has(mode) !== true;
 }
 

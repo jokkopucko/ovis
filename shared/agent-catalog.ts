@@ -244,6 +244,14 @@ export const APPROVED_COMMANDS: ReadonlySet<string> = new Set([
   "linux|curl -fsSL https://antigravity.google/cli/install.sh | bash",
   "windows|irm https://antigravity.google/cli/install.ps1 | iex",
   "windows|curl -fsSL https://antigravity.google/cli/install.cmd -o install.cmd && install.cmd && del install.cmd",
+  "macos|npm install -g @google/gemini-cli",
+  "macos|brew install gemini-cli",
+  "linux|npm install -g @google/gemini-cli",
+  "linux|brew install gemini-cli",
+  "windows|npm install -g @google/gemini-cli",
+  "macos|curl -fsSL https://cli.kiro.dev/install | bash",
+  "linux|curl -fsSL https://cli.kiro.dev/install | bash",
+  "windows|irm 'https://cli.kiro.dev/install.ps1' | iex",
   "macos|curl -fsSL https://omp.sh/install | sh",
   "linux|curl -fsSL https://omp.sh/install | sh",
   "windows|irm https://omp.sh/install.ps1 | iex",
@@ -333,6 +341,7 @@ const DSH_VERSIONS = "dsh 0.2.1-rc.5 refuses dsh-tui 0.17.0 as an untested pair 
 const CURL_BASH: readonly InstallRequirement[] = [{ tool: "curl" }, { tool: "bash" }];
 const CURL_SH: readonly InstallRequirement[] = [{ tool: "curl" }, { tool: "sh" }];
 const POWERSHELL: readonly InstallRequirement[] = [{ tool: "powershell" }];
+const GEMINI_NODE: readonly InstallRequirement[] = [{ tool: "node", min: "20.0.0" }, { tool: "npm" }];
 
 export const COMMAND_TESTS: Readonly<Record<string, readonly CommandTest[]>> = {
   "windows|irm https://claude.ai/install.ps1 | iex": [
@@ -792,6 +801,46 @@ const CATALOG_ENTRIES: readonly AgentCatalogEntry[] = [
     sources: [source("https://antigravity.google/docs/getting-started?tab=cli"), source("https://github.com/google-antigravity/antigravity-cli")],
     detect: { binaries: ["agy"], version_args: ["--version"], install_dirs: { macos: ["~/.local/bin"], linux: ["~/.local/bin"], windows: ["%LOCALAPPDATA%/agy/bin"] } },
     sign_in: { provider: "antigravity", command: null, in_agent: "Google sign-in on first start", api_keys: ["GEMINI_API_KEY"], required: true },
+    after_install: [],
+    min_version: null,
+  },
+  {
+    id: "gemini",
+    name: "Gemini CLI",
+    vendor: "Google",
+    kind: "harness",
+    description: "Google's open-source coding agent for the terminal.",
+    install: {
+      macos: only(method("posix", "npm install -g @google/gemini-cli", GEMINI_NODE), method("posix", "brew install gemini-cli", [{ tool: "brew" }])),
+      linux: only(method("posix", "npm install -g @google/gemini-cli", GEMINI_NODE), method("posix", "brew install gemini-cli", [{ tool: "brew" }])),
+      windows: only(method("powershell", "npm install -g @google/gemini-cli", GEMINI_NODE)),
+    },
+    no_install: {},
+    url_prefixes: [],
+    packages: ["npm:@google/gemini-cli", "brew:gemini-cli"],
+    sources: [{ url: "https://geminicli.com/docs/get-started/installation", checked: "2026-11-27" }, { url: "https://github.com/google-gemini/gemini-cli/blob/main/README.md", checked: "2026-11-27" }],
+    detect: { binaries: ["gemini"], version_args: ["--version"] },
+    sign_in: { provider: null, command: null, in_agent: "/auth", api_keys: ["GEMINI_API_KEY", "GOOGLE_API_KEY"], required: true },
+    after_install: [],
+    min_version: null,
+  },
+  {
+    id: "kiro",
+    name: "Kiro CLI",
+    vendor: "Amazon Web Services",
+    kind: "harness",
+    description: "Kiro's coding agent for the terminal.",
+    install: {
+      macos: only(method("posix", "curl -fsSL https://cli.kiro.dev/install | bash", CURL_BASH)),
+      linux: only(method("posix", "curl -fsSL https://cli.kiro.dev/install | bash", CURL_BASH, { known_issues: ["Needs glibc 2.34 or later; on an older or musl-based Linux the vendor's page offers a musl build instead."] })),
+      windows: only(method("powershell", "irm 'https://cli.kiro.dev/install.ps1' | iex", POWERSHELL, { known_issues: ["Windows 11 only, in PowerShell or Windows Terminal, not cmd."] })),
+    },
+    no_install: {},
+    url_prefixes: ["https://cli.kiro.dev/install", "https://cli.kiro.dev/install.ps1"],
+    packages: [],
+    sources: [{ url: "https://kiro.dev/docs/getting-started/installation/", checked: "2026-11-27" }, { url: "https://kiro.dev/docs/cli/v3/acp-migration/", checked: "2026-11-27" }],
+    detect: { binaries: ["kiro-cli"], version_args: ["--version"], install_dirs: { macos: ["~/.local/bin"], linux: ["~/.local/bin"] } },
+    sign_in: { provider: null, command: ["kiro-cli", "login"], in_agent: null, api_keys: ["KIRO_API_KEY"], required: true },
     after_install: [],
     min_version: null,
   },

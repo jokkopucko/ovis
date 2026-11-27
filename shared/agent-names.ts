@@ -12,6 +12,8 @@ export const AGENT_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   devin: "Devin CLI",
   grok: "Grok Build",
   agy: "Antigravity",
+  gemini: "Gemini CLI",
+  kiro: "Kiro CLI",
   omp: "Oh My Pi",
   omo: "OmO",
   gjc: "Gajae Code",

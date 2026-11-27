@@ -104,7 +104,7 @@ the earlier "ACP is not Ovis's path"). In this contract it is four things:
     `waiting_human` (G8 holds).
   - Ovis adds no approval of its own, so a child that requests nothing ends with no card.
     See [the per-harness defaults](harness-tool.md#child-defaults-and-approvals) for what can
-    run unasked. Claude and agy must report `default`. A full-access mode, an unreported
+    run unasked. Claude, agy and Gemini CLI must report `default`, Kiro `vibe`. A full-access mode, an unreported
     starting mode or Copilot's separate Allow All setting stops the launch. The keeper checks
     again before registration and refuses a prompt if the mode has changed or Allow All is on.
   - Ovis offers the agent no client file or terminal methods (`fs/*`, `terminal/*`). ACP v2 drops
@@ -300,7 +300,7 @@ What `agent_harnesses` reports today, and from what:
 
 | Flag | Reported today | From |
 |---|---|---|
-| `drive` | `["terminal", "acp"]` when Ovis finds an ACP command here, else `["terminal"]` | `resolveHarness`: GJC, OpenCode, agy and Copilot on the PATH; Claude Code and Codex with their installed adapters. No version pin (read, `server/agent-tools/harnesses.ts`). |
+| `drive` | `["terminal", "acp"]` when Ovis finds an ACP command here, else `["terminal"]` | `resolveHarness`: GJC, OpenCode, agy, Copilot, Gemini CLI (`gemini`) and Kiro (`kiro-cli`) on the PATH; Claude Code and Codex with their installed adapters. No version pin (read, `server/agent-tools/harnesses.ts`). |
 | `level` | `structured` with ACP drive, else `terminal` | as `drive` |
 | `acp_protocol` | `1` with ACP drive, else `null` | the version the checked launches answered; not read again from each launch's `initialize` |
 | `approvals` | `keys` always; `hook` when the approval hub has an adapter for the harness (Claude Code, pi, OmO, omp), whether or not the launched version gets the hook; `acp` with ACP drive. Codex's app-server answers are not announced yet | `approvals.handles` (read, `server/approvals/hub.ts`) |
@@ -360,9 +360,9 @@ The two harnesses the goal names first:
 
 | | Gemini CLI | agy (Antigravity) |
 |---|---|---|
-| In Ovis today | A display name only (read, `server/agents-routes.ts`); no catalog entry, no transcript reader. Not installed on this PC. | Catalog entry (read, `shared/agent-catalog.ts`); transcript reader `agy-transcript` (read, `server/agy.ts`); installed on this PC. |
-| ACP | Speaks ACP directly according to its docs (plan 10.1). The plan read the flag as `gemini --acp`; the exact flag name is **(unverified)**, not run here. | **(unverified)**. Only others' lists say it attaches over ACP (`agy acp` on the ACP site's client list; T3 Code's docs); nobody has run it. |
-| Drive until checked | `terminal` (`drive: ["terminal"]`) until the flag answers `initialize` | `terminal`, with its reader for results, until `agy acp` answers `initialize` |
+| In Ovis today | Catalog entry (`shared/agent-catalog.ts`); no transcript reader, so a person's Gemini pane stays a terminal. | Catalog entry (read, `shared/agent-catalog.ts`); transcript reader `agy-transcript` (read, `server/agy.ts`); installed on this PC. |
+| ACP | `gemini --acp` answered `initialize` and opened sessions in mode `default` (0.71.1, recorded in `server/agent-tools/fixtures/gemini-0.71.1-*`); without a sign-in `session/new` answers `-32000`, reported as `signed_in: false`. | **(unverified)**. Only others' lists say it attaches over ACP (`agy acp` on the ACP site's client list; T3 Code's docs); nobody has run it. |
+| Drive | `acp` for a child an agent starts; `terminal` for a person's pane | `terminal`, with its reader for results, until `agy acp` answers `initialize` |
 
 ## Commands and the code they use
 
