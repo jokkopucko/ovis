@@ -1411,7 +1411,7 @@ async function readKnownPrompt(
   let rollout = queueRollouts.get(paneId);
   if (!rollout || Date.now() - rollout.at > QUEUE_ROLLOUT_MS) {
     const store = await paneCodexHomePlaced(paneId, codexHome);
-    rollout = { path: await codexTranscriptPath(paneId, pane.cwd, store.home, undefined, false, store.placed && !codexHome), at: Date.now() };
+    rollout = { path: (await codexTranscriptPath(paneId, pane.cwd, store.home, undefined, false, store.placed && !codexHome))?.path ?? null, at: Date.now() };
     queueRollouts.set(paneId, rollout);
     if (queueRollouts.size > 64) queueRollouts.delete(queueRollouts.keys().next().value!);
   }

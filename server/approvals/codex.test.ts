@@ -644,7 +644,7 @@ describe("Ovis on the pane's Codex server", () => {
         { type: "session_meta", payload: { id: threadId, cwd: dir } },
         { type: "turn_context", payload: { model: "gpt-6.2-sol", effort: "low" } },
       ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
-      transcript.mockResolvedValue(path);
+      transcript.mockResolvedValue({ path, how: "inferred" });
     };
     return { paneId, dir, show, conversation: () => paneConversation(paneId, dir) };
   }
@@ -1047,7 +1047,7 @@ describe("Ovis on the pane's Codex server", () => {
 
     it("reads the one it holds, with no screen or folder evidence, and proves its file", async () => {
       const { first, home, proofs, lookup } = pane("afterFirstAnswer", "\u203a Ask Codex to do anything");
-      expect(await lookup()).toBe(first);
+      expect(await lookup()).toEqual({ path: first, how: "served" });
       const file = statSync(first, { bigint: true });
       expect(proofs.get(first)).toBe(`${file.dev}:${file.ino}`);
       expect(await rollout.codexOpenRollout("w1:p1", null, home)).toBe(first);
@@ -1065,7 +1065,7 @@ describe("Ovis on the pane's Codex server", () => {
       said(first, FIRST, answer);
       const next = String(((recorded.read[NEW]!)["thread"] as Message)["path"]);
       said(next, NEW, "The second conversation answers something else entirely, about a thread that was started anew.");
-      expect(await lookup()).toBe(first);
+      expect(await lookup()).toEqual({ path: first, how: "inferred" });
     });
 
     it("after a /new, tells the new one by short answers the screen shows under their prompts", async () => {
@@ -1077,7 +1077,7 @@ describe("Ovis on the pane's Codex server", () => {
         { type: "event_msg", payload: { type: "user_message", message: "And at sunset?" } },
         { type: "event_msg", payload: { type: "agent_message", message: "At sunset it turns orange, pink and deep red." } },
       ].map((entry) => JSON.stringify(entry)).join("\n") + "\n", { flag: "a" });
-      expect(await lookup()).toBe(next);
+      expect(await lookup()).toEqual({ path: next, how: "inferred" });
     });
 
     it("takes none when an answer the screen shows was given in another of them too, as in a fork", async () => {

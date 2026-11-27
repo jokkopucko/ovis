@@ -2126,10 +2126,10 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
     if (agent === "codex") {
       const { home, placed } = await paneCodexHomePlaced(paneId, codexHome, known);
       const proofs = new Map<string, string>();
-      const path = await codexTranscriptPath(paneId, cwd, home, panes, !placed, placed && !codexHome, proofs);
-      if (!path) throw new ConversationUnavailable("no_session_path");
-      const codexFile = proofs.get(path);
-      return { source: "codex-transcript", path, codexHome: home, ...(codexFile === undefined ? {} : { codexFile }) };
+      const found = await codexTranscriptPath(paneId, cwd, home, panes, !placed, placed && !codexHome, proofs);
+      if (!found) throw new ConversationUnavailable("no_session_path");
+      const codexFile = proofs.get(found.path);
+      return { source: "codex-transcript", path: found.path, codexHome: home, ...(codexFile === undefined ? {} : { codexFile }) };
     }
     if (agent === "claude") {
       const proofs = new Map<string, string>();

@@ -68,7 +68,10 @@ mock.module("./codex.ts", () => ({
   paneCodexHomePlaced: async (...args: Parameters<typeof realCodexHome>) => fakeCodexTranscripts.has(args[0])
     ? { home: root, placed: true } : realCodexHome(...args),
   codexOpenRollout: async (...args: Parameters<typeof realCodexRollout>) => fakeCodexTranscripts.get(args[0]) ?? realCodexRollout(...args),
-  codexTranscriptPath: async (...args: Parameters<typeof realCodexTranscript>) => fakeCodexTranscripts.get(args[0]) ?? realCodexTranscript(...args),
+  codexTranscriptPath: async (...args: Parameters<typeof realCodexTranscript>) => {
+    const path = fakeCodexTranscripts.get(args[0]);
+    return path === undefined ? realCodexTranscript(...args) : { path, how: "inferred" as const };
+  },
 }));
 const launches: string[] = [];
 const realLaunch = agentLaunchModule.agentLaunch;

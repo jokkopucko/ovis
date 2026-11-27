@@ -328,6 +328,28 @@ describe("runtime gates", () => {
   });
 });
 
+describe("conversations told by their text", () => {
+  // a pane's conversation chosen by matching what it shows (codexTranscriptPath's `inferred`) is a guess: these may
+  // be named where they are now, and fewer times, never more or anywhere else. Every mention counts (a definition, an
+  // import, an alias, `?.(`, `["..."]`), so none reaches a new caller unseen
+  const TEXT_MATCHED = /\b(?:matchCodexTranscript|matchCodexFirstExchange|loadedConversation|matchShortCodexAnswers|lastTurnConversation|opencodeTitled|opencodeSessionsTitled)\b/;
+  const NAMED: Record<string, number> = {
+    "server/codex.ts": 21,
+    "server/herdr-core/adapter.ts": 3,
+    "server/herdr-core/runtime.ts": 3,
+    "server/opencode.ts": 1,
+  };
+
+  it("names the text matchers no more often and nowhere new", () => {
+    const found = matches(serverCode(), TEXT_MATCHED);
+    const count = (file: string) => found.filter((use) => use.file === file).length;
+    fail(found.filter((use) => count(use.file) > (NAMED[use.file] ?? 0)).map((use) => use.at),
+      "Do not tie a pane to a conversation by its text: take what the agent or the pane's own process tells (served or held in codexTranscriptPath), or open the terminal.");
+    fail(Object.entries(NAMED).filter(([file, pinned]) => count(file) < pinned).map(([file]) => file),
+      "These files name the text matchers less often now: lower their count in NAMED in server/conventions.test.ts.");
+  });
+});
+
 describe("remote PC bundle boundary", () => {
   // scripts/build-remote-bundle.ts ships server/, shared/ and integrations/ but not src/ or relay/: code
   // there that imports either loads from a checkout, where every check runs, and not on a remote PC (#2220)

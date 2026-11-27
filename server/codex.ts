@@ -3514,6 +3514,14 @@ async function withoutStartedThreads(paneId: string, processes: string, screen: 
 }
 
 /**
+ * A pane's rollout and how codexTranscriptPath knew it: `served` when the Codex server Ovis started beside the pane
+ * says it (servedRollouts), `held` when the pane's Codex, or the server its TUI runs on, is proven to hold that file open, and
+ * `inferred` for every other way (the screen, a binding remembered from it, the thread herdr reported, the command
+ * line). For the reader to tell a fact from a guess; nothing refuses an inferred one yet.
+ */
+export type CodexTranscript = { path: string; how: "served" | "held" | "inferred" };
+
+/**
  * The rollout a pane's Codex writes, or null when nothing tells. `panes`: the session's
  * panes, when the caller has them (saves a snapshot, and closed panes' bindings go).
  *
@@ -3532,7 +3540,7 @@ async function withoutStartedThreads(paneId: string, processes: string, screen: 
  * all of them (loadedConversation).
  */
 export async function codexTranscriptPath(paneId: string, cwd: string, home = defaultCodexHome(), panes?: HerdrPane[], homeUnplaced = false, homeFromEarlierRead = false,
-  proofs?: Map<string, string>): Promise<string | null> {
+  proofs?: Map<string, string>): Promise<CodexTranscript | null> {
   if (panes !== undefined) {
     const open = new Set(panes.map((pane) => pane.pane_id));
     for (const pane of [...boundRollouts.keys()]) if (!open.has(pane)) boundRollouts.delete(pane);
@@ -3553,7 +3561,7 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
   if (told !== null) {
     if ("only" in told) {
       proofs?.set(told.only.path, told.only.identity);
-      return told.only.path;
+      return { path: told.only.path, how: "served" };
     }
     // which of its own conversations the TUI shows is the server's to say, and it does not: the screen tells it among
     // those only, never among the folder's
@@ -3570,8 +3578,8 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
       ?? matchShortCodexAnswers(shown.text, candidates.map((candidate) => ({ ...candidate, cut: false })));
     // the screen read is held to what the server held around it: a resume in between may show another
     const again = matched === null ? null : await servedRollouts(paneId, codexProcesses, home);
-    return again !== null && "among" in again && !("running" in again) && again.among.length === told.among.length
-      && again.among.every((path, at) => path === told.among[at]) ? matched : null;
+    return matched !== null && again !== null && "among" in again && !("running" in again) && again.among.length === told.among.length
+      && again.among.every((path, at) => path === told.among[at]) ? { path: matched, how: "inferred" } : null;
   }
   // an unlabelled pane on an app server elsewhere (--remote) shows that server's conversation: nothing this store
   // holds is proof of it, by the id its command line resumed or by an answer both happen to hold
@@ -3584,22 +3592,24 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
   if (homeFromEarlierRead && first !== undefined && ((await processCodexHome(first.pid, first.argv)) ?? defaultCodexHome()) !== home) return null;
   if (attached) {
     const proof = await tmuxRollout(paneId, home, found);
-    if (proof !== null) proofs?.set(proof.path, proof.identity);
-    return proof?.path ?? null;
+    if (proof === null) return null;
+    proofs?.set(proof.path, proof.identity);
+    return { path: proof.path, how: "held" };
   }
   if (open.size === 1) {
     const only = [...open][0]!;
     // held, but its file not provable (a conflict, a closed descriptor, lsof without D or i): an empty proof, which
     // the outcome read never matches, rather than the unchecked read a rollout chosen by other means keeps (#3402)
     proofs?.set(only, held.get(only) ?? "");
-    return only;
+    // the path a descriptor named may lead to another file by now: held only for the file proven open
+    return { path: only, how: held.has(only) ? "held" : "inferred" };
   }
   const served = open.size === 0 ? await ownServerRollout(codexProcesses, home) : null;
   // the pane's own server is known: no screen or folder evidence stands in for what it does not tell
   if (served === "unproven") return null;
   if (served !== null) {
     proofs?.set(served.path, served.identity);
-    return served.path;
+    return { path: served.path, how: "held" };
   }
   const resumed = resumedThread(codexProcesses.map((process) => process.argv ?? []));
 
@@ -3701,7 +3711,7 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     boundRollouts.delete(paneId);
     boundRollouts.set(paneId, { processes, path: matched, at: Date.now(), screen: bindingScreen(screen?.text ?? ""), ...(matched === titledElsewhere ? { titled: true } : {}) });
     if (boundRollouts.size > 64) boundRollouts.delete(boundRollouts.keys().next().value!);
-    return matched;
+    return { path: matched, how: "inferred" };
   }
   if (screen !== null && listed && candidates.length === paths.length && !agent.nestedTerminal && !agent.unlabelled && (resumed === null || resumedPath !== null)
     && !codexProcesses.some(({ argv = [] }) => argv.some((arg) => arg === "--remote" || arg.startsWith("--remote=")))) {
@@ -3709,7 +3719,7 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     if (tied !== null) {
       if (!await stillAsWeighed(paneId, processes, screen.text, home, tied.known)) return null;
       if (boundHere !== undefined && boundHere.path !== tied.found) boundRollouts.delete(paneId);
-      return tied.found;
+      return { path: tied.found, how: "inferred" };
     }
   }
   const unsure = [...new Set([...boundNewer, ...(resumedPath !== null ? resumedNewer : [])])];
@@ -3726,7 +3736,7 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
   const loaded = local && (boundHere !== undefined || resumedPath !== null) ? await loadedRollouts(home) : null;
   if (screen !== null && loaded !== null && [...loaded.keys()].some((path) => !paths.includes(path))) {
     const found = await loadedConversation(screen.text, paths, home);
-    if (found !== null) return found;
+    if (found !== null) return { path: found, how: "inferred" };
   }
   // A different pane's cached binding does not prove it still holds the thread.
   const plausible = [...new Set([...paths, ...(loaded?.keys() ?? [])])];
@@ -3753,15 +3763,15 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
       })))) {
     boundRollouts.delete(paneId);
     boundRollouts.set(paneId, boundHere);
-    return boundHere.path;
+    return { path: boundHere.path, how: "inferred" };
   }
   if (resumed === null && reported !== null && !agent.nestedTerminal && !agent.unlabelled
-    && await freshReportedThread(paneId, cwd, home, reported, codexProcesses, panes)) return reported;
+    && await freshReportedThread(paneId, cwd, home, reported, codexProcesses, panes)) return { path: reported, how: "inferred" };
   if (resumed !== null) {
     if (resumedPath === null || resumedNewer.length > 0) return null;
     // A verified launch ID is still useful before any answer is visible (including terminals
     // with tool output only). A visible answer that fits no candidate is not launch evidence.
-    if ((!screenHasAnswer && onlyPlausible(resumedPath)) || withoutAnswer(resumedPath) || visibleMatch(resumedPath)) return resumedPath;
+    if ((!screenHasAnswer && onlyPlausible(resumedPath)) || withoutAnswer(resumedPath) || visibleMatch(resumedPath)) return { path: resumedPath, how: "inferred" };
   }
   if (agent.nestedTerminal || agent.unlabelled) return null;
   const short = screen === null ? null : await (async () => {
@@ -3775,9 +3785,10 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     if (boundHere !== undefined || resumed !== null || titledElsewhere !== null) return null;
     return shortThreadFromProcess(paneId, cwd, home, screen.text, codexProcesses, panes);
   })();
-  if (short !== null) return short;
+  if (short !== null) return { path: short, how: "inferred" };
   // Not for a TUI of an app server elsewhere (--remote), which has
   // its conversation loaded there, nor for one holding rollouts open itself.
   if (!local) return null;
-  return loadedConversation((screen ?? await paneRead({ paneId, source: "recent", lines: 400, stripAnsi: true })).text, paths, home);
+  const loadedFound = await loadedConversation((screen ?? await paneRead({ paneId, source: "recent", lines: 400, stripAnsi: true })).text, paths, home);
+  return loadedFound === null ? null : { path: loadedFound, how: "inferred" };
 }
