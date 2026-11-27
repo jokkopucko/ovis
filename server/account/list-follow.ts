@@ -403,6 +403,8 @@ export interface ListFollowDeps {
   busy?(): boolean;
   /** How long a join a member allowed waits for the member's entry (LIST_MEMBER_WAIT_MS): shorter in a test. */
   readonly memberWaitMs?: number;
+  /** How often the PC looks at its clock (LIST_TICK_MS); 0: only when asked (tick), as in a test that moves the PC's clocks by hand. */
+  readonly tickMs?: number;
   /** The list put `key` out and the PC has that only in its mark so far: the sessions of every row of the key end. */
   denied?(key: string): void;
   /** Called at each look at the clock, before anything else: takes in what another server of this folder wrote to the PC's place in its account. */
@@ -524,6 +526,7 @@ export class ListFollow implements ListAuthority {
   private readonly ids = new WeakMap<FollowerCopy, Map<string, string>>();
   private turn: Promise<unknown> = Promise.resolve();
   private timer: ReturnType<typeof setInterval> | undefined;
+  private started = false;
   private stopped = false;
 
   constructor(private readonly deps: ListFollowDeps) {
@@ -533,7 +536,8 @@ export class ListFollow implements ListAuthority {
 
   /** Reads the saved copy and, on a pinned PC, gives its rows to the store; then looks at the clock every LIST_TICK_MS. */
   start(): void {
-    if (this.timer || this.stopped) return;
+    if (this.started || this.stopped) return;
+    this.started = true;
     void this.enqueue(async () => {
       const scope = this.bound();
       if (scope === null) return;
@@ -545,7 +549,9 @@ export class ListFollow implements ListAuthority {
       // after the rows and the removals' records were written: what the mark still owes is asked then
       this.settleOwed();
     });
-    this.timer = setInterval(() => this.tick(), LIST_TICK_MS);
+    const every = this.deps.tickMs ?? LIST_TICK_MS;
+    if (every <= 0) return;
+    this.timer = setInterval(() => this.tick(), every);
     this.timer.unref?.();
   }
 

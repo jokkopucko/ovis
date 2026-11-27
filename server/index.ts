@@ -240,6 +240,8 @@ export function createServer(
     accountListAddPollMs?: number;
     /** How long a join a member allowed waits for that member's entry in the account's list (list-follow.ts LIST_MEMBER_WAIT_MS). */
     accountListMemberWaitMs?: number;
+    /** How often the account's list looks at the PC's clock (list-follow.ts LIST_TICK_MS); 0: only when a test asks. */
+    accountListTickMs?: number;
     tailnetPcs?: TailnetPcsOptions;
     sshCandidates?: SshCandidatesOptions;
     /** a bridge this app starts on a PC (server/remote-entry.ts): its token is the credential its connection server holds, and no browser reaches it, so its snapshots go whole (#2160) */
@@ -493,6 +495,7 @@ export function createServer(
     recheck: () => { devices.recheckListedSessions(); },
     busy: () => devices.sessionsOpen(),
     ...(options.accountListMemberWaitMs === undefined ? {} : { memberWaitMs: options.accountListMemberWaitMs }),
+    ...(options.accountListTickMs === undefined ? {} : { tickMs: options.accountListTickMs }),
     denied: (key) => { devices.closeKeySessions(key); },
     // what another Ovis server on this folder wrote to the PC's place in its account since this one read it (a pin, a
     // clear) is taken in at each look at the clock, so this server decides by it within seconds

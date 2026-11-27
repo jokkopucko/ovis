@@ -54,7 +54,7 @@ async function accountInUse(options: { readonly scale?: number } = {}) {
   /** How often the PC asked the account service for a page of its list's log. */
   const reads = { log: 0 };
   const accountService = { url: "https://account.test", fetch: async (request: Request) => { if (new URL(request.url).pathname === "/v2/pc/list/log") reads.log += 1; return await service.fetch(request); } };
-  const { fixture, member } = await scaled(options.scale, () => relayAccountFixture("drive", ACCOUNT, { accountOpensAll: true, accountService, accountListAddPollMs: 0 }));
+  const { fixture, member } = await scaled(options.scale, () => relayAccountFixture("drive", ACCOUNT, { accountOpensAll: true, accountService, accountListAddPollMs: 0, accountListTickMs: 0 }));
   closes.push(() => fixture.close());
   const serverId = await registerSnapshotPc(service, fixture);
   const { services } = fixture.app.context;
