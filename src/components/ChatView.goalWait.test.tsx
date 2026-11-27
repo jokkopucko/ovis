@@ -4,7 +4,7 @@ import { openPage, type Page } from "../lib/page.fixture.ts";
 
 import type { ConversationTurn } from "../../shared/protocol.ts";
 import { SettingsProvider } from "../lib/settings.ts";
-import { Turn } from "./ChatView.tsx";
+import { Turn } from "./ChatTurn.tsx";
 
 const now = Date.parse("2026-10-05T00:10:00.000Z");
 const waitTurn = (dueAt: string): ConversationTurn => ({

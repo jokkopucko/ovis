@@ -1,6 +1,6 @@
 /**
  * Korean for the keys only the chat files use:
- * components/ChatView.tsx, components/Markdown.tsx, components/MermaidLightbox.tsx,
+ * components/ChatView.tsx, components/ChatWork.tsx, components/ChatTurn.tsx, components/Markdown.tsx, components/MermaidLightbox.tsx,
  * components/ChatMinimap.tsx, components/ImageLightbox.tsx, components/BackgroundTasks.tsx,
  * components/BackgroundAgentDetail.tsx, components/Artifacts.tsx, components/OmpBtw.tsx, components/MarkdownLinkMenu.tsx,
  * lib/workBlocks.ts (with CATEGORY_LABEL), lib/toolVerbs.ts (with VERB_LABEL), lib/outcomeChip.ts,

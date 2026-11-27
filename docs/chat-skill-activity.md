@@ -41,7 +41,7 @@ permissions or terminal input transport.
 
 Implementation: `server/skill-activity.ts`, the Claude/Codex transcript parsers,
 optional `SkillActivity` metadata in `shared/protocol.ts`, and
-`src/lib/skillActivity.ts` / `src/components/ChatView.tsx`.
+`src/lib/skillActivity.ts` / `src/components/ChatTurn.tsx`.
 
 Verification: `server/skill-activity.test.ts` covers request/result state,
 failures, selected-instruction filtering, lookalikes, incremental snapshots,

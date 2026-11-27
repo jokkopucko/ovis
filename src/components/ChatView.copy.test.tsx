@@ -6,7 +6,7 @@ import type { ConversationTurn } from "../../shared/protocol.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import * as clipboard from "../lib/clipboard.ts";
 import * as plainTextModule from "../lib/plainText.ts";
-import { Turn } from "./ChatView.tsx";
+import { Turn } from "./ChatTurn.tsx";
 
 /** One assistant turn whose words are its whole content; `ts` null keeps its row free of clocks. */
 const assistantTurn = (textParts?: string[]): ConversationTurn => ({ role: "assistant", ts: null, parts: textParts === undefined ? [{ kind: "text", text: "An answer." }] : textParts.map((text) => ({ kind: "text", text })) });

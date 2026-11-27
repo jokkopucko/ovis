@@ -290,7 +290,7 @@ Copyright (c) 2026 T3 Tools Inc.
 - `src/lib/chatMinimap.ts`, `src/components/ChatMinimap.tsx` <-
   `apps/web/src/components/chat/MessagesTimeline.logic.ts`,
   `apps/web/src/components/chat/timelineMinimapItems.ts`
-- `src/lib/userMessageFold.ts`, `src/components/ChatView.tsx` <-
+- `src/lib/userMessageFold.ts`, `src/components/ChatTurn.tsx` <-
   `apps/web/src/components/chat/MessagesTimeline.logic.ts`,
   `apps/web/src/components/chat/MessagesTimeline.tsx`
 

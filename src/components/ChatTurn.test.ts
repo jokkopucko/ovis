@@ -6,7 +6,7 @@ import { openPage, type Page } from "../lib/page.fixture.ts";
 import type { ConversationPart, ConversationTurn } from "../../shared/protocol.ts";
 import { ChatRowMemoryContext, type ChatRowMemory } from "../lib/chatRowState.tsx";
 import { SettingsProvider } from "../lib/settings.ts";
-import { Turn } from "./ChatView.tsx";
+import { Turn } from "./ChatTurn.tsx";
 
 const text = (value: string): ConversationPart => ({ kind: "text", text: value });
 const tool = (command: string): ConversationPart => ({ kind: "tool", name: "Bash", summary: command, input: JSON.stringify({ command }), output: "" });
