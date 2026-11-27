@@ -11,6 +11,8 @@ import { readUpdateChannel, type UpdateChannel } from "../../../shared/update.ts
 type Env = Record<string, string | undefined>;
 
 export const BETA_FEED = "https://github.com/devswha/ovis/releases/download/desktop-beta";
+/** What every release and beta build has in its app-update.yml (desktop.yml's UPDATE_FEED, beta.yml's STABLE_FEED) */
+export const STABLE_FEED = "https://github.com/devswha/ovis/releases/latest/download";
 const CHANNEL_FILE = "update-channel";
 
 export type Installer = "default" | "appimage" | "deb";
@@ -74,6 +76,27 @@ export function updatePlan(options: { packaged: boolean; env: Env; platform: str
   }
   if (channel === "beta" && options.platform === "win32") return { enabled: true, feed: null, channel: "stable", installer };
   return { enabled: true, feed: channel === "beta" ? BETA_FEED : null, channel, installer };
+}
+
+/** One feed a check reads: its address (none: the one app-update.yml names), and electron-updater's channel file and prerelease setting for it */
+export interface FeedSource {
+  feed: string | null;
+  channel: "beta" | "latest";
+  prerelease: boolean;
+}
+
+/**
+ * The feeds one check reads, in order, until one offers a version. The beta channel reads the
+ * stable feed after its own: a stable release is newer than the beta it came from (0.5.10 after
+ * 0.5.10-beta.7), and the beta feed moves past it only with the next daily beta, which is not made
+ * while the release's tag holds main's newest green commit. electron-updater never offers a version
+ * older than the running one, so a beta newer than the stable release is kept.
+ */
+export function checkFeeds(plan: Extract<UpdatePlan, { enabled: true }>): FeedSource[] {
+  if (plan.channel === "stable") return [{ feed: plan.feed, channel: "latest", prerelease: false }];
+  const beta: FeedSource = { feed: plan.feed, channel: "beta", prerelease: true };
+  // OVIS_UPDATE_URL names the one feed to read
+  return plan.feed === BETA_FEED ? [beta, { feed: STABLE_FEED, channel: "latest", prerelease: false }] : [beta];
 }
 
 export const UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;

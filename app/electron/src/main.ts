@@ -9,7 +9,7 @@ import { isFile, processStartSync } from "../../../shared/desktop-process.ts";
 import { choosePort, coreEnv, coreSession, endLeftover, installCore, layout, openLog, processCommand, serverEnv, startCore, startServer, stopServer, writeSaved, type RunningServer } from "./children.ts";
 import { accountServiceOf, startLoopbackSignIn, type LoopbackSignIn } from "./accountSignIn.ts";
 import { awakeLabel, DESKTOP_ACTIVITY_FILE, holdAwake, readAwakeSettings, readWorking, writeAwakeSettings, type AwakeSettings } from "./awake.ts";
-import { appUpdateState, checkForUpdates, debInstallCommand, downloadsUpdate, nextOffer, NO_OFFER, readUpdateNotices, stillHeld, UPDATE_CHECK_INTERVAL_MS, updateChannel, updateNotice, updatePlan, writeUpdateNotices, type AppCheck, type AppUpdateState, type HeldUpdate, type UpdateNotices, type UpdateOffer, type UpdaterEvent } from "./updates.ts";
+import { appUpdateState, checkFeeds, checkForUpdates, debInstallCommand, downloadsUpdate, nextOffer, NO_OFFER, readUpdateNotices, stillHeld, UPDATE_CHECK_INTERVAL_MS, updateChannel, updateNotice, updatePlan, writeUpdateNotices, type AppCheck, type AppUpdateState, type CheckOutcome, type FeedSource, type HeldUpdate, type UpdateNotices, type UpdateOffer, type UpdaterEvent } from "./updates.ts";
 import { extractedAppDir, othersRunFrom } from "./appimage.ts";
 import { desktopLocale, desktopText } from "./text.ts";
 import { hideWindow } from "./windowClose.ts";
@@ -676,11 +676,15 @@ async function startUpdates(): Promise<void> {
     }
   }
   const autoUpdater = plan.installer === "deb" ? new OvisDebUpdater() : plan.installer === "appimage" ? new updater.AppImageUpdater() : updater.autoUpdater;
-  if (plan.feed) autoUpdater.setFeedURL({ provider: "generic", url: plan.feed });
-  // beta-mac.yml and beta-linux.yml on beta, latest-*.yml otherwise; setting a channel allows downgrades, which stay off
-  autoUpdater.channel = plan.channel === "beta" ? "beta" : "latest";
-  autoUpdater.allowPrerelease = plan.channel === "beta";
-  autoUpdater.allowDowngrade = false;
+  const feeds = checkFeeds(plan);
+  const readFrom = (source: FeedSource) => {
+    if (source.feed) autoUpdater.setFeedURL({ provider: "generic", url: source.feed });
+    // beta-mac.yml and beta-linux.yml on beta, latest-*.yml otherwise; setting a channel allows downgrades, which stay off
+    autoUpdater.channel = source.channel;
+    autoUpdater.allowPrerelease = source.prerelease;
+    autoUpdater.allowDowngrade = false;
+  };
+  readFrom(feeds[0]!);
   autoUpdater.autoDownload = false;
   updateLog(`Updates: ${plan.channel} channel.`);
   // a .deb installs behind a password prompt: only when asked for (the tray's or a line's Restart to Update), never on a plain quit
@@ -729,11 +733,17 @@ async function startUpdates(): Promise<void> {
     if (quitting) return Promise.resolve();
     checking ??= (async () => {
       setAppCheck({ is: "checking" });
-      const outcome = await checkForUpdates(autoUpdater, updateLog, (version) => {
-        const wanted = !quitting && downloadsUpdate({ found: version, held: offer.staging ?? heldUpdate(), failed, exists: existsSync });
-        if (wanted) setAppCheck({ is: "downloading", version, percent: null });
-        return wanted;
-      });
+      let outcome: CheckOutcome = { is: "latest" };
+      // the next feed only when this one has nothing newer (updates.ts checkFeeds)
+      for (const source of feeds) {
+        if (feeds.length > 1) readFrom(source);
+        outcome = await checkForUpdates(autoUpdater, updateLog, (version) => {
+          const wanted = !quitting && downloadsUpdate({ found: version, held: offer.staging ?? heldUpdate(), failed, exists: existsSync });
+          if (wanted) setAppCheck({ is: "downloading", version, percent: null });
+          return wanted;
+        });
+        if (outcome.is !== "latest") break;
+      }
       // a downloaded or held update is the offer's to show (updates.ts appUpdateState)
       setAppCheck(outcome.is === "failed" ? { is: "failed", error: outcome.error } : outcome.is === "latest" ? { is: "latest" } : { is: "idle" });
     })().finally(() => { checking = null; });

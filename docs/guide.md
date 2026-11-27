@@ -1241,7 +1241,8 @@ next check, within 5 minutes, offers the newest beta, and it installs like a rel
 remove the file or write `stable`: nothing is downgraded, and the PC waits for the next release.
 
 The desktop app reads the same setting from its own state dir (`server/update-channel` in the app's
-data folder) when it starts, and then updates from the beta builds of the app.
+data folder) when it starts, and then updates from the beta builds of the app, or from a release that
+is newer than the last beta (a release day, before the next beta is made).
 
 ### Updating herdr
 
