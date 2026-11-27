@@ -28,6 +28,7 @@ const LOGIN = {
   antigravity: { cli: "Antigravity CLI (agy)", binaries: ["agy"], args: null },
   opencode: { cli: "opencode", binaries: ["opencode"], args: ["auth", "login"] },
   devin: { cli: "Devin CLI (devin)", binaries: ["devin"], args: ["auth", "login"] },
+  kimi: { cli: "kimi", binaries: ["kimi"], args: ["login"] },
 } as const;
 
 /**

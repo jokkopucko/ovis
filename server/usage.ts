@@ -27,6 +27,7 @@ import type { ProviderUsage, UsageCredits, UsageFailure, UsageProblem, UsageProv
 import { knownUsageProviders } from "../shared/usage.ts";
 import { isJsonObject, jsonResponse } from "./http.ts";
 import { opencodeDatabasePath } from "./opencode.ts";
+import { kimiUsage } from "./usage-kimi.ts";
 import { recordedUsages, type RecordedReading, type RecordedSource, type RecordedUsage } from "./usage-recorded.ts";
 import { gjcRecorded } from "./usage-recorded-gjc.ts";
 import { ompRecorded } from "./usage-recorded-omp.ts";
@@ -64,6 +65,8 @@ interface SignIn {
   token: string;
   expiresAt: number | null;
   plan?: string | null;
+  /** Kimi: the regional API base this credential belongs to */
+  baseUrl?: string;
   chatgptAccount?: string | null;
   fallbacks?: string[];
   account?: Account | null;
@@ -129,15 +132,15 @@ export class UsageHttpError extends Error {
   }
 }
 
-type Json = Record<string, unknown>;
-const record = (value: unknown): Json => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
-const text = (value: unknown): string | null => typeof value === "string" && value.trim() ? value.trim() : null;
+export type Json = Record<string, unknown>;
+export const record = (value: unknown): Json => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
+export const text = (value: unknown): string | null => typeof value === "string" && value.trim() ? value.trim() : null;
 /** a number, or a proto-JSON int64 (sent as a string) */
-const number = (value: unknown): number | null => {
+export const number = (value: unknown): number | null => {
   const parsed = typeof value === "string" && value.trim() ? Number(value) : value;
   return typeof parsed === "number" && Number.isFinite(parsed) ? parsed : null;
 };
-const percent = (value: number): number => Math.round(Math.min(100, Math.max(0, value)) * 10) / 10;
+export const percent = (value: number): number => Math.round(Math.min(100, Math.max(0, value)) * 10) / 10;
 const extras = (from: { resets?: UsageResets | null; credits?: UsageCredits | null }): { resets?: UsageResets; credits?: UsageCredits } =>
   ({ ...(from.resets ? { resets: from.resets } : {}), ...(from.credits ? { credits: from.credits } : {}) });
 
@@ -169,12 +172,12 @@ function keychainOrFile(keychain: SignIn | "locked" | null, file: SignIn | null,
   return file ? [{ ...file, account: file.account ?? account, source }] : keychainFound(keychain, source, account);
 }
 
-function parseJson(source: string | null): unknown {
+export function parseJson(source: string | null): unknown {
   if (source === null) return null;
   try { return JSON.parse(source); } catch { return null; }
 }
 
-function readText(path: string): string | null {
+export function readText(path: string): string | null {
   let fd: number | undefined;
   try {
     fd = openSync(path, "r");
@@ -208,7 +211,7 @@ async function readCapped(stream: ReadableStream<Uint8Array> | null): Promise<st
   return Buffer.concat(chunks).toString("utf8");
 }
 
-function isoTime(value: unknown): string | null {
+export function isoTime(value: unknown): string | null {
   const n = number(value);
   if (n !== null && n > 0) return new Date(n < 1e12 ? n * 1000 : n).toISOString();
   const s = text(value);
@@ -217,7 +220,7 @@ function isoTime(value: unknown): string | null {
   return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
 }
 
-function epochMs(value: unknown): number | null {
+export function epochMs(value: unknown): number | null {
   const iso = isoTime(value);
   return iso === null ? null : Date.parse(iso);
 }
@@ -256,7 +259,7 @@ function retryAfter(header: string | null): number | null {
   return Number.isNaN(at) ? null : Math.max(0, at - Date.now());
 }
 
-async function requestJson(ctx: UsageContext, url: string, init: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Json> {
+export async function requestJson(ctx: UsageContext, url: string, init: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Json> {
   const host = new URL(url).host;
   // the time allowed ran out (AbortSignal.timeout), else the connection itself failed (DNS, refused, dropped)
   const unreachable = (error: unknown) => error instanceof UsageFailed ? error : new UsageFailed(
@@ -1053,7 +1056,7 @@ const devin: UsageProvider = {
   },
 };
 
-export const USAGE_PROVIDERS: readonly UsageProvider[] = [claude, codex, cursor, copilot, grok, antigravity, opencode, devin];
+export const USAGE_PROVIDERS: readonly UsageProvider[] = [claude, codex, cursor, copilot, grok, antigravity, opencode, devin, kimiUsage];
 
 /** Keychain services whose read hung (an access prompt nobody answered): not asked again. */
 const promptedServices = new Set<string>();

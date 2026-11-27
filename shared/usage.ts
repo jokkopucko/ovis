@@ -1,6 +1,6 @@
 /** The usage providers clients before Devin know. */
 const LEGACY_USAGE_PROVIDER_IDS = ["claude", "codex", "cursor", "copilot", "grok", "antigravity", "opencode"] as const;
-const USAGE_PROVIDER_IDS = [...LEGACY_USAGE_PROVIDER_IDS, "devin"] as const;
+const USAGE_PROVIDER_IDS = [...LEGACY_USAGE_PROVIDER_IDS, "devin", "kimi"] as const;
 
 /** The subscriptions whose plan limits GET /api/usage can read from a CLI's own sign-in. */
 export type UsageProviderId = typeof USAGE_PROVIDER_IDS[number];

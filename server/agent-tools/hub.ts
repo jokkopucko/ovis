@@ -268,7 +268,12 @@ export class AgentToolHub {
       this.ledger.begin(intent);
       const child = await this.options.acp.start({ ...launch, harness: kind, parentPane: run.self, runId: key.id, mcpServers: [this.command(key.tokenFile)], askEveryTime: true });
       this.view.signInNeeded.delete(kind);
-      const startMode = delegatedMode(kind, child.client);
+      const modeSet = command.setMode === undefined || await child.client.request("session/set_mode", { sessionId: child.client.session, modeId: command.setMode }, AbortSignal.timeout(5000))
+        .then(() => true, (error: unknown) => {
+          if (error instanceof KeeperRequestError || error instanceof KeeperDisconnected) return false;
+          throw error;
+        });
+      const startMode = modeSet ? delegatedMode(kind, child.client) : null;
       const permitted = startMode !== null && await child.client.request("_keeper/tool_check",
         { sessionId: child.client.session, expectedMode: startMode }, AbortSignal.timeout(5000)).catch((error: unknown) => {
         if (error instanceof KeeperRequestError || error instanceof KeeperDisconnected) return false;

@@ -13,7 +13,7 @@ export interface HarnessToolSetting {
   readonly harnesses: readonly string[];
 }
 /** Harness kinds with an ACP launch in server/agent-tools/harnesses.ts (resolveHarness). */
-export const ACP_LAUNCH_HARNESSES = ["claude", "codex", "copilot", "opencode", "agy", "gjc", "gemini", "kiro"] as const;
+export const ACP_LAUNCH_HARNESSES = ["claude", "codex", "copilot", "opencode", "agy", "gjc", "gemini", "kiro", "kimi"] as const;
 export const HARNESS_TOOL_DEFAULT: HarnessToolSetting = { level: "start", depth: 1, harnesses: ACP_LAUNCH_HARNESSES };
 export const HARNESS_TOOL_OFF: HarnessToolSetting = { level: "off", depth: 1, harnesses: [] };
 export function parseHarnessSetting(stored: unknown): HarnessToolSetting | null {

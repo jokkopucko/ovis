@@ -30,7 +30,7 @@ const ctx: UsageContext = {
 };
 beforeAll(async () => {
   mkdirSync(bin);
-  for (const provider of ["claude", "codex", "agent", "gh", "grok", "opencode", "devin"]) {
+  for (const provider of ["claude", "codex", "agent", "gh", "grok", "opencode", "devin", "kimi"]) {
     writeFileSync(join(bin, provider), `#!${process.execPath}
 import { renameSync } from "node:fs";
 import { join } from "node:path";
@@ -883,6 +883,7 @@ for (const [provider, cli, argv] of [
   ["grok", "grok", ["login", "--device-auth"]],
   ["opencode", "opencode", ["auth", "login"]],
   ["devin", "devin", ["auth", "login"]],
+  ["kimi", "kimi", ["login"]],
 ] as const) {
   it(`starts ${provider} with official argv and the discovery home when no named homes are supported`, async () => {
     const receipt = `${cli}-receipt.json`;
@@ -908,9 +909,9 @@ for (const [provider, cli, argv] of [
 
 it("lists every advertised provider in discovery order without requesting upstream usage", async () => {
   const local = new UsageLoginService(root, { PATH: bin }, { ...ctx, fetch: async () => { throw new Error("upstream usage requested"); } });
-  const response = await local.handle(new Request("http://localhost/api/usage/login?providers=claude,codex,cursor,copilot,grok,antigravity,opencode,devin"));
+  const response = await local.handle(new Request("http://localhost/api/usage/login?providers=claude,codex,cursor,copilot,grok,antigravity,opencode,devin,kimi"));
   const result = await response.json();
-  expect(result.providers.map((provider: { id: string }) => provider.id)).toEqual(["claude", "codex", "cursor", "copilot", "grok", "antigravity", "opencode", "devin"]);
+  expect(result.providers.map((provider: { id: string }) => provider.id)).toEqual(["claude", "codex", "cursor", "copilot", "grok", "antigravity", "opencode", "devin", "kimi"]);
   expect(result.providers.filter((provider: { separate_home: boolean }) => provider.separate_home).map((provider: { id: string }) => provider.id)).toEqual(["claude", "codex"]);
 });
 

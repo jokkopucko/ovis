@@ -280,6 +280,12 @@ export const APPROVED_COMMANDS: ReadonlySet<string> = new Set([
   "windows|iex (irm https://hermes-agent.nousresearch.com/install.ps1)",
   "macos|npm install -g @deepseek-ai/dsh @deepseek-harness-tui/dsh-tui",
   "linux|npm install -g @deepseek-ai/dsh @deepseek-harness-tui/dsh-tui",
+  "macos|curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash",
+  "macos|npm install -g @moonshot-ai/kimi-code",
+  "linux|curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash",
+  "linux|npm install -g @moonshot-ai/kimi-code",
+  "windows|irm https://code.kimi.com/kimi-code/install.ps1 | iex",
+  "windows|npm install -g @moonshot-ai/kimi-code",
 ]);
 
 /** An allowed address: HTTPS, a host, and a path on it, so a prefix can never stand for a whole host. */
@@ -1017,6 +1023,33 @@ const CATALOG_ENTRIES: readonly AgentCatalogEntry[] = [
     // Sign in opens dsh-tui itself: the key goes into its own first-run prompt; Ovis has no field that asks for it
     sign_in: { provider: null, command: null, in_agent: "on its first start: a DeepSeek API key from https://platform.deepseek.com/api_keys typed into its own prompt, or an OpenAI- or Anthropic-compatible provider", api_keys: ["DEEPSEEK_API_KEY"], required: true },
     after_install: ["It needs a model before it can work: a DeepSeek API key (https://platform.deepseek.com/api_keys) or an OpenAI- or Anthropic-compatible provider, entered in dsh-tui's own first-run prompt: Ovis does not ask for the key."],
+    min_version: null,
+  },
+  {
+    id: "kimi",
+    name: "Kimi Code",
+    vendor: "Moonshot AI",
+    kind: "harness",
+    description: "Moonshot AI's terminal coding agent for Kimi models and compatible providers.",
+    install: {
+      macos: only(method("posix", "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash", CURL_BASH), method("posix", "npm install -g @moonshot-ai/kimi-code", [{ tool: "node", min: "22.19.0" }, { tool: "npm" }])),
+      linux: only(method("posix", "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash", CURL_BASH), method("posix", "npm install -g @moonshot-ai/kimi-code", [{ tool: "node", min: "22.19.0" }, { tool: "npm" }])),
+      windows: only(method("powershell", "irm https://code.kimi.com/kimi-code/install.ps1 | iex", POWERSHELL), method("powershell", "npm install -g @moonshot-ai/kimi-code", [{ tool: "node", min: "22.19.0" }, { tool: "npm" }])),
+    },
+    no_install: {},
+    url_prefixes: ["https://code.kimi.com/kimi-code/install.sh", "https://code.kimi.com/kimi-code/install.ps1"],
+    packages: ["npm:@moonshot-ai/kimi-code"],
+    sources: [
+      { url: "https://github.com/MoonshotAI/kimi-code#install", checked: "2026-11-19" },
+      { url: "https://moonshotai.github.io/kimi-code/en/guides/getting-started", checked: "2026-11-19" },
+    ],
+    detect: {
+      binaries: ["kimi"],
+      version_args: ["--version"],
+      install_dirs: { macos: ["~/.kimi-code/bin"], linux: ["~/.kimi-code/bin"], windows: ["%USERPROFILE%/.kimi-code/bin"] },
+    },
+    sign_in: { provider: "kimi", command: ["kimi", "login"], in_agent: "/login", api_keys: [], required: true },
+    after_install: ["On Windows, install Git for Windows before starting Kimi Code so it can use Git Bash."],
     min_version: null,
   },
   {

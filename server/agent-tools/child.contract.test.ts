@@ -33,6 +33,8 @@ const RECORDED: readonly Recorded[] = [
     .map(([run, kind]) => ({ harness: "gemini", fixture: `gemini-0.71.1-${run}`, version: "0.71.1", mode: "default", kinds: [kind] })),
   // Kiro's V3 engine names no kind on the request itself, only on the tool call it announced before it
   ...["ask-write", "ask-mkdir"].map(run => ({ harness: "kiro", fixture: `kiro-3.6.2-${run}`, version: "kiro-cli 3.6.2", mode: "vibe", kinds: [null] })),
+  // as Kiro's, Kimi Code's request names no kind; the tool call it announced before it does
+  ...["ask-write", "ask-mkdir"].map(run => ({ harness: "kimi", fixture: `kimi-2.8.1-${run}`, version: "2.8.1", mode: "default", kinds: [null] })),
 ];
 
 describe.skipIf(!keeperBuilt).each([...RECORDED])("a $harness child replaying $fixture", ({ harness, fixture, version, mode, kinds }) => {
@@ -109,7 +111,7 @@ exec "${process.execPath}" "${REPLAY}" "${FIXTURE}" "${join(dir, "replay.jsonl")
   const replayed = () => readFileSync(join(dir, "replay.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line) as Record<string, any>);
   const scenario = (options: {
     readonly startMode?: string; readonly openingAllowAll?: "on" | "off";
-    readonly updatedMode?: string; readonly updatedAllowAll?: "on" | "off";
+    readonly updatedMode?: string; readonly updatedAllowAll?: "on" | "off"; readonly refuseSetMode?: boolean;
   }) => writeFileSync(join(dir, "scenario.json"), JSON.stringify(options));
   async function rejectEveryCard(session: string) {
     const child = acp.forPane(session)!;
@@ -133,6 +135,9 @@ exec "${process.execPath}" "${REPLAY}" "${FIXTURE}" "${join(dir, "replay.jsonl")
         _meta: { claudeCode: { options: { allowDangerouslySkipPermissions: false } } },
       });
     } else expect(replayed()[0]?.sessionNew).not.toHaveProperty("configOptions");
+    // Kimi Code reports `default` whatever mode the person saved: the child sets it before its first task
+    if (harness === "kimi") expect(replayed().slice(1, 3)).toEqual([{ setMode: "default" }, { prompt: expect.stringContaining("do the actions") }]);
+    else expect(replayed().some(row => "setMode" in row)).toBe(false);
     expect(started.session.version).toBe(version.match(/\d+\.\d+\.\d+/)?.[0]);
     expect(acp.forPane(session)?.client.sessionMode).toBe(mode);
     await rejectEveryCard(session);
@@ -182,13 +187,24 @@ exec "${process.execPath}" "${REPLAY}" "${FIXTURE}" "${join(dir, "replay.jsonl")
     ["copilot-1.0.109-ask", ["https://agentclientprotocol.com/protocol/session-modes#autopilot"]],
     ["gemini-0.71.1-ask-write", ["autoEdit", "yolo"]],
     ["kiro-3.6.2-ask-write", ["autonomous"]],
+    ["kimi-2.8.1-ask-write", ["auto", "yolo"]],
   ]).get(fixture);
   if (elevatedModes) {
     it.each([...elevatedModes])("stops a child in wider mode %s before sending its initial task", async (startMode) => {
       scenario({ startMode });
       expect(await call("start", { harness, cwd: dir, task: "do the actions" })).toMatchObject({ kind: "refusal", error: { code: "not_granted" } });
       expect((await acp.terminals()).filter(row => row.state === "live")).toHaveLength(0);
-      expect(replayed()).toEqual([expect.objectContaining({ sessionNew: expect.any(Object) })]);
+      expect(replayed().filter(row => !("setMode" in row))).toEqual([expect.objectContaining({ sessionNew: expect.any(Object) })]);
+    });
+  }
+
+  if (fixture === "kimi-2.8.1-ask-write") {
+    // Kimi Code reports `default` whatever mode the person saved, so only the mode it is set to proves the start
+    it("does not start a child whose mode it could not set", async () => {
+      scenario({ refuseSetMode: true });
+      expect(await call("start", { harness, cwd: dir, task: "do the actions" })).toMatchObject({ kind: "refusal", error: { code: "not_granted" } });
+      expect((await acp.terminals()).filter(row => row.state === "live")).toHaveLength(0);
+      expect(replayed().some(row => "prompt" in row)).toBe(false);
     });
   }
 

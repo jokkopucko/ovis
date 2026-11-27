@@ -15,7 +15,7 @@ const POLL_MS = 60_000;
 export const HIGH_PERCENT = 80;
 
 export const PROVIDER_MARK: Readonly<Record<UsageProviderId, string>> = {
-  claude: "claude", codex: "codex", cursor: "cursor", copilot: "copilot", grok: "grok", antigravity: "agy", opencode: "opencode", devin: "devin",
+  claude: "claude", codex: "codex", cursor: "cursor", copilot: "copilot", grok: "grok", antigravity: "agy", opencode: "opencode", devin: "devin", kimi: "kimi",
 };
 
 export const WINDOW_LABEL: Readonly<Record<UsageWindow["kind"], string>> = {
