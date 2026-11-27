@@ -565,6 +565,10 @@ if (typeof window !== "undefined") {
   if (sheetOf(window.history.state) !== null) window.history.replaceState(ordinary(window.history.state, true), "");
 }
 
+export function sheetHistoryEntryKey(): string | undefined {
+  return navigation()?.currentEntry?.key;
+}
+
 export function useSheetHistory(active: boolean, onBack: () => boolean | void, stays = false, returns = false): void {
   const latest = useRef(onBack);
   latest.current = onBack;

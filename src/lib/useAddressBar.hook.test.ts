@@ -358,6 +358,48 @@ it("writes the file URL on a new entry after a sheet's refused Back does not ret
   expect(addresses()).toEqual([P1, `${P2}&file=README.md`]);
 });
 
+for (const [when, earlier] of [["made in this run", false], ["made before this run", true]] as const) it(`writes the new file entry after a refused Back onto an entry ${when}, without the Navigation API`, async () => {
+  const traversal = { ...sheetTraversal };
+  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator")!;
+  place.paneId = earlier ? "p2" : "p1";
+  try {
+    await mount(earlier ? [P1, P2] : [P1], async () => {
+      Object.defineProperty(window, "navigation", { configurable: true, value: undefined });
+      Object.defineProperty(globalThis, "navigator", {
+        ...originalNavigator,
+        value: { userAgent: "Chrome/145.0.0.0", userActivation: { isActive: false } },
+      });
+      // a fresh copy each time, so it counts on this window's history
+      const modulePath = `./sheetHistory.ts?address-bar-counted-file=${crypto.randomUUID()}`;
+      const sheets: typeof sheetHistory = await import(modulePath);
+      mock.module("./sheetHistory.ts", () => ({ ...sheets, sheetSteppedOff: () => sheetStep }));
+    });
+    if (!earlier) await act(async () => { place.paneId = "p2"; draw(); });
+
+    sheetStep = true;
+    await back();
+    sheetStep = false;
+    expect(window.location.search).toBe(P1);
+    expect(asked).toEqual([]);
+    await act(async () => { place.snapshot = roster(); draw(); });
+    expect(addresses()).toEqual([P1, P2]);
+
+    const preview = { path: "README.md", paneId: "p2", machineId: "local" };
+    await act(async () => {
+      window.history.pushState({ [FILE_PREVIEW_KEY]: preview }, "");
+      place.viewing = preview;
+      draw();
+    });
+
+    expect(addresses()).toEqual([P1, `${P2}&file=README.md`]);
+    expect(entries[1]!.state).toHaveProperty(FILE_PREVIEW_KEY, preview);
+  } finally {
+    mock.module("./sheetHistory.ts", () => ({ ...loaded.sheet, sheetSteppedOff: () => sheetStep }));
+    Object.assign(sheetTraversal, traversal);
+    Object.defineProperty(globalThis, "navigator", originalNavigator);
+  }
+});
+
 it("holds nothing once the dispatch is over, though the handler never heard the pop", async () => {
   await mount([P1, P2], async () => {
     window.addEventListener("popstate", (event) => { event.stopImmediatePropagation(); });

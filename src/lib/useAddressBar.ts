@@ -8,7 +8,7 @@ import { INBOX_FROM_KEY, type useInbox } from "./useInbox.ts";
 import { pageAddress, pageSearch } from "./pageQuery.ts";
 import type { SelectionMark } from "./selectionMark.ts";
 import { settingsEntry, settingsSteppedOff } from "./settingsHistory.ts";
-import { onSheetTraversalOver, sheetSteppedOff, sheetTraversalPending } from "./sheetHistory.ts";
+import { onSheetTraversalOver, sheetHistoryEntryKey, sheetSteppedOff, sheetTraversalPending } from "./sheetHistory.ts";
 import type { useFilePanels } from "./useFilePanels.ts";
 import type { useNewSessionState } from "./useNewSessionDialog.ts";
 import type { usePaneLens } from "./usePaneLens.ts";
@@ -26,10 +26,6 @@ export function popUnread(dispatching: Event | undefined, read: Event | null): b
 
 function otherPane(under: Pick<AppLink, "machine" | "pane"> | null, shown: Pick<AppLink, "machine" | "pane">): boolean {
   return under !== null && (under.machine !== shown.machine || under.pane !== shown.pane);
-}
-
-function entryKey(): string | undefined {
-  return (window as Window & { navigation?: { currentEntry?: { key: string } | null } }).navigation?.currentEntry?.key;
 }
 
 export function useAddressBar({ inbox, mode, newSessionOpen, newSessionMachineId, selectedPane, selectedPaneId, selectedWorkspace, viewing, selectedMachineId, leaveFile, restoreFile, fileFromPop, forgetLeftFiles, locked, machines, snapshot, linkLanded, view, settingsOpen, settingsPage, settingsLinkPage, settingsLinkSection, wideScreen, sidebarCollapsed, newTab, newFields, autoSelected, pendingFile, selectedMachine, openFile, machinesRef, selectTargetRef, pendingLink, setLinkLanded, linkSince, rosterSeq, setNewSessionOpen, pendingCreate, newSessionPending, setHeaderNote, selectionRef }: {
@@ -106,7 +102,8 @@ export function useAddressBar({ inbox, mode, newSessionOpen, newSessionMachineId
   const refusedEntry = useRef<{ link: Pick<AppLink, "machine" | "pane">; key: string | undefined } | null>(null);
   const wouldOverwriteRefused = (shown: Pick<AppLink, "machine" | "pane">): boolean => {
     const refused = refusedEntry.current;
-    return refused !== null && (refused.key === undefined || refused.key === entryKey()) && otherPane(refused.link, shown);
+    // an entry with no key is told from none: it is the refused one until an entry with a key comes
+    return refused !== null && refused.key === sheetHistoryEntryKey() && otherPane(refused.link, shown);
   };
   const [released, setReleased] = useState(0);
   const filePop = fileFromPop();
@@ -195,7 +192,7 @@ export function useAddressBar({ inbox, mode, newSessionOpen, newSessionMachineId
   useEffect(() => {
     const listHere = (): boolean => modeRef.current?.lands() ?? inboxRef.current.enabled;
     const onPop = (event: PopStateEvent): void => {
-      if (sheetSteppedOff()) { refusedEntry.current = { link: readLink(pageSearch()), key: entryKey() }; return; }
+      if (sheetSteppedOff()) { refusedEntry.current = { link: readLink(pageSearch()), key: sheetHistoryEntryKey() }; return; }
       if (settingsEntry(event.state) !== null) return;
       if (settingsSteppedOff()) { sayShown(); return; }
       refusedEntry.current = null;
