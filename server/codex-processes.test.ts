@@ -905,6 +905,43 @@ describe("the thread id a Codex pane's terminal title shows, from another folder
     expect(found.filter(([, chat, reader]) => chat !== null || reader !== null).map(([name]) => name)).toEqual([]);
   });
 
+  it("scans the stored names for a title's id once while the store is unchanged, and again after any write", async () => {
+    const rollout = otherFolderThread();
+    const db = new Database(join(home, "state_5.sqlite"));
+    db.exec("ALTER TABLE threads ADD COLUMN name TEXT");
+    db.close();
+    foreground = picker;
+    title = shortened;
+    screen = otherAnswer;
+    const query = spyOn(Database.prototype, "query");
+    const scans = () => query.mock.calls.filter(([sql]) => String(sql).includes("GLOB")).length;
+    try {
+      expect(await resolve()).toBe(rollout);
+      const first = scans();
+      expect(first).toBeGreaterThan(0);
+      expect(await resolve()).toBe(rollout);
+      expect(await codexOpenRollout(root, root, home)).toBe(rollout);
+      expect(scans()).toBe(first);
+      // a write within one timestamp tick keeps the store's size and times: only SQLite's change counter moves
+      const realStat = fs.statSync;
+      const frozen = new Map<string, unknown>();
+      const stat = spyOn(fs, "statSync").mockImplementation(((file: string, ...rest: unknown[]) => {
+        const read = (realStat as (...args: unknown[]) => unknown)(file, ...rest);
+        if (!/state_5\.sqlite(-wal|-shm)?$/.test(String(file))) return read;
+        if (!frozen.has(String(file))) frozen.set(String(file), read);
+        return frozen.get(String(file));
+      }) as typeof fs.statSync);
+      try {
+        expect(await resolve()).toBe(rollout);
+        const renamed = new Database(join(home, "state_5.sqlite"));
+        renamed.query("UPDATE threads SET name = ? WHERE id = ?").run(`project ${other}`, thread);
+        renamed.close();
+        expect(await resolve()).toBeNull();
+        expect(scans()).toBeGreaterThan(first);
+      } finally { stat.mockRestore(); }
+    } finally { query.mockRestore(); }
+  });
+
   it("compares the pane's folders as Codex writes them into the title too (R2)", async () => {
     otherFolderThread();
     foreground = picker;

@@ -1,6 +1,6 @@
 /** Native Codex rollouts contain both display events and model context. */
 import { constants as sqliteConstants, Database } from "bun:sqlite";
-import { closeSync, existsSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import nodePath, { isAbsolute, join, type PlatformPath } from "node:path";
@@ -2080,6 +2080,47 @@ export function asCodexTitle(text: string, screen = false): string {
 }
 
 /**
+ * titledCandidate's scan reads every stored thread's folder, name and title (a title is a whole first
+ * message, so tens of MB in a store of some hundred threads) and runs for each Codex pane on each poll.
+ * Its answer for an id holds while the store and its WAL are the same files with the same size and
+ * times, stamped before the read so that a write during it costs only one more scan, and for at most
+ * TITLE_RIVAL_TTL_MS: a same-size rewrite within one timestamp tick is the limit, as for settled in
+ * openCodexStore. Codex writes a thread's name without its updated_at, so no column of a row can stand
+ * for its text. A scan after a write meets the same texts again: shownTexts keeps shows() of each text,
+ * by its hash, for the id it was asked for.
+ */
+const TITLE_RIVAL_TTL_MS = 60_000;
+const TITLE_RIVALS_MAX = 1_000;
+const titleRivals = new Map<string, { stamp: string; at: number; rival: boolean }>();
+const SHOWN_TEXTS_MAX = 20_000;
+const shownTexts = new Map<string, boolean>();
+
+/**
+ * Each write transaction moves a counter SQLite keeps: the file change counter of the database header
+ * (offset 24) without a WAL, and the wal-index header at the start of -shm (iChange, mxFrame) with one.
+ * File times alone can miss a same-size write within one timestamp tick.
+ */
+function codexStoreStamp(home: string): string | null {
+  const head = (path: string, bytes: number): string => {
+    let descriptor: number | undefined;
+    try {
+      descriptor = openSync(path, "r");
+      const buffer = Buffer.alloc(bytes);
+      return buffer.subarray(0, readSync(descriptor, buffer, 0, bytes, 0)).toString("hex");
+    } catch { return "-"; }
+    finally { if (descriptor !== undefined) closeSync(descriptor); }
+  };
+  try {
+    const store = realpathSync(join(home, "state_5.sqlite"));
+    const files = [store, `${store}-wal`, `${store}-shm`].map((path) => {
+      const stat = statSync(path, { bigint: true, throwIfNoEntry: false });
+      return stat === undefined ? "-" : `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+    });
+    return [store, ...files, head(store, 100).slice(48, 56), head(`${store}-shm`, 48)].join("|");
+  } catch { return null; }
+}
+
+/**
  * The rollout of the one unarchived thread the store holds under the id (or the start of one) a
  * Codex pane's title shows (titledThread), while a Codex process runs in the pane. Unlike the
  * command line, the title follows /new and a resume through the picker, from any folder (#896).
@@ -2096,16 +2137,39 @@ function titledCandidate(agent: Pick<AgentInfo, "terminal_title" | "terminal_tit
   const shows = (text: string | null | undefined) => typeof text === "string"
     && [false, true].some((screen) => asCodexTitle(text, screen).replaceAll(" ", "").toLowerCase().includes(id));
   if ([agent.cwd, agent.foreground_cwd].some(shows)) return null;
-  const columns = new Set(db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('threads')").all().map((column) => column.name));
-  const named = ["cwd", "name", "title"].filter((column) => columns.has(column));
-  // the text itself without its spaces, or any text with a character outside printable ASCII (all
-  // Codex drops or turns into "-" is), which is then read as Codex would write it; SQLite's text
-  // functions stop at a NUL, so that one is looked for in the bytes
-  const texts = named.length === 0 ? [] : db.query<Record<string, string | null>, string[]>(
-    `SELECT ${named.join(", ")} FROM threads WHERE ${named.map((column) =>
-      `instr(lower(replace(${column}, ' ', '')), ?) > 0 OR ${column} GLOB '*[^ -~]*' OR instr(CAST(${column} AS BLOB), X'00') > 0`).join(" OR ")}`,
-  ).all(...named.map(() => id));
-  if (texts.some((row) => named.some((column) => shows(row[column])))) return null;
+  const key = `${home}\0${id}`;
+  const stamp = codexStoreStamp(home);
+  const kept = titleRivals.get(key);
+  let rival: boolean;
+  if (stamp !== null && kept !== undefined && kept.stamp === stamp && Date.now() - kept.at < TITLE_RIVAL_TTL_MS) rival = kept.rival;
+  else {
+    const storedShows = (text: string | null | undefined) => {
+      if (typeof text !== "string") return false;
+      const textKey = `${id}\0${text.length}\0${Bun.hash(text)}`;
+      let shown = shownTexts.get(textKey);
+      if (shown === undefined) {
+        shown = shows(text);
+        if (shownTexts.size >= SHOWN_TEXTS_MAX) shownTexts.clear();
+        shownTexts.set(textKey, shown);
+      }
+      return shown;
+    };
+    const columns = new Set(db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('threads')").all().map((column) => column.name));
+    const named = ["cwd", "name", "title"].filter((column) => columns.has(column));
+    // the text itself without its spaces, or any text with a character outside printable ASCII (all
+    // Codex drops or turns into "-" is), which is then read as Codex would write it; SQLite's text
+    // functions stop at a NUL, so that one is looked for in the bytes
+    const texts = named.length === 0 ? [] : db.query<Record<string, string | null>, string[]>(
+      `SELECT ${named.join(", ")} FROM threads WHERE ${named.map((column) =>
+        `instr(lower(replace(${column}, ' ', '')), ?) > 0 OR ${column} GLOB '*[^ -~]*' OR instr(CAST(${column} AS BLOB), X'00') > 0`).join(" OR ")}`,
+    ).all(...named.map(() => id));
+    rival = texts.some((row) => named.some((column) => storedShows(row[column])));
+    if (stamp !== null) {
+      if (titleRivals.size >= TITLE_RIVALS_MAX) titleRivals.clear();
+      titleRivals.set(key, { stamp, at: Date.now(), rival });
+    }
+  }
+  if (rival) return null;
   // ids are lowercase hex and dashes, all before "g": the range is every id that starts with this one
   const rows = db.query<{ rollout_path: string }, [string, string]>(
     "SELECT rollout_path FROM threads WHERE id >= ? AND id < ? AND archived = 0 LIMIT 2",
@@ -2161,10 +2225,13 @@ export async function codexFreshSession(paneId: string, cwds: readonly string[],
       const folders = [...new Set(named.flatMap((cwd) => {
         try { return [cwd, realpathSync(cwd)]; } catch { return [cwd]; }
       }))].map((folder) => storedCwdCondition(folder));
+      // one IN list: SQLite takes the archived-and-cwd index for it, but an OR of lists makes it
+      // read every unarchived row (each holds a whole first message)
+      const spellings = [...new Set(folders.flatMap((folder) => folder.params))];
       const said = db.query("SELECT 1 FROM pragma_table_info('threads') WHERE name = 'first_user_message'").get() !== null ? " AND COALESCE(first_user_message, '') <> ''" : "";
       const begun = db.query<unknown, (string | number)[]>(
-        `SELECT 1 FROM threads WHERE (${folders.map((folder) => folder.where).join(" OR ")}) AND archived = 0 AND agent_role IS NULL${interactive(db)}${said} AND max(COALESCE(created_at, 0), COALESCE(updated_at, 0)) >= ? LIMIT 1`,
-      ).get(...folders.flatMap((folder) => folder.params), since);
+        `SELECT 1 FROM threads WHERE cwd IN (${spellings.map(() => "?").join(", ")}) AND archived = 0 AND agent_role IS NULL${interactive(db)}${said} AND max(COALESCE(created_at, 0), COALESCE(updated_at, 0)) >= ? LIMIT 1`,
+      ).get(...spellings, since);
       opened.settled();
       if (begun !== null) return null;
     }
